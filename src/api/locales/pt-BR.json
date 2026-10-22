@@ -137,6 +137,7 @@
     "experimentNotFound": "Experimento não encontrado.",
     "fileTooLarge": "O arquivo é muito grande",
     "forbidden": "Acesso negado",
+    "googleApiDisabled": "A API do {{api}} está desativada no projeto do Google Cloud do cliente OAuth desta credencial. Ative a API nesse projeto e tente de novo: {{url}}",
     "googleCredentialNotConnected": "Esta credencial não é uma conta do Google conectada.",
     "googleCredentialNotFound": "A credencial de que esta integração precisa não foi encontrada.",
     "googleDriveScopeDenied": "O Google Drive recusou a requisição. Reconecte a credencial concedendo o escopo 'Drive (somente leitura)' ou 'Drive (acesso total)'; o escopo 'Drive (arquivos do app)' não consegue listar pastas existentes.",

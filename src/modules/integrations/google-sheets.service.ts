@@ -6,7 +6,11 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { readVaultRefId, tryResolveVaultEntry } from "@/modules/vault/service";
-import { readHeader, SPREADSHEET_ID_PATTERN } from "./toolpacks/google-sheets";
+import {
+  googleApiDisabledUrl,
+  readHeader,
+  SPREADSHEET_ID_PATTERN,
+} from "./toolpacks/google-sheets";
 
 // The two lists the Sheets integration editor picks from: the account's spreadsheets (through Drive,
 // which needs a Drive read scope; without one the operator pastes the URL instead) and one
@@ -132,6 +136,24 @@ export function mapSpreadsheetListResponse(
   return out;
 }
 
+// The 403 of an API turned off in the OAuth client's Cloud project, which reconnecting cannot fix,
+// apart from the 403 of a missing scope or a spreadsheet the account cannot open.
+function assertApiEnabled(
+  status: number,
+  json: unknown,
+  api: "Google Drive" | "Google Sheets",
+  service: string,
+): void {
+  const url = status === 403 ? googleApiDisabledUrl(json, service) : null;
+  if (!url) return;
+  throw new AppError(
+    `The ${api} API is turned off in the Google Cloud project of this credential's OAuth client. Enable it in that project and try again: ${url}`,
+    502,
+    "errors.googleApiDisabled",
+    { api, url },
+  );
+}
+
 export async function listCredentialSpreadsheets(
   ctx: TenantContext,
   credentialRef: string,
@@ -144,6 +166,7 @@ export async function listCredentialSpreadsheets(
     token,
     deps,
   );
+  assertApiEnabled(status, json, "Google Drive", "drive.googleapis.com");
   if (status === 403) {
     throw new AppError(
       "Google Drive denied the spreadsheet list. Reconnect the credential with the 'Drive (read-only)' scope, or paste the spreadsheet's URL instead.",
@@ -183,6 +206,12 @@ export async function listSpreadsheetTabs(
     `${root}?${new URLSearchParams({ fields: "properties.title,sheets.properties(sheetId,title,sheetType)" })}`,
     token,
     deps,
+  );
+  assertApiEnabled(
+    meta.status,
+    meta.json,
+    "Google Sheets",
+    "sheets.googleapis.com",
   );
   if (meta.status === 403 || meta.status === 401) {
     throw new AppError(

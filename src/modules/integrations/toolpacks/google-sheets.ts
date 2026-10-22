@@ -144,6 +144,45 @@ export interface Header {
   duplicated: Set<string>;
 }
 
+// Google refuses a call to an API that is turned off in the Cloud project of the OAuth client with a
+// 403 as well, and reconnecting the credential cannot fix that one: the API has to be enabled in that
+// project. Told apart by the error body (`SERVICE_DISABLED` in `details[]`, or the older
+// `accessNotConfigured` in `errors[]`). Returns where to enable it, or null for any other refusal.
+// The activation link Google sends is kept only when it points at the Cloud console; otherwise the
+// API's page in the console library stands in.
+export function googleApiDisabledUrl(
+  json: unknown,
+  service: string,
+): string | null {
+  const error = (json as { error?: unknown } | null)?.error as
+    | { details?: unknown; errors?: unknown }
+    | undefined;
+  if (!error || typeof error !== "object") return null;
+  const details = Array.isArray(error.details) ? error.details : [];
+  const info = details.find(
+    (d) => (d as { reason?: unknown })?.reason === "SERVICE_DISABLED",
+  ) as { metadata?: { activationUrl?: unknown } } | undefined;
+  const legacy = (Array.isArray(error.errors) ? error.errors : []).some(
+    (e) => (e as { reason?: unknown })?.reason === "accessNotConfigured",
+  );
+  if (!info && !legacy) return null;
+  const link = info?.metadata?.activationUrl;
+  if (typeof link === "string") {
+    try {
+      const u = new URL(link);
+      if (
+        u.protocol === "https:" &&
+        (u.hostname === "console.developers.google.com" ||
+          u.hostname === "console.cloud.google.com")
+      )
+        return u.toString();
+    } catch {
+      // NOTE: an unparsable link falls through to the library page.
+    }
+  }
+  return `https://console.cloud.google.com/apis/library/${service}`;
+}
+
 export function readHeader(row: unknown[] | undefined): Header {
   const names: string[] = [];
   const index = new Map<string, number>();
@@ -222,7 +261,7 @@ async function locateTab(
     ctx,
   );
   if (meta.status < 200 || meta.status >= 300)
-    return toolFailure(httpMessage(meta.status));
+    return toolFailure(httpMessage(meta.status, meta.json));
   const sheets = (meta.json as { sheets?: unknown } | null)?.sheets;
   const tab = (Array.isArray(sheets) ? sheets : [])
     .map((s) => (s as { properties?: Record<string, unknown> })?.properties)
@@ -246,7 +285,11 @@ async function locateTab(
   };
 }
 
-function httpMessage(status: number): string {
+function httpMessage(status: number, json: unknown): string {
+  const enableAt =
+    status === 403 ? googleApiDisabledUrl(json, "sheets.googleapis.com") : null;
+  if (enableAt)
+    return `The Google Sheets API is turned off in the Google Cloud project of the connected credential's OAuth client (HTTP 403). Reconnecting does not help: the operator has to enable it in that project (${enableAt}).`;
   if (status === 401 || status === 403)
     return `Google Sheets refused access (HTTP ${status}). The connected Google account needs the Sheets scope and access to this spreadsheet.`;
   if (status === 404)
@@ -275,7 +318,7 @@ async function readRows(
       "The tab is too large to read in one request. Ask the operator to move old rows to another tab.",
     );
   if (res.status < 200 || res.status >= 300)
-    return toolFailure(httpMessage(res.status));
+    return toolFailure(httpMessage(res.status, res.json));
   const values = (res.json as { values?: unknown } | null)?.values;
   return {
     rows: (Array.isArray(values) ? values : []).map((r) =>
@@ -472,7 +515,7 @@ function buildAppendTool(
           ctx,
         );
         if (res.status < 200 || res.status >= 300)
-          return toolFailure(httpMessage(res.status));
+          return toolFailure(httpMessage(res.status, res.json));
         return "Added the row at the end of the spreadsheet tab.";
       } catch (err) {
         return unreachable(err, "append");
@@ -631,7 +674,7 @@ function buildUpdateTool(
           ctx,
         );
         if (res.status < 200 || res.status >= 300)
-          return toolFailure(httpMessage(res.status));
+          return toolFailure(httpMessage(res.status, res.json));
         return `Updated row ${target} of the spreadsheet.`;
       } catch (err) {
         return unreachable(err, "update");

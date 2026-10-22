@@ -254,3 +254,51 @@ describe("the tab list", () => {
     ).toBe("errors.googleSheetsScopeDenied");
   });
 });
+
+describe("an API turned off in the credential's Cloud project", () => {
+  const disabled = (service: string) => ({
+    error: {
+      code: 403,
+      details: [
+        {
+          reason: "SERVICE_DISABLED",
+          metadata: {
+            activationUrl: `https://console.developers.google.com/apis/api/${service}/overview?project=123`,
+          },
+        },
+      ],
+    },
+  });
+
+  test("the spreadsheet list says to enable the Drive API, not to reconnect", async () => {
+    const { fetchImpl } = routed(() => [403, disabled("drive.googleapis.com")]);
+    const err = await refusal(
+      listCredentialSpreadsheets(ctx, "vault:3", noBase, deps(fetchImpl)),
+    );
+    expect(err.translationKey).toBe("errors.googleApiDisabled");
+    expect(err.translationParams).toEqual({
+      api: "Google Drive",
+      url: "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=123",
+    });
+  });
+
+  test("the tab list says to enable the Sheets API, also in the older error shape", async () => {
+    const current = routed(() => [403, disabled("sheets.googleapis.com")]);
+    const err = await refusal(
+      listSpreadsheetTabs(ctx, "vault:3", SID, noBase, deps(current.fetchImpl)),
+    );
+    expect(err.translationKey).toBe("errors.googleApiDisabled");
+    expect(err.translationParams?.api).toBe("Google Sheets");
+    const legacy = routed(() => [
+      403,
+      { error: { code: 403, errors: [{ reason: "accessNotConfigured" }] } },
+    ]);
+    const old = await refusal(
+      listSpreadsheetTabs(ctx, "vault:3", SID, noBase, deps(legacy.fetchImpl)),
+    );
+    expect(old.translationKey).toBe("errors.googleApiDisabled");
+    expect(old.translationParams?.url).toBe(
+      "https://console.cloud.google.com/apis/library/sheets.googleapis.com",
+    );
+  });
+});

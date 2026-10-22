@@ -137,6 +137,7 @@
     "experimentNotFound": "Experiment not found.",
     "fileTooLarge": "File is too large",
     "forbidden": "Forbidden",
+    "googleApiDisabled": "The {{api}} API is turned off in the Google Cloud project of this credential's OAuth client. Enable it in that project and try again: {{url}}",
     "googleCredentialNotConnected": "This credential is not a connected Google account.",
     "googleCredentialNotFound": "The credential this integration needs was not found.",
     "googleDriveScopeDenied": "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope; 'Drive (app files)' cannot list existing folders.",

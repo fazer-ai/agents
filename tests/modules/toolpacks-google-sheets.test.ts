@@ -902,3 +902,77 @@ describe("google sheets: the config a write may store", () => {
     }
   });
 });
+
+// The 403 Google sends when the Sheets API is turned off in the OAuth client's Cloud project, in the
+// current shape (`details[]`) and the older one (`errors[]`).
+const ACTIVATION =
+  "https://console.developers.google.com/apis/api/sheets.googleapis.com/overview?project=123";
+function disabled(activationUrl: string = ACTIVATION) {
+  return {
+    error: {
+      code: 403,
+      status: "PERMISSION_DENIED",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          reason: "SERVICE_DISABLED",
+          metadata: { activationUrl },
+        },
+      ],
+    },
+  };
+}
+const legacyDisabled = {
+  error: { code: 403, errors: [{ reason: "accessNotConfigured" }] },
+};
+function answering(body: unknown) {
+  return (async () =>
+    new Response(JSON.stringify(body), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+}
+
+describe("google sheets: an API turned off in the Cloud project", () => {
+  test("says to enable the API, with Google's activation link, instead of reconnecting", async () => {
+    const { tool } = setup(["sheets_find_rows"], {
+      ctx: { fetchImpl: answering(disabled()) },
+    });
+    const out = await tool("sheets_find_rows")({});
+    expect(out).toContain("turned off");
+    expect(out).toContain(ACTIVATION);
+    expect(out).not.toContain("Sheets scope");
+  });
+
+  test("the older accessNotConfigured shape points at the API's console page", async () => {
+    const { tool } = setup(["sheets_append_row"], {
+      ctx: { fetchImpl: answering(legacyDisabled) },
+    });
+    const out = await tool("sheets_append_row")({
+      values: [{ column: "Nome", value: "E" }],
+    });
+    expect(out).toContain(
+      "https://console.cloud.google.com/apis/library/sheets.googleapis.com",
+    );
+  });
+
+  test("an activation link outside the Cloud console is not repeated", async () => {
+    const { tool } = setup(["sheets_find_rows"], {
+      ctx: { fetchImpl: answering(disabled("https://evil.example/enable")) },
+    });
+    const out = await tool("sheets_find_rows")({});
+    expect(out).not.toContain("evil.example");
+    expect(out).toContain(
+      "https://console.cloud.google.com/apis/library/sheets.googleapis.com",
+    );
+  });
+
+  test("any other 403 keeps the scope sentence", async () => {
+    const { tool } = setup(["sheets_find_rows"], {
+      ctx: { fetchImpl: answering({ error: { code: 403 } }) },
+    });
+    const out = await tool("sheets_find_rows")({});
+    expect(out).toContain("Sheets scope");
+    expect(out).not.toContain("turned off");
+  });
+});

@@ -26,6 +26,7 @@ import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 // One key per fact, never one generic key per HTTP class: a registered key wins over
 // `AppError.message` in `refusalBody`, so a generic one hides the specific sentence (the Drive 403's
 // is the only one that names the OAuth scope to reconnect with).
+// translate('errors.googleApiDisabled', 'The {{api}} API is turned off in the Google Cloud project of this credential\'s OAuth client. Enable it in that project and try again: {{url}}')
 // translate('errors.googleCredentialNotConnected', 'This credential is not a connected Google account.')
 // translate('errors.googleCredentialNotFound', 'The credential this integration needs was not found.')
 // translate('errors.googleDriveScopeDenied', "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope; 'Drive (app files)' cannot list existing folders.")

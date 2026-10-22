@@ -161,6 +161,27 @@ export function readHeader(row: unknown[] | undefined): Header {
   return { names, index, duplicated, last };
 }
 
+// The header names a refusal lists, so a mistyped column on a tab with many or long headers costs a
+// bounded reply rather than the whole header row.
+const MAX_LISTED_COLUMN_CHARS = 100;
+const MAX_COLUMN_LIST_CHARS = 2_000;
+
+function columnList(names: string[]): string {
+  const shown: string[] = [];
+  let used = 0;
+  for (const name of names) {
+    const one =
+      name.length > MAX_LISTED_COLUMN_CHARS
+        ? `${clipText(name, MAX_LISTED_COLUMN_CHARS)}…`
+        : name;
+    if (shown.length && used + one.length + 2 > MAX_COLUMN_LIST_CHARS) break;
+    shown.push(one);
+    used += one.length + 2;
+  }
+  const rest = names.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")} and ${rest} more` : shown.join(", ");
+}
+
 // The header position of a column the model named, or the sentence that tells it why not.
 function locateColumn(header: Header, column: string): number | string {
   const key = headerKey(column);
@@ -168,7 +189,7 @@ function locateColumn(header: Header, column: string): number | string {
     return `The column "${column}" appears more than once in the header row, so it is ambiguous. Ask the operator to rename one of them.`;
   const i = header.index.get(key);
   if (i === undefined)
-    return `There is no column "${column}" in this tab. The columns are: ${header.names.join(", ")}.`;
+    return `There is no column "${column}" in this tab. The columns are: ${columnList(header.names)}.`;
   return i;
 }
 

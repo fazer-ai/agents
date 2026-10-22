@@ -349,6 +349,24 @@ describe("google sheets: append", () => {
     expect(fake.tab(0).rows.length).toBe(4);
   });
 
+  test("an unknown column on a tab with a huge header gets a bounded list of the real ones", async () => {
+    const header = Array.from(
+      { length: 1000 },
+      (_, i) => `Coluna ${i} ${"x".repeat(i === 0 ? 5000 : 50)}`,
+    );
+    const { tool, fake } = setup(["sheets_append_row"], {
+      tabs: [{ sheetId: 0, title: "Leads", rows: [header] }],
+    });
+    const out = await tool("sheets_append_row")({
+      values: [{ column: "Email", value: "c@x.com" }],
+    });
+    expect(out).toContain('no column "Email"');
+    expect(out).toContain("Coluna 1 ");
+    expect(out).toMatch(/and \d+ more\.$/);
+    expect(out.length).toBeLessThan(2_500);
+    expect(fake.writes).toBe(0);
+  });
+
   test("a header that starts after column A still gets each value under its own name", async () => {
     const { fake, tool } = setup(["sheets_append_row"], {
       tabs: [

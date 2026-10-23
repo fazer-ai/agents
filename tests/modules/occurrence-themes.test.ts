@@ -860,6 +860,208 @@ describe.skipIf(!dbUp)("consolidation", () => {
     for (const step of ["assignment", "consolidation", "partition"] as const)
       expect([step, NOT_GENERIC.test(systemOf(step))]).toEqual([step, false]);
   });
+
+  // The theme events of this account, oldest first, as [kind, theme, reason].
+  async function reasons(tenantId: bigint) {
+    const rows = await suDb.occurrenceThemeEvent.findMany({
+      where: { tenantId },
+      orderBy: { id: "asc" },
+    });
+    return rows.map((e) => [
+      e.kind,
+      e.themeId,
+      (e.detail as { reason?: unknown } | null)?.reason ?? null,
+    ]);
+  }
+
+  test("each merge, split and rename keeps the model's reason with its event, and a part's history shows the split it came from", async () => {
+    const a = await account();
+    const A = await a.theme("Ingresso nao chegou");
+    const B = await a.theme("Nao recebi");
+    const E = await a.theme("Nao apareceu no app");
+    const C = await a.theme("Pagamento");
+    const D = await a.theme("Duvida");
+    for (const th of [A, B, E, D])
+      await a.member(th.id, await a.conv(), th.title);
+    for (const s of ["pix recusado", "cobrado em dobro"])
+      await a.member(C.id, await a.conv(), s);
+    await a.round((step, user) =>
+      step === "consolidation"
+        ? {
+            merges: [
+              { absorbed: `T${B.id}`, into: `T${E.id}`, reason: "R-BE" },
+              { absorbed: `T${E.id}`, into: `T${A.id}`, reason: "R-EA" },
+            ],
+            splits: [
+              { theme: `T${C.id}`, into: ["Pix", "Cartao"], reason: "R-SPLIT" },
+            ],
+            renames: [
+              { theme: `T${D.id}`, title: "Titularidade", reason: "R-RENAME" },
+            ],
+          }
+        : step === "partition"
+          ? {
+              parts: numbered(user, "Sentences:").map((x, i) => ({
+                i,
+                part: x.startsWith("pix") ? 0 : 1,
+              })),
+            }
+          : nothing(step, user),
+    );
+    expect(await reasons(a.tenantId)).toEqual([
+      ["merge", B.id, "R-BE"],
+      ["merge", E.id, "R-EA"],
+      ["split", C.id, "R-SPLIT"],
+      ["rename", D.id, "R-RENAME"],
+    ]);
+    const survivor = await getTheme(a.ctx, A.id, appDb);
+    expect(
+      survivor.events
+        .map((e) => [
+          e.kind,
+          e.themeId,
+          (e.detail as { reason?: string }).reason,
+        ])
+        .sort(),
+    ).toEqual([
+      ["merge", String(B.id), "R-BE"],
+      ["merge", String(E.id), "R-EA"],
+    ]);
+    const part = await suDb.occurrenceTheme.findFirstOrThrow({
+      where: { tenantId: a.tenantId, title: "Pix" },
+    });
+    const partEvents = (await getTheme(a.ctx, part.id, appDb)).events;
+    expect(partEvents.map((e) => [e.kind, e.themeTitle])).toEqual([
+      ["split", "Pagamento"],
+    ]);
+    expect(partEvents.map((e) => e.detail)).toEqual([
+      {
+        into: expect.arrayContaining([String(part.id)]),
+        titles: ["Pix", "Cartao"],
+        reason: "R-SPLIT",
+      },
+    ]);
+    const renamed = (await getTheme(a.ctx, D.id, appDb)).events;
+    expect(renamed.map((e) => e.detail)).toEqual([
+      { from: "Duvida", to: "Titularidade", reason: "R-RENAME" },
+    ]);
+    // What the model is asked for: one reason per decision, in the consolidation prompt only.
+    const system = a.calls.find((c) => c.step === "consolidation")?.system;
+    expect(system).toContain("Give each decision a reason");
+    expect(
+      a.calls
+        .filter((c) => c.step !== "consolidation")
+        .some((c) => c.system.includes('reason":')),
+    ).toBe(false);
+  });
+
+  test("a part merged into another theme after the split still shows the split in the survivor's history", async () => {
+    const a = await account();
+    const C = await a.theme("Pagamento");
+    const X = await a.theme("Pix nao entrou");
+    await a.member(X.id, await a.conv(), "pix nao entrou");
+    for (const s of ["pix recusado", "cobrado em dobro"])
+      await a.member(C.id, await a.conv(), s);
+    let pass = 0;
+    const t0 = new Date();
+    const script: Script = (step, user) => {
+      if (step === "partition")
+        return {
+          parts: numbered(user, "Sentences:").map((x, i) => ({
+            i,
+            part: x.startsWith("pix") ? 0 : 1,
+          })),
+        };
+      if (step !== "consolidation") return nothing(step, user);
+      pass += 1;
+      if (pass === 1)
+        return {
+          splits: [
+            { theme: `T${C.id}`, into: ["Pix", "Cartao"], reason: "R-SPLIT" },
+          ],
+        };
+      const pix = /^(T\d+): Pix \(/m.exec(user)?.[1];
+      return { merges: [{ absorbed: pix, into: `T${X.id}`, reason: "R-M" }] };
+    };
+    await a.round(script, t0, { ...a.cfg, consolidationMinutes: 60 });
+    await a.round(script, new Date(t0.getTime() + 3_600_000), {
+      ...a.cfg,
+      consolidationMinutes: 60,
+    });
+    const part = await suDb.occurrenceTheme.findFirstOrThrow({
+      where: { tenantId: a.tenantId, title: "Pix" },
+    });
+    expect(part.mergedIntoId).toBe(X.id);
+    for (const id of [X.id, part.id]) {
+      const kinds = (await getTheme(a.ctx, id, appDb)).events.map((e) => [
+        e.kind,
+        (e.detail as { reason?: string }).reason,
+      ]);
+      expect(kinds).toContainEqual(["split", "R-SPLIT"]);
+      expect(kinds).toContainEqual(["merge", "R-M"]);
+    }
+  });
+
+  test("an answer without a reason, or with one that is not text, is applied as before", async () => {
+    const a = await account();
+    const A = await a.theme("A");
+    const B = await a.theme("B");
+    const D = await a.theme("D");
+    for (const th of [A, B, D]) await a.member(th.id, await a.conv(), th.title);
+    await a.round((step, user) =>
+      step === "consolidation"
+        ? {
+            merges: [{ absorbed: `T${B.id}`, into: `T${A.id}` }],
+            renames: [{ theme: `T${D.id}`, title: "D novo", reason: 42 }],
+          }
+        : nothing(step, user),
+    );
+    const rows = await suDb.occurrenceThemeEvent.findMany({
+      where: { tenantId: a.tenantId },
+      orderBy: { id: "asc" },
+    });
+    expect(rows.map((e) => [e.kind, e.detail])).toEqual([
+      ["merge", {}],
+      ["rename", { from: "D", to: "D novo" }],
+    ]);
+    const run = await suDb.occurrenceRun.findFirstOrThrow({
+      where: { tenantId: a.tenantId },
+      orderBy: { id: "desc" },
+    });
+    expect(JSON.stringify(run.detail)).not.toContain("unreadable_answer");
+  });
+
+  test("a reason with a NUL or a lone surrogate, or past the cap, is stored cleaned and clipped", async () => {
+    const a = await account();
+    const A = await a.theme("A");
+    const B = await a.theme("B");
+    const D = await a.theme("D");
+    for (const th of [A, B, D]) await a.member(th.id, await a.conv(), th.title);
+    const long = "Motivo longo ".repeat(80);
+    await a.round((step, user) =>
+      step === "consolidation"
+        ? {
+            merges: [
+              {
+                absorbed: `T${B.id}`,
+                into: `T${A.id}`,
+                reason: "mesmo\u0000 problema \ud800 de entrega",
+              },
+            ],
+            renames: [{ theme: `T${D.id}`, title: "D novo", reason: long }],
+          }
+        : nothing(step, user),
+    );
+    const [merge, rename] = (await reasons(a.tenantId)).map(
+      (r) => r[2] as string,
+    );
+    expect(merge).not.toContain("\u0000");
+    expect(/[\ud800-\udfff]/.test(merge ?? "")).toBe(false);
+    expect(merge).toContain("mesmo");
+    expect(merge).toContain("de entrega");
+    expect(rename?.length).toBe(200);
+    expect(long.startsWith(rename ?? "x")).toBe(true);
+  });
 });
 
 describe.skipIf(!dbUp)("canonical references", () => {

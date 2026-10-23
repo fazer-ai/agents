@@ -4049,6 +4049,10 @@
       "times_other": "({{count}} vezes)"
     },
     "enabled": "Monitor ligado",
+    "eventMerged": "“{{theme}}” foi juntado a outro tema",
+    "eventMergedHere": "“{{theme}}” foi juntado a este tema",
+    "eventRenamed": "Renomeado de “{{from}}” para “{{to}}”",
+    "eventSplit": "“{{theme}}” foi dividido em {{parts}}",
     "extrasIntro": "Outras coisas que o monitor escreve sobre cada conversa, até {{max}} campos no total. Elas não são agrupadas nem contadas; ligue a cópia no atributo personalizado para filtrar por elas no Chatwoot.",
     "extrasTitle": "Campos adicionais",
     "fieldAdd": "Adicionar campo",
@@ -4213,6 +4217,7 @@
     "themeConversationCount_many": "{{count}} conversas",
     "themeConversationCount_other": "{{count}} conversas",
     "themeDetailError": "Não foi possível ler as conversas deste tema.",
+    "themeHistory": "Histórico",
     "themeLastSeen": "visto pela última vez {{when}}",
     "themeReference": "Referência: {{reference}}",
     "themes": "Temas abertos",

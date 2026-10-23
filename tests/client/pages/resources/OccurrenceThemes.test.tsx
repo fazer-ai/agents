@@ -43,6 +43,7 @@ const detail = (id: string, sentence: string) => ({
         reference: null,
       },
     ],
+    events: [] as unknown[],
   },
 });
 
@@ -240,5 +241,67 @@ describe("OccurrenceThemes", () => {
     fireEvent.click(screen.getByRole("button", { name: /Pagamento com cart/ }));
     fireEvent.click(screen.getByRole("button", { name: /Cobrança duplicada/ }));
     expect(await screen.findByText(/^Seen from .+ to .+\.$/)).toBeTruthy();
+  });
+
+  test("an opened theme's history says each decision, with the model's reason under it when there is one", async () => {
+    installFetchStub(async (id) =>
+      json({
+        theme: {
+          ...detail(id, "pix nao caiu").theme,
+          events: [
+            {
+              kind: "rename",
+              themeId: id,
+              themeTitle: "Pix",
+              intoId: null,
+              at: "2026-10-19T13:00:00.000Z",
+              detail: { from: "Duvida", to: "Pix", reason: "R-RENAME" },
+            },
+            {
+              kind: "merge",
+              themeId: "9",
+              themeTitle: "Pix nao entrou",
+              intoId: id,
+              at: "2026-10-19T12:30:00.000Z",
+              detail: null,
+            },
+            {
+              kind: "split",
+              themeId: "7",
+              themeTitle: "Pagamento",
+              intoId: null,
+              at: "2026-10-19T12:00:00.000Z",
+              detail: {
+                into: [id, "8"],
+                titles: ["Pix", "Boleto"],
+                reason: "R-SPLIT",
+              },
+            },
+          ],
+        },
+      }),
+    );
+    render(<OccurrenceThemes />);
+    fireEvent.click(await screen.findByText("Pix"));
+    await screen.findByText("History");
+    const items = screen
+      .getAllByRole("listitem")
+      .filter((li) => li.querySelector("time") && li.closest("div.mt-2"));
+    const texts = items.map((li) => li.textContent ?? "");
+    expect(texts[0]).toContain("Renamed from “Duvida” to “Pix”");
+    expect(texts[0]).toContain("R-RENAME");
+    // A merge with no reason shows the decision alone: no empty line under it.
+    expect(texts[1]).toContain("“Pix nao entrou” joined into this theme");
+    expect(items[1]?.querySelectorAll("span").length).toBe(1);
+    expect(texts[2]).toContain("“Pagamento” split into “Pix”, “Boleto”");
+    expect(texts[2]).toContain("R-SPLIT");
+  });
+
+  test("a theme with no history shows no history section", async () => {
+    installFetchStub(async (id) => json(detail(id, "pix nao caiu")));
+    render(<OccurrenceThemes />);
+    fireEvent.click(await screen.findByText("Pix"));
+    await screen.findByText("pix nao caiu");
+    expect(screen.queryByText("History")).toBeNull();
   });
 });

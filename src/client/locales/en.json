@@ -3907,6 +3907,10 @@
       "times_other": "({{count}} times)"
     },
     "enabled": "Monitor on",
+    "eventMerged": "“{{theme}}” joined into another theme",
+    "eventMergedHere": "“{{theme}}” joined into this theme",
+    "eventRenamed": "Renamed from “{{from}}” to “{{to}}”",
+    "eventSplit": "“{{theme}}” split into {{parts}}",
     "extrasIntro": "Other things the monitor writes off each conversation, up to {{max}} fields in all. They are not grouped nor counted; turn on the attribute copy to filter by them in Chatwoot.",
     "extrasTitle": "Additional fields",
     "fieldAdd": "Add field",
@@ -4057,6 +4061,7 @@
     "themeConversationCount_one": "{{count}} conversation",
     "themeConversationCount_other": "{{count}} conversations",
     "themeDetailError": "Could not read this theme's conversations.",
+    "themeHistory": "History",
     "themeLastSeen": "last seen {{when}}",
     "themeReference": "Reference: {{reference}}",
     "themes": "Open themes",

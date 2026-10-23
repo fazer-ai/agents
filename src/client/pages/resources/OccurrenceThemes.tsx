@@ -35,6 +35,30 @@ function sameWords(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
+type ThemeEvent = ThemeDetail["events"][number];
+
+// The fields a consolidation event's detail may carry (docs/occurrences.md, "Themes"); anything else
+// in it is ignored, so an older event without a reason shows the decision alone.
+function eventDetail(e: ThemeEvent): {
+  from?: string;
+  to?: string;
+  titles?: string[];
+  reason?: string;
+} {
+  const d = e.detail;
+  if (d === null || typeof d !== "object" || Array.isArray(d)) return {};
+  const o = d as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  return {
+    from: str(o.from),
+    to: str(o.to),
+    titles: Array.isArray(o.titles)
+      ? o.titles.filter((x): x is string => typeof x === "string")
+      : undefined,
+    reason: str(o.reason),
+  };
+}
+
 export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
   const { t, i18n } = useTranslation();
   const [themes, setThemes] = useState<Theme[] | null>(null);
@@ -56,6 +80,38 @@ export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
           timeStyle: "short",
         })
       : "";
+  // One history line per event, in the theme's own words: what happened, then the model's reason.
+  const eventLine = (e: ThemeEvent, themeId: string): string => {
+    const d = eventDetail(e);
+    if (e.kind === "merge")
+      return e.intoId === themeId
+        ? t(
+            "occurrences.eventMergedHere",
+            "“{{theme}}” joined into this theme",
+            {
+              theme: e.themeTitle,
+            },
+          )
+        : t(
+            "occurrences.eventMerged",
+            "“{{theme}}” joined into another theme",
+            {
+              theme: e.themeTitle,
+            },
+          );
+    if (e.kind === "split")
+      return t("occurrences.eventSplit", "“{{theme}}” split into {{parts}}", {
+        theme: e.themeTitle,
+        parts: (d.titles ?? []).map((p) => `“${p}”`).join(", "),
+      });
+    if (e.kind === "rename")
+      return t(
+        "occurrences.eventRenamed",
+        "Renamed from “{{from}}” to “{{to}}”",
+        { from: d.from ?? "", to: d.to ?? e.themeTitle },
+      );
+    return e.kind;
+  };
   const flagLabel = (f: string) =>
     f === "new"
       ? t("occurrences.flagNew", "new")
@@ -294,6 +350,42 @@ export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
                         ))}
                       </ul>
                     )}
+                    {detail !== null &&
+                      detail.id === th.id &&
+                      !("failed" in detail) &&
+                      detail.theme.events.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1">
+                          <h3 className="font-medium text-text-muted text-xs">
+                            {t("occurrences.themeHistory", "History")}
+                          </h3>
+                          <ul className="flex flex-col gap-1.5">
+                            {detail.theme.events.map((e) => {
+                              const reason = eventDetail(e).reason;
+                              return (
+                                <li
+                                  key={`${e.kind}-${e.themeId}-${e.at}`}
+                                  className="flex flex-col text-sm"
+                                >
+                                  <span className="text-text-primary">
+                                    {eventLine(e, th.id)}
+                                    <time
+                                      dateTime={e.at}
+                                      className="ml-2 text-text-muted text-xs"
+                                    >
+                                      {when(e.at)}
+                                    </time>
+                                  </span>
+                                  {reason && (
+                                    <span className="text-text-muted text-xs">
+                                      {reason}
+                                    </span>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
                   </div>
                 )}
               </li>

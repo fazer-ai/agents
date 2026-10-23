@@ -24,6 +24,8 @@ const CONSOLIDATION_SAMPLES = 5;
 // The sentences a split's partition call sees.
 const SPLIT_SENTENCES_MAX = 300;
 export const THEME_TITLE_MAX = 120;
+// The consolidation's one sentence on why it merged, split or renamed, kept with the event.
+export const CONSOLIDATION_REASON_MAX = 200;
 
 const ASSIGN_ANSWER = z.object({
   assignments: z.array(
@@ -34,15 +36,32 @@ const ASSIGN_ANSWER = z.object({
   ),
 });
 
+// A reason that is missing or not a string leaves the decision as it was: the decision is applied
+// either way, only without its why.
+const reasonSchema = z.string().nullish().catch(null);
 const CONSOLIDATE_ANSWER = z.object({
   merges: z
-    .array(z.object({ absorbed: z.string(), into: z.string() }))
+    .array(
+      z.object({
+        absorbed: z.string(),
+        into: z.string(),
+        reason: reasonSchema,
+      }),
+    )
     .default([]),
   splits: z
-    .array(z.object({ theme: z.string(), into: z.array(z.string()).min(2) }))
+    .array(
+      z.object({
+        theme: z.string(),
+        into: z.array(z.string()).min(2),
+        reason: reasonSchema,
+      }),
+    )
     .default([]),
   renames: z
-    .array(z.object({ theme: z.string(), title: z.string() }))
+    .array(
+      z.object({ theme: z.string(), title: z.string(), reason: reasonSchema }),
+    )
     .default([]),
 });
 
@@ -64,8 +83,9 @@ ${THEME_IS} Sentences that are the same new reason get the same new title. Write
 const CONSOLIDATE_SYSTEM = `You review the open themes of the reasons customers contact customer service: id, title, how many conversations, and some of their sentences.
 Merge themes that are the same reason (into the one that should remain), split a theme that mixes different reasons, and settle a title that does not say what the reason is.
 ${THEME_IS} A split gives one part per concrete reason the theme mixes, as many as there are, each titled by that reason; it never cuts one reason across two parts. A theme whose sentences are all one reason is not split, even when its title is broad: rename it instead.
-Answer only JSON: {"merges":[{"absorbed":"<id>","into":"<id>"}],"splits":[{"theme":"<id>","into":["<title>","<title>"]}],"renames":[{"theme":"<id>","title":"<title>"}]}.
-Empty lists are valid. Use only listed ids. Write titles in the language of the sentences.`;
+Give each decision a reason: one sentence saying what makes the themes the same reason (merge), what separates the parts (split), or what the old title failed to say (rename).
+Answer only JSON: {"merges":[{"absorbed":"<id>","into":"<id>","reason":"<sentence>"}],"splits":[{"theme":"<id>","into":["<title>","<title>"],"reason":"<sentence>"}],"renames":[{"theme":"<id>","title":"<title>","reason":"<sentence>"}]}.
+Empty lists are valid. Use only listed ids. Write titles and reasons in the language of the sentences.`;
 
 const PARTITION_SYSTEM = `A theme of customer contact reasons is being split into parts. You get the parts (numbered titles) and the theme's numbered sentences.
 ${THEME_IS} Put each sentence in the part whose reason it states; sentences that state the same reason go to the same part.
@@ -80,6 +100,19 @@ function parseThemeRef(ref: string): bigint | null {
 // or the events' JSON refuses, and one refused title would roll back the whole step.
 const titleOf = (raw: string) =>
   clipText(makeStorable(raw.replace(/\s+/g, " ").trim()), THEME_TITLE_MAX);
+// The same cleaning for a decision's reason, clipped instead of refused; empty reads as none.
+const reasonOf = (raw: string | null | undefined): string | null =>
+  raw
+    ? clipText(
+        makeStorable(raw.replace(/\s+/g, " ").trim()),
+        CONSOLIDATION_REASON_MAX,
+      ) || null
+    : null;
+
+const withReason = (raw: string | null | undefined) => {
+  const reason = reasonOf(raw);
+  return reason === null ? {} : { reason };
+};
 
 // The newest distinct sentences of each theme, read from its newest members only (the index on
 // tenant, theme and read_at), so a theme's whole history is never loaded to show a few lines.
@@ -391,6 +424,7 @@ async function mergeTheme(
   absorbed: bigint,
   survivor: bigint,
   runId: bigint | null,
+  reason: string | null,
 ): Promise<void> {
   await db.occurrenceThemeMember.updateMany({
     where: { themeId: absorbed },
@@ -411,6 +445,7 @@ async function mergeTheme(
       themeId: absorbed,
       intoId: survivor,
       runId,
+      ...(reason === null ? {} : { detail: { reason } }),
     },
   });
   await refreshSeen(db, [survivor]);
@@ -472,12 +507,15 @@ export async function runConsolidationStep(
 
   // Merges, with the answer's own chains flattened first.
   const into = new Map<bigint, bigint>();
+  // Each absorbed theme keeps the reason of its own merge, also when a chain sends it further.
+  const mergeReason = new Map<bigint, string | null>();
   for (const m of answer.merges) {
     const a = parseThemeRef(m.absorbed);
     const b = parseThemeRef(m.into);
     if (a === null || b === null || a === b || !open.has(a) || !open.has(b))
       continue;
     into.set(a, b);
+    mergeReason.set(a, reasonOf(m.reason));
   }
   const final = (id: bigint): bigint => {
     const seen = new Set<bigint>();
@@ -493,7 +531,14 @@ export async function runConsolidationStep(
     const survivor = final(absorbed);
     if (survivor === absorbed) continue;
     await runScopedOn(base, sysCtx(tenantId), (db) =>
-      mergeTheme(db, tenantId, absorbed, survivor, runId),
+      mergeTheme(
+        db,
+        tenantId,
+        absorbed,
+        survivor,
+        runId,
+        mergeReason.get(absorbed) ?? null,
+      ),
     );
     gone.add(absorbed);
     summary.merges += 1;
@@ -572,7 +617,11 @@ export async function runConsolidationStep(
           kind: "split",
           themeId: id,
           runId,
-          detail: { into: ids.map(String), titles: parts },
+          detail: {
+            into: ids.map(String),
+            titles: parts,
+            ...withReason(s.reason),
+          },
         },
       });
       await refreshSeen(db, ids);
@@ -594,7 +643,11 @@ export async function runConsolidationStep(
           kind: "rename",
           themeId: id,
           runId,
-          detail: { from: titles.get(id) ?? null, to: title },
+          detail: {
+            from: titles.get(id) ?? null,
+            to: title,
+            ...withReason(r.reason),
+          },
         },
       });
     });

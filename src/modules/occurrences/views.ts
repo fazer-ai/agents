@@ -49,7 +49,8 @@ export interface ThemeEventView {
 export interface ThemeDetail extends ThemeListItem {
   status: string;
   conversationsShown: ThemeConversation[];
-  // The merges into this theme and what consolidation did to it, newest first.
+  // The merges into this theme, what consolidation did to it and the split it came from, newest
+  // first. A consolidation event's `detail.reason` is the model's sentence on why, when it gave one.
   events: ThemeEventView[];
 }
 
@@ -381,12 +382,19 @@ export async function getTheme(
       where: { tenantId, mergedIntoId: t.id },
       select: { id: true },
     });
+    const lineage = [t.id, ...absorbed.map((a) => a.id)];
     const eventRows = await db.occurrenceThemeEvent.findMany({
       where: {
         tenantId,
         OR: [
-          { themeId: { in: [t.id, ...absorbed.map((a) => a.id)] } },
+          { themeId: { in: lineage } },
           { intoId: t.id },
+          // The split that made this theme, or a theme merged into it, one of its parts: the split
+          // theme itself is closed and off the list, so its part is where the operator finds why.
+          ...lineage.map((id) => ({
+            kind: "split",
+            detail: { path: ["into"], array_contains: [String(id)] },
+          })),
         ],
       },
       orderBy: { createdAt: "desc" },

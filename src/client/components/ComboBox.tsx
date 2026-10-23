@@ -13,6 +13,10 @@ export interface ComboItem {
   label?: string;
   hint?: string;
   color?: string;
+  // Named on its chip but not offered in the list: a value already chosen that can no longer be
+  // picked (an inbox that lost its agent). `note` is said on that chip, beside the label.
+  unlisted?: boolean;
+  note?: string;
 }
 
 // A toggle drawn at the end of an option's row (the voice picker's "play sample"). It is a menu item of
@@ -144,13 +148,14 @@ export function ComboBox(props: ComboBoxProps) {
   }
 
   const q = search.trim().toLowerCase();
+  const offered = merged.filter((m) => !m.unlisted);
   const filtered = q
-    ? merged.filter(
+    ? offered.filter(
         (m) =>
           m.id.toLowerCase().includes(q) ||
           (m.label ?? "").toLowerCase().includes(q),
       )
-    : merged;
+    : offered;
   const searchTrimmed = search.trim();
   const showCustom =
     allowCustom &&
@@ -206,6 +211,9 @@ export function ComboBox(props: ComboBoxProps) {
               >
                 <ColorDot color={it?.color} />
                 <span className="truncate">{it?.label ?? v}</span>
+                {it?.note && (
+                  <span className="shrink-0 text-text-muted">{it.note}</span>
+                )}
                 <button
                   type="button"
                   disabled={disabled}

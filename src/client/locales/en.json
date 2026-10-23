@@ -3939,11 +3939,14 @@
     },
     "inboxes": {
       "intro": "Which conversations the monitor reads. Only these inboxes are read, counted and grouped into themes. Each round reads up to {{perRound}} conversations, those waiting longest first, and the newest {{messages}} messages of each; the rest wait for the next round.",
-      "lostAgent": "No agent receives this inbox any more, so the monitor reads nothing from it. Bind or observe it with an agent in Channels.",
+      "leftOut_one": "{{count}} inbox no agent receives is not listed. Bind or observe it with an agent in Channels to monitor it.",
+      "leftOut_other": "{{count}} inboxes no agent receives are not listed. Bind or observe them with an agent in Channels to monitor them.",
+      "lostAgentChips": "No agent receives the inboxes marked as not read any more, so the monitor reads nothing from them. Bind or observe them with an agent in Channels, or remove them.",
       "none": "This account has no inboxes yet. Connect a Chatwoot account in Channels first.",
+      "notRead": "not read",
+      "picker": "Inboxes the monitor reads",
       "removed": "An inbox removed from this account",
-      "title": "Inboxes",
-      "unreceived": "No agent receives this inbox. Bind or observe it with an agent in Channels to monitor it."
+      "title": "Inboxes"
     },
     "introGeneric": "Every round, the monitor reads the recent conversations of the inboxes you choose, writes why each customer got in touch, and groups the same reasons into themes. A theme that runs out of the usual is flagged.",
     "label": {

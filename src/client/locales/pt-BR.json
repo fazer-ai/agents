@@ -4081,11 +4081,16 @@
     },
     "inboxes": {
       "intro": "Quais conversas o monitor lê. Só as destas caixas são lidas, contadas e agrupadas em temas. Cada rodada lê até {{perRound}} conversas, as que esperam há mais tempo primeiro, e as {{messages}} mensagens mais recentes de cada uma; o resto espera a próxima rodada.",
-      "lostAgent": "Nenhum agente recebe mais esta caixa, então o monitor não lê nada dela. Vincule ou observe a caixa com um agente em Canais.",
+      "leftOut_zero": "{{count}} caixas que nenhum agente recebe não aparecem na lista. Vincule ou observe as caixas com um agente em Canais para monitorá-las.",
+      "leftOut_one": "{{count}} caixa que nenhum agente recebe não aparece na lista. Vincule ou observe a caixa com um agente em Canais para monitorá-la.",
+      "leftOut_many": "{{count}} caixas que nenhum agente recebe não aparecem na lista. Vincule ou observe as caixas com um agente em Canais para monitorá-las.",
+      "leftOut_other": "{{count}} caixas que nenhum agente recebe não aparecem na lista. Vincule ou observe as caixas com um agente em Canais para monitorá-las.",
+      "lostAgentChips": "Nenhum agente recebe mais as caixas marcadas como não lidas, então o monitor não lê nada delas. Vincule ou observe as caixas com um agente em Canais, ou remova-as.",
       "none": "Esta conta ainda não tem caixas de entrada. Conecte uma conta do Chatwoot em Canais primeiro.",
+      "notRead": "não lida",
+      "picker": "Caixas que o monitor lê",
       "removed": "Uma caixa removida desta conta",
-      "title": "Caixas de entrada",
-      "unreceived": "Nenhum agente recebe esta caixa. Vincule ou observe a caixa com um agente em Canais para monitorá-la."
+      "title": "Caixas de entrada"
     },
     "introGeneric": "A cada rodada, o monitor lê as conversas recentes das caixas de entrada que você escolher, escreve por que cada cliente entrou em contato e agrupa os mesmos motivos em temas. Um tema que sai do habitual é sinalizado.",
     "label": {

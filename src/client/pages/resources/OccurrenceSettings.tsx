@@ -120,10 +120,23 @@ function rowKeys(rows: FieldRow[]): string[] {
   return keys;
 }
 
+// The inboxes with the account beside a repeated name, as the Dashboards pickers name them. Without the
+// filter options the names still show, only without the account.
 async function loadInboxOptions(): Promise<InboxOption[] | null> {
-  const res = await api.api.v1.chatwoot.inboxes.get();
+  const [res, options] = await Promise.all([
+    api.api.v1.chatwoot.inboxes.get(),
+    api.api.v1.metrics["filter-options"].get().catch(() => null),
+  ]);
   if (res.error || !res.data) return null;
-  return res.data.inboxes;
+  const accountOf = new Map(
+    (options?.data?.inboxes ?? []).flatMap((i) =>
+      i.account ? [[i.id, i.account] as const] : [],
+    ),
+  );
+  return res.data.inboxes.map((i) => {
+    const account = accountOf.get(String(i.id));
+    return account ? { ...i, account } : i;
+  });
 }
 
 function Section({

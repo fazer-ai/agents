@@ -87,6 +87,12 @@ let holdPut: Promise<void> | null = null;
 // How many reads of the rounds fail before one answers.
 let runsFailures = 0;
 let costFailures = 0;
+// The filter options' inboxes: where a repeated name gets its account.
+let filterInboxes: {
+  id: string;
+  name: string;
+  account?: { id: number; name: string | null };
+}[] = [];
 
 function installFetchStub(config: Record<string, unknown> = DEFAULTS) {
   requests.length = 0;
@@ -186,6 +192,8 @@ function installFetchStub(config: Record<string, unknown> = DEFAULTS) {
           },
         ],
       });
+    if (url.pathname === "/api/v1/metrics/filter-options")
+      return json({ instance: {}, agents: [], inboxes: filterInboxes });
     if (url.pathname === "/api/v1/chatwoot/inboxes")
       return json({
         instance: {},
@@ -251,6 +259,20 @@ function openExtras() {
   fireEvent.click(screen.getByRole("button", { name: /Additional fields/ }));
 }
 
+// Picks an inbox in the monitor's inbox picker, as an admin does: open the list, choose the option.
+async function pickInbox(name: string) {
+  fireEvent.pointerDown(
+    screen.getByRole("button", { name: "Inboxes the monitor reads" }),
+    { button: 0, ctrlKey: false },
+  );
+  const menu = await screen.findByRole("menu");
+  fireEvent.click(
+    within(menu).getByRole("menuitem", { name: new RegExp(name) }),
+  );
+  fireEvent.keyDown(menu, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+}
+
 // Fills a new additional field's name and description, as an admin types them.
 function addField(name: string, description: string) {
   openExtras();
@@ -299,6 +321,7 @@ afterEach(() => {
   runsOverride = null;
   runsFailures = 0;
   costFailures = 0;
+  filterInboxes = [];
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -361,11 +384,11 @@ describe("OccurrencesPanel", () => {
       target: { value: "A que se refere." },
     });
     addField("Canal", "Por onde chegou.");
-    // The inbox no agent receives cannot be picked; the other can.
+    // The inbox no agent receives is not offered, and one line counts it; the other is picked.
     expect(
-      (screen.getByLabelText(/Só gente/) as HTMLInputElement).disabled,
-    ).toBe(true);
-    fireEvent.click(screen.getByLabelText("SAC"));
+      screen.getByText(/^1 inbox no agent receives is not listed\./),
+    ).toBeTruthy();
+    await pickInbox("SAC");
     fireEvent.click(screen.getByRole("switch", { name: "Monitor on" }));
     const save = screen.getByRole("button", { name: "Save" });
     await waitFor(() =>
@@ -423,7 +446,7 @@ describe("OccurrencesPanel", () => {
     expect(
       screen.getByTestId("occurrences-flags-sentence").textContent,
     ).not.toContain("reference");
-    fireEvent.click(screen.getByLabelText("SAC"));
+    await pickInbox("SAC");
     fireEvent.click(screen.getByRole("switch", { name: "Monitor on" }));
     const save = screen.getByRole("button", { name: "Save" });
     await waitFor(() =>
@@ -930,6 +953,17 @@ describe("OccurrencesPanel", () => {
     );
   });
 
+  test("a chosen inbox is named as the Dashboards pickers name it, with the account beside a repeated name", async () => {
+    filterInboxes = [
+      { id: "5", name: "SAC", account: { id: 7, name: "Loja Centro" } },
+      { id: "6", name: "Só gente" },
+    ];
+    installFetchStub({ ...DEFAULTS, inboxIds: ["5"], model: READING });
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    expect(await screen.findByText("SAC · Loja Centro")).toBeTruthy();
+  });
+
   test("a field with no name, or a name with no letter or digit, is marked and holds the save", async () => {
     installFetchStub();
     renderPanel();
@@ -1078,7 +1112,7 @@ describe("OccurrencesPanel", () => {
     installFetchStub({ ...DEFAULTS, model: READING });
     renderPanel();
     await screen.findByText("Occurrence monitor");
-    fireEvent.click(screen.getByLabelText("SAC"));
+    await pickInbox("SAC");
     fireEvent.click(screen.getByRole("switch", { name: "Monitor on" }));
     const save = screen.getByRole("button", { name: "Save" });
     await waitFor(() =>

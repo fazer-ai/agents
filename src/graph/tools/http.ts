@@ -1067,6 +1067,10 @@ export function buildHttpTool(
     // response that says there is none.
     if (res.status >= 200 && res.status < 300) {
       await registerDeclaredAppointment(def, deps, text);
+    } else {
+      // A declared non-2xx is a result to the alerts, not an accepted call: an observation goes on
+      // so the model reads it (graph.ts `endsOnWrites`).
+      fenceReporterOf(callConfig)?.({ declined: true });
     }
     return isExpectedResult(res.status, expectedStatuses)
       ? resultText

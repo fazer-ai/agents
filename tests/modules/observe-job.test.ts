@@ -1763,12 +1763,14 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
 
   // The read/write split rides the tool object through the assembly and both wrappers, like the
   // effect-free mark: a GET goes on to a second model call that reads its body, a POST ends the
-  // observation on the first (graph.ts `endsOnWrites`).
-  for (const [method, calls] of [
-    ["GET", 2],
-    ["POST", 1],
+  // observation on the first (graph.ts `endsOnWrites`), unless the answer is a status the operator
+  // declared a result (a 409 for a taken slot), which the model still has to read.
+  for (const [method, status, calls] of [
+    ["GET", 200, 2],
+    ["POST", 200, 1],
+    ["POST", 409, 2],
   ] as const) {
-    test(`an HTTP ${method} tool takes the observation to ${calls} model call(s)`, async () => {
+    test(`an HTTP ${method} tool answered ${status} takes the observation to ${calls} model call(s)`, async () => {
       const td = await suDb.toolDefinition.create({
         data: {
           tenantId,
@@ -1777,6 +1779,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
           method,
           urlTemplate: "https://8.8.8.8/v1/consulta",
           allowedHosts: ["8.8.8.8"],
+          expectedStatuses: [409],
         },
       });
       const grant = await suDb.agentToolSelection.create({
@@ -1794,7 +1797,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       globalThis.fetch = (async (input: RequestInfo | URL) => {
         sent.push(String(input));
         return new Response('{"corpo":"da-consulta"}', {
-          status: 200,
+          status,
           headers: { "content-type": "application/json" },
         });
       }) as typeof fetch;

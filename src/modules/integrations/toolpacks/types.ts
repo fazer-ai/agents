@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { markRead } from "@/graph/tools/reads";
 import { withDeadline } from "@/lib/outbound";
 import type { SafeUrlOptions } from "@/lib/ssrf";
 import type { Schedule } from "@/modules/business-hours/hours";
@@ -309,6 +310,10 @@ export function buildToolpackTools(
         ...(tagged.metadata ?? {}),
         integrationInstanceId: String(sel.instanceId),
       };
+      // A pack says neither which of its tools only read nor when one refused in plain words (an
+      // unknown column, an ambiguous row), so an observation reads the result of every one
+      // (graph/tools/reads.ts), the way it does an MCP tool's.
+      markRead(t);
       if (!ctx.onNoEffect || !ctx.stillWanted) return t;
       const seen = Object.create(t) as typeof t;
       seen.invoke = ((input: unknown, config?: unknown) =>

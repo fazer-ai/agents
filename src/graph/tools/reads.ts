@@ -14,9 +14,9 @@ export function markRead<T extends object>(t: T): T {
   return t;
 }
 
-// A read is a tool marked so (an HTTP GET, an MCP tool), an effect-free one (`search_knowledge`, the
-// code tools) or a utility native (its name is reserved). Everything else is a write: the native
-// actions, `skip_reply`, `handoff_to_human`, an HTTP tool with any other method, an integration.
+// A read is a tool marked so (an HTTP GET, an MCP tool, an integration's), an effect-free one
+// (`search_knowledge`, the code tools) or a utility native (its name is reserved). Everything else is
+// a write: the native actions, `skip_reply`, `handoff_to_human`, an HTTP tool with any other method.
 const UTILITY_NAMES: ReadonlySet<string> = new Set(UTILITY_NATIVE_TOOL_NAMES);
 
 export function isReadTool(t: { name: string }): boolean {

@@ -704,6 +704,8 @@ describe("every node the ledger writes is classified for the involvement KPI", (
       "occurrence_canonical",
       "occurrence_consolidation",
       "occurrence_reading",
+      "occurrence_transcription",
+      "occurrence_vision",
       "other_inbox_summary",
       "suggestion_review",
       "vision",

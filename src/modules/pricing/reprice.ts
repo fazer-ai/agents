@@ -13,6 +13,11 @@ import { PRICE_TABLE_VERSION } from "./version";
 // Order is the capture's: the tenant's own price, then an OpenRouter-reported figure, then the table.
 // Rows with a null `price_table` are left out unless asked for (their token counts predate fixes).
 
+// What `price_table` says on a row no table priced because the provider reported nothing to price
+// (a speech-to-text call answers words, not tokens). Never repriced: its zero tokens are no count
+// of the call, and pricing them would turn an unknown cost into a confident $0.
+export const UNMETERED_PRICE_TABLE = "unmetered";
+
 export type PriceFn = (
   provider: string,
   model: string,
@@ -217,7 +222,10 @@ function rowFilter(opts: RepriceOptions): Prisma.LlmUsageWhereInput {
     model: opts.model,
     ...(opts.tenant === "all" ? {} : { tenantId: opts.tenant }),
     ...(opts.from || opts.to ? { createdAt } : {}),
-    priceTable: opts.priceTable === undefined ? { not: null } : opts.priceTable,
+    priceTable:
+      opts.priceTable === undefined
+        ? { not: null, notIn: [UNMETERED_PRICE_TABLE] }
+        : opts.priceTable,
   };
 }
 
@@ -230,6 +238,10 @@ export async function runReprice(
   base: TransactionCapable,
   opts: RepriceOptions,
 ): Promise<RepriceReport> {
+  if (opts.priceTable === UNMETERED_PRICE_TABLE)
+    throw new Error(
+      `rows stamped "${UNMETERED_PRICE_TABLE}" have no tokens to price`,
+    );
   const batchSize = opts.batchSize ?? 1000;
   const where = rowFilter(opts);
   // Each tenant's saved prices, read once per run.

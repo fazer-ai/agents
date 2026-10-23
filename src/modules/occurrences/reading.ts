@@ -29,6 +29,11 @@ import {
   upsertReadings,
 } from "./readings";
 import {
+  RECOVERY_TIME_SHARE,
+  type RecoveryDeps,
+  recoverReadingMedia,
+} from "./recovery";
+import {
   type OccurrenceField,
   type OccurrencesConfig,
   READING_MESSAGES,
@@ -69,6 +74,9 @@ interface DueConversation {
   lastInboundMessageId: number | null;
   // The last `/reset`'s message id: what came before it is the episode the reset ended.
   resetAtMessageId: number | null;
+  // The customer message the conversation's last reading covered, for the media recovery.
+  readInboundAt: Date | null;
+  readInboundMessageId: number | null;
 }
 
 export interface ReadingSummary {
@@ -141,11 +149,14 @@ async function dueConversations(
         last_inbound_at: Date;
         last_inbound_message_id: number | null;
         reset_at_message_id: number | null;
+        read_inbound_at: Date | null;
+        read_inbound_message_id: number | null;
         total: bigint;
       }>
     >`
       SELECT c.id, c.inbox_id, c.chatwoot_instance_id, c.chatwoot_conversation_id,
              c.last_inbound_at, c.last_inbound_message_id, c.reset_at_message_id,
+             r.read_inbound_at, r.read_inbound_message_id,
              count(*) OVER () AS total
         FROM conversations c
         JOIN occurrence_conversation_reads r ON r.conversation_id = c.id
@@ -178,6 +189,8 @@ async function dueConversations(
         lastInboundAt: r.last_inbound_at,
         lastInboundMessageId: r.last_inbound_message_id,
         resetAtMessageId: r.reset_at_message_id,
+        readInboundAt: r.read_inbound_at,
+        readInboundMessageId: r.read_inbound_message_id,
       })),
       total: rows.length > 0 ? Number(rows[0]?.total ?? 0) : 0,
     };
@@ -268,11 +281,13 @@ async function markFailed(
 // `deferred`: left due for the next round without a failure (a transcription still running).
 type ReadOutcome = "read" | "failed" | "withdrawn" | "skipped" | "deferred";
 
-export interface ReadingDeps {
+export interface ReadingDeps extends RecoveryDeps {
   makeChatwootClient?: LoadChatwootClientDeps["makeClient"];
   now?: () => Date;
   // The per-round cap; tests lower it.
   perRound?: number;
+  // The round's thread, which the media recovery's ledger rows carry so the round sums them.
+  threadId?: string;
 }
 
 export async function runReadingStep(
@@ -390,11 +405,62 @@ export async function runReadingStep(
         boundary === null ? fetched : fetched.filter((r) => r.id > boundary);
       const media = settleMedia(tenantId, c.chatwootInstanceId, rows, now());
       if (media.verdict === "defer") return "deferred";
+      const lineOpts = {
+        ownBotIds: await botIdsOf(c.chatwootInstanceId),
+        trustPhoneEcho: providerReservesEchoIds(await providerOf(c.inboxId)),
+      };
+      // Not when the reading's model cannot be called: the conversation stays pending, and the
+      // media would be paid for again once the memory forgets it.
+      if (cfg.recoverMedia && models.resolved !== false)
+        await recoverReadingMedia({
+          base,
+          target: {
+            tenantId,
+            conversationId: c.id,
+            inboxId: c.inboxId,
+            chatwootInstanceId: c.chatwootInstanceId,
+            chatwootConversationId: c.chatwootConversationId,
+            readInboundAt: c.readInboundAt,
+            readInboundMessageId: c.readInboundMessageId,
+          },
+          rows,
+          states: media.states,
+          threadId: deps.threadId ?? null,
+          signal: AbortSignal.any([
+            cut,
+            AbortSignal.timeout(
+              Math.max(
+                0,
+                (stopAt - Date.now() - (models.minCallMs ?? 0)) *
+                  RECOVERY_TIME_SHARE,
+              ),
+            ),
+          ]),
+          windowSize: READING_MESSAGES,
+          // The message reaches the reading when the budgeted transcript changes with its line: the
+          // renderer keeps the newest lines and cuts the one it runs out on. The lines are rendered
+          // from every row, so a quote reads as it will in the reading.
+          fits: (id) => {
+            const lines = transcriptFromRows(rows, READING_MESSAGES, {
+              ...lineOpts,
+              ids: true,
+            });
+            const at = lines.findIndex((l) => l.messageId === id);
+            if (at < 0) return false;
+            const from = (k: number) =>
+              renderTranscript(lines.slice(k), READING_TRANSCRIPT_MAX_CHARS);
+            return from(at) !== from(at + 1);
+          },
+          deps,
+          // Best-effort: what could not be recovered is read with the renderer's marker.
+        }).catch((err) =>
+          logger.warn(
+            { tenantId: String(tenantId), conversationId: String(c.id), err },
+            "occurrence reading: the media recovery did not run",
+          ),
+        );
       transcript = renderTranscript(
-        transcriptFromRows(rows, READING_MESSAGES, {
-          ownBotIds: await botIdsOf(c.chatwootInstanceId),
-          trustPhoneEcho: providerReservesEchoIds(await providerOf(c.inboxId)),
-        }),
+        transcriptFromRows(rows, READING_MESSAGES, lineOpts),
         READING_TRANSCRIPT_MAX_CHARS,
       );
     } catch (err) {

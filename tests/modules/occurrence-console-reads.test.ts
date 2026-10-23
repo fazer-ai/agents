@@ -154,9 +154,13 @@ describe("a round's steps as stored", () => {
     expect(runSteps({}).reading).toBeNull();
   });
 
-  test("the cost reads the ledger lines each step is billed under", () => {
+  test("the cost reads the ledger lines each step is billed under, and the media recovery's", () => {
     expect([...MONITOR_NODES].sort()).toEqual(
-      OCCURRENCE_STEPS.map((s) => STEP_NODE[s]).sort(),
+      [
+        ...OCCURRENCE_STEPS.map((s) => STEP_NODE[s]),
+        "occurrence_transcription",
+        "occurrence_vision",
+      ].sort(),
     );
   });
 });
@@ -299,7 +303,7 @@ describe.skipIf(!dbUp)("against the database", () => {
     }
   });
 
-  test("the monitor's cost sums its four ledger lines over 7 and 30 days, nothing else", async () => {
+  test("the monitor's cost sums its steps' and its media recovery's ledger lines over 7 and 30 days, nothing else", async () => {
     const now = new Date();
     const day = 24 * 60 * minute;
     const row = (node: string | null, ago: number, cost: number | null) =>
@@ -316,17 +320,20 @@ describe.skipIf(!dbUp)("against the database", () => {
     await row("occurrence_assignment", 2 * day, 0.02);
     await row("occurrence_consolidation", 10 * day, 0.1);
     await row("occurrence_canonical", 3 * day, null);
+    // The reading's media recovery: an image priced, a voice note with no price.
+    await row("occurrence_vision", 4 * day, 0.005);
+    await row("occurrence_transcription", 5 * day, null);
     // Not the monitor's: an agent turn and an observer.
     await row(null, day, 5);
     await row("observer", day, 5);
     // Older than 30 days.
     await row("occurrence_reading", 40 * day, 9);
     const cost = await occurrenceCost(ctx(), now, appDb);
-    expect(cost.last7Days.calls).toBe(3);
-    expect(cost.last7Days.unpricedCalls).toBe(1);
-    expect(cost.last7Days.costUsd).toBeCloseTo(0.03, 10);
-    expect(cost.last30Days.calls).toBe(4);
-    expect(cost.last30Days.costUsd).toBeCloseTo(0.13, 10);
+    expect(cost.last7Days.calls).toBe(5);
+    expect(cost.last7Days.unpricedCalls).toBe(2);
+    expect(cost.last7Days.costUsd).toBeCloseTo(0.035, 10);
+    expect(cost.last30Days.calls).toBe(6);
+    expect(cost.last30Days.costUsd).toBeCloseTo(0.135, 10);
     const none = await occurrenceCost(ctx(otherTenantId), now, appDb);
     expect(none.last30Days).toEqual({
       calls: 0,

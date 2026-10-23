@@ -8,6 +8,7 @@ import {
   capturePricer,
   planReprice,
   runReprice,
+  UNMETERED_PRICE_TABLE,
 } from "@/modules/pricing/reprice";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -211,6 +212,12 @@ describe("arguments", () => {
       expect(
         parseRepriceArgs([...base, "--price-table", stamp]).priceTable,
       ).toBe(stamp);
+  });
+
+  test("`--price-table unmetered` is refused: those calls reported no tokens", () => {
+    expect(() =>
+      parseRepriceArgs([...base, "--price-table", UNMETERED_PRICE_TABLE]),
+    ).toThrow(UsageError);
   });
 
   test("dry run unless --apply; `none` targets the rows no table priced", () => {
@@ -564,6 +571,46 @@ describe.skipIf(!dbUp)("re-pricing the ledger (issue #867)", () => {
     expect(await read(noTable)).toEqual({
       cost: priced(PEAK),
       table: PRICE_TABLE_VERSION,
+    });
+  });
+
+  test("an unmetered row keeps its unknown cost: its zero tokens are no count of the call", async () => {
+    await clear();
+    const metered = await seed();
+    const unmetered = await seed({
+      table: UNMETERED_PRICE_TABLE,
+      cost: null,
+      input: 0,
+      cached: 0,
+      output: 0,
+    });
+    const report = await runReprice(suDb, {
+      tenant: tA,
+      provider: "deepseek",
+      model: MODEL,
+      apply: true,
+    });
+    expect(report.groups[0]?.matched).toBe(1);
+    expect(await read(metered)).toEqual({
+      cost: priced(PEAK),
+      table: PRICE_TABLE_VERSION,
+    });
+    expect(await read(unmetered)).toEqual({
+      cost: null,
+      table: UNMETERED_PRICE_TABLE,
+    });
+    await expect(
+      runReprice(suDb, {
+        tenant: tA,
+        provider: "deepseek",
+        model: MODEL,
+        priceTable: UNMETERED_PRICE_TABLE,
+        apply: true,
+      }),
+    ).rejects.toThrow("no tokens to price");
+    expect(await read(unmetered)).toEqual({
+      cost: null,
+      table: UNMETERED_PRICE_TABLE,
     });
   });
 

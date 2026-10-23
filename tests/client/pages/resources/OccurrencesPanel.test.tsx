@@ -49,6 +49,7 @@ const DEFAULTS = {
   concentrationShare: 0.6,
   model: null as null | Record<string, unknown>,
   businessContext: "",
+  recoverMedia: false,
 };
 
 const READING = {
@@ -594,6 +595,29 @@ describe("OccurrencesPanel", () => {
     expect(body.businessContext).toBe("  Atendemos clientes de uma loja.  ");
     // The model did not change, so it is not sent.
     expect("model" in body).toBe(false);
+  });
+
+  test("recovering old voice notes and images is a switch, off until turned on, and saved as set", async () => {
+    installFetchStub({ ...DEFAULTS, model: READING });
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    const toggle = screen.getByRole("switch", {
+      name: "Transcribe and describe them again when reading",
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    const save = screen.getByRole("button", { name: "Save" });
+    await waitFor(() =>
+      expect((save as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(requests.some((r) => r.method === "PUT")).toBe(true),
+    );
+    const body = requests.find((r) => r.method === "PUT")?.body as {
+      recoverMedia?: boolean;
+    };
+    expect(body.recoverMedia).toBe(true);
   });
 
   test("an openai-compatible model whose credential holds the base URL saves without one of its own", async () => {

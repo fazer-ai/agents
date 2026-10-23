@@ -66,6 +66,8 @@ describe("the settings block", () => {
     expect(OCCURRENCES_DEFAULTS.enabled).toBe(false);
     expect(OCCURRENCES_DEFAULTS.fields).toEqual([]);
     expect(OCCURRENCES_DEFAULTS.referenceField).toBeNull();
+    // Recovering old media costs the inbox agent's providers: never on unless asked.
+    expect(OCCURRENCES_DEFAULTS.recoverMedia).toBe(false);
     expect(OCCURRENCES_DEFAULTS.reasonField).toBeNull();
     expect(OCCURRENCES_DEFAULTS.model).toBeNull();
   });
@@ -216,6 +218,8 @@ describe("the settings block", () => {
       { ...ok, models: { reading: READING } },
       { ...ok, businessContext: "x".repeat(2_001) },
       { ...ok, businessContext: "meio \ud800 contexto" },
+      { ...ok, recoverMedia: "true" },
+      { ...ok, recoverMedia: null },
       { ...ok, referenceField: "inexistente" },
       // The reason and the reference are two fields, not one.
       { ...ok, reasonField: "referencia" },
@@ -418,6 +422,20 @@ describe.skipIf(!dbUp)("against the database", () => {
     expect(await pendingRounds()).toBe(0);
     // The fields stay: switching off is not forgetting the setup.
     expect((await getOccurrencesSettings(ctx(), appDb)).fields).toEqual(FIELDS);
+  });
+
+  test("recoverMedia saves on its own and changes nothing else in the block", async () => {
+    const before = await getOccurrencesSettings(ctx(), appDb);
+    expect(before.recoverMedia).toBe(false);
+    const saved = await updateOccurrencesSettings(
+      ctx(),
+      { recoverMedia: true },
+      appDb,
+    );
+    expect(saved).toEqual({ ...before, recoverMedia: true });
+    expect((await getOccurrencesSettings(ctx(), appDb)).recoverMedia).toBe(
+      true,
+    );
   });
 
   test("the business context is stored and returned exactly as sent, its cap on the raw length", async () => {

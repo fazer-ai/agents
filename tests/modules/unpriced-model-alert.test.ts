@@ -9,6 +9,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { defaultUsagePersist, type UsageRow } from "@/graph/usage";
+import { UNMETERED_PRICE_TABLE } from "@/modules/pricing/reprice";
 import {
   announceUnpricedModel,
   resetUnpricedAnnouncements,
@@ -123,6 +124,17 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  test("an unmetered call is not announced: it has no price to set", async () => {
+    await persist()({
+      ...row(tenantA, "gpt-4o-transcribe", null),
+      promptTokens: 0,
+      completionTokens: 0,
+      priceTable: UNMETERED_PRICE_TABLE,
+    });
+    expect(await alerts(tenantA)).toHaveLength(0);
+    expect(await suDb.llmUsage.count({ where: { tenantId: tenantA } })).toBe(1);
   });
 
   test("the first unpriced call of a model is announced, with no ceiling and no Langfuse", async () => {

@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { recordDirectUsage } from "@/graph/usage";
+import { recordDirectUsage, type UsageNode } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { shareAbortableInFlight } from "@/lib/locks";
 import { sanitizeErrorMessage } from "@/lib/redact";
@@ -280,6 +280,9 @@ export interface ExtractInboundParams {
   stashAnnotation?: boolean;
   // The caller's deadline, handed to the provider attempts.
   signal?: AbortSignal;
+  // The ledger step the call is billed under: an agent's reading by default, the occurrence
+  // monitor's when it reads again what upstream Chatwoot no longer holds.
+  usageNode?: Extract<UsageNode, "vision" | "occurrence_vision">;
 }
 
 export interface ExtractResult {
@@ -444,6 +447,31 @@ export async function classifyBodyImage(
   return r === BODY_IMAGE_IGNORED || r === BODY_IMAGE_OVER_CAP ? r : null;
 }
 
+function fileReadKey(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  messageId: number;
+  attachmentId: number | null;
+  dataUrl: string;
+  classifyOnly?: boolean;
+}): string {
+  return `vision:${p.tenantId}:${p.instanceId}:${p.messageId}:${p.attachmentId ?? p.dataUrl}:${p.classifyOnly ? "classify" : "read"}`;
+}
+
+// The read of a file this process already holds, for a caller whose own wait for it was cut short.
+export function rememberedFileRead(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  messageId: number;
+  attachmentId: number | null;
+  dataUrl: string;
+}): ExtractResult | null {
+  const v = fileReadFor(fileReadKey(p))?.value;
+  return v && typeof v === "object" && "kind" in v && "text" in v
+    ? (v as ExtractResult)
+    : null;
+}
+
 // One read per file, however many deliveries of its message ask: a delivery that finds the file
 // being read waits for that read, and one that comes later reuses its result while the annotation
 // store keeps it. A failed read is not kept, so the next delivery tries again.
@@ -458,7 +486,7 @@ function extractInbound(
   | typeof BODY_IMAGE_IGNORED
   | typeof BODY_IMAGE_OVER_CAP
 > {
-  const key = `vision:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId ?? params.dataUrl}:${params.classifyOnly ? "classify" : "read"}`;
+  const key = fileReadKey(params);
   const kept = fileReadFor(key);
   if (kept)
     return Promise.resolve(
@@ -470,7 +498,13 @@ function extractInbound(
   return shareAbortableInFlight(
     key,
     async (signal) => {
-      const value = await extractInboundOnce({ ...params, signal });
+      const value = await extractInboundOnce({
+        ...params,
+        signal,
+        // Kept before the write-back: a caller that stops waiting during that write still finds the
+        // read it paid for.
+        remember: (r) => rememberFileRead(key, r),
+      });
       if (!isUnread(value)) rememberFileRead(key, value);
       return value;
     },
@@ -482,6 +516,7 @@ async function extractInboundOnce(
   params: ExtractInboundParams & {
     bodyImage?: boolean;
     classifyOnly?: boolean;
+    remember?: (r: ExtractResult) => void;
   },
 ): Promise<
   | ExtractResult
@@ -656,7 +691,7 @@ async function extractInboundOnce(
     await recordDirectUsage(params.flow, {
       provider: cfg.provider,
       model: cfg.model || provider.defaultModel,
-      node: "vision",
+      node: params.usageNode ?? "vision",
       ...extracted.usage,
       durationMs: performance.now() - readStartedAt,
     });
@@ -675,6 +710,7 @@ async function extractInboundOnce(
       kind === "image" ? { imageDescription: text } : { extractedText: text },
     );
 
+  params.remember?.({ kind, text });
   // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on
   // the flow log so a meta that never lands is visible to the operator.
   if (params.attachmentId !== null)

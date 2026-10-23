@@ -359,9 +359,14 @@ async function viewsOf(
   });
 }
 
-// The ledger node each step's calls are billed under (src/modules/occurrences/model.ts STEP_NODE):
-// the same lines the dashboard's cost by call type shows.
-export const MONITOR_NODES = OCCURRENCE_STEPS.map((s) => `occurrence_${s}`);
+// The ledger node each step's calls are billed under (src/modules/occurrences/model.ts STEP_NODE),
+// and the reading's media recovery (./recovery.ts): the same lines the dashboard's cost by call
+// type shows.
+export const MONITOR_NODES = [
+  ...OCCURRENCE_STEPS.map((s) => `occurrence_${s}`),
+  "occurrence_transcription",
+  "occurrence_vision",
+];
 
 export interface MonitorCost {
   // The priced calls' sum; null when none of the period's calls had a price.

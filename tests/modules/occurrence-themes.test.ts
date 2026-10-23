@@ -11,9 +11,11 @@ import type { ResolvedModelConfig } from "@/graph/models";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   clearMediaAnnotations,
+  mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { recordWatcherMediaRefusal } from "@/modules/contact-auth/media-refusal";
 import {
   rememberPosted,
   runCanonicalCopy,
@@ -29,6 +31,7 @@ import {
   upsertReadings,
   withdrawReadingCopies,
 } from "@/modules/occurrences/readings";
+import type { RecoveryDeps } from "@/modules/occurrences/recovery";
 import {
   occurrenceRoundHandler,
   runOccurrenceRound,
@@ -315,6 +318,8 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
       content: string;
       private?: boolean;
       attachments?: unknown[];
+      // The Chatwoot message it replies to.
+      inReplyTo?: number;
       // When the customer wrote it; absent, a fixed instant long past.
       at?: Date;
     }>
@@ -338,6 +343,9 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
             sender_type: m.type === "incoming" ? "contact" : "user",
             sender: { id: 1, type: m.type === "incoming" ? "contact" : "user" },
             ...(m.attachments ? { attachments: m.attachments } : {}),
+            ...(m.inReplyTo
+              ? { content_attributes: { in_reply_to: m.inReplyTo } }
+              : {}),
           })),
         };
       },
@@ -3010,6 +3018,658 @@ describe.skipIf(!dbUp)("the reading step", () => {
     await a.round(reads({}));
     const call = a.calls.find((x) => x.step === "reading");
     expect(call?.user).toContain("não audível");
+  });
+
+  // THE MEDIA RECOVERY (docs/occurrences.md, "Voice notes and images on upstream Chatwoot"): an old
+  // voice note or image this process no longer holds, read again with the inbox agent's speech-to-text
+  // and vision when the account switched `recoverMedia` on, and billed to the monitor.
+  const recovering = async (
+    over: {
+      stt?: boolean;
+      vision?: boolean;
+      sttText?: string;
+      sttModel?: string;
+      // Chatwoot's pages of twenty, newest first, walked back with `before`.
+      paged?: boolean;
+      transcribe?: RecoveryDeps["transcribe"];
+      // Chatwoot never answers the attachment meta write.
+      slowMeta?: boolean;
+    } = {},
+  ) => {
+    const a = await account({ recoverMedia: true });
+    await suDb.agent.update({
+      where: { id: a.rnd.id },
+      data: {
+        settings: {
+          stt: {
+            enabled: over.stt ?? true,
+            provider: "openai",
+            model: over.sttModel ?? "gpt-4o-mini-transcribe",
+            credentialRef: `vault:${a.kr}`,
+          },
+          vision: {
+            enabled: over.vision ?? true,
+            provider: "openai",
+            model: "vision-model",
+            credentialRef: `vault:${a.kr}`,
+          },
+        },
+      },
+    });
+    const providers = { stt: 0, vision: 0 };
+    const sttFetch = (async () => {
+      providers.stt += 1;
+      return Response.json({ text: over.sttText ?? "quero trocar o ingresso" });
+    }) as unknown as typeof fetch;
+    const visionFetch = (async () => {
+      providers.vision += 1;
+      return Response.json({
+        choices: [{ message: { content: "print de erro no pagamento" } }],
+        usage: { prompt_tokens: 300, completion_tokens: 12 },
+      });
+    }) as unknown as typeof fetch;
+    const makeChatwootClient = async () => {
+      const real = await a.makeChatwootClient();
+      const paged = {
+        getMessages: async (
+          conversation: number,
+          opts?: { before?: number },
+        ) => {
+          const all = (
+            (await real.getMessages(conversation)) as {
+              payload: { id: number }[];
+            }
+          ).payload
+            .filter((m) => opts?.before === undefined || m.id < opts.before)
+            .sort((x, y) => x.id - y.id);
+          return { payload: all.slice(-20) };
+        },
+      };
+      return Object.assign(Object.create(real), {
+        ...(over.paged ? paged : {}),
+        downloadAttachment: async (url: string) => ({
+          bytes: new ArrayBuffer(64),
+          contentType: url.endsWith(".ogg") ? "audio/ogg" : "image/png",
+        }),
+        // Upstream Chatwoot: the attachment meta route does not exist.
+        updateAttachmentMeta: async () => {
+          // Never answers: only the recovery's own deadline ends the wait.
+          if (over.slowMeta) await new Promise(() => {});
+          throw new Error("Chatwoot API 404");
+        },
+      }) as ChatwootClient;
+    };
+    const round = (cfg: OccurrencesConfig, now = new Date()) =>
+      runOccurrenceRound(a.tenantId, cfg, {
+        base: appDb,
+        now: () => now,
+        // Every reading answers, so a conversation read is marked read.
+        makeModel: (mc) =>
+          new ScriptedModel(
+            mc,
+            (step, user) =>
+              step === "reading" ? { queixa: "contato" } : nothing(step, user),
+            a.calls,
+          ),
+        makeChatwootClient,
+        recovery: { sttFetch, visionFetch, transcribe: over.transcribe },
+      });
+    const media = async (file_type: "audio" | "image") => {
+      const c = await customer(a, "x");
+      a.messages.set(c.cw, [
+        {
+          type: "incoming",
+          content: "",
+          attachments: [
+            {
+              id: 9,
+              file_type,
+              data_url: `https://cdn.example/a.${file_type === "audio" ? "ogg" : "png"}`,
+            },
+          ],
+        },
+      ]);
+      return c;
+    };
+    const rows = (node: string) =>
+      suDb.llmUsage.findMany({ where: { tenantId: a.tenantId, node } });
+    return {
+      a,
+      providers,
+      round,
+      media,
+      rows,
+      makeChatwootClient,
+      sttFetch,
+      visionFetch,
+    };
+  };
+
+  test("with recoverMedia on, an old voice note is transcribed again and read with its words, on the monitor's own line", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.stt).toBe(1);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "quero trocar o ingresso",
+    );
+    const lines = await r.rows("occurrence_transcription");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      agentId: null,
+      conversationId: c.id,
+      costUsd: null,
+      promptTokens: 0,
+    });
+    expect(await r.rows("vision")).toHaveLength(0);
+  });
+
+  test("with recoverMedia on, an old image is described again and read with its description, priced on its own line", async () => {
+    const r = await recovering();
+    const c = await r.media("image");
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.vision).toBe(1);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "print de erro no pagamento",
+    );
+    const lines = await r.rows("occurrence_vision");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      agentId: null,
+      conversationId: c.id,
+      promptTokens: 300,
+      completionTokens: 12,
+    });
+    expect(await r.rows("vision")).toHaveLength(0);
+  });
+
+  test("with recoverMedia off, nothing is transcribed or described again and the marker is read", async () => {
+    const r = await recovering();
+    await r.media("audio");
+    await r.round({ ...r.a.cfg, recoverMedia: false });
+    expect(r.providers).toEqual({ stt: 0, vision: 0 });
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "não audível",
+    );
+    expect(await r.rows("occurrence_transcription")).toHaveLength(0);
+  });
+
+  test("an agent with speech-to-text and vision off recovers nothing, and the conversation is still read", async () => {
+    const r = await recovering({ stt: false, vision: false });
+    const c = await r.media("audio");
+    const image = await r.media("image");
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(
+      (
+        await suDb.occurrenceConversationRead.findUniqueOrThrow({
+          where: { conversationId: image.id },
+        })
+      ).readInboundAt,
+    ).not.toBeNull();
+    expect(r.providers).toEqual({ stt: 0, vision: 0 });
+    expect(
+      await suDb.occurrenceConversationRead.findUniqueOrThrow({
+        where: { conversationId: c.id },
+      }),
+    ).toMatchObject({ failures: 0 });
+    expect(
+      (
+        await suDb.occurrenceConversationRead.findUniqueOrThrow({
+          where: { conversationId: c.id },
+        })
+      ).readInboundAt,
+    ).not.toBeNull();
+  });
+
+  test("an agent switched off lends nothing to the recovery", async () => {
+    const r = await recovering();
+    await suDb.agent.update({
+      where: { id: r.a.rnd.id },
+      data: { enabled: false },
+    });
+    await r.media("audio");
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("a reading recovers at most the newest five messages of a conversation", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    const one = r.a.messages.get(c.cw)?.[0];
+    if (!one) throw new Error("no message");
+    r.a.messages.set(
+      c.cw,
+      Array.from({ length: 7 }, () => ({ ...one })),
+    );
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.stt).toBe(5);
+  });
+
+  test("across Chatwoot's pages, the five recovered are the newest, not the newest of the oldest page", async () => {
+    const r = await recovering({ paged: true });
+    const c = await r.media("audio");
+    const one = r.a.messages.get(c.cw)?.[0];
+    if (!one) throw new Error("no message");
+    r.a.messages.set(
+      c.cw,
+      Array.from({ length: 25 }, () => ({ ...one })),
+    );
+    const { chatwootInstanceId } = await suDb.conversation.findUniqueOrThrow({
+      where: { id: c.id },
+    });
+    const heard = (n: number) =>
+      Boolean(
+        mediaAnnotationFor(r.a.tenantId, chatwootInstanceId, c.cw * 100 + n)
+          ?.transcribedText,
+      );
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+      expect(r.providers.stt).toBe(5);
+      expect([21, 22, 23, 24, 25].every(heard)).toBe(true);
+      expect([1, 2, 3, 4, 5, 20].some(heard)).toBe(false);
+    } finally {
+      clearMediaAnnotations();
+    }
+  });
+
+  test("only what the transcript renders is recovered: voice notes older than its window are not", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    const one = r.a.messages.get(c.cw)?.[0];
+    if (!one) throw new Error("no message");
+    r.a.messages.set(c.cw, [
+      ...Array.from({ length: 10 }, () => ({ ...one })),
+      ...Array.from({ length: 30 }, (_, i) => ({
+        type: "incoming" as const,
+        content: `mensagem ${i}`,
+      })),
+    ]);
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("a reading model that does not resolve leaves the media alone: no reading could use it", async () => {
+    const r = await recovering();
+    await r.media("audio");
+    const model = r.a.cfg.model;
+    if (!model) throw new Error("no model");
+    await r.round({
+      ...r.a.cfg,
+      recoverMedia: true,
+      model: { ...model, credentialRef: "vault:999999999" },
+    });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("a voice note the transcript's character budget leaves out is not recovered", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    r.a.messages.get(c.cw)?.push({
+      type: "incoming",
+      content: "a".repeat(20_100),
+    });
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("an agent with a contact authorization gate lends nothing to the recovery", async () => {
+    const r = await recovering();
+    const agent = await suDb.agent.findUniqueOrThrow({
+      where: { id: r.a.rnd.id },
+    });
+    await suDb.agent.update({
+      where: { id: r.a.rnd.id },
+      data: {
+        settings: {
+          ...(agent.settings as Record<string, unknown>),
+          contactAuth: { enabled: true, url: "https://auth.example/check" },
+        },
+      },
+    });
+    await r.media("audio");
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("a transcription cut short during its write-back still has its ledger row, and its words are read", async () => {
+    let target: {
+      tenantId: bigint;
+      instanceId: bigint;
+      messageId: number;
+    } | null = null;
+    const r = await recovering({
+      transcribe: async (p) => {
+        target = {
+          tenantId: p.tenantId,
+          instanceId: p.instanceId,
+          messageId: p.messageId,
+        };
+        // The provider answered; the reading's time ran out during the write-back.
+        await p.deps?.fetchImpl?.(
+          "https://stt.example/v1/audio/transcriptions",
+        );
+        stashMediaAnnotation(target, {
+          transcribedText: "quero meu reembolso",
+        });
+        throw new DOMException("the reading's time ran out", "AbortError");
+      },
+    });
+    await r.media("audio");
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(target).not.toBeNull();
+    expect(await r.rows("occurrence_transcription")).toHaveLength(1);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "quero meu reembolso",
+    );
+  });
+
+  test("a recovery that runs long leaves the reading its own time, and the conversation is read", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    const cfg = { ...r.a.cfg, recoverMedia: true };
+    const models = await roundModels(r.a.tenantId, cfg, {
+      base: appDb,
+      threadId: `occurrences:${r.a.tenantId}:slow`,
+      deadline: Date.now() + 3_000,
+      minCallMs: 10,
+      makeModel: (mc) =>
+        new ScriptedModel(mc, () => ({ queixa: "contato" }), r.a.calls),
+    });
+    let stopped = false;
+    const summary = await runReadingStep(appDb, r.a.tenantId, cfg, models, {
+      makeChatwootClient: r.makeChatwootClient,
+      // A provider that never answers: the recovery waits until its share of the time is up.
+      transcribe: (p) =>
+        new Promise((_, reject) =>
+          p.signal?.addEventListener("abort", () => {
+            stopped = true;
+            reject(new DOMException("time is up", "AbortError"));
+          }),
+        ),
+    });
+    expect(stopped).toBe(true);
+    expect(summary).toMatchObject({ read: 1, pending: 0 });
+    expect(await readingOf(c.id, "queixa")).not.toBeNull();
+  });
+
+  test("a voice note another pass already transcribed is read with its words and billed there, not again", async () => {
+    const fetched = 0;
+    const r = await recovering({
+      transcribe: async (p) => {
+        // The arrival pass finished while the recovery asked its fences: the words are in memory and
+        // no provider is called for them.
+        stashMediaAnnotation(
+          {
+            tenantId: p.tenantId,
+            instanceId: p.instanceId,
+            messageId: p.messageId,
+          },
+          { transcribedText: "o pedido chegou errado" },
+        );
+        return "o pedido chegou errado";
+      },
+    });
+    await r.media("audio");
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(fetched).toBe(0);
+    expect(await r.rows("occurrence_transcription")).toHaveLength(0);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "o pedido chegou errado",
+    );
+  });
+
+  test("an image on a message the budget cuts still reaches the reading, and is described", async () => {
+    const r = await recovering();
+    const c = await r.media("image");
+    const first = r.a.messages.get(c.cw)?.[0];
+    if (!first) throw new Error("no message");
+    first.content = "b".repeat(20_100);
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.vision).toBe(1);
+  });
+
+  test("an image described before its write-back was cut short is read with its description", async () => {
+    const r = await recovering({ slowMeta: true });
+    await r.media("image");
+    const cfg = { ...r.a.cfg, recoverMedia: true };
+    const models = await roundModels(r.a.tenantId, cfg, {
+      base: appDb,
+      threadId: `occurrences:${r.a.tenantId}:meta`,
+      deadline: Date.now() + 3_000,
+      minCallMs: 10,
+      makeModel: (mc) =>
+        new ScriptedModel(mc, () => ({ queixa: "contato" }), r.a.calls),
+    });
+    try {
+      await runReadingStep(appDb, r.a.tenantId, cfg, models, {
+        makeChatwootClient: r.makeChatwootClient,
+        visionFetch: r.visionFetch,
+      });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.vision).toBe(1);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "print de erro no pagamento",
+    );
+  });
+
+  test("an image another pass described while the recovery ran is read with that description, not described again", async () => {
+    const r = await recovering({
+      transcribe: async (p) => {
+        // Meanwhile, the arrival pass finished the message's image.
+        stashMediaAnnotation(
+          {
+            tenantId: p.tenantId,
+            instanceId: p.instanceId,
+            messageId: p.messageId,
+          },
+          { imageDescription: "foto de um boleto vencido" },
+        );
+        await p.deps?.fetchImpl?.(
+          "https://stt.example/v1/audio/transcriptions",
+        );
+        return "quero pagar";
+      },
+    });
+    const c = await r.media("audio");
+    r.a.messages.set(c.cw, [
+      {
+        type: "incoming",
+        content: "",
+        attachments: [
+          { id: 9, file_type: "audio", data_url: "https://cdn.example/a.ogg" },
+          { id: 10, file_type: "image", data_url: "https://cdn.example/b.png" },
+        ],
+      },
+    ]);
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.vision).toBe(0);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "foto de um boleto vencido",
+    );
+  });
+
+  test("a voice note a later reply quotes, but whose own line the budget leaves out, is not recovered", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    const audio = r.a.messages.get(c.cw)?.[0];
+    if (!audio) throw new Error("no message");
+    audio.content = "legenda";
+    r.a.messages
+      .get(c.cw)
+      ?.push(
+        { type: "outgoing", content: "c".repeat(20_000) },
+        { type: "incoming", content: "e então?", inReplyTo: c.cw * 100 + 1 },
+      );
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("a voice note the agent refused as a watcher is not recovered", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    recordWatcherMediaRefusal(r.a.tenantId, c.id, r.a.rnd.id, c.cw * 100 + 1);
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("an image message whose first file alone carries its meta has the rest described again", async () => {
+    const r = await recovering();
+    const c = await r.media("image");
+    r.a.messages.set(c.cw, [
+      {
+        type: "incoming",
+        content: "",
+        attachments: [
+          {
+            id: 9,
+            file_type: "image",
+            data_url: "https://cdn.example/a.png",
+            meta: { image_description: "foto do ingresso" },
+          },
+          { id: 10, file_type: "image", data_url: "https://cdn.example/b.png" },
+        ],
+      },
+    ]);
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.vision).toBe(1);
+    expect(r.a.calls.find((x) => x.step === "reading")?.user).toContain(
+      "print de erro no pagamento",
+    );
+  });
+
+  test("a transcription on the provider's default model is recorded under that model", async () => {
+    const r = await recovering({ sttModel: "" });
+    await r.media("audio");
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    const lines = await r.rows("occurrence_transcription");
+    expect(lines.map((l) => l.model)).toEqual(["gpt-4o-transcribe"]);
+  });
+
+  test("the media the contact authorization refused is not recovered", async () => {
+    const r = await recovering();
+    const c = await r.media("audio");
+    await suDb.conversation.update({
+      where: { id: c.id },
+      data: { mediaRefusedThroughMessageId: c.cw * 100 + 1 },
+    });
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("an account over its spend ceiling recovers nothing", async () => {
+    const r = await recovering();
+    await r.media("audio");
+    const t = await suDb.tenant.findUniqueOrThrow({
+      where: { id: r.a.tenantId },
+    });
+    await suDb.tenant.update({
+      where: { id: r.a.tenantId },
+      data: {
+        settings: {
+          ...(t.settings as Record<string, unknown>),
+          spendCeiling: { enabled: true, monthlyInboxUsd: 10 },
+        },
+      },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.spendCostSnapshot.create({
+      data: {
+        tenantId: r.a.tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+    });
+    await r.round({ ...r.a.cfg, recoverMedia: true });
+    expect(r.providers.stt).toBe(0);
+  });
+
+  test("an inbox only observed is recovered with the observing agent's speech-to-text", async () => {
+    const r = await recovering();
+    await suDb.inbox.update({
+      where: { id: r.a.inbox.id },
+      data: { agentId: null },
+    });
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId: r.a.tenantId,
+        inboxId: r.a.inbox.id,
+        agentId: r.a.rnd.id,
+      },
+    });
+    await r.media("audio");
+    try {
+      await r.round({ ...r.a.cfg, recoverMedia: true });
+    } finally {
+      clearMediaAnnotations();
+    }
+    expect(r.providers.stt).toBe(1);
+  });
+
+  test("a voice note an earlier reading covered is not transcribed again when the customer writes later, even one that transcribed to nothing", async () => {
+    const r = await recovering({ sttText: "" });
+    const c = await r.media("audio");
+    const cfg = { ...r.a.cfg, recoverMedia: true };
+    const t0 = Date.now();
+    await r.round(cfg, new Date(t0));
+    expect(r.providers.stt).toBe(1);
+    expect(await r.rows("occurrence_transcription")).toHaveLength(1);
+    // Past the memory's 15 minutes, the customer writes again.
+    clearMediaAnnotations();
+    r.a.messages.get(c.cw)?.push({
+      type: "incoming",
+      content: "alguém?",
+      at: new Date(t0 + 20 * MIN),
+    });
+    await suDb.conversation.update({
+      where: { id: c.id },
+      data: { lastInboundAt: new Date(t0 + 20 * MIN) },
+    });
+    await r.round(cfg, new Date(t0 + 30 * MIN));
+    expect(r.a.calls.filter((x) => x.step === "reading")).toHaveLength(2);
+    expect(r.providers.stt).toBe(1);
+    expect(await r.rows("occurrence_transcription")).toHaveLength(1);
   });
 
   test("a customer message that arrives during the read is read in the next round", async () => {

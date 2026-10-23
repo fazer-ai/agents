@@ -22,6 +22,7 @@ import { readTenantOccurrences, sysCtx } from "./config";
 import { runFlagsStep } from "./flags";
 import { type RoundModelDeps, roundModels } from "./model";
 import { runReadingStep } from "./reading";
+import type { RecoveryDeps } from "./recovery";
 import { runThreadId } from "./runs";
 import type { OccurrencesConfig } from "./settings";
 import { runAssignmentStep, runConsolidationStep } from "./themes";
@@ -49,6 +50,8 @@ export interface RoundDeps {
   signal?: AbortSignal;
   makeModel?: RoundModelDeps["makeModel"];
   makeChatwootClient?: LoadChatwootClientDeps["makeClient"];
+  // The media recovery's providers, which tests replace.
+  recovery?: Omit<RecoveryDeps, "makeChatwootClient">;
 }
 
 // The consolidation is due when no round consolidated within one consolidation cadence.
@@ -116,6 +119,8 @@ export async function runOccurrenceRound(
       // stronger model over what the assignment left.
       const reading = await runReadingStep(base, tenantId, cfg, models, {
         now,
+        threadId,
+        ...deps.recovery,
         ...(deps.makeChatwootClient
           ? { makeChatwootClient: deps.makeChatwootClient }
           : {}),

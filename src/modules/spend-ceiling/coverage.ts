@@ -57,4 +57,6 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     occurrence_assignment: "gated",
     occurrence_reading: "gated",
     occurrence_consolidation: "gated",
+    occurrence_transcription: "gated",
+    occurrence_vision: "gated",
   });

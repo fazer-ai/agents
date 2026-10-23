@@ -90,6 +90,14 @@ export function useNodeLabel() {
       "dashboard.node.occurrenceConsolidation",
       "Occurrences: theme consolidation",
     ),
+    occurrence_transcription: t(
+      "dashboard.node.occurrenceTranscription",
+      "Occurrences: voice note transcription",
+    ),
+    occurrence_vision: t(
+      "dashboard.node.occurrenceVision",
+      "Occurrences: image reading",
+    ),
   };
   return (node: string) => labels[node] ?? node;
 }

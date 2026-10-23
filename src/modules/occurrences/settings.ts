@@ -104,6 +104,10 @@ export interface OccurrencesConfig {
   model: OccurrenceModel | null;
   // Appended to every step's fixed prompt as context about the business; empty sends nothing.
   businessContext: string;
+  // On upstream Chatwoot a voice note's words and an image's description live only in this process's
+  // memory for 15 minutes; on, the reading transcribes or describes again what a conversation's new
+  // messages are missing, with the inbox agent's speech-to-text and vision, on its own cost lines.
+  recoverMedia: boolean;
 }
 
 export const OCCURRENCES_DEFAULTS: OccurrencesConfig = {
@@ -121,6 +125,7 @@ export const OCCURRENCES_DEFAULTS: OccurrencesConfig = {
   concentrationShare: 0.6,
   model: null,
   businessContext: "",
+  recoverMedia: false,
 };
 
 const ranged = (r: { min: number; max: number; int: boolean }) =>
@@ -261,6 +266,7 @@ export const occurrencesSettingsSchema = z
           `the business context is at most ${BUSINESS_CONTEXT_MAX} characters`,
         )
         .refine((v) => unstorableCodePoints(v) === null, storableMessage),
+      recoverMedia: z.boolean(),
     },
     unknownKey,
   )

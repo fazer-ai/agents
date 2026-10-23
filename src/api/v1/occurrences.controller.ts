@@ -163,6 +163,12 @@ const patchBody = t.Object({
         "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
     }),
   ),
+  recoverMedia: t.Optional(
+    t.Boolean({
+      description:
+        "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
+    }),
+  ),
 });
 
 // Elysia cleans a body to its schema before the handler runs, so a key the block does not have would

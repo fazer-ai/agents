@@ -1168,6 +1168,8 @@
       "occurrenceCanonical": "Ocorrências: nomes de referência",
       "occurrenceConsolidation": "Ocorrências: consolidação de temas",
       "occurrenceReading": "Ocorrências: leitura",
+      "occurrenceTranscription": "Ocorrências: transcrição de áudio",
+      "occurrenceVision": "Ocorrências: leitura de imagem",
       "otherInboxSummary": "Resumo de outra caixa de entrada",
       "suggestionReview": "Revisão de sugestão de conhecimento",
       "ttsNormalize": "Preparo do texto para voz",
@@ -4126,6 +4128,12 @@
     },
     "reasonHint": "Obrigatório. Conversas com o mesmo motivo são agrupadas num tema; uma conversa com o motivo vazio não entra em tema nenhum.",
     "reasonTitle": "Motivo",
+    "recoverMedia": {
+      "hint": "Desligado por padrão. Usa a transcrição de áudio e a leitura de imagem do agente que recebe a caixa, uma vez por mensagem nova, e o custo sai em Ocorrências. Um agente com \"Quem este agente atende\" ligado não recupera nada.",
+      "intro": "No Chatwoot original, a transcrição de um áudio e a descrição de uma imagem ficam guardadas por cerca de 15 minutos, e uma rodada que vem depois lê a mensagem sem esse conteúdo. No Chatwoot da fazer.ai elas ficam na própria mensagem, e isto não é necessário.",
+      "label": "Transcrever e descrever de novo na leitura",
+      "title": "Áudios e imagens antigos"
+    },
     "referenceAtCap": "O monitor lê até {{max}} campos: tire um campo adicional para ler a referência.",
     "referenceHint": "Opcional. A que o motivo se refere, seja o que for que o seu negócio atende. Os jeitos diferentes como os clientes escrevem viram um nome só, e um tema é sinalizado quando a maior parte das conversas dele tem a mesma referência.",
     "referenceOff": "Sem referência, o monitor funciona normalmente; só fica desligada a sinalização de temas concentrados numa referência.",

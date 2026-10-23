@@ -214,6 +214,7 @@ export function OccurrenceSettings({
   );
   const [model, setModel] = useState<ModelDraft | null>(null);
   const [businessContext, setBusinessContext] = useState("");
+  const [recoverMedia, setRecoverMedia] = useState(false);
 
   // The defaults are read through a ref: a language change must not recreate `adopt`, which would
   // reload the configuration and throw away an unsaved edit.
@@ -254,6 +255,7 @@ export function OccurrenceSettings({
     setNums(numTexts(c));
     setModel(toDraft(c.model));
     setBusinessContext(c.businessContext);
+    setRecoverMedia(c.recoverMedia);
     setPristine(null);
     setAdoptSeq((n) => n + 1);
   }, []);
@@ -382,6 +384,7 @@ export function OccurrenceSettings({
       ) as Record<NumKey, number>),
       model: fromDraft(model),
       businessContext,
+      recoverMedia,
     }),
     [
       enabled,
@@ -394,6 +397,7 @@ export function OccurrenceSettings({
       sentNums,
       model,
       businessContext,
+      recoverMedia,
     ],
   );
   const latest = useRef(draft);
@@ -914,6 +918,30 @@ export function OccurrenceSettings({
                 onChange={(e) => setBusinessContext(e.target.value)}
               />
             </FormField>
+          </Section>
+
+          <Section
+            title={t(
+              "occurrences.recoverMedia.title",
+              "Old voice notes and images",
+            )}
+            intro={t(
+              "occurrences.recoverMedia.intro",
+              "On upstream Chatwoot, a voice note's transcription and an image's description are kept for about 15 minutes, so a round that comes later reads them without their content. On the fazer.ai Chatwoot they are kept on the message and this is not needed.",
+            )}
+          >
+            <SwitchField
+              checked={recoverMedia}
+              onCheckedChange={setRecoverMedia}
+              label={t(
+                "occurrences.recoverMedia.label",
+                "Transcribe and describe them again when reading",
+              )}
+              help={t(
+                "occurrences.recoverMedia.hint",
+                'Off by default. Uses the speech-to-text and vision of the agent that receives the inbox, once per new message, and is billed under Occurrences. An agent with "Who this agent serves" on recovers nothing.',
+              )}
+            />
           </Section>
 
           <Section

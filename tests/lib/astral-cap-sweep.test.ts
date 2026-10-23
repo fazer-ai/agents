@@ -517,6 +517,8 @@ const BARE_SLICES: Record<
   // The names Chatwoot may still hold for a reading, the newest few kept off an ARRAY, twice: when a
   // value changes, and when a copy posted a name the reading had already moved past.
   "src/modules/occurrences/readings.ts": [1, "array"],
+  // The newest messages a reading recovers, an ARRAY of message rows.
+  "src/modules/occurrences/recovery.ts": [2, "array"],
   // The round's folded skip lines, an ARRAY of strings.
   "src/modules/occurrences/round.ts": [1, "array"],
   // A stored skip line cut at its ": " (a position found in it), and the page of rounds off the row

@@ -3464,6 +3464,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           concentrationShare: ranged(CONCENTRATION_SHARE_RANGE).optional(),
           model: occurrenceModelSchema.nullable().optional(),
           businessContext: z.string().max(BUSINESS_CONTEXT_MAX).optional(),
+          recoverMedia: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3483,6 +3484,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           concentrationShare?: number;
           model?: OccurrenceModel | null;
           businessContext?: string;
+          recoverMedia?: boolean;
           dry_run?: boolean;
         },
         eff,

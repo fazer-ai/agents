@@ -95,6 +95,11 @@ export interface RoundModels {
   budget: AbortSignal;
   // When the round must have stopped calling models.
   deadline: number;
+  // Whether the model resolved (a key, an endpoint): false, every step's call is refused, so work
+  // paid for only to feed one (the reading's media recovery) is not started. Absent reads as true.
+  resolved?: boolean;
+  // The least time a call is started with: work before a call leaves it this much.
+  minCallMs?: number;
 }
 
 export interface RoundModelDeps {
@@ -381,6 +386,8 @@ export async function roundModels(
     skipped,
     budget,
     deadline: deps.deadline,
+    resolved: resolution.ok,
+    minCallMs: deps.minCallMs ?? MIN_CALL_MS,
     tryAsk,
     async ask(step, system, user, schema, scope) {
       const r = await tryAsk(step, system, user, schema, scope);

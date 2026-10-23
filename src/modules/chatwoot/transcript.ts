@@ -124,6 +124,8 @@ export interface TranscriptLine {
   text: string;
   // When the message was written, kept only for a reader that renders it (`dated`).
   at?: Date | null;
+  // The Chatwoot message the line renders, kept only for a reader that asks (`ids`).
+  messageId?: number;
 }
 
 const ROLE_LABEL: Record<TranscriptLine["role"], string> = {
@@ -164,6 +166,7 @@ export function transcriptFromRows(
     ownBotIds?: ReadonlySet<number>;
     trustPhoneEcho?: boolean;
     dated?: boolean;
+    ids?: boolean;
   } = {},
 ): TranscriptLine[] {
   const ownBotIds = opts.ownBotIds ?? new Set<number>();
@@ -205,6 +208,7 @@ export function transcriptFromRows(
           : outgoingRole(m, ownBotIds, trustPhoneEcho),
       text: clean,
       ...(opts.dated ? { at: m.createdAt ?? null } : {}),
+      ...(opts.ids ? { messageId: m.id } : {}),
     });
   }
   return out;

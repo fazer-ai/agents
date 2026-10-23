@@ -17,6 +17,7 @@ import {
 } from "@/modules/pricing/overrides";
 import { type PricedTokens, priceCall } from "@/modules/pricing/price";
 import { reportedCostFromUsage } from "@/modules/pricing/reported";
+import { UNMETERED_PRICE_TABLE } from "@/modules/pricing/reprice";
 import { announceUnpricedModel } from "@/modules/pricing/unpriced-alert";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
@@ -311,6 +312,10 @@ const IS_AGENT_TURN = {
   occurrence_canonical: false,
   occurrence_assignment: false,
   occurrence_consolidation: false,
+  // The reading's recovery of a voice note or image upstream Chatwoot no longer holds, with the inbox
+  // agent's speech-to-text and vision, billed to the monitor and never to the agent.
+  occurrence_transcription: false,
+  occurrence_vision: false,
 } as const satisfies Record<string, boolean>;
 
 // The step a billed call is recorded under. `UsageCapture`, `recordDirectUsage` and `buildCallbacks`
@@ -430,7 +435,9 @@ export function defaultUsagePersist(
         cache_creation_1h_tokens: row.cacheCreation1hTokens,
       });
     });
-    if (row.costUsd === null) {
+    // An unmetered call has no price to configure: the alert's remedy (a price, then a reprice)
+    // does not apply to it.
+    if (row.costUsd === null && row.priceTable !== UNMETERED_PRICE_TABLE) {
       await announceUnpricedModel({
         tenantId: row.tenantId,
         model: row.model,
@@ -714,6 +721,34 @@ export async function recordDirectUsage(
     );
   } catch (err) {
     logger.warn({ err, node: row.node }, "usage: direct trace failed");
+  }
+}
+
+// A billed call whose provider reports no usage the table can price (a speech-to-text provider
+// answers words, not tokens): one row per call, with no tokens and no cost, so the step's own line
+// counts it and the ledger says it was not priced instead of showing it as free.
+export async function recordUnmeteredCall(
+  flow: FlowContext,
+  row: { model: string; node: UsageNode; durationMs?: number },
+): Promise<void> {
+  const usageRow: UsageRow = {
+    ...usageAttribution(flow),
+    model: row.model,
+    node: row.node,
+    promptTokens: 0,
+    completionTokens: 0,
+    cachedReadTokens: 0,
+    cacheCreationTokens: 0,
+    cacheCreation1hTokens: 0,
+    durationMs: row.durationMs ?? null,
+    costUsd: null,
+    priceTable: UNMETERED_PRICE_TABLE,
+  };
+  noteTurnUsage(usageRow);
+  try {
+    await defaultUsagePersist(flow.base)(usageRow);
+  } catch (err) {
+    logger.warn({ err, node: row.node }, "usage: unmetered capture failed");
   }
 }
 

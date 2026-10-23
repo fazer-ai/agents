@@ -13,7 +13,11 @@ import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PRICE_OVERRIDE_PROVIDERS } from "@/modules/pricing/overrides";
 import { modelRates } from "@/modules/pricing/price";
-import { type RepriceOptions, runReprice } from "@/modules/pricing/reprice";
+import {
+  type RepriceOptions,
+  runReprice,
+  UNMETERED_PRICE_TABLE,
+} from "@/modules/pricing/reprice";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { PrismaClient } from "../generated/prisma/client";
 
@@ -60,6 +64,10 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
     throw new UsageError("--from must be before --to");
   const table = values["price-table"];
   if (table === "") throw new UsageError("--price-table needs a value");
+  if (table === UNMETERED_PRICE_TABLE)
+    throw new UsageError(
+      `--price-table ${UNMETERED_PRICE_TABLE}: those calls reported no tokens, so there is nothing to price`,
+    );
   // Only the provider is checked here. Whether the model has a price is per row: a tenant's own
   // price can cover a model the table lacks (an `openai-compatible` server, say), and a row nothing
   // prices is left as it was and counted in the report, never refused up front.

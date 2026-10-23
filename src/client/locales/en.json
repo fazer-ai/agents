@@ -1119,6 +1119,8 @@
       "occurrenceCanonical": "Occurrences: reference names",
       "occurrenceConsolidation": "Occurrences: theme consolidation",
       "occurrenceReading": "Occurrences: reading",
+      "occurrenceTranscription": "Occurrences: voice note transcription",
+      "occurrenceVision": "Occurrences: image reading",
       "otherInboxSummary": "Summary of another inbox",
       "suggestionReview": "Knowledge suggestion review",
       "ttsNormalize": "Voice text preparation",
@@ -3982,6 +3984,12 @@
     },
     "reasonHint": "Required. Conversations with the same reason are grouped into a theme; one whose reason is empty joins no theme.",
     "reasonTitle": "Reason",
+    "recoverMedia": {
+      "hint": "Off by default. Uses the speech-to-text and vision of the agent that receives the inbox, once per new message, and is billed under Occurrences. An agent with \"Who this agent serves\" on recovers nothing.",
+      "intro": "On upstream Chatwoot, a voice note's transcription and an image's description are kept for about 15 minutes, so a round that comes later reads them without their content. On the fazer.ai Chatwoot they are kept on the message and this is not needed.",
+      "label": "Transcribe and describe them again when reading",
+      "title": "Old voice notes and images"
+    },
     "referenceAtCap": "The monitor reads up to {{max}} fields: remove an additional field to read the reference.",
     "referenceHint": "Optional. What the reason refers to, whatever your business deals with. The different ways customers write it become one name, and a theme is flagged when most of its conversations share one.",
     "referenceOff": "Without a reference the monitor works as usual; only the flag for themes concentrated on one reference is off.",

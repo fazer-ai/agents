@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components/Toast";
@@ -491,7 +492,7 @@ describe("OccurrencesPanel", () => {
     });
   });
 
-  test("switching the provider drops the base URL it had, and one that takes a base URL shows it", async () => {
+  test("switching the provider drops the base URL it had, and only OpenAI-compatible shows one, as the agent's card", async () => {
     installFetchStub({
       ...DEFAULTS,
       model: {
@@ -512,10 +513,8 @@ describe("OccurrencesPanel", () => {
     fireEvent.change(control("Provider"), {
       target: { value: "openrouter" },
     });
-    // OpenRouter takes a base URL, so the field stays, empty: the old server is not carried over.
-    expect((screen.getByLabelText("Base URL") as HTMLInputElement).value).toBe(
-      "",
-    );
+    // The agent's Model card asks a base URL of OpenAI-compatible alone, and so does this one.
+    expect(screen.queryByLabelText("Base URL")).toBeNull();
     // The key goes with the provider: OpenRouter's is chosen.
     fireEvent.click(control("API key"));
     fireEvent.click(await screen.findByText("chave-openrouter"));
@@ -883,6 +882,53 @@ describe("OccurrencesPanel", () => {
       expect("concentrationShare" in body).toBe(false);
       expect(body.referenceField).toBeNull();
     });
+
+  test("an OpenAI-compatible model on the provider default says, under each field, what holds the save", async () => {
+    installFetchStub({ ...DEFAULTS, model: READING });
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    fireEvent.change(control("Provider"), {
+      target: { value: "openai-compatible" },
+    });
+    const save = screen.getByRole("button", { name: "Save" });
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Type the model id.")).toBeTruthy();
+    fireEvent.pointerDown(control("Model"), { button: 0, ctrlKey: false });
+    const menu = await screen.findByRole("menu");
+    fireEvent.change(within(menu).getByRole("textbox"), {
+      target: { value: "llama-3.1-8b" },
+    });
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: 'Use "llama-3.1-8b"' }),
+    );
+    expect(screen.queryByText("Type the model id.")).toBeNull();
+    expect(screen.getByText("Type the base URL.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "http://127.0.0.1:9/v1" },
+    });
+    expect(screen.queryByText("Type the base URL.")).toBeNull();
+    await waitFor(() =>
+      expect((save as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
+
+  test("a field whose instructions are emptied says so and holds the save until they are typed again", async () => {
+    installFetchStub({ ...DEFAULTS, model: READING });
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    const instructions = screen.getAllByLabelText(
+      "What the monitor writes here",
+    )[0] as HTMLTextAreaElement;
+    fireEvent.change(instructions, { target: { value: "" } });
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(screen.getByText("Say what the monitor writes here.")).toBeTruthy();
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(instructions, { target: { value: "Por que escreveu." } });
+    expect(screen.queryByText("Say what the monitor writes here.")).toBeNull();
+    await waitFor(() =>
+      expect((save as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
 
   test("a field with no name, or a name with no letter or digit, is marked and holds the save", async () => {
     installFetchStub();

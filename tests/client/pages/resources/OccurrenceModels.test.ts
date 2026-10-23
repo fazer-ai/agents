@@ -19,10 +19,21 @@ describe("modelProblem", () => {
   });
 
   test("an openai-compatible model with no endpoint anywhere asks for one", () => {
-    expect(modelProblem(compatible, t, null)).toBe("Type the base URL.");
-    expect(modelProblem({ ...compatible, credentialRef: "" }, t)).toBe(
-      "Type the base URL.",
+    const endpoint = {
+      field: "baseURL",
+      message: "Type the base URL.",
+    } as const;
+    expect(modelProblem(compatible, t, null)).toEqual(endpoint);
+    expect(modelProblem({ ...compatible, credentialRef: "" }, t)).toEqual(
+      endpoint,
     );
+  });
+
+  test("an openai-compatible model left on the provider default asks for the model id", () => {
+    expect(modelProblem({ ...compatible, model: "" }, t, null)).toEqual({
+      field: "model",
+      message: "Type the model id.",
+    });
   });
 
   test("its own endpoint is enough without a credential", () => {

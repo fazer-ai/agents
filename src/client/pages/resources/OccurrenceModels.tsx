@@ -57,34 +57,51 @@ export function fromDraft(d: ModelDraft | null): OccurrenceModel | null {
       };
 }
 
-// What keeps the model's draft from saving, said in words; null when it can save. The endpoint may
-// come from the credential, as the round resolves it (model.ts, resolveMonitorModel).
+// What keeps the model's draft from saving, and the field that holds it; null when it can save. The
+// endpoint may come from the credential, as the round resolves it (model.ts, resolveMonitorModel).
+export interface ModelProblem {
+  field: "credential" | "model" | "baseURL";
+  message: string;
+}
+
 export function modelProblem(
   s: ModelDraft,
   t: (k: string, d: string) => string,
   credentialBase?: string | null,
-): string | null {
+): ModelProblem | null {
   if (s.provider !== "openai-compatible" && !s.credentialRef.trim())
-    return t("occurrences.models.needsCredential", "Choose the API key.");
+    return {
+      field: "credential",
+      message: t("occurrences.models.needsCredential", "Choose the API key."),
+    };
   if (s.provider === "openai-compatible" && !s.model.trim())
-    return t("occurrences.models.needsModel", "Type the model id.");
+    return {
+      field: "model",
+      message: t("occurrences.models.needsModel", "Type the model id."),
+    };
   if (
     s.provider === "openai-compatible" &&
     !s.baseURL.trim() &&
     !credentialBase
   )
-    return t("occurrences.models.needsEndpoint", "Type the base URL.");
+    return {
+      field: "baseURL",
+      message: t("occurrences.models.needsEndpoint", "Type the base URL."),
+    };
   return null;
 }
 
 // The monitor's one model, laid out as the agent's Model card: provider and model on one row, the API
-// key below, and the base URL when the provider dials one. No agent is borrowed.
+// key below, and the base URL for OpenAI-compatible only, as the agent's card shows it. `problem` is
+// said under the field that holds the save; a missing key is said by the key picker itself.
 export function OccurrenceModelSection({
   value,
   onChange,
+  problem,
 }: {
   value: ModelDraft;
   onChange: (v: ModelDraft) => void;
+  problem?: ModelProblem | null;
 }) {
   const { t } = useTranslation();
   const baseUrlOf = useVaultBaseUrls();
@@ -114,7 +131,11 @@ export function OccurrenceModelSection({
             ))}
           </Select>
         </FormField>
-        <FormField label={t("editor.model", "Model")} group>
+        <FormField
+          label={t("editor.model", "Model")}
+          group
+          error={problem?.field === "model" ? problem.message : undefined}
+        >
           <ModelPicker
             value={value.model}
             onChange={(v) => onChange({ ...value, model: v })}
@@ -141,21 +162,20 @@ export function OccurrenceModelSection({
           />
         </FormField>
       </div>
-      {takesBaseUrl(value.provider) && (
+      {value.provider === "openai-compatible" && (
         <FormField
           label={t("editor.baseURL", "Base URL")}
+          error={problem?.field === "baseURL" ? problem.message : undefined}
           description={
             credBase && !value.baseURL.trim()
               ? t(
                   "editor.baseURLFromCredential",
                   "Defined by the selected credential.",
                 )
-              : value.provider === "openai-compatible"
-                ? t(
-                    "editor.baseURLHint",
-                    "Required for OpenAI-compatible providers.",
-                  )
-                : undefined
+              : t(
+                  "editor.baseURLHint",
+                  "Required for OpenAI-compatible providers.",
+                )
           }
         >
           <Input

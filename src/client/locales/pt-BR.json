@@ -4055,6 +4055,7 @@
     "fieldAttribute": "Gravar também no atributo personalizado da conversa",
     "fieldAttributeKey": "Atributo personalizado no Chatwoot: {{attribute}}",
     "fieldInstruction": "O que o monitor escreve aqui",
+    "fieldInstructionMissing": "Diga o que o monitor escreve aqui.",
     "fieldName": "Nome",
     "fieldNameMissing": "Dê um nome ao campo.",
     "fieldNameUnusable": "Use letras ou números no nome.",

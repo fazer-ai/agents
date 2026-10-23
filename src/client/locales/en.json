@@ -3913,6 +3913,7 @@
     "fieldAttribute": "Also write to the conversation's custom attribute",
     "fieldAttributeKey": "Chatwoot custom attribute: {{attribute}}",
     "fieldInstruction": "What the monitor writes here",
+    "fieldInstructionMissing": "Say what the monitor writes here.",
     "fieldName": "Name",
     "fieldNameMissing": "Give the field a name.",
     "fieldNameUnusable": "Use letters or digits in the name.",

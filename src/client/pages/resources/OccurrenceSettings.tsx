@@ -312,10 +312,9 @@ export function OccurrenceSettings({
           t("occurrences.needsInbox", "at least one inbox"),
         modelNeedsCheck &&
           shownProblem !== null &&
-          (shownModel.provider !== "openai-compatible" &&
-          !shownModel.credentialRef.trim()
+          (shownProblem.field === "credential"
             ? t("occurrences.needsModelKey", "the model's API key")
-            : !shownModel.model.trim()
+            : shownProblem.field === "model"
               ? t("occurrences.needsModelId", "the model")
               : t("occurrences.needsModelBaseUrl", "the model's base URL")),
       ].filter((x): x is string => typeof x === "string")
@@ -575,6 +574,14 @@ export function OccurrenceSettings({
             "occurrences.fieldInstruction",
             "What the monitor writes here",
           )}
+          error={
+            row.description.trim()
+              ? undefined
+              : t(
+                  "occurrences.fieldInstructionMissing",
+                  "Say what the monitor writes here.",
+                )
+          }
         >
           <Textarea
             rows={2}
@@ -853,7 +860,12 @@ export function OccurrenceSettings({
               "The provider, API key and model every step of the monitor runs on. The prompts are fixed; the business context below is what you can add to them.",
             )}
           >
-            <OccurrenceModelSection value={shownModel} onChange={setModel} />
+            <OccurrenceModelSection
+              value={shownModel}
+              onChange={setModel}
+              // Said where it holds the save: a model edited here, or one the switch-on needs.
+              problem={modelNeedsCheck ? shownProblem : null}
+            />
           </Section>
 
           <Section

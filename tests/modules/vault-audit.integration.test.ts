@@ -374,6 +374,34 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
     expect(other.tenantSettings).toEqual([]);
   });
 
+  test("vaultReferences: a credential the occurrence monitor's steps use is referenced", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const { id } = await createVaultEntry(
+      ctx,
+      { name: "refs-occurrences", value: "sk_y" },
+      undefined,
+      undefined,
+      appDb,
+    );
+    const step = {
+      provider: "openai",
+      model: null,
+      credentialRef: formatVaultRef(id),
+      baseURL: null,
+    };
+    await su?.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: {
+          occurrences: { model: step },
+        },
+      },
+    });
+    expect((await vaultReferences(ctx, id, appDb)).tenantSettings).toEqual([
+      "occurrences",
+    ]);
+  });
+
   test("audit: records a row scoped to the tenant", async () => {
     // A synthetic action, because this asserts RLS scoping and nothing about the vocabulary. A
     // real one like `tenant.update` is Full-only, so the Free tree would not compile while the master

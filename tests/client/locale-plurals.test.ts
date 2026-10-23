@@ -28,6 +28,12 @@ const IDENTICAL_ON_PURPOSE: Record<string, string> = {
   "editor.tools.mcpSelected": "en: no noun agrees with the count",
   "editor.tools.nativeActiveCount": "en: no noun agrees with the count",
   "dashboard.cost.acrossResolved": "en: no noun agrees with the count",
+  // A round's parts, each a count and a verb or participle: "1 failed", "2 left for the next round".
+  "occurrences.detail.copied": "en: no noun agrees with the count",
+  "occurrences.detail.failed": "en: no noun agrees with the count",
+  "occurrences.detail.pending": "en: no noun agrees with the count",
+  "occurrences.detail.placed": "en: no noun agrees with the count",
+  "occurrences.detail.dropped": "en: no noun agrees with the count",
 };
 
 // Keys that interpolate `{{count}}` and are still FLAT. Each one would be a call site the extractor

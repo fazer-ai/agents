@@ -74,6 +74,22 @@ export function useNodeLabel() {
       "dashboard.node.otherInboxSummary",
       "Summary of another inbox",
     ),
+    occurrence_reading: t(
+      "dashboard.node.occurrenceReading",
+      "Occurrences: reading",
+    ),
+    occurrence_canonical: t(
+      "dashboard.node.occurrenceCanonical",
+      "Occurrences: reference names",
+    ),
+    occurrence_assignment: t(
+      "dashboard.node.occurrenceAssignment",
+      "Occurrences: theme assignment",
+    ),
+    occurrence_consolidation: t(
+      "dashboard.node.occurrenceConsolidation",
+      "Occurrences: theme consolidation",
+    ),
   };
   return (node: string) => labels[node] ?? node;
 }

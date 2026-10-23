@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  Activity,
   Blocks,
   BookOpen,
   Clock,
@@ -24,6 +25,7 @@ import { ResourcesContext } from "./ResourcesContext";
 // t('resources.tabs.hours', 'Hours')
 // t('resources.tabs.integrations', 'Integrations')
 // t('resources.tabs.vault', 'Vault')
+// t('resources.tabs.occurrences', 'Occurrences')
 // t('resources.tabs.advanced', 'Advanced')
 const TABS: { to: string; labelKey: string; icon: LucideIcon; badge?: true }[] =
   [
@@ -50,6 +52,11 @@ const TABS: { to: string; labelKey: string; icon: LucideIcon; badge?: true }[] =
       to: "/resources/vault",
       labelKey: "resources.tabs.vault",
       icon: KeyRound,
+    },
+    {
+      to: "/resources/occurrences",
+      labelKey: "resources.tabs.occurrences",
+      icon: Activity,
     },
     {
       to: "/resources/advanced",

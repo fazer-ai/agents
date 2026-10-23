@@ -197,6 +197,24 @@ import {
   APPROVAL_LINK_MODES,
   APPROVAL_LINK_TEMPLATE_MAX,
 } from "@/modules/documents/approval-link";
+import { RUNS_LIMIT_RANGE } from "@/modules/occurrences/runs";
+import {
+  ABOVE_USUAL_RATIO_RANGE,
+  BUSINESS_CONTEXT_MAX,
+  CADENCE_MINUTES_RANGE,
+  CONCENTRATION_SHARE_RANGE,
+  CONSOLIDATION_MINUTES_RANGE,
+  FIELDS_MAX,
+  INBOXES_MAX,
+  NEW_MIN_CONVERSATIONS_RANGE,
+  type OccurrenceField,
+  type OccurrenceModel,
+  occurrenceFieldSchema,
+  occurrenceModelSchema,
+  PREVIOUS_DAYS_RANGE,
+  WINDOW_MINUTES_RANGE,
+} from "@/modules/occurrences/settings";
+import { THEMES_LIMIT_RANGE } from "@/modules/occurrences/views";
 import {
   PRICE_OVERRIDE_RATE_MAX,
   PRICE_OVERRIDES_MAX,
@@ -219,6 +237,12 @@ import {
   knowledgeSourceSync,
   knowledgeUpdate,
 } from "./write-knowledge";
+import {
+  occurrenceRunsList,
+  occurrencesGet,
+  occurrencesSet,
+  occurrenceThemesList,
+} from "./write-occurrences";
 import {
   apiKeyRevoke,
   businessHoursCreate,
@@ -290,6 +314,9 @@ function registerTenantTool(
     description: string;
     inputSchema: z.ZodRawShape;
     targetless?: (args: Record<string, unknown>) => boolean;
+    // Refuse an argument the shape does not name instead of dropping it (the SDK's object strips
+    // them), for a tool whose REST twin refuses an unknown key.
+    strict?: boolean;
   },
   handler: (
     // biome-ignore lint/suspicious/noExplicitAny: each call site narrows `args` to its own tool shape; `any` lets those narrower handler signatures bind without a per-tool generic.
@@ -299,7 +326,7 @@ function registerTenantTool(
     signal: AbortSignal,
   ) => CallToolResult | Promise<CallToolResult>,
 ): void {
-  const inputSchema =
+  const shape =
     principal.role === "SUPER_ADMIN"
       ? {
           ...def.inputSchema,
@@ -308,6 +335,10 @@ function registerTenantTool(
             : tenantSelectorField,
         }
       : def.inputSchema;
+  // Typed as the shape so the handler's `extra` keeps its inference; the SDK takes either at runtime.
+  const inputSchema = (
+    def.strict ? z.strictObject(shape) : shape
+  ) as z.ZodRawShape;
   server.registerTool(
     name,
     { description: def.description, inputSchema },
@@ -1188,6 +1219,55 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await proactiveBreakerGet(eff)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrences_get",
+      {
+        description: "Get the account's occurrence monitor.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(await occurrencesGet(eff)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_runs_list",
+      {
+        description:
+          "The occurrence monitor's rounds, newest first, and its cost.",
+        inputSchema: {
+          limit: ranged(RUNS_LIMIT_RANGE).optional(),
+          before: z
+            .string()
+            .regex(/^[1-9][0-9]{0,18}$/)
+            .optional(),
+        },
+      },
+      async (args: { limit?: number; before?: string }, eff) =>
+        writeContent(await occurrenceRunsList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_themes_list",
+      {
+        description:
+          "List the occurrence monitor's open themes, flagged first; with theme_id, that theme's conversations and sentences.",
+        inputSchema: {
+          theme_id: z.string().optional(),
+          flagged: z.boolean().optional(),
+          limit: ranged(THEMES_LIMIT_RANGE).optional(),
+        },
+      },
+      async (
+        args: { theme_id?: string; flagged?: boolean; limit?: number },
+        eff,
+      ) => writeContent(await occurrenceThemesList(eff, args)),
     );
 
     registerTenantTool(
@@ -3359,6 +3439,54 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { dry_run?: boolean }, eff) =>
         writeContent(await proactiveBreakerResume(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrences_set",
+      {
+        description:
+          "Set the account's occurrence monitor; fields and inboxIds replace their lists. Switching on needs inboxIds, model and reasonField; without referenceField the concentration flag is off. Previews unless dry_run is false.",
+        strict: true,
+        inputSchema: {
+          enabled: z.boolean().optional(),
+          inboxIds: z.array(z.string()).max(INBOXES_MAX).optional(),
+          fields: z.array(occurrenceFieldSchema).max(FIELDS_MAX).optional(),
+          reasonField: z.string().nullable().optional(),
+          referenceField: z.string().nullable().optional(),
+          cadenceMinutes: ranged(CADENCE_MINUTES_RANGE).optional(),
+          consolidationMinutes: ranged(CONSOLIDATION_MINUTES_RANGE).optional(),
+          newMinConversations: ranged(NEW_MIN_CONVERSATIONS_RANGE).optional(),
+          windowMinutes: ranged(WINDOW_MINUTES_RANGE).optional(),
+          previousDays: ranged(PREVIOUS_DAYS_RANGE).optional(),
+          aboveUsualRatio: ranged(ABOVE_USUAL_RATIO_RANGE).optional(),
+          concentrationShare: ranged(CONCENTRATION_SHARE_RANGE).optional(),
+          model: occurrenceModelSchema.nullable().optional(),
+          businessContext: z.string().max(BUSINESS_CONTEXT_MAX).optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          enabled?: boolean;
+          inboxIds?: string[];
+          fields?: OccurrenceField[];
+          reasonField?: string | null;
+          referenceField?: string | null;
+          cadenceMinutes?: number;
+          consolidationMinutes?: number;
+          newMinConversations?: number;
+          windowMinutes?: number;
+          previousDays?: number;
+          aboveUsualRatio?: number;
+          concentrationShare?: number;
+          model?: OccurrenceModel | null;
+          businessContext?: string;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await occurrencesSet(eff, args)),
     );
 
     registerTenantTool(

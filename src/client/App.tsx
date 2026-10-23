@@ -51,6 +51,7 @@ import { DocumentsPanel } from "@/client/pages/resources/documents/DocumentsPane
 import { IntegrationsPanel } from "@/client/pages/resources/IntegrationsPanel";
 import { KnowledgePanel } from "@/client/pages/resources/KnowledgePanel";
 import { McpPanel } from "@/client/pages/resources/McpPanel";
+import { OccurrencesPanel } from "@/client/pages/resources/OccurrencesPanel";
 import { ResourcesLayout } from "@/client/pages/resources/ResourcesLayout";
 import { ToolsPanel } from "@/client/pages/resources/ToolsPanel";
 import { VaultPanel } from "@/client/pages/resources/VaultPanel";
@@ -194,6 +195,10 @@ export function App() {
                                   <Route
                                     path="vault"
                                     element={<VaultPanel />}
+                                  />
+                                  <Route
+                                    path="occurrences"
+                                    element={<OccurrencesPanel />}
                                   />
                                   <Route
                                     path="advanced"

@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { PROVIDERS_HONORING_BASE_URL } from "@/graph/model-config";
 import type { AuditAction } from "@/lib/audit/actions";
+import { parseDbId } from "@/lib/db-id";
 import {
   AppError,
   phrase,
@@ -18,6 +21,16 @@ import {
   parseApprovalLinkSettings,
 } from "@/modules/documents/approval-link";
 import { unprintablePhrase } from "@/modules/documents/printable";
+import { syncTenantOccurrenceRound } from "@/modules/occurrences/arm";
+import { runFlagsStep } from "@/modules/occurrences/flags";
+import {
+  mergeOccurrences,
+  OCCURRENCES_DEFAULTS,
+  type OccurrencesConfig,
+  type OccurrencesPatch,
+  occurrencesSettingsSchema,
+  readOccurrencesConfig,
+} from "@/modules/occurrences/settings";
 import {
   forgetPriceOverrides,
   type PriceOverride,
@@ -45,6 +58,7 @@ import {
 import {
   requireVaultRef,
   requireVaultRefFor,
+  tryResolveApiKeyEntry,
   vaultRefWhere,
 } from "@/modules/vault/service";
 
@@ -250,7 +264,8 @@ async function patchBlock<
     | SpendCeilingLegacyStored
     | PriceOverridesBlock
     | ProactiveBreakerConfig
-    | ApprovalLinkSettings,
+    | ApprovalLinkSettings
+    | OccurrencesConfig,
 >(
   ctx: TenantContext,
   base: PrismaClient,
@@ -261,7 +276,8 @@ async function patchBlock<
     | "spendCeiling"
     | "priceOverrides"
     | "proactiveBreaker"
-    | "approvalLink",
+    | "approvalLink"
+    | "occurrences",
   // Handed both states, so a block can report what moved without carrying what it holds (the
   // company profile needs the difference; see `sides` for the shape the others use).
   audit: {
@@ -670,6 +686,204 @@ export async function updateProactiveBreakerSettings(
     },
     breakerLockKey(requireTenantId(ctx)),
   );
+}
+
+export async function getOccurrencesSettings(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+): Promise<OccurrencesConfig> {
+  const tenantId = requireTenantId(ctx);
+  return runScopedOn(base, ctx, async (db) =>
+    readOccurrencesConfig(await readRawSettings(db, tenantId)),
+  );
+}
+
+// The inboxes a write ADDS to the monitor exist in this account and are received by the product (a
+// responder bound, or an observer watching): the monitor reads the conversations the product already
+// receives, and an inbox nobody receives would give it nothing to read while looking configured. An
+// inbox already on the list that loses its agent later is not refused on the next save: it simply
+// stops producing readings, and the console says so. Asked by the write under its lock and by the
+// MCP preview, so the two refuse the same block.
+export async function assertOccurrencesInboxes(
+  db: Pick<PrismaClient, "inbox">,
+  tenantId: bigint,
+  current: Pick<OccurrencesConfig, "inboxIds">,
+  value: Pick<OccurrencesConfig, "inboxIds">,
+): Promise<void> {
+  const added = value.inboxIds.filter((id) => !current.inboxIds.includes(id));
+  if (added.length === 0) return;
+  const ids = added
+    .map((id) => parseDbId(id))
+    .filter((id): id is bigint => id !== null);
+  const rows = await db.inbox.findMany({
+    where: { tenantId, id: { in: ids } },
+    select: {
+      id: true,
+      name: true,
+      agentId: true,
+      _count: { select: { observers: true } },
+    },
+  });
+  const byId = new Map(rows.map((r) => [String(r.id), r]));
+  for (const id of added) {
+    const row = byId.get(id);
+    if (!row)
+      throw new AppError(
+        `occurrences: inboxIds names no inbox of this account (${id})`,
+        422,
+      );
+    if (row.agentId === null && row._count.observers === 0)
+      throw new AppError(
+        `occurrences: no agent receives the conversations of the inbox "${row.name}" (bind an agent to it, or have one observe it)`,
+        422,
+      );
+  }
+}
+
+// The monitor's credential, as the write stores it: `vault:<id>` in this account, of a kind that
+// holds an API key (the rule the agent's own model key follows). Advisory for the preview,
+// authoritative for the write; it reads outside the write's transaction, as the embedding key's check
+// does.
+export async function canonicalOccurrenceModel(
+  ctx: TenantContext,
+  patch: OccurrencesPatch,
+  base: PrismaClient = basePrisma,
+): Promise<OccurrencesPatch> {
+  const m: unknown = patch.model;
+  if (!m || typeof m !== "object" || Array.isArray(m)) return patch;
+  const ref = (m as { credentialRef?: unknown }).credentialRef;
+  if (typeof ref !== "string" || !ref.trim()) return patch;
+  const canonical = await runScopedOn(base, ctx, (db) =>
+    requireVaultRefFor(
+      db,
+      ref.trim(),
+      "occurrences.model.credentialRef",
+      "apiKey",
+    ),
+  );
+  // The endpoint a model with none of its own inherits is its credential's (model.ts,
+  // resolveMonitorModel): openai-compatible needs one, or the monitor is on and never reads; a
+  // provider whose adapter drops it would send the conversations to the vendor instead of that proxy.
+  const own = m as { provider?: unknown; baseURL?: unknown };
+  if (typeof own.baseURL !== "string" || !own.baseURL.trim()) {
+    const key = await runScopedOn(base, ctx, (db) =>
+      tryResolveApiKeyEntry(db, canonical),
+    );
+    const honors = (PROVIDERS_HONORING_BASE_URL as readonly unknown[]).includes(
+      own.provider,
+    );
+    if (
+      key.state === "ok" &&
+      own.provider === "openai-compatible" &&
+      !key.baseUrl
+    )
+      throw new AppError(
+        "occurrences: the model is openai-compatible with no endpoint, and its credential has none (give the model a baseURL, or the credential a base URL)",
+        422,
+      );
+    if (key.state === "ok" && !honors && key.baseUrl)
+      throw new AppError(
+        `occurrences: the model's credential carries an endpoint a ${String(own.provider)} model does not take (the conversations would go to the vendor, not that endpoint); use a credential without one, or openai-compatible`,
+        422,
+      );
+  }
+  return {
+    ...patch,
+    model: {
+      ...(m as object),
+      credentialRef: canonical,
+    } as OccurrencesPatch["model"],
+  };
+}
+
+// The block as the audit trail keeps it, forever: the model's endpoint as its scheme and host only
+// (docs/api-and-fleet.md, the audit URL rule), since a URL can carry a key in its userinfo, path or
+// query.
+function occurrencesForAudit(raw: Record<string, unknown>) {
+  const cfg = readOccurrencesConfig(raw);
+  return {
+    ...cfg,
+    model:
+      cfg.model === null
+        ? null
+        : {
+            ...cfg.model,
+            baseURL:
+              cfg.model.baseURL === null
+                ? null
+                : redactEndpoint(cfg.model.baseURL),
+          },
+  };
+}
+
+// Updates the account's occurrence monitor (docs/occurrences.md). Validated on the way in, so a cadence
+// of 0, or a monitor switched on without its reason field, is a 422 rather than a block read as the
+// default. The model's credential is stored as `vault:<id>` of a kind that holds an API key, and an
+// inbox the write adds must be received by an agent, checked under the lock with the write. Arms or
+// cancels the round after the commit.
+export async function updateOccurrencesSettings(
+  ctx: TenantContext,
+  rawPatch: OccurrencesPatch,
+  base: PrismaClient = basePrisma,
+): Promise<OccurrencesConfig> {
+  const patch = await canonicalOccurrenceModel(ctx, rawPatch, base);
+  let before: OccurrencesConfig = OCCURRENCES_DEFAULTS;
+  const value = await patchBlock(
+    ctx,
+    base,
+    "occurrences",
+    {
+      action: "tenant_settings.occurrences_set",
+      target: "tenant_settings:occurrences",
+      // The whole block: field descriptions and the business context are the account's instructions
+      // to the monitor, not a customer's words, and the trail is where an admin reads who changed them.
+      project: sides(occurrencesForAudit),
+    },
+    async (raw) => {
+      before = readOccurrencesConfig(raw);
+      const merged = mergeOccurrences(before, patch);
+      const parsed = occurrencesSettingsSchema.safeParse(merged);
+      if (!parsed.success)
+        throw new AppError(
+          `occurrences: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+          422,
+        );
+      return parsed.data;
+    },
+    (db, value) =>
+      assertOccurrencesInboxes(db, requireTenantId(ctx), before, value),
+  );
+  await syncTenantOccurrenceRound(requireTenantId(ctx), base);
+  // The flags and their reference are the round's, but what a theme shows must follow the block as
+  // saved now: an inbox taken off the list leaves the counts at once (occurrences/views.ts filters by
+  // the saved list), and a reference switched off or changed, or a threshold moved, changes which
+  // flags hold. Any change to what the flags step reads counts them again now rather than at the next
+  // round. Best-effort: the next round recounts anyway.
+  if (flagInputsChanged(before, value))
+    await runFlagsStep(base, requireTenantId(ctx), value, new Date()).catch(
+      (err) =>
+        logger.warn(
+          { err, tenantId: String(requireTenantId(ctx)) },
+          "occurrences: the flags could not be recounted after the monitor changed",
+        ),
+    );
+  return value;
+}
+
+// What the flags step reads off the block (occurrences/flags.ts).
+const FLAG_INPUTS = [
+  "inboxIds",
+  "reasonField",
+  "referenceField",
+  "newMinConversations",
+  "windowMinutes",
+  "previousDays",
+  "aboveUsualRatio",
+  "concentrationShare",
+] as const satisfies readonly (keyof OccurrencesConfig)[];
+
+function flagInputsChanged(a: OccurrencesConfig, b: OccurrencesConfig) {
+  return FLAG_INPUTS.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
 }
 
 export type SpendCeilingUpdateInput = Partial<SpendCeilingConfig>;

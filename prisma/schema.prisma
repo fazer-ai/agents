@@ -85,6 +85,7 @@ enum SchedulerJobKind {
   RECONCILE_SWEEP
   INGEST_FALLBACK
   OTHER_INBOX_SUMMARY
+  OCCURRENCE_ROUND
 }
 
 enum SchedulerJobStatus {
@@ -197,11 +198,19 @@ model Tenant {
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
   dashboardDataSources          DashboardDataSource[]
+  conversationReadings          ConversationReading[]
+  occurrenceConversationReads   OccurrenceConversationRead[]
+  occurrenceRuns                OccurrenceRun[]
   dashboardViewers              DashboardViewer[]
   dashboardViewerSessions       DashboardViewerSession[]
   dashboardViewerVisits         DashboardViewerVisit[]
   dashboardViewerCodes          DashboardViewerCode[]
   dashboardEmbedLinks           DashboardEmbedLink[]
+  occurrenceThemes              OccurrenceTheme[]
+  occurrenceThemeMembers        OccurrenceThemeMember[]
+  occurrenceThemeEvents         OccurrenceThemeEvent[]
+  occurrenceCanonicals          OccurrenceCanonical[]
+  occurrenceAlias               OccurrenceAlias[]
 
   @@map("tenants")
 }
@@ -1259,15 +1268,18 @@ model Conversation {
   createdAt                       DateTime  @default(now()) @map("created_at")
   updatedAt                       DateTime  @updatedAt @map("updated_at")
 
-  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance        ChatwootInstance    @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
-  inbox           Inbox?              @relation(fields: [inboxId], references: [id], onDelete: SetNull)
-  contact         Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  replyClaims     MessageReplyClaim[]
-  turnDeliveries  AgentTurnDelivery[]
-  replyDispensals ReplyDispensal[]
-  ruleStates      DecisionRuleState[]
-  ruleClaims      DecisionRuleClaim[]
+  tenant                Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance              ChatwootInstance            @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  inbox                 Inbox?                      @relation(fields: [inboxId], references: [id], onDelete: SetNull)
+  contact               Contact?                    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  replyClaims           MessageReplyClaim[]
+  turnDeliveries        AgentTurnDelivery[]
+  replyDispensals       ReplyDispensal[]
+  ruleStates            DecisionRuleState[]
+  ruleClaims            DecisionRuleClaim[]
+  readings              ConversationReading[]
+  occurrenceRead        OccurrenceConversationRead?
+  occurrenceThemeMember OccurrenceThemeMember?
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
@@ -3408,4 +3420,202 @@ model DashboardDirty {
   @@index([tenantId, processedAt])
   @@index([tenantId, createdAt])
   @@map("dashboard_dirty")
+}
+
+// WHAT AN OBSERVER READ OFF A CONVERSATION for the account's occurrence monitor (docs/occurrences.md):
+// one row per conversation and declared field, written by the `record_reading` tool. The fields are the
+// account's (`tenant.settings.occurrences.fields`), so `field` is whatever key it declared. Counting
+// "new conversations" reads `first_read_at`, which a later change of value does not move.
+model ConversationReading {
+  id               BigInt    @id @default(autoincrement())
+  tenantId         BigInt    @map("tenant_id")
+  conversationId   BigInt    @map("conversation_id")
+  field            String
+  value            String
+  // The agent that wrote the current value. Plain column: a reading outlives the agent that read it.
+  agentId          BigInt?   @map("agent_id")
+  firstReadAt      DateTime  @default(now()) @map("first_read_at")
+  lastReadAt       DateTime  @default(now()) @map("last_read_at")
+  // The reference's canonical name, as the canonical step decided it for this value. Null on every
+  // other field, on an empty reference (the no-reference bucket) and until the step has run.
+  canonicalId      BigInt?   @map("canonical_id")
+  // Whether Chatwoot's attribute holds the canonical name: every write of the reading clears it, since
+  // the observer writes its raw spelling there, and the round's copy sets it.
+  canonicalWritten Boolean   @default(false) @map("canonical_written")
+  // The name the copy last put in Chatwoot for this value, kept across merges so a folder on it keeps
+  // the conversation; and what Chatwoot may still hold from before the current value (every spelling
+  // since the last copy, as the observer's writes of them may have failed), so a copy can tell such a
+  // leftover from a newer write.
+  writtenName      String?   @map("written_name")
+  remoteBefore     String[]  @default([]) @map("remote_before")
+  // When the copy last failed: a failed copy waits behind the ones never tried, so a conversation
+  // whose Chatwoot keeps refusing cannot take the round's whole batch. A new value clears it.
+  copyTriedAt      DateTime? @map("copy_tried_at")
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  canonical    OccurrenceCanonical? @relation(fields: [canonicalId], references: [id], onDelete: SetNull)
+
+  @@unique([conversationId, field])
+  @@index([canonicalId])
+  @@index([tenantId, field, firstReadAt])
+  // The round counts what was read in its window.
+  @@index([tenantId, field, lastReadAt])
+  @@map("conversation_readings")
+}
+
+// Where the monitor's reading of a conversation stands: the customer message it last covered
+// (`readInboundAt`, the conversation's `last_inbound_at` when it was read), so a conversation is read
+// again only once the customer wrote after it. A read that failed is counted against the message it
+// was for (`failedInboundAt`); after a few, that message is given up on until the customer writes
+// again. The fields' values are `conversation_readings`, as before.
+model OccurrenceConversationRead {
+  id                     BigInt    @id @default(autoincrement())
+  tenantId               BigInt    @map("tenant_id")
+  conversationId         BigInt    @unique @map("conversation_id")
+  readInboundAt          DateTime? @map("read_inbound_at")
+  // The covered message's Chatwoot id: two messages in one second share `readInboundAt`.
+  readInboundMessageId   Int?      @map("read_inbound_message_id")
+  readAt                 DateTime? @map("read_at")
+  failures               Int       @default(0)
+  failedInboundAt        DateTime? @map("failed_inbound_at")
+  // The failed message's Chatwoot id, beside its time, as `readInboundMessageId`.
+  failedInboundMessageId Int?      @map("failed_inbound_message_id")
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("occurrence_conversation_reads")
+}
+
+// One round of the occurrence monitor: when it ran, how long it took, what it read and what its model
+// calls cost (the sum of the round's `llm_usage` rows). `status`: ok | failed.
+model OccurrenceRun {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      BigInt    @map("tenant_id")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  durationMs    Int?      @map("duration_ms")
+  status        String    @default("running")
+  readings      Int       @default(0)
+  // Where this round's count of readings stopped, stored with the count: the next round counts from
+  // the latest one, so a round that failed before counting leaves its window to the next.
+  countedUntil  DateTime? @map("counted_until")
+  modelCalls    Int       @default(0) @map("model_calls")
+  // Calls with no price: `costUsd` sums the priced ones only, and is null when none had a price.
+  unpricedCalls Int       @default(0) @map("unpriced_calls")
+  costUsd       Decimal?  @map("cost_usd") @db.Decimal(14, 6)
+  detail        Json      @default("{}")
+  // The round also ran the stronger model's consolidation; the next is due a consolidation cadence
+  // after the last round that did.
+  consolidated  Boolean   @default(false)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, startedAt])
+  @@map("occurrence_runs")
+}
+
+// A theme: reason sentences the assignment model judged to be one thing. `status`: open | merged |
+// split. A merged theme names its survivor in `mergedIntoId`, always the final one (never a chain).
+// `flags` is what the last round found (new, above_usual, concentrated), `flagReferenceId`
+// the canonical reference most of its window conversations share (the column keeps its first name).
+model OccurrenceTheme {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      BigInt    @map("tenant_id")
+  title         String
+  status        String    @default("open")
+  mergedIntoId  BigInt?   @map("merged_into_id")
+  firstSeenAt   DateTime? @map("first_seen_at")
+  lastSeenAt    DateTime? @map("last_seen_at")
+  flags         String[]  @default([])
+  flagReferenceId BigInt? @map("flag_subject_id")
+  flaggedAt     DateTime? @map("flagged_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant  Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members OccurrenceThemeMember[]
+  events  OccurrenceThemeEvent[]
+
+  @@index([tenantId, status])
+  @@map("occurrence_themes")
+}
+
+// A conversation in a theme, with its own reason sentence verbatim. One theme per conversation: a
+// conversation whose sentence changes is assigned again. `readAt` is when the conversation was first
+// read, which is what the flags count.
+model OccurrenceThemeMember {
+  id             BigInt   @id @default(autoincrement())
+  tenantId       BigInt   @map("tenant_id")
+  themeId        BigInt   @map("theme_id")
+  conversationId BigInt   @map("conversation_id")
+  sentence       String
+  readAt         DateTime @map("read_at")
+  assignedAt     DateTime @default(now()) @map("assigned_at")
+
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  theme        OccurrenceTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  conversation Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId])
+  @@index([tenantId, themeId, readAt])
+  @@map("occurrence_theme_members")
+}
+
+// What consolidation did to a theme: `kind` merge (themeId absorbed into intoId), split (themeId
+// divided, `detail.into` the new ids) or rename (`detail.from`, `detail.to`).
+model OccurrenceThemeEvent {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  kind      String
+  themeId   BigInt   @map("theme_id")
+  intoId    BigInt?  @map("into_id")
+  runId     BigInt?  @map("run_id")
+  detail    Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  theme  OccurrenceTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@map("occurrence_theme_events")
+}
+
+// A canonical reference: the name the reference's free spellings were unified to. Never renamed, since a
+// folder may filter by it; a merged one names its survivor in `mergedIntoId`, always the final one.
+model OccurrenceCanonical {
+  id           BigInt   @id @default(autoincrement())
+  tenantId     BigInt   @map("tenant_id")
+  // The reference field it was decided for: a field switched later starts its own dictionary.
+  field        String   @default("")
+  name         String
+  mergedIntoId BigInt?  @map("merged_into_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  aliases  OccurrenceAlias[]
+  readings ConversationReading[]
+
+  @@unique([tenantId, field, name])
+  @@map("occurrence_canonicals")
+}
+
+// The canonical model's decision about one exact spelling, so the same spelling is never asked again.
+// The key is the raw value as stored: no folding of case or accents, which would be a similarity
+// judgment this code does not make.
+model OccurrenceAlias {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  field       String   @default("")
+  raw         String
+  canonicalId BigInt   @map("canonical_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  canonical OccurrenceCanonical @relation(fields: [canonicalId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, field, raw])
+  @@map("occurrence_aliases")
 }

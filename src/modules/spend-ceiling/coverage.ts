@@ -51,4 +51,10 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     // itself right before its one model call. A refusal leaves the conversation listed without
     // content until a later turn arms it again.
     other_inbox_summary: "gated",
+    // The OCCURRENCE_ROUND job asks the ceiling itself before each of its model calls
+    // (occurrences/model.ts). A refusal skips that step for the round; its input waits for the next.
+    occurrence_canonical: "gated",
+    occurrence_assignment: "gated",
+    occurrence_reading: "gated",
+    occurrence_consolidation: "gated",
   });

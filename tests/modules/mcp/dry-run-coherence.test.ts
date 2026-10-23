@@ -17,6 +17,7 @@ import * as writeDocuments from "@/modules/mcp/write-documents";
 import * as writeFleet from "@/modules/mcp/write-fleet";
 import * as writeInstanceHealth from "@/modules/mcp/write-instance-health";
 import * as writeKnowledge from "@/modules/mcp/write-knowledge";
+import * as writeOccurrences from "@/modules/mcp/write-occurrences";
 import * as writeSettings from "@/modules/mcp/write-settings";
 import * as writeWebhooks from "@/modules/mcp/write-webhooks";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -486,6 +487,16 @@ const TABLE: Record<string, Row> = {
   proactive_breaker_resume: {
     skip: "takes no input it could refuse: resuming an open breaker changes nothing, so the preview and the apply agree by construction",
   },
+  occurrences_set: {
+    args: { enabled: true },
+    why: "switched on with no inbox, model or reason field",
+    also: [
+      {
+        args: { inboxIds: [NOPE] },
+        why: "inboxIds names no inbox of this account",
+      },
+    ],
+  },
   proactive_breaker_set: {
     args: { mode: "fixed", limit: -5 },
     why: "limit below 1",
@@ -607,6 +618,7 @@ const FNS = {
   ...writeFleet,
   ...writeInstanceHealth,
   ...writeKnowledge,
+  ...writeOccurrences,
   ...writeSettings,
   ...writeWebhooks,
   ...writeRoot,

@@ -553,6 +553,12 @@ export class ChatwootClient {
     this.accountBase = `${root}/api/v1/accounts/${config.accountId}`;
   }
 
+  // Whether this client's deadline has passed: everything it would write is refused from here on, and
+  // a caller that keeps its own record of the same work (a reading) stops there too.
+  get expired(): boolean {
+    return this.config.expiresOn?.aborted === true;
+  }
+
   // Asked by a queued write at the last moment before it sends. Absent ⇒ the write proceeds, which
   // is what every caller with no fence to offer means. A fence that THROWS is not a withdrawal
   // either: the write goes out, exactly as every other fence in this codebase decides.

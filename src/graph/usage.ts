@@ -304,6 +304,13 @@ const IS_AGENT_TURN = {
   // The OTHER_INBOX_SUMMARY job summarizing the contact's conversation in another inbox: a
   // conversation this turn did not take, read as context.
   other_inbox_summary: false,
+  // The OCCURRENCE_ROUND job's four model steps (modules/occurrences): reading each conversation of
+  // the monitored inboxes, fitting reference spellings to canonical names, assigning reason sentences
+  // to themes, and consolidating the open themes. The monitor reads on its own, never in a turn.
+  occurrence_reading: false,
+  occurrence_canonical: false,
+  occurrence_assignment: false,
+  occurrence_consolidation: false,
 } as const satisfies Record<string, boolean>;
 
 // The step a billed call is recorded under. `UsageCapture`, `recordDirectUsage` and `buildCallbacks`

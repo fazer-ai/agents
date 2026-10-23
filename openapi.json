@@ -22744,6 +22744,1520 @@
         "operationId": "deleteV1Business-hoursById"
       }
     },
+    "/v1/occurrences/config": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Get the occurrence monitor",
+        "description": "The account's occurrence monitor: the inboxes it reads, the fields it reads off each conversation, which one is the reason grouped into themes and which (optionally) the reference, the monitor's model, the business context, and the cadence.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1OccurrencesConfig",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Set the occurrence monitor",
+        "description": "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be received by an agent (bound or observing).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "inboxIds": {
+                    "maxItems": 50,
+                    "description": "The inboxes whose conversations the monitor reads (row ids as strings); replaces the list.",
+                    "type": "array",
+                    "items": {
+                      "pattern": "^[1-9][0-9]{0,18}$",
+                      "type": "string"
+                    }
+                  },
+                  "fields": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "key",
+                        "name",
+                        "description",
+                        "attribute"
+                      ],
+                      "properties": {
+                        "key": {
+                          "pattern": "^[a-z0-9_]{1,64}$",
+                          "description": "The field's key: lowercase letters, digits and `_`. Also the Chatwoot custom attribute key when `attribute` is true.",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "maxLength": 80,
+                          "type": "string"
+                        },
+                        "description": {
+                          "minLength": 1,
+                          "maxLength": 500,
+                          "description": "What the observer is told to write in this field.",
+                          "type": "string"
+                        },
+                        "attribute": {
+                          "description": "Also write the value to the conversation's Chatwoot custom attribute of the same key.",
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "reasonField": {
+                    "minLength": 1,
+                    "description": "The key of the field read as the conversation's reason, which the model groups into themes; required to switch the monitor on.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "referenceField": {
+                    "minLength": 1,
+                    "description": "The key of the optional field read as what the reason refers to; the concentration flag counts by it, and is never raised without it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cadenceMinutes": {
+                    "minimum": 5,
+                    "maximum": 1440,
+                    "description": "Minutes between rounds.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 5,
+                        "maximum": 1440,
+                        "description": "Minutes between rounds.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "consolidationMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes between the stronger model's consolidations.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes between the stronger model's consolidations.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newMinConversations": {
+                    "minimum": 1,
+                    "maximum": 10000,
+                    "description": "N: conversations a theme needs in the recent window to be flagged.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 10000,
+                        "description": "N: conversations a theme needs in the recent window to be flagged.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "windowMinutes": {
+                    "minimum": 15,
+                    "maximum": 1440,
+                    "description": "The recent window, in minutes.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 1440,
+                        "description": "The recent window, in minutes.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "previousDays": {
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Days before the window a new theme must have no conversations in.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 30,
+                        "description": "Days before the window a new theme must have no conversations in.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "aboveUsualRatio": {
+                    "minimum": 1.1,
+                    "maximum": 100,
+                    "description": "X: times its own usual rate the window has to run at.",
+                    "type": "number"
+                  },
+                  "concentrationShare": {
+                    "minimum": 0.1,
+                    "maximum": 1,
+                    "description": "Share of the window's conversations with one canonical reference.",
+                    "type": "number"
+                  },
+                  "model": {
+                    "description": "The one model every step runs on; required to switch the monitor on.",
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "required": [
+                      "provider",
+                      "model",
+                      "credentialRef",
+                      "baseURL"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "default": "openai",
+                        "description": "The monitor's model provider.",
+                        "type": "string",
+                        "enum": [
+                          "openai",
+                          "openai-compatible",
+                          "anthropic",
+                          "google",
+                          "deepseek",
+                          "openrouter"
+                        ]
+                      },
+                      "model": {
+                        "description": "The model id; null or blank is the provider's default.",
+                        "maxLength": 200,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "credentialRef": {
+                        "description": "The vault credential (`vault:<id>`) holding the provider's API key; required but for openai-compatible.",
+                        "maxLength": 200,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "baseURL": {
+                        "description": "The endpoint, for openai-compatible or a provider that honors a proxy; null uses the credential's.",
+                        "maxLength": 500,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "businessContext": {
+                    "maxLength": 2000,
+                    "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "inboxIds": {
+                    "maxItems": 50,
+                    "description": "The inboxes whose conversations the monitor reads (row ids as strings); replaces the list.",
+                    "type": "array",
+                    "items": {
+                      "pattern": "^[1-9][0-9]{0,18}$",
+                      "type": "string"
+                    }
+                  },
+                  "fields": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "key",
+                        "name",
+                        "description",
+                        "attribute"
+                      ],
+                      "properties": {
+                        "key": {
+                          "pattern": "^[a-z0-9_]{1,64}$",
+                          "description": "The field's key: lowercase letters, digits and `_`. Also the Chatwoot custom attribute key when `attribute` is true.",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "maxLength": 80,
+                          "type": "string"
+                        },
+                        "description": {
+                          "minLength": 1,
+                          "maxLength": 500,
+                          "description": "What the observer is told to write in this field.",
+                          "type": "string"
+                        },
+                        "attribute": {
+                          "description": "Also write the value to the conversation's Chatwoot custom attribute of the same key.",
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "reasonField": {
+                    "minLength": 1,
+                    "description": "The key of the field read as the conversation's reason, which the model groups into themes; required to switch the monitor on.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "referenceField": {
+                    "minLength": 1,
+                    "description": "The key of the optional field read as what the reason refers to; the concentration flag counts by it, and is never raised without it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cadenceMinutes": {
+                    "minimum": 5,
+                    "maximum": 1440,
+                    "description": "Minutes between rounds.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 5,
+                        "maximum": 1440,
+                        "description": "Minutes between rounds.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "consolidationMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes between the stronger model's consolidations.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes between the stronger model's consolidations.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newMinConversations": {
+                    "minimum": 1,
+                    "maximum": 10000,
+                    "description": "N: conversations a theme needs in the recent window to be flagged.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 10000,
+                        "description": "N: conversations a theme needs in the recent window to be flagged.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "windowMinutes": {
+                    "minimum": 15,
+                    "maximum": 1440,
+                    "description": "The recent window, in minutes.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 1440,
+                        "description": "The recent window, in minutes.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "previousDays": {
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Days before the window a new theme must have no conversations in.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 30,
+                        "description": "Days before the window a new theme must have no conversations in.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "aboveUsualRatio": {
+                    "minimum": 1.1,
+                    "maximum": 100,
+                    "description": "X: times its own usual rate the window has to run at.",
+                    "type": "number"
+                  },
+                  "concentrationShare": {
+                    "minimum": 0.1,
+                    "maximum": 1,
+                    "description": "Share of the window's conversations with one canonical reference.",
+                    "type": "number"
+                  },
+                  "model": {
+                    "description": "The one model every step runs on; required to switch the monitor on.",
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "required": [
+                      "provider",
+                      "model",
+                      "credentialRef",
+                      "baseURL"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "default": "openai",
+                        "description": "The monitor's model provider.",
+                        "type": "string",
+                        "enum": [
+                          "openai",
+                          "openai-compatible",
+                          "anthropic",
+                          "google",
+                          "deepseek",
+                          "openrouter"
+                        ]
+                      },
+                      "model": {
+                        "description": "The model id; null or blank is the provider's default.",
+                        "maxLength": 200,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "credentialRef": {
+                        "description": "The vault credential (`vault:<id>`) holding the provider's API key; required but for openai-compatible.",
+                        "maxLength": 200,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "baseURL": {
+                        "description": "The endpoint, for openai-compatible or a provider that honors a proxy; null uses the credential's.",
+                        "maxLength": 500,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "businessContext": {
+                    "maxLength": 2000,
+                    "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "inboxIds": {
+                    "maxItems": 50,
+                    "description": "The inboxes whose conversations the monitor reads (row ids as strings); replaces the list.",
+                    "type": "array",
+                    "items": {
+                      "pattern": "^[1-9][0-9]{0,18}$",
+                      "type": "string"
+                    }
+                  },
+                  "fields": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "key",
+                        "name",
+                        "description",
+                        "attribute"
+                      ],
+                      "properties": {
+                        "key": {
+                          "pattern": "^[a-z0-9_]{1,64}$",
+                          "description": "The field's key: lowercase letters, digits and `_`. Also the Chatwoot custom attribute key when `attribute` is true.",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "maxLength": 80,
+                          "type": "string"
+                        },
+                        "description": {
+                          "minLength": 1,
+                          "maxLength": 500,
+                          "description": "What the observer is told to write in this field.",
+                          "type": "string"
+                        },
+                        "attribute": {
+                          "description": "Also write the value to the conversation's Chatwoot custom attribute of the same key.",
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  "reasonField": {
+                    "minLength": 1,
+                    "description": "The key of the field read as the conversation's reason, which the model groups into themes; required to switch the monitor on.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "referenceField": {
+                    "minLength": 1,
+                    "description": "The key of the optional field read as what the reason refers to; the concentration flag counts by it, and is never raised without it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cadenceMinutes": {
+                    "minimum": 5,
+                    "maximum": 1440,
+                    "description": "Minutes between rounds.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 5,
+                        "maximum": 1440,
+                        "description": "Minutes between rounds.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "consolidationMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes between the stronger model's consolidations.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes between the stronger model's consolidations.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newMinConversations": {
+                    "minimum": 1,
+                    "maximum": 10000,
+                    "description": "N: conversations a theme needs in the recent window to be flagged.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 10000,
+                        "description": "N: conversations a theme needs in the recent window to be flagged.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "windowMinutes": {
+                    "minimum": 15,
+                    "maximum": 1440,
+                    "description": "The recent window, in minutes.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 1440,
+                        "description": "The recent window, in minutes.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "previousDays": {
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Days before the window a new theme must have no conversations in.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 1,
+                        "maximum": 30,
+                        "description": "Days before the window a new theme must have no conversations in.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "aboveUsualRatio": {
+                    "minimum": 1.1,
+                    "maximum": 100,
+                    "description": "X: times its own usual rate the window has to run at.",
+                    "type": "number"
+                  },
+                  "concentrationShare": {
+                    "minimum": 0.1,
+                    "maximum": 1,
+                    "description": "Share of the window's conversations with one canonical reference.",
+                    "type": "number"
+                  },
+                  "model": {
+                    "description": "The one model every step runs on; required to switch the monitor on.",
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "required": [
+                      "provider",
+                      "model",
+                      "credentialRef",
+                      "baseURL"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "default": "openai",
+                        "description": "The monitor's model provider.",
+                        "type": "string",
+                        "enum": [
+                          "openai",
+                          "openai-compatible",
+                          "anthropic",
+                          "google",
+                          "deepseek",
+                          "openrouter"
+                        ]
+                      },
+                      "model": {
+                        "description": "The model id; null or blank is the provider's default.",
+                        "maxLength": 200,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "credentialRef": {
+                        "description": "The vault credential (`vault:<id>`) holding the provider's API key; required but for openai-compatible.",
+                        "maxLength": 200,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "baseURL": {
+                        "description": "The endpoint, for openai-compatible or a provider that honors a proxy; null uses the credential's.",
+                        "maxLength": 500,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "businessContext": {
+                    "maxLength": 2000,
+                    "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putV1OccurrencesConfig",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/occurrences/runs": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List the monitor's rounds",
+        "description": "The rounds, newest first, a page at a time: when each ran, how long it took, how many conversations it read and how many were still waiting, what each step did and why a step did not complete, how many model calls it made and what they cost. `total` counts every round; `nextBefore` is null on the last page.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "maximum": 200,
+              "description": "How many rounds to return, 1 to 200 (default 20).",
+              "anyOf": [
+                {
+                  "format": "numeric",
+                  "default": 0,
+                  "type": "string"
+                },
+                {
+                  "minimum": 1,
+                  "maximum": 200,
+                  "description": "How many rounds to return, 1 to 200 (default 20).",
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "description": "The next page: pass back `nextBefore` from the previous one. The rounds older than that round, so a round that starts meanwhile never shifts a page.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1OccurrencesRuns"
+      }
+    },
+    "/v1/occurrences/themes": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List the open themes",
+        "description": "The open themes, flagged first: title, why it is flagged, its reference, how many conversations (absorbed themes included) and when it was first and last seen. `total` counts every open theme, past the limit too.",
+        "parameters": [
+          {
+            "name": "flagged",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "maximum": 500,
+              "description": "How many themes, 1 to 500 (default 100).",
+              "anyOf": [
+                {
+                  "format": "numeric",
+                  "default": 0,
+                  "type": "string"
+                },
+                {
+                  "minimum": 1,
+                  "maximum": 500,
+                  "description": "How many themes, 1 to 500 (default 100).",
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1OccurrencesThemes"
+      }
+    },
+    "/v1/occurrences/cost": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Get the monitor's cost",
+        "description": "What the monitor's model calls cost over the last 7 and the last 30 days, every step included. `costUsd` sums the priced calls and is null when none had a price; `unpricedCalls` says how many it leaves out.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1OccurrencesCost",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/occurrences/themes/{id}": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Get a theme",
+        "description": "One theme with its newest conversations, each with its own reason sentence verbatim and a link to Chatwoot, and what consolidation did to it. An absorbed theme answers as its survivor.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1OccurrencesThemesById"
+      }
+    },
     "/v1/experiments": {
       "get": {
         "tags": [

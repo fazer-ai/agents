@@ -41,6 +41,7 @@ import {
   oauthMcpCallbackController,
   oauthMcpVaultController,
 } from "@/api/v1/oauth-mcp.controller";
+import { occurrencesController } from "@/api/v1/occurrences.controller";
 import { tenantSettingsController } from "@/api/v1/tenant-settings.controller";
 import { toolsController } from "@/api/v1/tools.controller";
 import { v1Controller } from "@/api/v1/v1.controller";
@@ -247,6 +248,7 @@ const api = new Elysia()
   .use(codeToolsController)
   .use(mcpConnectionsController)
   .use(businessHoursController)
+  .use(occurrencesController)
   .use(experimentsController)
   .use(vaultController)
   .use(oauthGoogleVaultController)

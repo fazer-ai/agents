@@ -83,6 +83,14 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ClientAppSecret",
   "DashboardDay",
   "DashboardDirty",
+  "ConversationReading",
+  "OccurrenceRun",
+  "OccurrenceTheme",
+  "OccurrenceThemeMember",
+  "OccurrenceConversationRead",
+  "OccurrenceThemeEvent",
+  "OccurrenceCanonical",
+  "OccurrenceAlias",
 ]);
 
 function withTenant<T>(data: T, tenantId: bigint): T {

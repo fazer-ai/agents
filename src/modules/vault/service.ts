@@ -1674,11 +1674,15 @@ export async function vaultReferences(
     const settings = (tenantRow?.settings ?? {}) as {
       embedding?: { credentialRef?: unknown };
       langfuse?: { credentialRef?: unknown };
+      occurrences?: { model?: { credentialRef?: unknown } | null };
     };
     if (settings.embedding?.credentialRef === idRef)
       tenantSettings.push("embedding");
     if (settings.langfuse?.credentialRef === idRef)
       tenantSettings.push("langfuse");
+    // The occurrence monitor's model (modules/occurrences/settings.ts).
+    if (settings.occurrences?.model?.credentialRef === idRef)
+      tenantSettings.push("occurrences");
     return {
       toolDefinitions: tds.map((t) => t.name),
       mcpConnections: mcps.map((m) => m.name),

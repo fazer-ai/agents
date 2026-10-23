@@ -8,6 +8,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
+  chatwootMessageListLength,
   parseChatwootMessages,
   toRenderable,
 } from "@/modules/chatwoot/messages";
@@ -57,16 +58,20 @@ export async function readWindowRows(
   conversationId: number,
   want: number,
   maxPages: number = DEFAULT_MAX_PAGES,
+  // A degraded page (a body that is not a list, or rows that do not parse) throws instead of
+  // reading as the start of the conversation: for a caller that stores what it read as covered.
+  opts: { strict?: boolean } = {},
 ): Promise<ChatwootMessageRow[]> {
   const seen = new Map<number, ChatwootMessageRow>();
   let before: number | undefined;
   for (let page = 0; page < maxPages; page++) {
-    const rows = parseChatwootMessages(
-      await client.getMessages(
-        conversationId,
-        before === undefined ? undefined : { before },
-      ),
+    const raw = await client.getMessages(
+      conversationId,
+      before === undefined ? undefined : { before },
     );
+    const rows = parseChatwootMessages(raw);
+    if (opts.strict && chatwootMessageListLength(raw) !== rows.length)
+      throw new Error("a page of the conversation did not read");
     let oldest: number | null = null;
     let added = 0;
     for (const r of rows) {

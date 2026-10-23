@@ -524,7 +524,10 @@ function RefList({ refs }: { refs: References | null }) {
           key: k,
           // biome-ignore lint/plugin/no-dynamic-i18n-key: tenant-setting keys registered via magic comments
           label: t(`vault.tenantSetting.${k}`, k),
-          to: "/resources/advanced",
+          to:
+            k === "occurrences"
+              ? "/resources/occurrences"
+              : "/resources/advanced",
         }))}
       />
       {empty && (
@@ -538,6 +541,7 @@ function RefList({ refs }: { refs: References | null }) {
 
 // Magic comments register the dynamic tenant-setting keys for the i18n extractor.
 // t('vault.tenantSetting.embedding', 'Knowledge base embeddings')
+// t('vault.tenantSetting.occurrences', 'Occurrence monitor')
 // t('vault.tenantSetting.langfuse', 'Observability (Langfuse)')
 
 interface RefItem {

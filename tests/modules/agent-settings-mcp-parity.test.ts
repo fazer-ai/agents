@@ -62,6 +62,12 @@ const NOT_PUBLISHED: Record<string, string> = {
     "tenant-settings/service.ts patches that row): the breaker counts every agent of the account, " +
     "so a per-agent knob would contradict itself across agents. It reaches MCP through " +
     "`proactive_breaker_set`.",
+  occurrences:
+    "NOT an agent-settings block. `readOccurrencesConfig` is only ever handed a TENANT's settings " +
+    "bag: occurrences/config.ts and graph/prepare.ts read it off the `tenants` row, and " +
+    "tenant-settings/service.ts patches that row. The monitor counts the whole account's " +
+    "conversations, one per tenant, so a per-agent copy would have nothing to mean. It reaches MCP " +
+    "through `occurrences_set`.",
   appointmentReminders:
     "NOT an agent-settings block. `readAppointmentReminderConfig` is only ever called with " +
     "`sel.config` — the Google Calendar integration INSTANCE's config (toolpacks/google-calendar.ts, " +

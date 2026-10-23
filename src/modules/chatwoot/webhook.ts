@@ -164,6 +164,7 @@ import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { armObserve, observeKeyPrefix } from "@/modules/observe/job";
 import { readMonitoringConfig } from "@/modules/observe/settings";
+import { withdrawReadingCopies } from "@/modules/occurrences/readings";
 import { summaryDedupeKey } from "@/modules/other-inboxes/settings";
 import {
   announceErasedDeaths,
@@ -3467,6 +3468,15 @@ async function maybeConsumeCommandOrGate(params: {
                    AND reset_at_message_id = ${commandMessageId}`,
             );
         }),
+      );
+      // Before the clear: a canonical copy of the occurrence monitor still pending would write the
+      // subject back over it.
+      await withdrawReadingCopies(base, tenantId, ctx.conv.id).catch((err) =>
+        logger.warn(
+          "chatwoot: /reset could not withdraw the pending canonical copies (conv=%s): %s",
+          String(conversationId),
+          errMsg(err),
+        ),
       );
       await step("clear custom attributes", "atributos", () =>
         client.clearConversationCustomAttributes(conversationId),

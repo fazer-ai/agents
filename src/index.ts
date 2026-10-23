@@ -58,6 +58,8 @@ import {
   stopCompactionWorker,
 } from "@/modules/memory/worker";
 import { registerObserveHandler } from "@/modules/observe/job";
+import { ensureAllOccurrenceRounds } from "@/modules/occurrences/arm";
+import { registerOccurrenceRoundHandler } from "@/modules/occurrences/round";
 import { registerOtherInboxSummaryHandler } from "@/modules/other-inboxes/summary-job";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
@@ -197,6 +199,7 @@ if (config.schedulerWorker.enabled) {
   registerTakeoverRecoveryHandler();
   registerHumanReplyRecoveryHandler();
   registerSpendPollHandler();
+  registerOccurrenceRoundHandler();
   registerKnowledgeSourceHandler();
   registerInboundSweepHandlers();
   startScheduler();
@@ -238,6 +241,10 @@ if (config.schedulerWorker.enabled) {
   // teardown sweeps only what exists while it runs, and a turn that writes after it leaves rows
   // nothing points at.
   startCheckpointReconciler();
+  // NOTE: Every account whose occurrence monitor is on gets its round back.
+  void ensureAllOccurrenceRounds().catch((error) =>
+    logger.warn({ error }, "Failed to arm occurrence rounds"),
+  );
 }
 
 // NOTE: External alert delivery worker (execution-flow warnings/errors → Discord / webhook).

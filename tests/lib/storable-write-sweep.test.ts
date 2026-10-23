@@ -384,6 +384,11 @@ const GUARD_CALLS: Record<string, number> = {
   // The body of an alert and of a rate alert, each a line posted to the channel.
   "src/modules/flowlog/alerts.ts": 2,
   "src/modules/flowlog/service.ts": 2,
+  // A step's model call that failed, and a step whose model could not be resolved, before either
+  // reason reaches `occurrence_runs.detail.skipped`.
+  "src/modules/occurrences/model.ts": 2,
+  // A failed occurrence round's cause, before it reaches `occurrence_runs.detail`.
+  "src/modules/occurrences/round.ts": 1,
   "src/modules/rag/documents.ts": 1,
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
   // and the boot re-arm's before it reaches the log.

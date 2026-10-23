@@ -405,6 +405,10 @@ const BARE_SLICES: Record<
   // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
   // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.
   "src/client/pages/resources/ToolEditModal.tsx": [2, "index"],
+  // The rounds' cursor stack's pop (Previous): an ARRAY.
+  "src/client/pages/resources/OccurrenceRounds.tsx": [2, "array"],
+  // A field's key from its name, cut after the name was reduced to [a-z0-9_].
+  "src/client/pages/resources/occurrenceWords.ts": [1, "ascii"],
   // The history without its last message, when that message is a stalled repeat the dangling-call
   // repair leaves to the stall's own removal. An array of messages, never a string.
   "src/graph/graph.ts": [1, "array"],
@@ -510,6 +514,14 @@ const BARE_SLICES: Record<
   // Zod issue PATHS, which name our own schema's keys, never the received values.
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
+  // The names Chatwoot may still hold for a reading, the newest few kept off an ARRAY, twice: when a
+  // value changes, and when a copy posted a name the reading had already moved past.
+  "src/modules/occurrences/readings.ts": [1, "array"],
+  // The round's folded skip lines, an ARRAY of strings.
+  "src/modules/occurrences/round.ts": [1, "array"],
+  // A stored skip line cut at its ": " (a position found in it), and the page of rounds off the row
+  // ARRAY read one past the limit.
+  "src/modules/occurrences/runs.ts": [2, "index + array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
   // Two: the notes window and the label-change window. Both slice an ARRAY of rows, so neither can
   // land inside a surrogate pair.

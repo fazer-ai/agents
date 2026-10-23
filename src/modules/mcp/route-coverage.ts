@@ -291,6 +291,12 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/tenant-settings/proactive-breaker/resume": {
     tool: "proactive_breaker_resume",
   },
+  "GET /v1/occurrences/config": { tool: "occurrences_get" },
+  "PUT /v1/occurrences/config": { tool: "occurrences_set" },
+  "GET /v1/occurrences/runs": { tool: "occurrence_runs_list" },
+  "GET /v1/occurrences/cost": { tool: "occurrence_runs_list" },
+  "GET /v1/occurrences/themes": { tool: "occurrence_themes_list" },
+  "GET /v1/occurrences/themes/:id": { tool: "occurrence_themes_list" },
   "POST /v1/tenant-settings/langfuse/test": {
     gap: "probe the Langfuse credential",
   },

@@ -218,17 +218,18 @@ describe("MCP tool descriptions", () => {
     // agent_call_floor, plus the client channel SDK's four client app tools and the audience filter
     // on the log and metrics tools; 33_086 on the Free tree before the SDK. 35_532 with the three
     // dashboard_embed_link tools (Pro only), whose job is a new secret-bearing link and cannot be
-    // folded into another tool's description.
-    expect(desc).toBeLessThanOrEqual(35_610);
+    // folded into another tool's description. 35_951 with the four occurrence tools, each cut to its
+    // job and the rules that refuse (the rest is docs/occurrences.md). 36_033 once main's tools joined.
+    expect(desc).toBeLessThanOrEqual(36_100);
     // Measured at 82_062 with `limits.maxProactivePerDay`, `snoozedFollowUp` and `otherInboxes` on
     // agent_settings_set, the document template writes, issued_document_list's search and cursor, the
     // proactive_breaker tools, the voice binding and kind, the tts timeout and fallback voice,
     // agent_call_floor's draft, the guardrails' onFailure and endpoint check, the `calls` numbers
     // ranged, the dashboard and dashboard_source tools (Pro only), tv_rotation and tv_seconds
-    // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter.
-    // 74_540 on the Free tree before the SDK. 82_753 with the three dashboard_embed_link tools
-    // (Pro only), 83_985 with preconditions, `setLabels.removal` and the writable list, 84_599 with per-kind templates.
-    expect(schema).toBeLessThanOrEqual(84_910);
+    // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter; 74_540
+    // on the Free tree before the SDK. 84_599 with the dashboard_embed_link tools, preconditions,
+    // `setLabels.removal`, the writable list and per-kind templates, 87_056 with the occurrence tools.
+    expect(schema).toBeLessThanOrEqual(87_120);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

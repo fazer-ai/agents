@@ -2264,6 +2264,8 @@ export interface GraphBuildDeps {
   // Forwarded to the graph: this caller's turn has no reply channel, so the tool budget's wrap-up
   // must not tell the model to answer a customer. The observation tick passes it.
   noReplyChannel?: boolean;
+  // See BuildAgentGraphParams.noEffectCount.
+  noEffectCount?: () => number;
   // The spoken-reply notice, asked every round. See BuildAgentGraphParams.spokenNotice.
   spokenNotice?: () => string | null;
   // See BuildAgentGraphParams.standingNotices.
@@ -2415,6 +2417,7 @@ export async function buildModelAndGraph(
     onDanglingToolCalls: deps.onDanglingToolCalls,
     onContradictedHandoff: deps.onContradictedHandoff,
     noReplyChannel: deps.noReplyChannel,
+    noEffectCount: deps.noEffectCount,
     spokenNotice: deps.spokenNotice,
     standingNotices: deps.standingNotices,
     stillWanted: deps.stillWanted,

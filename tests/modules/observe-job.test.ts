@@ -224,6 +224,11 @@ class LabellingModel {
 
 // A LABELLING MODEL THAT REMEMBERS WHAT IT WAS SENT, for the wrap-up wording: the tick
 // has no reply channel, so the instruction the budget adds must not tell it to answer a customer.
+// A call the toolset does not have, answered with an error: beside a write it keeps the observation
+// going to another model round (graph.ts `endsOnWrites`), which is the round the tests that use it
+// are about. Without it a step of writes alone ends the turn.
+const MISSING_TOOL_CALL = { name: "nao_existe", args: {}, id: "call_missing" };
+
 class RecordingLabellingModel {
   calls = 0;
   readonly rounds: string[] = [];
@@ -252,6 +257,7 @@ class RecordingLabellingModel {
                   args: { add: ["cancelamento"] },
                   id: "call_labels",
                 },
+                MISSING_TOOL_CALL,
               ],
             })
           : new AIMessage("");
@@ -1525,6 +1531,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                     args: { add: ["cancelamento"] },
                     id: "call_labels",
                   },
+                  MISSING_TOOL_CALL,
                 ],
               });
             throw new Error("provider 503");
@@ -1699,6 +1706,152 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       await suDb.toolDefinition.delete({ where: { id: td.id } });
     }
   });
+
+  // A write that changed nothing is not the end of the observation: the model sees why and can fix
+  // the call (graph.ts `endsOnWrites`, which reads the tick's own no-effect count). The kanban move
+  // reports no effect on that count alone, with no fence report beside it.
+  test("a write that reported no effect takes the observation to another model call", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let calls = 0;
+    let bound: string[] = [];
+    const model = {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      },
+      bindTools(tools: { name: string }[]) {
+        bound = tools.map((t) => t.name);
+        return {
+          async invoke(): Promise<AIMessage> {
+            calls++;
+            return calls === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "kanban_move_card",
+                      args: { targetStep: "Fechado" },
+                      id: "k1",
+                    },
+                  ],
+                })
+              : new AIMessage("");
+          },
+        };
+      },
+    };
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("done");
+    // The call reached the real tool, not the error a missing one gets.
+    expect(bound).toContain("kanban_move_card");
+    expect(calls).toBe(2);
+  });
+
+  // The read/write split rides the tool object through the assembly and both wrappers, like the
+  // effect-free mark: a GET goes on to a second model call that reads its body, a POST ends the
+  // observation on the first (graph.ts `endsOnWrites`).
+  for (const [method, calls] of [
+    ["GET", 2],
+    ["POST", 1],
+  ] as const) {
+    test(`an HTTP ${method} tool takes the observation to ${calls} model call(s)`, async () => {
+      const td = await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name: `consulta_${method.toLowerCase()}`,
+          label: "Consulta",
+          method,
+          urlTemplate: "https://8.8.8.8/v1/consulta",
+          allowedHosts: ["8.8.8.8"],
+        },
+      });
+      const grant = await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId,
+          source: "HTTP",
+          toolDefinitionId: td.id,
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+      });
+      const realFetch = globalThis.fetch;
+      const sent: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        sent.push(String(input));
+        return new Response('{"corpo":"da-consulta"}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+      const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+      const seen: BaseMessage[][] = [];
+      const model = {
+        async invoke(): Promise<AIMessage> {
+          return new AIMessage("");
+        },
+        bindTools(_tools: unknown) {
+          return {
+            async invoke(msgs: BaseMessage[]): Promise<AIMessage> {
+              seen.push(msgs);
+              return seen.length === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [{ name: td.name, args: {}, id: "h1" }],
+                  })
+                : new AIMessage("");
+            },
+          };
+        },
+      };
+      try {
+        const res = await runObserve(
+          tenantId,
+          {
+            instanceId,
+            conversationId: CONV,
+            agentId,
+            reason: "burst",
+            atMessageId: null,
+          },
+          appDb,
+          {
+            makeClient: async () =>
+              stubClient([message(1, "quero cancelar")], [], log),
+            makeModel: () => model as unknown as BaseChatModel,
+          },
+        );
+        expect(res.outcome).toBe("done");
+        expect(sent).toHaveLength(1);
+        expect(seen).toHaveLength(calls);
+        if (calls === 2) {
+          const body = (seen[1] ?? [])
+            .filter((m) => m.getType() === "tool")
+            .map((m) => String(m.content))
+            .join("\n");
+          expect(body).toContain("da-consulta");
+        }
+      } finally {
+        globalThis.fetch = realFetch;
+        await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+        await suDb.toolDefinition.delete({ where: { id: td.id } });
+      }
+    });
+  }
 
   test("the knowledge search keeps the retry, and it is the RAG tool that says so", async () => {
     // The other half of the case above: the exemption belongs to the tool the RAG builder made, and
@@ -2861,6 +3014,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                   },
                   id: `call_${n}`,
                 },
+                ...(n === 1 ? [MISSING_TOOL_CALL] : []),
               ],
             });
           },
@@ -3783,6 +3937,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                       },
                       id: `call_labels_${n}`,
                     },
+                    ...(n === 1 ? [MISSING_TOOL_CALL] : []),
                   ],
                 });
               },
@@ -4066,6 +4221,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                     args: { add: ["cancelamento"] },
                     id: "call_labels",
                   },
+                  MISSING_TOOL_CALL,
                 ],
               });
             }
@@ -4110,8 +4266,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     ]);
   });
 
-  // NOTE: at `maxToolCalls: 3` the wrap-up lands on the round right after the first tool call,
-  // which on an observation is every observation that writes.
+  // NOTE: at `maxToolCalls: 3` the wrap-up lands on the round right after the first tool step, which
+  // an observation reaches only when that step did not end it: here a call the toolset lacks.
   test("the budget's wrap-up tells the tick to finish with its tools, never to answer a customer", async () => {
     await suDb.agent.update({
       where: { id: agentId },

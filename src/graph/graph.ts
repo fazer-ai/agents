@@ -5,8 +5,12 @@ import {
   type MessageContent,
   RemoveMessage,
   SystemMessage,
+  type ToolMessage,
 } from "@langchain/core/messages";
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
+} from "@langchain/core/tools";
 import {
   END,
   MessagesAnnotation,
@@ -46,6 +50,12 @@ import {
   droppedCallsStamp,
 } from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
+import {
+  type CallReport,
+  fenceReporterOf,
+  withFenceReporter,
+} from "./tools/fence-report";
+import { isReadTool } from "./tools/reads";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
 // the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
@@ -139,6 +149,10 @@ export interface BuildAgentGraphParams {
   // contradict the frame, and models then either go silent or argue back in prose that goes nowhere
   // and is paid for by the token. Absent means the ordinary turn, which does answer somebody.
   noReplyChannel?: boolean;
+  // On such a turn, how many calls so far ran and wrote nothing (the observation's own count, job.ts),
+  // read around each tool step: a step that grew it was refused somewhere, and the turn goes on so
+  // the model can see why. Absent reads as nothing refused.
+  noEffectCount?: () => number;
   // What the model is told about a spoken reply, asked on EVERY round: the notice's text while the
   // reply still goes as a voice note, null once it does not (the model chose text, or the customer
   // asked for text mid-turn), so no later round forbids the lists text was chosen to carry. It travels
@@ -666,6 +680,7 @@ export function buildAgentGraph({
   onContradictedHandoff,
   stillWanted,
   noReplyChannel,
+  noEffectCount,
   spokenNotice,
   standingNotices,
   primaryDeadlineMs,
@@ -1047,7 +1062,38 @@ export function buildAgentGraph({
   // Once per turn, the same closure argument the flags above make. It says the tool boundary
   // refused this turn's calls, which is what routes the graph to END instead of back to the model.
   let calledOffAtTools = false;
+  // Once per turn as well: the step just run ended an observation (see `endsOnWrites`).
+  let endedOnWrites = false;
   const toolNode = hasTools ? new ToolNode(tools) : null;
+  const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));
+
+  // An observation ends after a step of writes alone, every one accepted: its client is muted, so the
+  // closing model call could only write text nobody receives, and it resends the whole window to do
+  // it. A read in the step keeps the call (its result is what the next step acts on), and so does any
+  // call that failed or was refused, so the model can see why and fix it. A name the toolset does not
+  // have is answered with an error, which keeps the call too. A responder always goes on: its last
+  // message is the reply.
+  const endsOnWrites = (
+    calls: { name: string; id?: string }[],
+    results: BaseMessage[],
+    refused: boolean,
+  ): boolean => {
+    if (!noReplyChannel || refused || calls.length === 0) return false;
+    const writes = calls.every((c) => {
+      const t = toolsByName.get(c.name);
+      return t !== undefined && !isReadTool(t);
+    });
+    if (!writes) return false;
+    const answered = new Map(
+      results
+        .filter((m) => m.getType() === "tool")
+        .map((m) => [(m as ToolMessage).tool_call_id, m as ToolMessage]),
+    );
+    return calls.every((c) => {
+      const r = c.id ? answered.get(c.id) : undefined;
+      return r !== undefined && r.status !== "error";
+    });
+  };
   const clientNames: ReadonlySet<string> = clientToolNames ?? new Set();
 
   // The refusal is a tool result, and the turn ends on it. Routing away from the tool node would
@@ -1103,20 +1149,54 @@ export function buildAgentGraph({
       // NOTE: every tool goes through here, which is why the guard lives at the node: native, HTTP,
       // MCP, integrations and documents are all assembled into this one list, and a per-tool guard is
       // one the next tool added would simply not have.
-      .addNode("tools", async (state: typeof MessagesAnnotation.State) => {
-        const refused = await refuseCalledOffCalls(state);
-        if (refused) return refused;
-        const serverView = withServerCallsOnly(state, clientNames);
-        if (!serverView) return { messages: [] };
-        const contradicted = setAsideContradictedHandoffs(serverView);
-        if (!contradicted)
+      .addNode(
+        "tools",
+        async (
+          state: typeof MessagesAnnotation.State,
+          config: ToolRunnableConfig,
+        ) => {
+          const refused = await refuseCalledOffCalls(state);
+          if (refused) return refused;
+          const serverView = withServerCallsOnly(state, clientNames);
+          if (!serverView) return { messages: [] };
+          // A fence that refused a call says so on the call's config, not in its result
+          // (fence-report.ts); heard here, and passed on to a reporter already there.
+          let fenced = false;
+          const outer = fenceReporterOf(config);
+          const heard = noReplyChannel
+            ? withFenceReporter(config, (r: CallReport) => {
+                if (!("committed" in r)) fenced = true;
+                outer?.(r);
+              })
+            : config;
+          const before = noEffectCount?.() ?? 0;
+          const contradicted = setAsideContradictedHandoffs(serverView);
+          if (!contradicted) {
+            // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
+            const ran = await toolNode!.invoke(serverView, heard);
+            const last = serverView.messages.at(-1) as AIMessage;
+            const nothingWritten = (noEffectCount?.() ?? 0) > before;
+            if (
+              endsOnWrites(
+                last.tool_calls ?? [],
+                ran.messages,
+                fenced || nothingWritten,
+              )
+            ) {
+              endedOnWrites = true;
+              // The empty terminator the called-off path ends on, for the same reason: the runtime
+              // reads the turn's text off the LAST message, which must not be a tool result.
+              return { messages: [...ran.messages, new AIMessage("")] };
+            }
+            return ran;
+          }
+          // A handoff set aside is a call that did not run, so the turn goes on.
+          onContradictedHandoff?.({ calls: contradicted.answers.length });
           // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-          return await toolNode!.invoke(serverView);
-        onContradictedHandoff?.({ calls: contradicted.answers.length });
-        // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-        const ran = await toolNode!.invoke(contradicted.view);
-        return { messages: [...contradicted.answers, ...ran.messages] };
-      })
+          const ran = await toolNode!.invoke(contradicted.view, heard);
+          return { messages: [...contradicted.answers, ...ran.messages] };
+        },
+      )
       // NOTE: built on every graph so the edges type-check, and unreachable without client tools:
       // with an empty set no call is ever pending for it.
       .addNode("client_tools", clientToolsNode(clientNames))
@@ -1126,7 +1206,7 @@ export function buildAgentGraph({
       .addConditionalEdges(
         "tools",
         (state: typeof MessagesAnnotation.State) =>
-          calledOffAtTools
+          calledOffAtTools || endedOnWrites
             ? END
             : pendingClientCalls(state.messages, clientNames).length > 0
               ? "client_tools"

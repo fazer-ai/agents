@@ -10,6 +10,7 @@ import {
   mcpServerSlug,
   namespacedToolName,
 } from "@/graph/tools/mcp";
+import { isReadTool } from "@/graph/tools/reads";
 import { normalizeToolName } from "@/graph/tools/toolName";
 
 const PUBLIC = "8.8.8.8"; // public IP literal: no DNS lookup, not SSRF-blocked
@@ -312,6 +313,19 @@ describe("loadMcpToolsForAgent", () => {
     // The allowlist matches the bare server name "a"; the model sees the namespaced name.
     // normalizeToolName keeps hyphens, so "asaas-mcp" → slug "asaas-mcp".
     expect(tools.map((t) => t.name)).toEqual(["mcp__asaas-mcp__a"]);
+  });
+
+  // Nothing in a server's declaration says read or write, so an observation reads the result of
+  // every MCP tool (tools/reads.ts); the cached original stays unmarked.
+  test("marks the exposed tool as a read, not the server's cached one", async () => {
+    const original = fakeTool("a");
+    const tools = await loadMcpToolsForAgent(
+      7n,
+      [sel({ enabledTools: ["a"] })],
+      { connect: async () => [original] },
+    );
+    expect(tools.map(isReadTool)).toEqual([true]);
+    expect(isReadTool(original)).toBe(false);
   });
 
   test("invokes onDiscoverError for each failing connection, still loading the rest", async () => {

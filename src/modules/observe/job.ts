@@ -1704,6 +1704,8 @@ export async function runObserve(
         // NOTE: the tick's frame says the model answers nobody, so the tool budget's wrap-up says the
         // same: finish with a tool, or stop, never "responda ao cliente".
         noReplyChannel: true,
+        // A step that grew it wrote nothing somewhere, so the turn goes on (graph.ts `endsOnWrites`).
+        noEffectCount: () => noEffect,
         // NOTE: nobody waits on an observation this second, so its model call yields to replies under
         // contention, within the background's share and aging bound; a wait past the threshold is
         // written, at info, so a starved observer shows in the Logs.

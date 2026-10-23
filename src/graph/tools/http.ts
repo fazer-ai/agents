@@ -11,6 +11,7 @@ import {
   isExpectedResult,
   normalizeExpectedStatuses,
 } from "@/graph/tools/http-status";
+import { markRead } from "@/graph/tools/reads";
 import { AppError } from "@/lib/errors";
 import { fetchBounded, withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -1066,6 +1067,10 @@ export function buildHttpTool(
     // response that says there is none.
     if (res.status >= 200 && res.status < 300) {
       await registerDeclaredAppointment(def, deps, text);
+    } else {
+      // A declared non-2xx is a result to the alerts, not an accepted call: an observation goes on
+      // so the model reads it (graph.ts `endsOnWrites`).
+      fenceReporterOf(callConfig)?.({ declined: true });
     }
     return isExpectedResult(res.status, expectedStatuses)
       ? resultText
@@ -1096,7 +1101,8 @@ export function buildHttpTool(
   if (def.ackMessage) {
     (tool as { [ASKS_WAIT_MESSAGE]?: true })[ASKS_WAIT_MESSAGE] = true;
   }
-  return tool;
+  // A GET answers with what the model asked for, so an observation goes on to read it (reads.ts).
+  return method === "GET" ? markRead(tool) : tool;
 }
 
 // The header a tool's server sends when it trimmed its own response to fit. Present at all declares

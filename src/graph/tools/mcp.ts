@@ -23,6 +23,7 @@ import {
   mcpRuntimeBase,
 } from "@/graph/tools/mcp-names";
 import { declarationSchema } from "@/graph/tools/mcp-schema";
+import { markRead } from "@/graph/tools/reads";
 import {
   hasSafeStdioCommandChars,
   isMcpStdioLauncher,
@@ -256,7 +257,8 @@ function exposeMcpTool(
     clone.func = (...args: unknown[]) =>
       callHeaders.run(call, () => func.apply(tool, args));
   }
-  return clone as unknown as StructuredToolInterface;
+  // Nothing says whether a server's tool reads or writes, so an observation reads its result (reads.ts).
+  return markRead(clone) as unknown as StructuredToolInterface;
 }
 
 // Builds the system-prompt block that gives the agent each MCP server's scope. Scans the assembled

@@ -8,6 +8,7 @@ import {
   parseToolInputSchema,
   sanitizeToolName,
 } from "@/graph/tools/http";
+import { isReadTool } from "@/graph/tools/reads";
 import {
   buildToolpackTools,
   deadlineFetch,
@@ -1769,6 +1770,48 @@ describe("the turn's deadline reaches a toolpack", () => {
       (handed as typeof fetch)("https://example.com/x"),
     ).rejects.toThrow("time budget");
   });
+
+  // A pack says neither which tools only read nor when one refused in plain words, so an
+  // observation goes on to read every integration result (graph/tools/reads.ts), through both
+  // wrappers the seam may add.
+  for (const fenced of [false, true]) {
+    test(`every pack tool reaches the toolset marked as a read${fenced ? ", fenced" : ""}`, () => {
+      registerToolpack({
+        catalogType: "__test_reads__",
+        toolSpecs: [{ name: "find_rows", schema: z.object({}) }],
+        build() {
+          return [
+            tool(async () => "linha", {
+              name: "find_rows",
+              description: "find",
+              schema: z.object({}),
+            }),
+          ];
+        },
+      });
+      const built = buildToolpackTools(
+        [
+          {
+            instanceId: 1n,
+            catalogType: "__test_reads__",
+            config: {},
+            credentialRef: null,
+            enabledTools: ["find_rows"],
+          },
+        ],
+        {
+          tenantId: 1n,
+          base: {} as never,
+          threadId: "t",
+          resolveCredential: async () => null,
+          ...(fenced
+            ? { stillWanted: async () => true, onNoEffect: () => {} }
+            : {}),
+        },
+      );
+      expect(built.map(isReadTool)).toEqual([true]);
+    });
+  }
 
   test("both signals survive: the pack's timeout AND the deadline", async () => {
     // The half a `??` gets wrong, and it is the common case rather than the edge one: by the time

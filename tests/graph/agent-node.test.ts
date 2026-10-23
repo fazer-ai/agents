@@ -29,6 +29,7 @@ import {
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { buildNativeTools } from "@/graph/tools/native";
+import { markRead } from "@/graph/tools/reads";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 // Records the messages handed to the model on each invoke (the only thing agentNode does with it).
@@ -124,6 +125,15 @@ const noopTool = tool(async () => "feito", {
   description: "noop",
   schema: z.object({}),
 });
+// The same tool as a read: an observation ends after a step of writes alone (graph.ts
+// `endsOnWrites`), so only a read takes one to the budget's wrap-up and hard limit.
+const readNoopTool = markRead(
+  tool(async () => "feito", {
+    name: "noop",
+    description: "noop",
+    schema: z.object({}),
+  }),
+);
 
 // The REAL `skip_reply`, not a double: the tool identifies itself with a mark in `additional_kwargs`
 // that only it can set, so a stand-in returning the ack string is not the tool as far as
@@ -2199,7 +2209,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         : {}),
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
-      tools: [noopTool],
+      tools: [noReplyChannel ? readNoopTool : noopTool],
       maxToolCalls: 3,
       ...(noReplyChannel ? { noReplyChannel: true } : {}),
     });

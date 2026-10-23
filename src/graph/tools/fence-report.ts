@@ -14,10 +14,16 @@ export interface FenceReport {
   partial: boolean;
 }
 
-// Two more facts only the handler knows, on the same channel: the call returned without writing
-// anything (a scope the conversation does not have), or it wrote something that stays even though
-// the call then threw (a handoff's note filed before its status change failed).
-export type CallReport = FenceReport | { noEffect: true } | { committed: true };
+// Three more facts only the handler knows, on the same channel: the call returned without writing
+// anything (a scope the conversation does not have), it wrote something that stays even though the
+// call then threw (a handoff's note filed before its status change failed), or the other side
+// answered that it did not take the call, in a status the operator declared a result rather than a
+// failure (a 409 for a taken slot), which says nothing about whether anything was written.
+export type CallReport =
+  | FenceReport
+  | { noEffect: true }
+  | { committed: true }
+  | { declined: true };
 
 export type FenceReporter = (report: CallReport) => void;
 

@@ -210,7 +210,7 @@ async function invokeForVerdict(
   // Same verdict, in the dialect this endpoint speaks. See ./verdict and graph/model-config: asking
   // in the wrong one is not a soft failure, it is a refusal on every screen.
   const schema = mode === "openapi" ? VERDICT_SCHEMA_OPENAPI : VERDICT_SCHEMA;
-  // NOTE: `output-format` sends the schema as Anthropic's `output_config.format`. The adapter's
+  // `output-format` sends the schema as Anthropic's `output_config.format`. The adapter's
   // default there is a forced tool call, which the 5-5 generation refuses with a 400, and its
   // jsonSchema method throws when handed `strict`.
   const how =

@@ -5,9 +5,12 @@ import type { MonitorKey } from "./monitors";
 import { type OccurrencesConfig, readMonitorConfig } from "./settings";
 
 // THE FLAGS, counted exactly from the members of each open theme (docs/occurrences.md, "Flags": new,
-// above its usual, concentrated). A conversation counts at the instant it was first read, and every
-// flag needs at least N conversations in the recent window. Concentrated needs a reference field;
-// without one it is never raised.
+// above its usual, concentrated). A conversation counts at the customer message its first reading
+// covered, not at the read: a round that reads late (the per-round cap, the budget, the spend
+// ceiling) does not move it into the window, nor keep it there after its message has left. A reading
+// stored before that time was kept, or with no customer message, counts at the read. Every flag needs
+// at least N conversations in the recent window. Concentrated needs a reference field; without one it
+// is never raised.
 
 export type FlagKind = "new" | "above_usual" | "concentrated";
 
@@ -78,38 +81,46 @@ export async function runFlagsStep(
     const horizon = new Date(
       windowStart.getTime() - cfg.previousDays * 86_400_000,
     );
-    const earliest = cfg.reasonField
-      ? await db.conversationReading.aggregate({
-          where: {
-            monitorId,
-            field: cfg.reasonField,
-            conversation: { inboxId: { in: cfg.inboxIds.map(BigInt) } },
-          },
-          _min: { firstReadAt: true },
-        })
-      : null;
+    // The history covered starts at the earliest conversation counted, by the same time it counts at.
+    const [earliest] = cfg.reasonField
+      ? await db.$queryRaw<{ at: Date | null }[]>`
+          SELECT min(COALESCE(r.first_inbound_at, r.first_read_at)) AS at
+            FROM conversation_readings r
+            JOIN conversations cv ON cv.id = r.conversation_id
+                                 AND cv.inbox_id = ANY(${cfg.inboxIds}::bigint[])
+           WHERE r.monitor_id = ${monitorId}
+             AND r.field = ${cfg.reasonField}`
+      : [];
     const coveredFrom = new Date(
       Math.max(
         horizon.getTime(),
-        earliest?._min.firstReadAt?.getTime() ?? windowStart.getTime(),
+        earliest?.at?.getTime() ?? windowStart.getTime(),
       ),
     );
+    // A member counts at the customer message of the reading it was placed from, which it keeps (a
+    // reason field switched since does not move it back to its read), else at the read. Only members
+    // read by `now` count. A covered message precedes its read, so a member read before the horizon
+    // cannot count, and the read's bound keeps the recount on its index as the membership grows.
     const rows = await db.$queryRaw<
-      Array<{ theme_id: bigint; read_at: Date; reference_id: bigint | null }>
+      Array<{ theme_id: bigint; at: Date; reference_id: bigint | null }>
     >`
-      SELECT m.theme_id, m.read_at,
-             COALESCE(c.merged_into_id, c.id) AS reference_id
-        FROM occurrence_theme_members m
-        JOIN occurrence_themes t ON t.id = m.theme_id AND t.status = 'open'
-        JOIN conversations cv ON cv.id = m.conversation_id
-                             AND cv.inbox_id = ANY(${cfg.inboxIds}::bigint[])
-        LEFT JOIN conversation_readings s
-               ON s.conversation_id = m.conversation_id AND s.monitor_id = m.monitor_id
-              AND s.field = ${cfg.referenceField ?? ""}
-        LEFT JOIN occurrence_canonicals c ON c.id = s.canonical_id
-       WHERE m.monitor_id = ${monitorId}
-         AND m.read_at >= ${horizon}
-         AND m.read_at <= ${now}`;
+      SELECT theme_id, at, reference_id FROM (
+        SELECT m.theme_id, m.read_at,
+               COALESCE(m.inbound_at, m.read_at) AS at,
+               COALESCE(c.merged_into_id, c.id) AS reference_id
+          FROM occurrence_theme_members m
+          JOIN occurrence_themes t ON t.id = m.theme_id AND t.status = 'open'
+          JOIN conversations cv ON cv.id = m.conversation_id
+                               AND cv.inbox_id = ANY(${cfg.inboxIds}::bigint[])
+          LEFT JOIN conversation_readings s
+                 ON s.conversation_id = m.conversation_id AND s.monitor_id = m.monitor_id
+                AND s.field = ${cfg.referenceField ?? ""}
+          LEFT JOIN occurrence_canonicals c ON c.id = s.canonical_id
+         WHERE m.monitor_id = ${monitorId}
+           AND m.read_at >= ${horizon}
+           AND m.read_at <= ${now}
+      ) counted
+       WHERE at >= ${horizon}`;
     const counts = new Map<bigint, ThemeCounts>();
     for (const r of rows) {
       const c = counts.get(r.theme_id) ?? {
@@ -117,7 +128,7 @@ export async function runFlagsStep(
         before: 0,
         byReference: new Map<bigint, number>(),
       };
-      if (r.read_at >= windowStart) {
+      if (r.at >= windowStart) {
         c.window += 1;
         if (r.reference_id !== null)
           c.byReference.set(

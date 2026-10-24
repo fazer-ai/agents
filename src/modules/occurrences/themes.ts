@@ -182,6 +182,8 @@ interface PendingSentence {
   conversationId: bigint;
   sentence: string;
   readAt: Date;
+  // The customer message that reading covered, which the member keeps for the flags.
+  inboundAt: Date | null;
 }
 
 // The reason readings no theme holds yet with that sentence: never assigned, or assigned with a
@@ -196,9 +198,14 @@ async function pendingSentences(
   limit: number,
 ): Promise<PendingSentence[]> {
   const rows = await db.$queryRaw<
-    Array<{ conversation_id: bigint; value: string; first_read_at: Date }>
+    Array<{
+      conversation_id: bigint;
+      value: string;
+      first_read_at: Date;
+      first_inbound_at: Date | null;
+    }>
   >`
-    SELECT r.conversation_id, r.value, r.first_read_at
+    SELECT r.conversation_id, r.value, r.first_read_at, r.first_inbound_at
       FROM conversation_readings r
       JOIN conversations c ON c.id = r.conversation_id
       LEFT JOIN occurrence_theme_members m ON m.conversation_id = r.conversation_id
@@ -214,6 +221,7 @@ async function pendingSentences(
     conversationId: r.conversation_id,
     sentence: r.value,
     readAt: r.first_read_at,
+    inboundAt: r.first_inbound_at,
   }));
 }
 
@@ -391,6 +399,7 @@ export async function runAssignmentStep(
                     conversationId: p.conversationId,
                     sentence: p.sentence,
                     readAt: p.readAt,
+                    inboundAt: p.inboundAt,
                   },
                 ],
           ),

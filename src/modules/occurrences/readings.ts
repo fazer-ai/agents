@@ -19,8 +19,9 @@ export function readingValue(raw: string): string {
 }
 
 // One row per monitor, conversation and field. A new value replaces the old one and moves `last_read_at`;
-// `first_read_at` stays the instant the conversation was first read for that field, which is what
-// "new conversations in the window" counts. Rewriting the same value only moves `last_read_at`.
+// `first_read_at` stays the instant the conversation was first read for that field, and
+// `first_inbound_at` the customer message that read covered, which is what the flags count the
+// conversation at. Rewriting the same value only moves `last_read_at`.
 
 // Thrown inside the write when the caller's time ran out, so the transaction rolls back.
 // `/reset` empties the conversation's Chatwoot attributes on purpose: a canonical copy still pending
@@ -80,7 +81,8 @@ function remoteBeforeOf(before: {
 }
 
 // `expired`, when given, is asked before each write and again before the commit: an observation that
-// ran out of time while waiting for a connection or a statement writes nothing.
+// ran out of time while waiting for a connection or a statement writes nothing. `inboundAt` is the
+// customer message the reading covered, kept only on a field's first reading.
 export async function upsertReadings(
   base: PrismaClient,
   { tenantId, monitorId }: MonitorKey,
@@ -89,6 +91,7 @@ export async function upsertReadings(
   now: Date = new Date(),
   expired?: () => boolean,
   resetMark?: number | null,
+  inboundAt: Date | null = null,
 ): Promise<void> {
   const entries = Object.entries(values);
   if (entries.length === 0) return;
@@ -144,6 +147,7 @@ export async function upsertReadings(
           agentId: null,
           firstReadAt: now,
           lastReadAt: now,
+          firstInboundAt: inboundAt,
           canonicalWritten: withdrawn,
         },
         // A new value is a new spelling: its canonical is the canonical step's to decide again, and

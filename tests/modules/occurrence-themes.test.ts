@@ -2404,6 +2404,185 @@ describe.skipIf(!dbUp)("flags without a reference", () => {
   });
 });
 
+// A conversation counts at the customer message its first reading covered, not at the read
+// (docs/occurrences.md, "Flags"): a round that reads late does not move the conversation into the
+// window, nor keep it there after its message has left it.
+describe.skipIf(!dbUp)(
+  "flags count the customer's message, not the read",
+  () => {
+    const MIN = 60_000;
+    // `since`: a customer message the mirror has not heard of yet, written after `wroteAt`.
+    async function late(
+      a: Awaited<ReturnType<typeof account>>,
+      n: number,
+      wroteAt: Date,
+      since?: Date,
+    ) {
+      const ids: bigint[] = [];
+      for (let i = 0; i < n; i += 1) {
+        const id = await a.conv({ lastInboundAt: wroteAt });
+        const row = await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+        });
+        a.messages.set(row.chatwootConversationId, [
+          {
+            type: "incoming",
+            content: `ingresso nao chegou ${i}`,
+            at: wroteAt,
+          },
+          ...(since
+            ? [{ type: "incoming" as const, content: "e agora?", at: since }]
+            : []),
+        ]);
+        ids.push(id);
+      }
+      return ids;
+    }
+    const into =
+      (themeId: bigint): Script =>
+      (step, user) =>
+        step === "reading"
+          ? { unidade: "", queixa: "ingresso nao chegou" }
+          : step === "assignment"
+            ? {
+                assignments: numbered(user, "New sentences:").map((_, i) => ({
+                  i,
+                  theme: `T${themeId}`,
+                })),
+              }
+            : nothing(step, user);
+    const flagsOfTheme = async (id: bigint) =>
+      (
+        await suDb.occurrenceTheme.findUniqueOrThrow({
+          where: { id },
+          select: { flags: true },
+        })
+      ).flags;
+
+    test("a conversation read late leaves the window when its message does, not when its read does", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // Written 50 minutes before the round that reads them: inside the window, so admitted.
+      await late(a, 5, new Date(t0 - 50 * MIN));
+      await a.round(into(theme.id), new Date(t0));
+      expect(await count(a.tenantId, theme.id)).toBe(5);
+      expect(await flagsOfTheme(theme.id)).toEqual(["new"]);
+      // 20 minutes later the messages are 70 minutes old: out of the window, though read 20 ago.
+      await a.round(nothing, new Date(t0 + 20 * MIN));
+      expect(await flagsOfTheme(theme.id)).toEqual([]);
+    });
+
+    test("a customer message the due list missed but the transcript holds is the one a first reading counts at", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // The mirror knows the message of 50 minutes ago; the customer wrote again 5 minutes ago, and
+      // the transcript the model reads has it.
+      await late(a, 5, new Date(t0 - 50 * MIN), new Date(t0 - 5 * MIN));
+      await a.round(into(theme.id), new Date(t0));
+      // 20 minutes later the first message has left the window, the one the model read has not.
+      await a.round(nothing, new Date(t0 + 20 * MIN));
+      expect(await flagsOfTheme(theme.id)).toEqual(["new"]);
+    });
+
+    test("a backlog read in one round leaves the window with its messages, not with the read", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // One conversation an hour for the last day, counted when it was read, as before the change.
+      const old = await a.conv();
+      await a.read(old, { queixa: "antiga" }, new Date(t0 - 30 * 3_600_000));
+      for (let h = 2; h <= 24; h += 1) {
+        const c = await a.conv();
+        await a.member(theme.id, c, `frase ${h}`, new Date(t0 - h * 3_600_000));
+      }
+      // Six conversations that wrote between 40 and 55 minutes ago, the round that read them left
+      // for later: read now, they are counted where they belong, and their hour is no spike...
+      for (let i = 0; i < 6; i += 1)
+        await late(a, 1, new Date(t0 - (55 - i * 3) * MIN));
+      await a.round(into(theme.id), new Date(t0));
+      // The 23 of the last day, the six, and the old reading the round placed too.
+      expect(await count(a.tenantId, theme.id)).toBe(30);
+      // ...until an hour after the newest of them, when the next hour has none: by the read, this
+      // round would still count all six in the window and flag the theme above its usual.
+      await a.round(nothing, new Date(t0 + 45 * MIN));
+      expect(await flagsOfTheme(theme.id)).toEqual([]);
+    });
+
+    test("the history covered starts at the earliest message counted, not at the earliest read", async () => {
+      const a = await account({
+        windowMinutes: 60,
+        newMinConversations: 5,
+        aboveUsualRatio: 3,
+      });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // The monitor's first round reads five conversations written 55 minutes before it.
+      await late(a, 5, new Date(t0 - 55 * MIN));
+      await a.round(into(theme.id), new Date(t0));
+      // 210 minutes later, five more in the last hour: 5 over the 205 minutes covered before the window
+      // is a usual a third of the window's rate, so the theme is above its usual. Counting the history
+      // from the first read instead (150 minutes) would make the usual too high to flag it.
+      await late(a, 5, new Date(t0 + 200 * MIN));
+      await a.round(into(theme.id), new Date(t0 + 210 * MIN));
+      expect(await count(a.tenantId, theme.id)).toBe(10);
+      expect(await flagsOfTheme(theme.id)).toEqual(["above_usual"]);
+    });
+
+    test("a member keeps the message it was placed with after the reason field changes", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // Placed from readings that covered messages of 90 minutes ago, read 10 minutes ago.
+      for (let i = 0; i < 5; i += 1) {
+        const c = await a.conv();
+        const m = await a.member(
+          theme.id,
+          c,
+          `frase ${i}`,
+          new Date(t0 - 10 * MIN),
+        );
+        await suDb.occurrenceThemeMember.update({
+          where: { id: m.id },
+          data: { inboundAt: new Date(t0 - 90 * MIN) },
+        });
+      }
+      // The reason is now another field, which none of them has a reading of yet; until the assignment
+      // places them again, they count at the message they were placed with, out of the window.
+      const cfg = (
+        await suDb.occurrenceMonitor.findUniqueOrThrow({
+          where: { id: a.monitorId },
+        })
+      ).config as Record<string, unknown>;
+      await suDb.occurrenceMonitor.update({
+        where: { id: a.monitorId },
+        data: {
+          config: {
+            ...cfg,
+            reasonField: "unidade",
+            referenceField: null,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await runFlagsStep(appDb, a.key, new Date(t0));
+      expect(await flagsOfTheme(theme.id)).toEqual([]);
+    });
+
+    test("a reading stored before the messages were kept counts when it was read, as before", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      for (let i = 0; i < 5; i += 1) {
+        const c = await a.conv({ lastInboundAt: new Date(t0 - 3 * 3_600_000) });
+        await a.member(theme.id, c, `frase ${i}`, new Date(t0 - 10 * MIN));
+      }
+      await a.round(nothing, new Date(t0));
+      expect(await flagsOfTheme(theme.id)).toEqual(["new"]);
+    });
+  },
+);
+
 describe.skipIf(!dbUp)("the round's cost, cadence and switch", () => {
   test("every model call is a ledger row of its own stage, on the monitor's key and no agent, and the run sums them (c23)", async () => {
     const a = await account();

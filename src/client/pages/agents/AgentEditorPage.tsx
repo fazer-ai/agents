@@ -4688,6 +4688,12 @@ function AgentEditor() {
     : watcher
       ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
       : tabs.filter((item) => item.key !== "decisions" && item.key !== "call");
+  // The header's last crumb is drawn from the URL, which keeps its tab while an edit is unsaved
+  // (agents#1647), so it names the tab on screen instead.
+  useBreadcrumbLabel(
+    id && picked ? `/agents/${id}/${urlTab}` : null,
+    picked ? (tabs.find((item) => item.key === picked)?.label ?? null) : null,
+  );
 
   // One value for the card at the top and the compact line in every tab's save bar, so the two can
   // only show together and offer the same actions.

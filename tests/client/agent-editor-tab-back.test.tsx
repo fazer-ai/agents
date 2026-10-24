@@ -18,6 +18,10 @@ const { ToastProvider } = await import("@/client/components/Toast");
 const { AuthProvider } = await import("@/client/contexts/AuthContext");
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
 const { NavGuardProvider } = await import("@/client/contexts/NavGuardContext");
+const { BreadcrumbProvider } = await import(
+  "@/client/contexts/BreadcrumbContext"
+);
+const { Breadcrumbs } = await import("@/client/components/Breadcrumbs");
 
 // The agent editor's tabs (agents#1647): a tab change is no history entry, so with an unsaved edit
 // browser Back always leaves the agent (asking first), and Discard lands outside it, even after tabs
@@ -102,11 +106,17 @@ function renderEditor(path: string, agent = AGENT) {
         <ToastProvider>
           <AuthProvider>
             <NavGuardProvider>
-              <Navigator />
-              <Routes>
-                <Route path="/agents" element={<p>Agent list</p>} />
-                <Route path="/agents/:id/:tab" element={<AgentEditorPage />} />
-              </Routes>
+              <BreadcrumbProvider>
+                <Navigator />
+                <Breadcrumbs />
+                <Routes>
+                  <Route path="/agents" element={<p>Agent list</p>} />
+                  <Route
+                    path="/agents/:id/:tab"
+                    element={<AgentEditorPage />}
+                  />
+                </Routes>
+              </BreadcrumbProvider>
             </NavGuardProvider>
           </AuthProvider>
         </ToastProvider>
@@ -279,4 +289,20 @@ test("a warning's jump does not hold back a later link's focus marker", async ()
       document.getElementById("stt")?.classList.contains("section-highlight"),
     ).toBe(true),
   );
+});
+
+test("with an unsaved edit the header's crumb names the tab on screen, not the URL's", async () => {
+  renderEditor("/agents/1/behavior");
+  await waitFor(() => signature());
+  const crumb = () =>
+    document.querySelector('nav[aria-label="Breadcrumbs"] li:last-child')
+      ?.textContent ?? "";
+  expect(crumb()).toBe("Behavior");
+  fireEvent.click(signature());
+  await waitFor(() => expect(unsaved()).toBe(true));
+  fireEvent.click(screen.getByRole("tab", { name: /General/ }));
+  expect(window.location.pathname).toBe("/agents/1/behavior");
+  await waitFor(() => expect(crumb()).toBe("General"));
+  act(() => navigateTo("/agents/1/behavior"));
+  await waitFor(() => expect(crumb()).toBe("Behavior"));
 });

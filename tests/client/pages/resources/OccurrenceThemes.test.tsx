@@ -58,8 +58,9 @@ function installFetchStub(
   const attempts = new Map<string, number>();
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input instanceof Request ? input.url : input));
-    if (url.pathname === "/api/v1/occurrences/themes") return json(list());
-    const id = /^\/api\/v1\/occurrences\/themes\/(\d+)$/.exec(
+    if (url.pathname === "/api/v1/occurrences/monitors/7/themes")
+      return json(list());
+    const id = /^\/api\/v1\/occurrences\/monitors\/7\/themes\/(\d+)$/.exec(
       url.pathname,
     )?.[1];
     if (id) {
@@ -83,7 +84,7 @@ describe("OccurrenceThemes", () => {
     installFetchStub(async (id, attempt) =>
       json(detail(id, attempt === 1 ? "pix antigo" : "pix depois da rodada")),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     fireEvent.click(await screen.findByText("Pix"));
     await screen.findByText(/pix antigo/);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
@@ -100,7 +101,7 @@ describe("OccurrenceThemes", () => {
           })
         : Promise.resolve(json(detail("2", "boleto nao gerou"))),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     fireEvent.click(await screen.findByText("Pix"));
     fireEvent.click(screen.getByText("Boleto"));
     await screen.findByText("boleto nao gerou");
@@ -116,7 +117,7 @@ describe("OccurrenceThemes", () => {
         attempt === 1 ? json({}, 500) : json(detail(id, "pix nao caiu")),
       ),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     fireEvent.click(await screen.findByText("Pix"));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not read");
@@ -136,7 +137,7 @@ describe("OccurrenceThemes", () => {
         total: 2,
       }),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     expect(await screen.findByText("1 conversation")).toBeTruthy();
     expect(screen.getByText("2 conversations")).toBeTruthy();
   });
@@ -157,7 +158,7 @@ describe("OccurrenceThemes", () => {
         };
       },
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     expect(await screen.findByText("1 to 20 of 45")).toBeTruthy();
     const seen: string[] = [];
     const titles = () =>
@@ -183,7 +184,7 @@ describe("OccurrenceThemes", () => {
       async (id) => json(detail(id, "x")),
       () => ({ themes: [theme("1", "Pix")], total: 640 }),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     expect(
       await screen.findByText("Showing the first 1 of 640 open themes."),
     ).toBeTruthy();
@@ -193,11 +194,11 @@ describe("OccurrenceThemes", () => {
     installFetchStub(async (id, attempt) =>
       json(detail(id, attempt === 1 ? "antes" : "depois da rodada")),
     );
-    const view = render(<OccurrenceThemes active />);
+    const view = render(<OccurrenceThemes monitorId="7" active />);
     fireEvent.click(await screen.findByText("Pix"));
     await screen.findByText("antes");
-    view.rerender(<OccurrenceThemes active={false} />);
-    view.rerender(<OccurrenceThemes active />);
+    view.rerender(<OccurrenceThemes monitorId="7" active={false} />);
+    view.rerender(<OccurrenceThemes monitorId="7" active />);
     expect(await screen.findByText("depois da rodada")).toBeTruthy();
   });
 
@@ -225,7 +226,7 @@ describe("OccurrenceThemes", () => {
         total: 2,
       }),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     await screen.findByText("Pagamento com cartão");
     // The same words as the title are not repeated; a different reference is labelled.
     expect(screen.queryByText(/pagamento com cartao/)).toBeNull();
@@ -281,7 +282,7 @@ describe("OccurrenceThemes", () => {
         },
       }),
     );
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     fireEvent.click(await screen.findByText("Pix"));
     await screen.findByText("History");
     const items = screen
@@ -299,7 +300,7 @@ describe("OccurrenceThemes", () => {
 
   test("a theme with no history shows no history section", async () => {
     installFetchStub(async (id) => json(detail(id, "pix nao caiu")));
-    render(<OccurrenceThemes />);
+    render(<OccurrenceThemes monitorId="7" />);
     fireEvent.click(await screen.findByText("Pix"));
     await screen.findByText("pix nao caiu");
     expect(screen.queryByText("History")).toBeNull();

@@ -1,7 +1,8 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn } from "@/lib/tenancy";
 import { sysCtx } from "./config";
-import { type OccurrencesConfig, readOccurrencesConfig } from "./settings";
+import type { MonitorKey } from "./monitors";
+import { type OccurrencesConfig, readMonitorConfig } from "./settings";
 
 // THE FLAGS, counted exactly from the members of each open theme (docs/occurrences.md, "Flags": new,
 // above its usual, concentrated). A conversation counts at the instant it was first read, and every
@@ -60,17 +61,18 @@ export interface FlagsSummary {
 // "flagged since" survives the rounds in between.
 export async function runFlagsStep(
   base: PrismaClient,
-  tenantId: bigint,
-  given: OccurrencesConfig,
+  { tenantId, monitorId }: MonitorKey,
   now: Date,
 ): Promise<FlagsSummary> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    // Counted over the block saved NOW, read under a share lock on the account's row: a save that
+    // Counted over the block saved NOW, read under a share lock on the monitor's row: a save that
     // takes an inbox off the list (and recounts) waits for this, or this waits for it, so a round
-    // that started with the old list never writes back flags from an inbox already taken off.
-    const [row] = await db.$queryRaw<{ settings: unknown }[]>`
-      SELECT settings FROM tenants WHERE id = ${tenantId} FOR SHARE`;
-    const cfg = row ? readOccurrencesConfig(row.settings) : given;
+    // that started with the old list never writes back flags from an inbox already taken off. A
+    // monitor deleted meanwhile has no themes left to flag.
+    const [row] = await db.$queryRaw<{ config: unknown }[]>`
+      SELECT config FROM occurrence_monitors WHERE id = ${monitorId} FOR SHARE`;
+    if (!row) return { flagged: 0 };
+    const cfg = readMonitorConfig(row.config);
     const windowMs = cfg.windowMinutes * 60_000;
     const windowStart = new Date(now.getTime() - windowMs);
     const horizon = new Date(
@@ -79,7 +81,7 @@ export async function runFlagsStep(
     const earliest = cfg.reasonField
       ? await db.conversationReading.aggregate({
           where: {
-            tenantId,
+            monitorId,
             field: cfg.reasonField,
             conversation: { inboxId: { in: cfg.inboxIds.map(BigInt) } },
           },
@@ -102,9 +104,10 @@ export async function runFlagsStep(
         JOIN conversations cv ON cv.id = m.conversation_id
                              AND cv.inbox_id = ANY(${cfg.inboxIds}::bigint[])
         LEFT JOIN conversation_readings s
-               ON s.conversation_id = m.conversation_id AND s.field = ${cfg.referenceField ?? ""}
+               ON s.conversation_id = m.conversation_id AND s.monitor_id = m.monitor_id
+              AND s.field = ${cfg.referenceField ?? ""}
         LEFT JOIN occurrence_canonicals c ON c.id = s.canonical_id
-       WHERE m.tenant_id = ${tenantId}
+       WHERE m.monitor_id = ${monitorId}
          AND m.read_at >= ${horizon}
          AND m.read_at <= ${now}`;
     const counts = new Map<bigint, ThemeCounts>();
@@ -130,7 +133,7 @@ export async function runFlagsStep(
       cfg,
     };
     const open = await db.occurrenceTheme.findMany({
-      where: { tenantId, status: "open" },
+      where: { monitorId, status: "open" },
       select: { id: true, flags: true, flaggedAt: true },
     });
     // Grouped by what each theme gets, one update per group: almost every theme gets "no flag", and a

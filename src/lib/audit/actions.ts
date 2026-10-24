@@ -106,6 +106,9 @@ export const AUDIT_ACTIONS = [
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
   "mcp_token.revoke",
+  "occurrence_monitor.created",
+  "occurrence_monitor.deleted",
+  "occurrence_monitor.updated",
   "tenant_settings.approval_link_set",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
@@ -113,7 +116,6 @@ export const AUDIT_ACTIONS = [
   "tenant_settings.price_overrides_set",
   "tenant_settings.spend_ceiling_set",
   "tenant_settings.proactive_breaker_set",
-  "tenant_settings.occurrences_set",
   // An admin reopening the proactive breaker after a trip.
   "proactive_breaker.resume",
   "tool.create",

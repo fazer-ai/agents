@@ -6,7 +6,7 @@ import {
 import { intRange, numberRange } from "@/lib/number-range";
 import { unstorableCodePoints } from "@/lib/text";
 
-// THE ACCOUNT'S OCCURRENCE MONITOR, the `occurrences` block of `tenant.settings` (docs/occurrences.md).
+// AN OCCURRENCE MONITOR'S CONFIGURATION, the `config` of its `occurrence_monitors` row (docs/occurrences.md).
 // It declares which inboxes the monitor reads, what it reads off each conversation (the FIELDS,
 // entirely the account's choice), which of them is the REASON the model groups into themes and which,
 // optionally, the REFERENCE a theme's conversations are counted by, the one model every step runs on,
@@ -186,7 +186,7 @@ export const occurrenceModelSchema = z
         message: "an openai-compatible model needs a model id",
       });
     // With no credential there is no endpoint to inherit either: the model names its own. One that
-    // names a credential is checked against the credential's endpoint on save (tenant-settings).
+    // names a credential is checked against the credential's endpoint on save (monitors.ts).
     if (
       m.provider === "openai-compatible" &&
       m.credentialRef === null &&
@@ -322,7 +322,7 @@ export const occurrencesSettingsSchema = z
     }
   });
 
-// Lenient, like every runtime reader of `tenant.settings`: an absent or damaged block is the default,
+// Lenient, like every runtime reader of a stored block: an absent or damaged block is the default,
 // which is OFF. A block that no longer parses must not start spending a model. A key this version
 // does not have (a later version wrote it) is left out, so it does not switch the monitor off.
 export function readOccurrencesConfig(settings: unknown): OccurrencesConfig {
@@ -347,6 +347,11 @@ export function readOccurrencesConfig(settings: unknown): OccurrencesConfig {
     enabled: false,
   });
   return draft.success ? draft.data : structuredClone(OCCURRENCES_DEFAULTS);
+}
+
+// A monitor's own block (`occurrence_monitors.config`), read as leniently as the account's block was.
+export function readMonitorConfig(config: unknown): OccurrencesConfig {
+  return readOccurrencesConfig({ occurrences: config });
 }
 
 // The patch a REST or MCP caller sends: any top-level key; what it leaves out keeps its value.

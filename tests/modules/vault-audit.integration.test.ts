@@ -374,7 +374,7 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
     expect(other.tenantSettings).toEqual([]);
   });
 
-  test("vaultReferences: a credential the occurrence monitor's steps use is referenced", async () => {
+  test("vaultReferences: a credential an occurrence monitor's steps use is referenced", async () => {
     const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
     const { id } = await createVaultEntry(
       ctx,
@@ -389,17 +389,18 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
       credentialRef: formatVaultRef(id),
       baseURL: null,
     };
-    await su?.tenant.update({
-      where: { id: tenantId },
-      data: {
-        settings: {
-          occurrences: { model: step },
-        },
-      },
+    // Any of the account's monitors: the second one here, the first naming another key.
+    await su?.occurrenceMonitor.createMany({
+      data: [
+        { tenantId, name: "Ocorrências", config: { model: null } },
+        { tenantId, name: "Produtor", position: 1, config: { model: step } },
+      ],
     });
     expect((await vaultReferences(ctx, id, appDb)).tenantSettings).toEqual([
       "occurrences",
     ]);
+    await su?.occurrenceMonitor.deleteMany({ where: { tenantId } });
+    expect((await vaultReferences(ctx, id, appDb)).tenantSettings).toEqual([]);
   });
 
   test("audit: records a row scoped to the tenant", async () => {

@@ -213,23 +213,19 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 35_244 with the 15 dashboard tools and the six dashboard_source tools (Pro only),
-    // conversation_decisions_test, inbox_bind_voice, the voice kind on agent_create and
-    // agent_call_floor, plus the client channel SDK's four client app tools and the audience filter
-    // on the log and metrics tools; 33_086 on the Free tree before the SDK. 35_532 with the three
-    // dashboard_embed_link tools (Pro only), whose job is a new secret-bearing link and cannot be
-    // folded into another tool's description. 35_951 with the four occurrence tools, each cut to its
-    // job and the rules that refuse (the rest is docs/occurrences.md). 36_033 once main's tools joined.
-    expect(desc).toBeLessThanOrEqual(36_100);
-    // Measured at 82_062 with `limits.maxProactivePerDay`, `snoozedFollowUp` and `otherInboxes` on
-    // agent_settings_set, the document template writes, issued_document_list's search and cursor, the
-    // proactive_breaker tools, the voice binding and kind, the tts timeout and fallback voice,
-    // agent_call_floor's draft, the guardrails' onFailure and endpoint check, the `calls` numbers
-    // ranged, the dashboard and dashboard_source tools (Pro only), tv_rotation and tv_seconds
-    // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter; 74_540
-    // on the Free tree before the SDK. 84_599 with the dashboard_embed_link tools, preconditions,
-    // `setLabels.removal`, the writable list and per-kind templates, 87_056 with the occurrence tools.
-    expect(schema).toBeLessThanOrEqual(87_120);
+    // Measured at 35_244 with the dashboard and dashboard_source tools (Pro only), the voice tools,
+    // and the client channel SDK's app tools and audience filter (33_086 on the Free tree before the
+    // SDK); 35_532 with the dashboard_embed_link tools, whose job is a new secret-bearing link; 35_951
+    // with the four occurrence tools, each cut to its job and the rules that refuse (the rest is
+    // docs/occurrences.md); 36_447 with the four occurrence monitor tools (list, create, rename,
+    // delete), each a job no other tool does, with the bare sentence that says it.
+    expect(desc).toBeLessThanOrEqual(36_500);
+    // Measured at 82_062 with the agent_settings_set additions (limits, follow-ups, other inboxes,
+    // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client
+    // channel SDK's app tools (74_540 on the Free tree before the SDK); 84_599 with the
+    // dashboard_embed_link tools and the label settings; 87_056 with the occurrence tools; 88_026
+    // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools.
+    expect(schema).toBeLessThanOrEqual(88_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

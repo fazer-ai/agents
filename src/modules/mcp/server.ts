@@ -197,6 +197,7 @@ import {
   APPROVAL_LINK_MODES,
   APPROVAL_LINK_TEMPLATE_MAX,
 } from "@/modules/documents/approval-link";
+import { MONITOR_NAME_MAX, MONITORS_MAX } from "@/modules/occurrences/monitors";
 import { RUNS_LIMIT_RANGE } from "@/modules/occurrences/runs";
 import {
   ABOVE_USUAL_RATIO_RANGE,
@@ -238,6 +239,10 @@ import {
   knowledgeUpdate,
 } from "./write-knowledge";
 import {
+  occurrenceMonitorCreate,
+  occurrenceMonitorDelete,
+  occurrenceMonitorsList,
+  occurrenceMonitorUpdate,
   occurrenceRunsList,
   occurrencesGet,
   occurrencesSet,
@@ -364,6 +369,12 @@ const PRICE_RATE_RANGE = numberRange(0, PRICE_OVERRIDE_RATE_MAX);
 // Matches the playground service's own audio/file upload caps so the MCP path rejects oversized
 // media before any provider call.
 const MAX_MCP_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+// An occurrence monitor's id; the tools that take it optionally answer for the account's first.
+const monitorIdArg = z
+  .string()
+  .regex(/^[1-9][0-9]{0,18}$/)
+  .optional();
 
 export interface McpPlaygroundAttachment {
   mime: string;
@@ -1226,10 +1237,23 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       principal,
       "occurrences_get",
       {
-        description: "Get the account's occurrence monitor.",
+        description:
+          "Get an occurrence monitor; without monitor_id, the account's first.",
+        inputSchema: { monitor_id: monitorIdArg },
+      },
+      async (args: { monitor_id?: string }, eff) =>
+        writeContent(await occurrencesGet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitors_list",
+      {
+        description: "List the account's occurrence monitors.",
         inputSchema: {},
       },
-      async (_args, eff) => writeContent(await occurrencesGet(eff)),
+      async (_args, eff) => writeContent(await occurrenceMonitorsList(eff)),
     );
 
     registerTenantTool(
@@ -1238,8 +1262,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "occurrence_runs_list",
       {
         description:
-          "The occurrence monitor's rounds, newest first, and its cost.",
+          "An occurrence monitor's rounds, newest first, and its cost.",
         inputSchema: {
+          monitor_id: monitorIdArg,
           limit: ranged(RUNS_LIMIT_RANGE).optional(),
           before: z
             .string()
@@ -1247,8 +1272,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .optional(),
         },
       },
-      async (args: { limit?: number; before?: string }, eff) =>
-        writeContent(await occurrenceRunsList(eff, args)),
+      async (
+        args: { monitor_id?: string; limit?: number; before?: string },
+        eff,
+      ) => writeContent(await occurrenceRunsList(eff, args)),
     );
 
     registerTenantTool(
@@ -1257,15 +1284,21 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "occurrence_themes_list",
       {
         description:
-          "List the occurrence monitor's open themes, flagged first; with theme_id, that theme's conversations and sentences.",
+          "List an occurrence monitor's open themes, flagged first; with theme_id, that theme's conversations and sentences.",
         inputSchema: {
+          monitor_id: monitorIdArg,
           theme_id: z.string().optional(),
           flagged: z.boolean().optional(),
           limit: ranged(THEMES_LIMIT_RANGE).optional(),
         },
       },
       async (
-        args: { theme_id?: string; flagged?: boolean; limit?: number },
+        args: {
+          monitor_id?: string;
+          theme_id?: string;
+          flagged?: boolean;
+          limit?: number;
+        },
         eff,
       ) => writeContent(await occurrenceThemesList(eff, args)),
     );
@@ -3447,9 +3480,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "occurrences_set",
       {
         description:
-          "Set the account's occurrence monitor; fields and inboxIds replace their lists. Switching on needs inboxIds, model and reasonField; without referenceField the concentration flag is off. Previews unless dry_run is false.",
+          "Set an occurrence monitor (without monitor_id, the first, created if none); fields and inboxIds replace their lists. Switching on needs inboxIds, model and reasonField; without referenceField the concentration flag is off. Previews unless dry_run is false.",
         strict: true,
         inputSchema: {
+          monitor_id: monitorIdArg,
           enabled: z.boolean().optional(),
           inboxIds: z.array(z.string()).max(INBOXES_MAX).optional(),
           fields: z.array(occurrenceFieldSchema).max(FIELDS_MAX).optional(),
@@ -3470,6 +3504,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (
         args: {
+          monitor_id?: string;
           enabled?: boolean;
           inboxIds?: string[];
           fields?: OccurrenceField[];
@@ -3489,6 +3524,59 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await occurrencesSet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitor_create",
+      {
+        description: `Create an occurrence monitor, off; duplicate_of copies that one's configuration, with no inboxes. At most ${MONITORS_MAX}. Previews unless dry_run is false.`,
+        inputSchema: {
+          name: z.string().max(MONITOR_NAME_MAX).optional(),
+          duplicate_of: monitorIdArg,
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { name?: string; duplicate_of?: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await occurrenceMonitorCreate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitor_update",
+      {
+        description:
+          "Rename an occurrence monitor. Previews unless dry_run is false.",
+        inputSchema: {
+          monitor_id: z.string(),
+          name: z.string().max(MONITOR_NAME_MAX),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { monitor_id: string; name: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await occurrenceMonitorUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitor_delete",
+      {
+        description:
+          "Delete an occurrence monitor and what it read; the preview counts it. Previews unless dry_run is false.",
+        inputSchema: {
+          monitor_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { monitor_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await occurrenceMonitorDelete(eff, args)),
     );
 
     registerTenantTool(

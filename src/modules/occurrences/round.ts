@@ -13,14 +13,16 @@ import {
   registerJobHandler,
   SCHEDULER_STALE_MS,
 } from "@/modules/scheduler/worker";
+import { jobMonitorId } from "./arm";
 import {
   runCanonicalConsolidation,
   runCanonicalCopy,
   runCanonicalStep,
 } from "./canonicals";
-import { readTenantOccurrences, sysCtx } from "./config";
+import { readMonitorOccurrences, sysCtx } from "./config";
 import { runFlagsStep } from "./flags";
 import { type RoundModelDeps, roundModels } from "./model";
+import type { MonitorKey } from "./monitors";
 import { runReadingStep } from "./reading";
 import type { RecoveryDeps } from "./recovery";
 import { runThreadId } from "./runs";
@@ -57,13 +59,13 @@ export interface RoundDeps {
 // The consolidation is due when no round consolidated within one consolidation cadence.
 async function consolidationDue(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   cfg: OccurrencesConfig,
   startedAt: Date,
 ): Promise<boolean> {
   const last = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.occurrenceRun.findFirst({
-      where: { tenantId, consolidated: true, startedAt: { lt: startedAt } },
+      where: { monitorId, consolidated: true, startedAt: { lt: startedAt } },
       orderBy: { startedAt: "desc" },
       select: { startedAt: true },
     }),
@@ -87,16 +89,17 @@ function foldSkipped(lines: string[]): string[] {
 }
 
 export async function runOccurrenceRound(
-  tenantId: bigint,
+  m: MonitorKey,
   cfg: OccurrencesConfig,
   deps: RoundDeps = {},
 ): Promise<RoundSummary> {
+  const { tenantId, monitorId } = m;
   const base = deps.base ?? basePrisma;
   const now = deps.now ?? (() => new Date());
   const startedAt = now();
   const run = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.occurrenceRun.create({
-      data: { tenantId, startedAt, status: "running" },
+      data: { tenantId, monitorId, startedAt, status: "running" },
       select: { id: true },
     }),
   );
@@ -117,7 +120,7 @@ export async function runOccurrenceRound(
       // The conversations first, so this round's steps already see what they say; then the references,
       // so the flags of this round count by canonical; then the new sentences; then, when due, the
       // stronger model over what the assignment left.
-      const reading = await runReadingStep(base, tenantId, cfg, models, {
+      const reading = await runReadingStep(base, m, cfg, models, {
         now,
         threadId,
         ...deps.recovery,
@@ -128,19 +131,14 @@ export async function runOccurrenceRound(
       detail.reading = reading;
       // The conversations this round read: the readings column and `detail.reading.read` agree.
       readings = reading.read;
-      const canonical = await runCanonicalStep(base, tenantId, cfg, models);
+      const canonical = await runCanonicalStep(base, m, cfg, models);
       detail.canonical = canonical;
-      detail.assignment = await runAssignmentStep(base, tenantId, cfg, models);
-      if (await consolidationDue(base, tenantId, cfg, startedAt)) {
-        const themes = await runConsolidationStep(
-          base,
-          tenantId,
-          models,
-          run.id,
-        );
+      detail.assignment = await runAssignmentStep(base, m, cfg, models);
+      if (await consolidationDue(base, m, cfg, startedAt)) {
+        const themes = await runConsolidationStep(base, m, models, run.id);
         const canonicals = await runCanonicalConsolidation(
           base,
-          tenantId,
+          m,
           cfg,
           models,
         );
@@ -149,11 +147,11 @@ export async function runOccurrenceRound(
         // Only a pass that completed starts the next interval; a skipped one is tried next round.
         consolidated = themes.completed && canonicals.completed;
       }
-      detail.flags = await runFlagsStep(base, tenantId, cfg, now());
+      detail.flags = await runFlagsStep(base, m, now());
       // Last, so a slow Chatwoot spends only what the analytical steps left.
       canonical.copied = await runCanonicalCopy(
         base,
-        tenantId,
+        m,
         cfg,
         models.budget,
         deps.makeChatwootClient,
@@ -163,7 +161,7 @@ export async function runOccurrenceRound(
     } catch (err) {
       error = sanitizeErrorMessage(err);
       logger.warn(
-        { error, tenantId: String(tenantId) },
+        { error, tenantId: String(tenantId), monitorId: String(monitorId) },
         "occurrence round failed",
       );
     }
@@ -192,8 +190,8 @@ export async function runOccurrenceRound(
   return { runId: run.id, status, readings, durationMs, error };
 }
 
-// The job. ON: run and re-arm one cadence later. OFF: end the loop; the next save that switches it
-// on arms it again. It never throws, so the ladder never reaches DEAD.
+// The job, one per monitor. ON: run and re-arm one cadence later. OFF, or deleted: end the loop; the
+// next save that switches it on arms it again. It never throws, so the ladder never reaches DEAD.
 export async function occurrenceRoundHandler(
   job: ClaimedJob,
   base: PrismaClient = basePrisma,
@@ -201,22 +199,24 @@ export async function occurrenceRoundHandler(
   jobCtx?: JobContext,
 ): Promise<JobResult> {
   const now = deps.now ?? (() => new Date());
-  let cfg: OccurrencesConfig;
+  const monitorId = jobMonitorId(job.payload);
+  if (monitorId === null) return { outcome: "done" };
+  let cfg: OccurrencesConfig | null;
   try {
-    cfg = await readTenantOccurrences(job.tenantId, base);
+    cfg = await readMonitorOccurrences(job.tenantId, monitorId, base);
   } catch (err) {
     logger.warn(
-      { err, tenantId: String(job.tenantId) },
+      { err, tenantId: String(job.tenantId), monitorId: String(monitorId) },
       "occurrence round: the monitor could not be read; asking again in a minute",
     );
     return { outcome: "reschedule", runAt: new Date(now().getTime() + 60_000) };
   }
-  if (!cfg.enabled) return { outcome: "done" };
+  if (!cfg?.enabled) return { outcome: "done" };
   try {
     // A round's writes are not taken back on a retry, so a run cut past its deadline still has its
     // reschedule written (scheduler/worker.ts, JobContext.commit).
     jobCtx?.commit();
-    await runOccurrenceRound(job.tenantId, cfg, {
+    await runOccurrenceRound({ tenantId: job.tenantId, monitorId }, cfg, {
       ...deps,
       base,
       now,
@@ -225,7 +225,7 @@ export async function occurrenceRoundHandler(
   } catch (err) {
     // The run row itself could not be written: nothing to record it in, so the log is the record.
     logger.warn(
-      { err, tenantId: String(job.tenantId) },
+      { err, tenantId: String(job.tenantId), monitorId: String(monitorId) },
       "occurrence round could not be recorded",
     );
   }

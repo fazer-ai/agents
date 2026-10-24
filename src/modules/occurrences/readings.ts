@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { sysCtx } from "./config";
+import type { MonitorKey } from "./monitors";
 
 // A reading's value as stored: trimmed and capped. Empty is a value of its own ("read, nothing
 // there"): an empty reference is the no-reference bucket, an empty reason is a conversation with
@@ -17,13 +18,13 @@ export function readingValue(raw: string): string {
   );
 }
 
-// One row per conversation and field. A new value replaces the old one and moves `last_read_at`;
+// One row per monitor, conversation and field. A new value replaces the old one and moves `last_read_at`;
 // `first_read_at` stays the instant the conversation was first read for that field, which is what
 // "new conversations in the window" counts. Rewriting the same value only moves `last_read_at`.
 
 // Thrown inside the write when the caller's time ran out, so the transaction rolls back.
 // `/reset` empties the conversation's Chatwoot attributes on purpose: a canonical copy still pending
-// for one of its readings must not write the reference back. Marked before the attributes are cleared,
+// for one of its readings, of any monitor, must not write the reference back. Marked before the attributes are cleared,
 // so a copy queued behind the reset finds nothing to copy; the next reading the observer writes, in
 // the new episode, makes it pending again.
 export async function withdrawReadingCopies(
@@ -82,9 +83,8 @@ function remoteBeforeOf(before: {
 // ran out of time while waiting for a connection or a statement writes nothing.
 export async function upsertReadings(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   conversationId: bigint,
-  agentId: bigint | null,
   values: Record<string, string>,
   now: Date = new Date(),
   expired?: () => boolean,
@@ -121,7 +121,7 @@ export async function upsertReadings(
         }[]
       >`
         SELECT value, written_name, remote_before FROM conversation_readings
-        WHERE conversation_id = ${conversationId} AND field = ${field}
+        WHERE monitor_id = ${monitorId} AND conversation_id = ${conversationId} AND field = ${field}
         FOR UPDATE`;
       const before = row
         ? {
@@ -132,13 +132,16 @@ export async function upsertReadings(
         : null;
       const changed = before !== null && before.value !== value;
       await db.conversationReading.upsert({
-        where: { conversationId_field: { conversationId, field } },
+        where: {
+          monitorId_conversationId_field: { monitorId, conversationId, field },
+        },
         create: {
           tenantId,
+          monitorId,
           conversationId,
           field,
           value,
-          agentId,
+          agentId: null,
           firstReadAt: now,
           lastReadAt: now,
           canonicalWritten: withdrawn,
@@ -150,7 +153,7 @@ export async function upsertReadings(
         // Chatwoot, so the canonical is copied there again.
         update: {
           value,
-          agentId,
+          agentId: null,
           lastReadAt: now,
           canonicalWritten: withdrawn,
           ...(changed

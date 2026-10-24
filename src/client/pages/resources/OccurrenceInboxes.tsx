@@ -10,6 +10,9 @@ export type InboxOption = NonNullable<
   account?: { id: number; name: string | null };
 };
 
+// Another monitor of the account, as the list gives it: an inbox it also reads is marked here.
+export type OtherMonitor = { id: string; name: string; inboxIds: string[] };
+
 // Whether the product receives an inbox's conversations: a responder bound to it, or an observer
 // watching it. The monitor reads only what the product receives.
 export const inboxReceived = (i: InboxOption) =>
@@ -17,15 +20,19 @@ export const inboxReceived = (i: InboxOption) =>
 
 // The inboxes the monitor reads, in the picker the agent editor uses for "Other inboxes". An inbox no
 // agent receives is not offered (the save would refuse it), and one line counts them; one already
-// chosen that lost its agent stays as a chip marked as not read, and is removed like any other.
+// chosen that lost its agent stays as a chip marked as not read, and is removed like any other. An
+// inbox another monitor also reads says which, on its chip and in the list: each monitor reads it and
+// pays for its own reading.
 export function OccurrenceInboxesSection({
   inboxes,
   value,
   onChange,
+  otherMonitors = [],
 }: {
   inboxes: InboxOption[];
   value: string[];
   onChange: (v: string[]) => void;
+  otherMonitors?: OtherMonitor[];
 }) {
   const { t } = useTranslation();
   const chosen = new Set(value);
@@ -41,14 +48,31 @@ export function OccurrenceInboxesSection({
       </p>
     );
   const notRead = t("occurrences.inboxes.notRead", "not read");
+  const alsoReadBy = (id: string) => {
+    const names = otherMonitors
+      .filter((m) => m.inboxIds.includes(id))
+      .map((m) => m.name);
+    return names.length === 0
+      ? null
+      : t("occurrences.inboxes.alsoReadBy", "also read by {{names}}", {
+          names: names.join(", "),
+        });
+  };
   const items = [
     // One no agent receives is named (a chip if it is chosen) but never offered.
-    ...inboxes.map((i) => ({
-      id: i.id,
-      label: inboxOptionLabel(i, t),
-      hint: "",
-      ...(inboxReceived(i) ? {} : { unlisted: true, note: notRead }),
-    })),
+    ...inboxes.map((i) => {
+      const shared = alsoReadBy(i.id);
+      return {
+        id: i.id,
+        label: inboxOptionLabel(i, t),
+        hint: shared ?? "",
+        ...(inboxReceived(i)
+          ? shared
+            ? { note: shared }
+            : {}
+          : { unlisted: true, note: notRead }),
+      };
+    }),
     ...gone.map((id) => ({
       id,
       label: t(
@@ -63,6 +87,7 @@ export function OccurrenceInboxesSection({
     (i) => !inboxReceived(i) && !chosen.has(i.id),
   ).length;
   const lost = inboxes.some((i) => chosen.has(i.id) && !inboxReceived(i));
+  const shared = value.some((id) => alsoReadBy(id) !== null);
   return (
     <div className="flex flex-col gap-1.5">
       <ComboBox
@@ -89,6 +114,14 @@ export function OccurrenceInboxesSection({
           {t(
             "occurrences.inboxes.lostAgentChips",
             "No agent receives the inboxes marked as not read any more, so the monitor reads nothing from them. Bind or observe them with an agent in Channels, or remove them.",
+          )}
+        </p>
+      )}
+      {shared && (
+        <p className="text-text-muted text-xs">
+          {t(
+            "occurrences.inboxes.sharedHelp",
+            "An inbox marked as also read by another monitor is read by each of them on its own: each one keeps its own themes and pays for its own reading.",
           )}
         </p>
       )}

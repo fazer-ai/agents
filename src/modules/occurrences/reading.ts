@@ -19,9 +19,10 @@ import {
   renderTranscript,
   transcriptFromRows,
 } from "@/modules/chatwoot/transcript";
-import { sysCtx } from "./config";
+import { copyStillSaved, readMonitorOccurrences, sysCtx } from "./config";
 import { settleMedia } from "./media";
 import type { RoundModels } from "./model";
+import type { MonitorKey } from "./monitors";
 import {
   ReadingsExpiredError,
   readingValue,
@@ -90,7 +91,7 @@ export interface ReadingSummary {
 }
 
 // Of the monitored inboxes, those an agent receives right now (bound, or observing), the rule the
-// console shows and the save checks (tenant-settings/service.ts, assertOccurrencesInboxes).
+// console shows and the save checks (monitors.ts, assertOccurrencesInboxes).
 async function receivedInboxes(
   base: PrismaClient,
   tenantId: bigint,
@@ -125,7 +126,7 @@ async function receivedInboxes(
 // message the read failed on READ_FAILURES_MAX times is given up on until the customer writes again.
 async function dueConversations(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   inboxIds: string[],
   windowStart: Date,
   limit: number,
@@ -133,13 +134,13 @@ async function dueConversations(
   if (inboxIds.length === 0) return { due: [], total: 0 };
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     await db.$executeRaw`
-      INSERT INTO occurrence_conversation_reads (tenant_id, conversation_id)
-      SELECT c.tenant_id, c.id
+      INSERT INTO occurrence_conversation_reads (tenant_id, monitor_id, conversation_id)
+      SELECT c.tenant_id, ${monitorId}, c.id
         FROM conversations c
        WHERE c.tenant_id = ${tenantId}
          AND c.inbox_id = ANY(${inboxIds}::bigint[])
          AND c.last_inbound_at >= ${windowStart}
-      ON CONFLICT (conversation_id) DO NOTHING`;
+      ON CONFLICT (monitor_id, conversation_id) DO NOTHING`;
     const rows = await db.$queryRaw<
       Array<{
         id: bigint;
@@ -160,6 +161,7 @@ async function dueConversations(
              count(*) OVER () AS total
         FROM conversations c
         JOIN occurrence_conversation_reads r ON r.conversation_id = c.id
+                                             AND r.monitor_id = ${monitorId}
        WHERE c.tenant_id = ${tenantId}
          AND c.inbox_id = ANY(${inboxIds}::bigint[])
          AND c.last_inbound_at IS NOT NULL
@@ -213,15 +215,16 @@ function answerSchema(fields: OccurrenceField[]) {
 
 async function markRead(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   c: DueConversation,
   now: Date,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.occurrenceConversationRead.upsert({
-      where: { conversationId: c.id },
+      where: { monitorId_conversationId: { monitorId, conversationId: c.id } },
       create: {
         tenantId,
+        monitorId,
         conversationId: c.id,
         readInboundAt: c.lastInboundAt,
         readInboundMessageId: c.lastInboundMessageId,
@@ -243,12 +246,12 @@ async function markRead(
 // again.
 async function markFailed(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   c: DueConversation,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const row = await db.occurrenceConversationRead.findUnique({
-      where: { conversationId: c.id },
+      where: { monitorId_conversationId: { monitorId, conversationId: c.id } },
       select: {
         failures: true,
         failedInboundAt: true,
@@ -261,9 +264,10 @@ async function markFailed(
       (row?.failedInboundMessageId ?? null) === c.lastInboundMessageId;
     const failures = same ? (row?.failures ?? 0) + 1 : 1;
     await db.occurrenceConversationRead.upsert({
-      where: { conversationId: c.id },
+      where: { monitorId_conversationId: { monitorId, conversationId: c.id } },
       create: {
         tenantId,
+        monitorId,
         conversationId: c.id,
         failures,
         failedInboundAt: c.lastInboundAt,
@@ -292,7 +296,7 @@ export interface ReadingDeps extends RecoveryDeps {
 
 export async function runReadingStep(
   base: PrismaClient,
-  tenantId: bigint,
+  m: MonitorKey,
   cfg: OccurrencesConfig,
   models: RoundModels,
   deps: ReadingDeps = {},
@@ -304,6 +308,7 @@ export async function runReadingStep(
     pending: 0,
   };
   if (cfg.fields.length === 0 || cfg.inboxIds.length === 0) return summary;
+  const { tenantId } = m;
   const now = deps.now ?? (() => new Date());
   const startedAt = now();
   const windowStart = new Date(
@@ -320,7 +325,7 @@ export async function runReadingStep(
     models.skipped.push(`reading: no agent receives the inbox "${name}"`);
   const { due, total } = await dueConversations(
     base,
-    tenantId,
+    m,
     received,
     windowStart,
     deps.perRound ?? READINGS_PER_ROUND,
@@ -514,6 +519,10 @@ export async function runReadingStep(
         .filter((f) => f.attribute && values[f.key])
         .map((f) => [f.key, values[f.key] as string]),
     );
+    // Only the copy obeys the monitor as saved now (config.ts, copyStillSaved): a field whose copy was
+    // switched off, or an inbox taken off, mid-round loses its copy, never its reading, which is paid
+    // for and counts. A reset or the round's end calls off both.
+    let copyRefused = false;
     if (Object.keys(toChatwoot).length > 0) {
       try {
         await client.setConversationCustomAttributes(
@@ -521,30 +530,40 @@ export async function runReadingStep(
           toChatwoot,
           {
             asAdmin: true,
-            stillWanted: async () => !(await resetMoved()) && !cut.aborted,
+            stillWanted: async () => {
+              if ((await resetMoved()) || cut.aborted) return false;
+              copyRefused = !(await copyStillSaved(
+                base,
+                m,
+                c.inboxId,
+                Object.keys(toChatwoot),
+              ));
+              return !copyRefused;
+            },
           },
         );
       } catch (err) {
         if (
-          err instanceof ChatwootCalledOffError ||
-          err instanceof ChatwootExpiredError
+          (err instanceof ChatwootCalledOffError ||
+            err instanceof ChatwootExpiredError) &&
+          !copyRefused
         )
           return "withdrawn";
         // The attribute is a copy for folders; the reading is what the monitor counts, so a failed
-        // copy is logged and the reading is still stored.
-        logger.warn(
-          { tenantId: String(tenantId), conversationId: String(c.id), err },
-          "occurrence reading: the attribute copy failed",
-        );
+        // or refused copy is logged and the reading is still stored.
+        if (!copyRefused)
+          logger.warn(
+            { tenantId: String(tenantId), conversationId: String(c.id), err },
+            "occurrence reading: the attribute copy failed",
+          );
       }
     }
     if (await resetMoved()) return "withdrawn";
     try {
       await upsertReadings(
         base,
-        tenantId,
+        m,
         c.id,
-        null,
         values,
         now(),
         () => cut.aborted,
@@ -554,7 +573,7 @@ export async function runReadingStep(
       if (err instanceof ReadingsExpiredError) return "withdrawn";
       throw err;
     }
-    await markRead(base, tenantId, c, now());
+    await markRead(base, m, c, now());
     return "read";
   }
 
@@ -566,6 +585,18 @@ export async function runReadingStep(
   const worker = async () => {
     while (next < due.length) {
       if (halted || cut.aborted) return;
+      // A monitor deleted mid-round reads nothing more: there is nowhere to keep a reading, and each
+      // one is a paid call.
+      if (
+        (await readMonitorOccurrences(tenantId, m.monitorId, base).catch(
+          () => undefined,
+        )) === null
+      ) {
+        halted = true;
+        return;
+      }
+      // Another worker may have taken the last one while this one asked.
+      if (halted || cut.aborted || next >= due.length) return;
       const c = due[next] as DueConversation;
       next += 1;
       started += 1;
@@ -583,7 +614,7 @@ export async function runReadingStep(
       else if (outcome === "withdrawn") summary.withdrawn += 1;
       else if (outcome === "failed") {
         summary.failed += 1;
-        await markFailed(base, tenantId, c).catch(() => undefined);
+        await markFailed(base, m, c).catch(() => undefined);
       }
       // A deferred read stays due and does not stop the others.
       if (outcome === "deferred") started -= 1;

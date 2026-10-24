@@ -46,6 +46,7 @@ import {
 import {
   type InboxOption,
   OccurrenceInboxesSection,
+  type OtherMonitor,
 } from "./OccurrenceInboxes";
 import {
   EMPTY_MODEL,
@@ -122,7 +123,7 @@ function rowKeys(rows: FieldRow[]): string[] {
 
 // The inboxes with the account beside a repeated name, as the Dashboards pickers name them. Without the
 // filter options the names still show, only without the account.
-async function loadInboxOptions(): Promise<InboxOption[] | null> {
+export async function loadInboxOptions(): Promise<InboxOption[] | null> {
   const [res, options] = await Promise.all([
     api.api.v1.chatwoot.inboxes.get(),
     api.api.v1.metrics["filter-options"].get().catch(() => null),
@@ -169,6 +170,8 @@ function Section({
 // and how often the rounds run. The reason and the reference are two fixed fields, filled with their
 // defaults on a monitor that has none; any other field is an additional one.
 export function OccurrenceSettings({
+  monitorId,
+  otherMonitors = [],
   onLoaded,
   onSaved,
   onDirtyChange,
@@ -176,6 +179,9 @@ export function OccurrenceSettings({
   reloadKey = 0,
   active = true,
 }: {
+  monitorId: string;
+  // The account's other monitors, so an inbox one of them also reads says so.
+  otherMonitors?: OtherMonitor[];
   onLoaded?: (c: OccurrencesConfig) => void;
   onSaved?: (c: OccurrencesConfig) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -191,6 +197,8 @@ export function OccurrenceSettings({
   const [saved, setSaved] = useState<OccurrencesConfig | null>(null);
   const [inboxes, setInboxes] = useState<InboxOption[]>([]);
   const [saving, setSaving] = useState(false);
+  // Why the last save was refused, kept on the page (a toast goes away) until the next save.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [enabled, setEnabled] = useState(false);
   const [inboxIds, setInboxIds] = useState<string[]>([]);
@@ -264,7 +272,7 @@ export function OccurrenceSettings({
     setLoading(true);
     setFailed(false);
     const [cfg, roster] = await Promise.all([
-      api.api.v1.occurrences.config.get(),
+      api.api.v1.occurrences.monitors({ id: monitorId }).config.get(),
       loadInboxOptions(),
     ]);
     if (cfg.error || !cfg.data || roster === null) {
@@ -276,7 +284,7 @@ export function OccurrenceSettings({
     setInboxes(roster);
     onLoaded?.(cfg.data.occurrences);
     setLoading(false);
-  }, [adopt, onLoaded]);
+  }, [adopt, onLoaded, monitorId]);
 
   useEffect(() => {
     void load();
@@ -414,6 +422,7 @@ export function OccurrenceSettings({
 
   async function save() {
     setSaving(true);
+    setSaveError(null);
     try {
       // Only what changed: a value sent unchanged is a value the server checks again.
       const patch = Object.fromEntries(
@@ -426,7 +435,9 @@ export function OccurrenceSettings({
       ) as typeof draft;
       // Which row went out under which key, so a row saved while another box is edited keeps it.
       const sent = new Map(fields.map((f, i) => [f._id, keys[i] ?? ""]));
-      const { data, error } = await api.api.v1.occurrences.config.put(patch);
+      const { data, error } = await api.api.v1.occurrences
+        .monitors({ id: monitorId })
+        .config.put(patch);
       if (error || !data) throw error ?? new Error("no data");
       // An edit made while the request was out stays on the form, still unsaved; the rows that were
       // saved take their key now, so renaming one later does not make a new field of it.
@@ -450,11 +461,11 @@ export function OccurrenceSettings({
       showToast(t("occurrences.saved", "Occurrence monitor saved."), "success");
       onSaved?.(data.occurrences);
     } catch (e) {
-      showToast(
+      const message =
         apiErrorMessage(e) ||
-          t("occurrences.saveError", "Could not save the occurrence monitor."),
-        "error",
-      );
+        t("occurrences.saveError", "Could not save the occurrence monitor.");
+      setSaveError(message);
+      showToast(message, "error");
     } finally {
       setSaving(false);
     }
@@ -680,6 +691,7 @@ export function OccurrenceSettings({
           {/* Whether the monitor as saved is working; a switch not saved yet changes nothing. */}
           {saved?.enabled && (
             <OccurrenceStatus
+              monitorId={monitorId}
               cadenceMinutes={saved.cadenceMinutes}
               reloadKey={reloadKey}
               active={active}
@@ -697,6 +709,7 @@ export function OccurrenceSettings({
           >
             <OccurrenceInboxesSection
               inboxes={inboxes}
+              otherMonitors={otherMonitors}
               value={inboxIds}
               onChange={setInboxIds}
             />
@@ -989,7 +1002,12 @@ export function OccurrenceSettings({
             </p>
           )}
 
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {saveError && (
+              <p role="alert" className="text-error text-sm">
+                {saveError}
+              </p>
+            )}
             <Button
               onClick={save}
               loading={saving}

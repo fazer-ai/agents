@@ -95,6 +95,22 @@ let filterInboxes: {
   account?: { id: number; name: string | null };
 }[] = [];
 
+// The account's monitors as the list gives them: by default the one these tests open.
+let extraMonitors: Record<string, unknown>[] = [];
+const monitorsList = (config: Record<string, unknown>) => [
+  {
+    id: "1",
+    name: "Ocorrências",
+    position: 0,
+    enabled: config.enabled ?? false,
+    inboxIds: config.inboxIds ?? [],
+    lastRun: null,
+    openThemes: 0,
+    runs: 0,
+  },
+  ...extraMonitors,
+];
+
 function installFetchStub(config: Record<string, unknown> = DEFAULTS) {
   requests.length = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -105,32 +121,46 @@ function installFetchStub(config: Record<string, unknown> = DEFAULTS) {
     const body =
       typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ method, path: url.pathname, body });
-    if (url.pathname === "/api/v1/occurrences/config" && method === "GET")
+    if (url.pathname === "/api/v1/occurrences/monitors" && method === "GET")
+      return json({ instance: {}, monitors: monitorsList(config), max: 10 });
+    if (
+      url.pathname === "/api/v1/occurrences/monitors/1/config" &&
+      method === "GET"
+    )
       return json({ instance: {}, occurrences: config });
-    if (url.pathname === "/api/v1/occurrences/config" && method === "PUT") {
+    if (
+      url.pathname === "/api/v1/occurrences/monitors/1/config" &&
+      method === "PUT"
+    ) {
       if (holdPut) await holdPut;
       const merged = { ...config, ...body };
       return json({ instance: {}, occurrences: merged });
     }
-    if (url.pathname === "/api/v1/occurrences/runs" && runsFailures > 0) {
+    if (
+      url.pathname === "/api/v1/occurrences/monitors/1/runs" &&
+      runsFailures > 0
+    ) {
       runsFailures -= 1;
       return json({}, 500);
     }
-    if (url.pathname === "/api/v1/occurrences/cost" && costFailures > 0) {
+    if (
+      url.pathname === "/api/v1/occurrences/monitors/1/cost" &&
+      costFailures > 0
+    ) {
       costFailures -= 1;
       return json({}, 500);
     }
-    if (url.pathname === "/api/v1/occurrences/cost")
+    if (url.pathname === "/api/v1/occurrences/monitors/1/cost")
       return json({
         instance: {},
         last7Days: { costUsd: 0.0123, calls: 7, unpricedCalls: 0 },
         last30Days: { costUsd: 0.5, calls: 31, unpricedCalls: 1 },
       });
-    if (url.pathname === "/api/v1/occurrences/themes")
+    if (url.pathname === "/api/v1/occurrences/monitors/1/themes")
       return json({ instance: {}, themes: [], total: 0 });
-    if (url.pathname === "/api/v1/occurrences/runs" && runsOverride)
+    if (url.pathname === "/api/v1/occurrences/monitors/1/runs" && runsOverride)
       return json({ instance: {}, ...runsOverride(url) });
-    if (url.pathname === "/api/v1/occurrences/runs")
+    if (url.pathname === "/api/v1/occurrences/monitors/1/runs")
       return json({
         instance: {},
         total: 4,
@@ -241,7 +271,7 @@ function LocationProbe() {
   return null;
 }
 
-const renderPanel = (path = "/resources/occurrences") =>
+const renderPanel = (path = "/resources/occurrences?monitor=1") =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <ToastProvider>
@@ -323,6 +353,7 @@ afterEach(() => {
   runsFailures = 0;
   costFailures = 0;
   filterInboxes = [];
+  extraMonitors = [];
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -718,7 +749,7 @@ describe("OccurrencesPanel", () => {
     installFetchStub();
     // Every read fails until the retry, however many times the screen asks.
     runsFailures = Number.POSITIVE_INFINITY;
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not read the rounds.");
     absent(screen.queryByText("No round has run yet."));
@@ -730,7 +761,7 @@ describe("OccurrencesPanel", () => {
 
   test("a cost that cannot be read says so and drops the old totals, while the rounds stay readable", async () => {
     installFetchStub();
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     expect(await screen.findByText("US$ 0.0123")).toBeTruthy();
     costFailures = 1;
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
@@ -745,7 +776,7 @@ describe("OccurrencesPanel", () => {
 
   test("a round whose calls had no price says so instead of a cost, and a partial cost says what it leaves out", async () => {
     installFetchStub();
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     expect(await screen.findByText("No price")).toBeTruthy();
     expect(screen.getByText("US$ 0.0021")).toBeTruthy();
     expect(screen.getByText("1 call with no price left out")).toBeTruthy();
@@ -784,7 +815,9 @@ describe("OccurrencesPanel", () => {
       });
       const reads = () =>
         requests.filter(
-          (r) => r.path === "/api/v1/occurrences/config" && r.method === "GET",
+          (r) =>
+            r.path === "/api/v1/occurrences/monitors/1/config" &&
+            r.method === "GET",
         ).length;
       const readsBefore = reads();
       await i18n.changeLanguage("pt-BR");
@@ -1004,7 +1037,7 @@ describe("OccurrencesPanel", () => {
 
   test("the open tab is in the URL: a link opens it, Back returns, and an unknown one opens the configuration", async () => {
     installFetchStub();
-    renderPanel("/resources/occurrences?tab=nope");
+    renderPanel("/resources/occurrences?monitor=1&tab=nope");
     await screen.findByText("Occurrence monitor");
     expect(
       screen
@@ -1012,12 +1045,12 @@ describe("OccurrencesPanel", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
     openTab("Rounds");
-    expect(location).toBe("/resources/occurrences?tab=rounds");
+    expect(location).toBe("/resources/occurrences?monitor=1&tab=rounds");
     expect(
       screen.getByRole("tab", { name: "Rounds" }).getAttribute("aria-selected"),
     ).toBe("true");
     openTab("Themes");
-    expect(location).toBe("/resources/occurrences?tab=themes");
+    expect(location).toBe("/resources/occurrences?monitor=1&tab=themes");
   });
 
   test("an edit on the configuration survives a look at another tab, and the tab says it is unsaved", async () => {
@@ -1257,7 +1290,7 @@ describe("OccurrencesPanel", () => {
         runs: ids.map(run),
       };
     };
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     expect(await screen.findByText("1 to 20 of 23")).toBeTruthy();
     expect(screen.getByText("US$ 0.0123")).toBeTruthy();
     expect(screen.getByText(/1 call with no price left out/)).toBeTruthy();
@@ -1285,7 +1318,9 @@ describe("OccurrencesPanel", () => {
     ).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));
     expect(await screen.findByText("21 to 23 of 23")).toBeTruthy();
-    const pages = requests.filter((r) => r.path === "/api/v1/occurrences/runs");
+    const pages = requests.filter(
+      (r) => r.path === "/api/v1/occurrences/monitors/1/runs",
+    );
     expect(pages.length).toBeGreaterThan(1);
     fireEvent.click(screen.getByRole("button", { name: /Previous/ }));
     expect(await screen.findByText("1 to 20 of 23")).toBeTruthy();
@@ -1450,7 +1485,7 @@ describe("OccurrencesPanel", () => {
         runs: Array.from({ length: 20 }, (_, i) => run(start + i)),
       };
     };
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     expect(await screen.findByText("1 to 20 of 60")).toBeTruthy();
     const next = screen.getByRole("button", { name: /Next/ });
     fireEvent.click(next);
@@ -1485,7 +1520,7 @@ describe("OccurrencesPanel", () => {
         runs: Array.from({ length: 20 }, (_, i) => run(start + i)),
       };
     };
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     expect(await screen.findByText("1 to 20 of 60")).toBeTruthy();
     runsFailures = Number.POSITIVE_INFINITY;
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));
@@ -1619,7 +1654,7 @@ describe("OccurrencesPanel", () => {
         },
       ],
     });
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     fireEvent.click(
       (
         await screen.findAllByRole("button", { expanded: false })
@@ -1674,7 +1709,7 @@ describe("OccurrencesPanel", () => {
         },
       ],
     });
-    renderPanel("/resources/occurrences?tab=rounds");
+    renderPanel("/resources/occurrences?monitor=1&tab=rounds");
     fireEvent.click(await screen.findByRole("button", { expanded: false }));
     const text =
       screen.getByText(/^Conversation reading: 3/).closest("ul")?.textContent ??

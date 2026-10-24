@@ -59,7 +59,13 @@ function eventDetail(e: ThemeEvent): {
   };
 }
 
-export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
+export function OccurrenceThemes({
+  monitorId,
+  active = true,
+}: {
+  monitorId: string;
+  active?: boolean;
+}) {
   const { t, i18n } = useTranslation();
   const [themes, setThemes] = useState<Theme[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -126,9 +132,9 @@ export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
 
   const load = useCallback(async () => {
     setFailed(false);
-    const res = await api.api.v1.occurrences.themes.get({
-      query: { limit: THEMES_LIMIT_RANGE.max },
-    });
+    const res = await api.api.v1.occurrences
+      .monitors({ id: monitorId })
+      .themes.get({ query: { limit: THEMES_LIMIT_RANGE.max } });
     if (res.error || !res.data) {
       setFailed(true);
       return;
@@ -141,7 +147,7 @@ export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
     setPage((p) =>
       Math.min(p, Math.max(0, Math.ceil(list.length / THEMES_PAGE) - 1)),
     );
-  }, []);
+  }, [monitorId]);
 
   // Read again each time the tab is opened, so the themes a round just placed are there.
   // biome-ignore lint/correctness/useExhaustiveDependencies: opening the tab is the trigger; refresh reads the open theme too.
@@ -166,7 +172,10 @@ export function OccurrenceThemes({ active = true }: { active?: boolean } = {}) {
   async function loadDetail(id: string) {
     const mine = ++seq.current;
     setDetail(null);
-    const res = await api.api.v1.occurrences.themes({ id }).get();
+    const res = await api.api.v1.occurrences
+      .monitors({ id: monitorId })
+      .themes({ themeId: id })
+      .get();
     if (mine !== seq.current) return;
     setDetail(
       !res.error && res.data

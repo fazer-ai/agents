@@ -26,11 +26,13 @@ const IDLE_MS = 60_000;
 // and 30 days above them. Pages are keyed on the last round shown (`nextBefore`), so a round that
 // starts while the operator reads never pushes a row onto the next page.
 export function OccurrenceRounds({
+  monitorId,
   monitorOn,
   active,
   reloadKey,
   watchMs = WATCH_MS,
 }: {
+  monitorId: string;
   monitorOn: boolean;
   active: boolean;
   // Bumped by the page after a save, so a monitor just switched on is watched at once.
@@ -52,31 +54,34 @@ export function OccurrenceRounds({
   const seq = useRef(0);
   const cursor = cursors[cursors.length - 1] ?? null;
 
-  const load = useCallback(async (before: string | null) => {
-    const mine = ++seq.current;
-    const [res, costRes] = await Promise.all([
-      api.api.v1.occurrences.runs.get({
-        query: {
-          limit: ROUNDS_PAGE,
-          ...(before === null ? {} : { before }),
-        },
-      }),
-      api.api.v1.occurrences.cost.get(),
-    ]);
-    if (mine !== seq.current) return;
-    // A failed cost read drops the totals instead of leaving older ones labeled as the last 7 and
-    // 30 days; the rounds stay usable either way.
-    const costOk = !costRes.error && !!costRes.data;
-    setCost(costOk ? costRes.data : null);
-    setCostFailed(!costOk);
-    if (res.error || !res.data) {
-      setFailed(true);
-      return;
-    }
-    setFailed(false);
-    setPage(res.data);
-    setPageFor(before);
-  }, []);
+  const load = useCallback(
+    async (before: string | null) => {
+      const mine = ++seq.current;
+      const [res, costRes] = await Promise.all([
+        api.api.v1.occurrences.monitors({ id: monitorId }).runs.get({
+          query: {
+            limit: ROUNDS_PAGE,
+            ...(before === null ? {} : { before }),
+          },
+        }),
+        api.api.v1.occurrences.monitors({ id: monitorId }).cost.get(),
+      ]);
+      if (mine !== seq.current) return;
+      // A failed cost read drops the totals instead of leaving older ones labeled as the last 7 and
+      // 30 days; the rounds stay usable either way.
+      const costOk = !costRes.error && !!costRes.data;
+      setCost(costOk ? costRes.data : null);
+      setCostFailed(!costOk);
+      if (res.error || !res.data) {
+        setFailed(true);
+        return;
+      }
+      setFailed(false);
+      setPage(res.data);
+      setPageFor(before);
+    },
+    [monitorId],
+  );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is the trigger itself.
   useEffect(() => {

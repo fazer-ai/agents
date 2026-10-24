@@ -5,6 +5,7 @@ import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { sysCtx } from "./config";
 import type { RoundModels } from "./model";
+import type { MonitorKey } from "./monitors";
 import type { OccurrencesConfig } from "./settings";
 
 // THEMES (docs/occurrences.md, "Themes"). Every round a model assigns the reason sentences that are
@@ -120,7 +121,7 @@ const SAMPLE_SCAN = 100;
 
 async function samplesOf(
   db: ScopedDb,
-  tenantId: bigint,
+  monitorId: bigint,
   themeIds: bigint[],
   per: number,
 ): Promise<Map<bigint, string[]>> {
@@ -134,7 +135,7 @@ async function samplesOf(
       FROM (
         SELECT m.sentence, m.read_at
         FROM occurrence_theme_members m
-        WHERE m.tenant_id = ${tenantId} AND m.theme_id = t.id
+        WHERE m.monitor_id = ${monitorId} AND m.theme_id = t.id
         ORDER BY m.read_at DESC
         LIMIT ${SAMPLE_SCAN}
       ) recent
@@ -189,7 +190,7 @@ interface PendingSentence {
 // not pending, so it is never sent twice nor counted twice.
 async function pendingSentences(
   db: ScopedDb,
-  tenantId: bigint,
+  monitorId: bigint,
   reasonField: string,
   inboxIds: string[],
   limit: number,
@@ -201,7 +202,8 @@ async function pendingSentences(
       FROM conversation_readings r
       JOIN conversations c ON c.id = r.conversation_id
       LEFT JOIN occurrence_theme_members m ON m.conversation_id = r.conversation_id
-     WHERE r.tenant_id = ${tenantId}
+                                          AND m.monitor_id = r.monitor_id
+     WHERE r.monitor_id = ${monitorId}
        AND c.inbox_id = ANY(${inboxIds}::bigint[])
        AND r.field = ${reasonField}
        AND r.value <> ''
@@ -217,7 +219,7 @@ async function pendingSentences(
 
 export async function runAssignmentStep(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   cfg: OccurrencesConfig,
   models: RoundModels,
 ): Promise<AssignmentSummary> {
@@ -239,13 +241,14 @@ export async function runAssignmentStep(
       SELECT m.id, m.theme_id
         FROM occurrence_theme_members m
         JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.tenant_id = ${tenantId}
+       WHERE m.monitor_id = ${monitorId}
          AND (
            c.inbox_id IS NULL
            OR NOT (c.inbox_id = ANY(${cfg.inboxIds}::bigint[]))
            OR NOT EXISTS (
              SELECT 1 FROM conversation_readings r
               WHERE r.conversation_id = m.conversation_id
+                AND r.monitor_id = m.monitor_id
                 AND r.field = ${reason}
                 AND r.value <> ''))`;
     if (emptied.length === 0) return 0;
@@ -265,14 +268,14 @@ export async function runAssignmentStep(
       async (db) => {
         const pending = await pendingSentences(
           db,
-          tenantId,
+          monitorId,
           reason,
           cfg.inboxIds,
           SENTENCES_PER_CALL,
         );
         const themes = pending.length
           ? await db.occurrenceTheme.findMany({
-              where: { tenantId, status: "open" },
+              where: { monitorId, status: "open" },
               select: { id: true, title: true },
               orderBy: { lastSeenAt: { sort: "desc", nulls: "last" } },
               take: THEMES_SHOWN,
@@ -280,7 +283,7 @@ export async function runAssignmentStep(
           : [];
         const samples = await samplesOf(
           db,
-          tenantId,
+          monitorId,
           themes.map((t) => t.id),
           SAMPLES_PER_THEME,
         );
@@ -320,6 +323,7 @@ export async function runAssignmentStep(
         (
           await db.conversationReading.findMany({
             where: {
+              monitorId,
               conversationId: { in: pending.map((p) => p.conversationId) },
               field: reason,
             },
@@ -354,7 +358,7 @@ export async function runAssignmentStep(
         titles.length
           ? (
               await db.occurrenceTheme.createManyAndReturn({
-                data: titles.map((title) => ({ tenantId, title })),
+                data: titles.map((title) => ({ tenantId, monitorId, title })),
                 select: { id: true, title: true },
               })
             ).map((t) => [t.title, t.id])
@@ -367,13 +371,13 @@ export async function runAssignmentStep(
       const convs = rows.map((r) => r.p.conversationId);
       const before = convs.length
         ? await db.occurrenceThemeMember.findMany({
-            where: { conversationId: { in: convs } },
+            where: { monitorId, conversationId: { in: convs } },
             select: { themeId: true },
           })
         : [];
       if (convs.length) {
         await db.occurrenceThemeMember.deleteMany({
-          where: { conversationId: { in: convs } },
+          where: { monitorId, conversationId: { in: convs } },
         });
         await db.occurrenceThemeMember.createMany({
           data: rows.flatMap(({ p, themeId }) =>
@@ -382,6 +386,7 @@ export async function runAssignmentStep(
               : [
                   {
                     tenantId,
+                    monitorId,
                     themeId,
                     conversationId: p.conversationId,
                     sentence: p.sentence,
@@ -420,7 +425,7 @@ export interface ConsolidationSummary {
 // redirect is always one step: A into B and then B into C leaves A and B both pointing at C.
 async function mergeTheme(
   db: ScopedDb,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   absorbed: bigint,
   survivor: bigint,
   runId: bigint | null,
@@ -435,12 +440,13 @@ async function mergeTheme(
     data: { status: "merged", mergedIntoId: survivor, flags: [] },
   });
   await db.occurrenceTheme.updateMany({
-    where: { tenantId, mergedIntoId: absorbed },
+    where: { monitorId, mergedIntoId: absorbed },
     data: { mergedIntoId: survivor },
   });
   await db.occurrenceThemeEvent.create({
     data: {
       tenantId,
+      monitorId,
       kind: "merge",
       themeId: absorbed,
       intoId: survivor,
@@ -453,7 +459,7 @@ async function mergeTheme(
 
 export async function runConsolidationStep(
   base: PrismaClient,
-  tenantId: bigint,
+  m: MonitorKey,
   models: RoundModels,
   runId: bigint | null,
 ): Promise<ConsolidationSummary> {
@@ -463,12 +469,13 @@ export async function runConsolidationStep(
     renames: 0,
     completed: true,
   };
+  const { tenantId, monitorId } = m;
   const { themes, counts, samples } = await runScopedOn(
     base,
     sysCtx(tenantId),
     async (db) => {
       const themes = await db.occurrenceTheme.findMany({
-        where: { tenantId, status: "open" },
+        where: { monitorId, status: "open" },
         select: { id: true, title: true },
         orderBy: { lastSeenAt: { sort: "desc", nulls: "last" } },
         take: THEMES_SHOWN,
@@ -481,7 +488,7 @@ export async function runConsolidationStep(
       const counts = new Map(grouped.map((g) => [g.themeId, g._count._all]));
       const samples = await samplesOf(
         db,
-        tenantId,
+        monitorId,
         themes.map((t) => t.id),
         CONSOLIDATION_SAMPLES,
       );
@@ -509,13 +516,13 @@ export async function runConsolidationStep(
   const into = new Map<bigint, bigint>();
   // Each absorbed theme keeps the reason of its own merge, also when a chain sends it further.
   const mergeReason = new Map<bigint, string | null>();
-  for (const m of answer.merges) {
-    const a = parseThemeRef(m.absorbed);
-    const b = parseThemeRef(m.into);
+  for (const merge of answer.merges) {
+    const a = parseThemeRef(merge.absorbed);
+    const b = parseThemeRef(merge.into);
     if (a === null || b === null || a === b || !open.has(a) || !open.has(b))
       continue;
     into.set(a, b);
-    mergeReason.set(a, reasonOf(m.reason));
+    mergeReason.set(a, reasonOf(merge.reason));
   }
   const final = (id: bigint): bigint => {
     const seen = new Set<bigint>();
@@ -533,7 +540,7 @@ export async function runConsolidationStep(
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       mergeTheme(
         db,
-        tenantId,
+        m,
         absorbed,
         survivor,
         runId,
@@ -567,7 +574,7 @@ export async function runConsolidationStep(
         ...parts.map((p, i) => `${i}. ${p}`),
         "",
         "Sentences:",
-        ...members.map((m, i) => `${i}. ${m.sentence}`),
+        ...members.map((member, i) => `${i}. ${member.sentence}`),
       ].join("\n"),
       PARTITION_ANSWER,
     );
@@ -582,7 +589,7 @@ export async function runConsolidationStep(
         ids.push(
           (
             await db.occurrenceTheme.create({
-              data: { tenantId, title },
+              data: { tenantId, monitorId, title },
               select: { id: true },
             })
           ).id,
@@ -593,9 +600,9 @@ export async function runConsolidationStep(
         if (p.part >= 0 && p.part < parts.length) placed.set(p.i, p.part);
       // One update per part, not per member, so a split at the cap stays inside the transaction.
       const byPart = new Map<number, bigint[]>();
-      for (const [i, m] of members.entries()) {
+      for (const [i, member] of members.entries()) {
         const part = placed.get(i) ?? 0;
-        byPart.set(part, [...(byPart.get(part) ?? []), m.id]);
+        byPart.set(part, [...(byPart.get(part) ?? []), member.id]);
       }
       for (const [part, memberIds] of byPart)
         await db.occurrenceThemeMember.updateMany({
@@ -614,6 +621,7 @@ export async function runConsolidationStep(
       await db.occurrenceThemeEvent.create({
         data: {
           tenantId,
+          monitorId,
           kind: "split",
           themeId: id,
           runId,
@@ -640,6 +648,7 @@ export async function runConsolidationStep(
       await db.occurrenceThemeEvent.create({
         data: {
           tenantId,
+          monitorId,
           kind: "rename",
           themeId: id,
           runId,

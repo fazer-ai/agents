@@ -15,11 +15,13 @@ const STATUS_MS = 60_000;
 // in words when it failed or a step did not complete) and when the next one is expected. The next
 // round is armed one cadence after the last one ends (round.ts, occurrenceRoundHandler).
 export function OccurrenceStatus({
+  monitorId,
   cadenceMinutes,
   reloadKey = 0,
   active = true,
   onShowRounds,
 }: {
+  monitorId: string;
   cadenceMinutes: number;
   reloadKey?: number;
   active?: boolean;
@@ -31,12 +33,14 @@ export function OccurrenceStatus({
 
   const load = useCallback(async () => {
     const mine = ++seq.current;
-    const res = await api.api.v1.occurrences.runs.get({ query: { limit: 1 } });
+    const res = await api.api.v1.occurrences
+      .monitors({ id: monitorId })
+      .runs.get({ query: { limit: 1 } });
     if (mine !== seq.current) return;
     // A failed read keeps what was shown: this line is a summary, the Rounds tab says the error.
     if (res.error || !res.data) return;
     setLast(res.data.runs[0] ?? null);
-  }, []);
+  }, [monitorId]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is the trigger itself.
   useEffect(() => {

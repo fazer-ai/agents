@@ -200,6 +200,7 @@ model Tenant {
   dashboardDataSources          DashboardDataSource[]
   conversationReadings          ConversationReading[]
   occurrenceConversationReads   OccurrenceConversationRead[]
+  occurrenceMonitors            OccurrenceMonitor[]
   occurrenceRuns                OccurrenceRun[]
   dashboardViewers              DashboardViewer[]
   dashboardViewerSessions       DashboardViewerSession[]
@@ -1268,18 +1269,18 @@ model Conversation {
   createdAt                       DateTime  @default(now()) @map("created_at")
   updatedAt                       DateTime  @updatedAt @map("updated_at")
 
-  tenant                Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance              ChatwootInstance            @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
-  inbox                 Inbox?                      @relation(fields: [inboxId], references: [id], onDelete: SetNull)
-  contact               Contact?                    @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  replyClaims           MessageReplyClaim[]
-  turnDeliveries        AgentTurnDelivery[]
-  replyDispensals       ReplyDispensal[]
-  ruleStates            DecisionRuleState[]
-  ruleClaims            DecisionRuleClaim[]
-  readings              ConversationReading[]
-  occurrenceRead        OccurrenceConversationRead?
-  occurrenceThemeMember OccurrenceThemeMember?
+  tenant                 Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance               ChatwootInstance             @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  inbox                  Inbox?                       @relation(fields: [inboxId], references: [id], onDelete: SetNull)
+  contact                Contact?                     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  replyClaims            MessageReplyClaim[]
+  turnDeliveries         AgentTurnDelivery[]
+  replyDispensals        ReplyDispensal[]
+  ruleStates             DecisionRuleState[]
+  ruleClaims             DecisionRuleClaim[]
+  readings               ConversationReading[]
+  occurrenceReads        OccurrenceConversationRead[]
+  occurrenceThemeMembers OccurrenceThemeMember[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
@@ -3426,9 +3427,40 @@ model DashboardDirty {
 // one row per conversation and declared field, written by the `record_reading` tool. The fields are the
 // account's (`tenant.settings.occurrences.fields`), so `field` is whatever key it declared. Counting
 // "new conversations" reads `first_read_at`, which a later change of value does not move.
+// One occurrence monitor of an account (docs/occurrences.md): its name and the configuration an admin
+// chooses (the inboxes it reads, the fields, the thresholds, the model, the cadences), validated by
+// modules/occurrences/settings.ts. Its readings, themes, canonicals and rounds are its own rows; the
+// spending cap, prices and vault stay the account's. `position` orders the list, and the account's
+// first monitor (the lowest) is the one the paths without a monitor id answer for.
+model OccurrenceMonitor {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  name      String
+  config    Json     @default("{}")
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant            Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  readings          ConversationReading[]
+  conversationReads OccurrenceConversationRead[]
+  runs              OccurrenceRun[]
+  themes            OccurrenceTheme[]
+  members           OccurrenceThemeMember[]
+  events            OccurrenceThemeEvent[]
+  canonicals        OccurrenceCanonical[]
+  aliases           OccurrenceAlias[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, position])
+  @@map("occurrence_monitors")
+}
+
 model ConversationReading {
   id               BigInt    @id @default(autoincrement())
   tenantId         BigInt    @map("tenant_id")
+  // The monitor that read it: two monitors reading one conversation keep a reading each.
+  monitorId        BigInt    @map("monitor_id")
   conversationId   BigInt    @map("conversation_id")
   field            String
   value            String
@@ -3453,14 +3485,16 @@ model ConversationReading {
   copyTriedAt      DateTime? @map("copy_tried_at")
 
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor    @relation(fields: [monitorId], references: [id], onDelete: Cascade)
   conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   canonical    OccurrenceCanonical? @relation(fields: [canonicalId], references: [id], onDelete: SetNull)
 
-  @@unique([conversationId, field])
+  @@unique([monitorId, conversationId, field])
+  @@index([conversationId])
   @@index([canonicalId])
-  @@index([tenantId, field, firstReadAt])
+  @@index([monitorId, field, firstReadAt])
   // The round counts what was read in its window.
-  @@index([tenantId, field, lastReadAt])
+  @@index([monitorId, field, lastReadAt])
   @@map("conversation_readings")
 }
 
@@ -3472,7 +3506,8 @@ model ConversationReading {
 model OccurrenceConversationRead {
   id                     BigInt    @id @default(autoincrement())
   tenantId               BigInt    @map("tenant_id")
-  conversationId         BigInt    @unique @map("conversation_id")
+  monitorId              BigInt    @map("monitor_id")
+  conversationId         BigInt    @map("conversation_id")
   readInboundAt          DateTime? @map("read_inbound_at")
   // The covered message's Chatwoot id: two messages in one second share `readInboundAt`.
   readInboundMessageId   Int?      @map("read_inbound_message_id")
@@ -3482,10 +3517,13 @@ model OccurrenceConversationRead {
   // The failed message's Chatwoot id, beside its time, as `readInboundMessageId`.
   failedInboundMessageId Int?      @map("failed_inbound_message_id")
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
+  @@unique([monitorId, conversationId])
   @@index([tenantId])
+  @@index([conversationId])
   @@map("occurrence_conversation_reads")
 }
 
@@ -3494,6 +3532,7 @@ model OccurrenceConversationRead {
 model OccurrenceRun {
   id            BigInt    @id @default(autoincrement())
   tenantId      BigInt    @map("tenant_id")
+  monitorId     BigInt    @map("monitor_id")
   startedAt     DateTime  @default(now()) @map("started_at")
   finishedAt    DateTime? @map("finished_at")
   durationMs    Int?      @map("duration_ms")
@@ -3511,9 +3550,11 @@ model OccurrenceRun {
   // after the last round that did.
   consolidated  Boolean   @default(false)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, startedAt])
+  @@index([monitorId, startedAt])
   @@map("occurrence_runs")
 }
 
@@ -3522,24 +3563,27 @@ model OccurrenceRun {
 // `flags` is what the last round found (new, above_usual, concentrated), `flagReferenceId`
 // the canonical reference most of its window conversations share (the column keeps its first name).
 model OccurrenceTheme {
-  id            BigInt    @id @default(autoincrement())
-  tenantId      BigInt    @map("tenant_id")
-  title         String
-  status        String    @default("open")
-  mergedIntoId  BigInt?   @map("merged_into_id")
-  firstSeenAt   DateTime? @map("first_seen_at")
-  lastSeenAt    DateTime? @map("last_seen_at")
-  flags         String[]  @default([])
-  flagReferenceId BigInt? @map("flag_subject_id")
-  flaggedAt     DateTime? @map("flagged_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+  id              BigInt    @id @default(autoincrement())
+  tenantId        BigInt    @map("tenant_id")
+  monitorId       BigInt    @map("monitor_id")
+  title           String
+  status          String    @default("open")
+  mergedIntoId    BigInt?   @map("merged_into_id")
+  firstSeenAt     DateTime? @map("first_seen_at")
+  lastSeenAt      DateTime? @map("last_seen_at")
+  flags           String[]  @default([])
+  flagReferenceId BigInt?   @map("flag_subject_id")
+  flaggedAt       DateTime? @map("flagged_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
   tenant  Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor       @relation(fields: [monitorId], references: [id], onDelete: Cascade)
   members OccurrenceThemeMember[]
   events  OccurrenceThemeEvent[]
 
   @@index([tenantId, status])
+  @@index([monitorId, status])
   @@map("occurrence_themes")
 }
 
@@ -3549,17 +3593,20 @@ model OccurrenceTheme {
 model OccurrenceThemeMember {
   id             BigInt   @id @default(autoincrement())
   tenantId       BigInt   @map("tenant_id")
+  monitorId      BigInt   @map("monitor_id")
   themeId        BigInt   @map("theme_id")
   conversationId BigInt   @map("conversation_id")
   sentence       String
   readAt         DateTime @map("read_at")
   assignedAt     DateTime @default(now()) @map("assigned_at")
 
-  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  theme        OccurrenceTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
-  conversation Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  theme        OccurrenceTheme   @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
-  @@unique([conversationId])
+  @@unique([monitorId, conversationId])
+  @@index([conversationId])
   @@index([tenantId, themeId, readAt])
   @@map("occurrence_theme_members")
 }
@@ -3569,6 +3616,7 @@ model OccurrenceThemeMember {
 model OccurrenceThemeEvent {
   id        BigInt   @id @default(autoincrement())
   tenantId  BigInt   @map("tenant_id")
+  monitorId BigInt   @map("monitor_id")
   kind      String
   themeId   BigInt   @map("theme_id")
   intoId    BigInt?  @map("into_id")
@@ -3576,10 +3624,12 @@ model OccurrenceThemeEvent {
   detail    Json     @default("{}")
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  theme  OccurrenceTheme @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  theme   OccurrenceTheme   @relation(fields: [themeId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, createdAt])
+  @@index([monitorId, createdAt])
   @@map("occurrence_theme_events")
 }
 
@@ -3588,6 +3638,7 @@ model OccurrenceThemeEvent {
 model OccurrenceCanonical {
   id           BigInt   @id @default(autoincrement())
   tenantId     BigInt   @map("tenant_id")
+  monitorId    BigInt   @map("monitor_id")
   // The reference field it was decided for: a field switched later starts its own dictionary.
   field        String   @default("")
   name         String
@@ -3595,10 +3646,12 @@ model OccurrenceCanonical {
   createdAt    DateTime @default(now()) @map("created_at")
 
   tenant   Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor  OccurrenceMonitor     @relation(fields: [monitorId], references: [id], onDelete: Cascade)
   aliases  OccurrenceAlias[]
   readings ConversationReading[]
 
-  @@unique([tenantId, field, name])
+  @@unique([monitorId, field, name])
+  @@index([tenantId])
   @@map("occurrence_canonicals")
 }
 
@@ -3608,14 +3661,17 @@ model OccurrenceCanonical {
 model OccurrenceAlias {
   id          BigInt   @id @default(autoincrement())
   tenantId    BigInt   @map("tenant_id")
+  monitorId   BigInt   @map("monitor_id")
   field       String   @default("")
   raw         String
   canonicalId BigInt   @map("canonical_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
   tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor   OccurrenceMonitor   @relation(fields: [monitorId], references: [id], onDelete: Cascade)
   canonical OccurrenceCanonical @relation(fields: [canonicalId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, field, raw])
+  @@unique([monitorId, field, raw])
+  @@index([tenantId])
   @@map("occurrence_aliases")
 }

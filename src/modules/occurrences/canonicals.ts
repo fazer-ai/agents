@@ -7,8 +7,9 @@ import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
-import { sysCtx } from "./config";
+import { copyStillSaved, sysCtx } from "./config";
 import type { RoundModels } from "./model";
+import type { MonitorKey } from "./monitors";
 import { REMOTE_BEFORE_MAX, readingValue } from "./readings";
 import type { OccurrencesConfig } from "./settings";
 
@@ -139,7 +140,7 @@ export async function rememberPosted(
 // happen (a failure, the round's budget) is tried again next round.
 async function copyCanonicalAttributes(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   key: string,
   inboxIds: string[],
   budget: AbortSignal,
@@ -149,7 +150,7 @@ async function copyCanonicalAttributes(
   const due = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversationReading.findMany({
       where: {
-        tenantId,
+        monitorId,
         field: key,
         canonicalId: { not: null },
         canonicalWritten: false,
@@ -164,7 +165,11 @@ async function copyCanonicalAttributes(
         writtenName: true,
         remoteBefore: true,
         conversation: {
-          select: { chatwootInstanceId: true, chatwootConversationId: true },
+          select: {
+            chatwootInstanceId: true,
+            chatwootConversationId: true,
+            inboxId: true,
+          },
         },
       },
       // Never tried first, then the ones that failed longest ago, so one that keeps failing cannot
@@ -265,6 +270,16 @@ async function copyCanonicalAttributes(
           // round.
           stillWanted: async () => {
             try {
+              // The monitor as saved now still copies the reference on this inbox (config.ts).
+              if (
+                !(await copyStillSaved(
+                  base,
+                  { tenantId, monitorId },
+                  r.conversation.inboxId,
+                  [key],
+                ))
+              )
+                return false;
               const still = await runScopedOn(base, sysCtx(tenantId), (db) =>
                 db.conversationReading.count({ where: unchanged(r) }),
               );
@@ -318,7 +333,7 @@ async function copyCanonicalAttributes(
 // bucket and is never sent nor given a canonical. A monitor with no reference field has nothing to fit.
 export async function runCanonicalStep(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   cfg: OccurrencesConfig,
   models: RoundModels,
 ): Promise<CanonicalStepSummary> {
@@ -335,7 +350,7 @@ export async function runCanonicalStep(
     db.conversationReading
       .findMany({
         where: {
-          tenantId,
+          monitorId,
           field: reference,
           canonicalId: null,
           value: { not: "" },
@@ -358,7 +373,7 @@ export async function runCanonicalStep(
   const raws = [...new Set(pending.map((p) => p.value))];
   const known = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const aliases = await db.occurrenceAlias.findMany({
-      where: { tenantId, field: reference, raw: { in: raws } },
+      where: { monitorId, field: reference, raw: { in: raws } },
       select: { raw: true, canonicalId: true },
     });
     const survivors = await survivorsOf(
@@ -397,7 +412,7 @@ export async function runCanonicalStep(
     const batch = unseen.slice(at, at + RAWS_PER_CALL);
     const names = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.occurrenceCanonical.findMany({
-        where: { tenantId, field: reference, mergedIntoId: null },
+        where: { monitorId, field: reference, mergedIntoId: null },
         select: { id: true, name: true },
         orderBy: { createdAt: "desc" },
         take: CANONICALS_SHOWN,
@@ -442,8 +457,8 @@ export async function runCanonicalStep(
             // name, created when absent. Two spellings given the same new name share it.
             const existing = await db.occurrenceCanonical.findUnique({
               where: {
-                tenantId_field_name: {
-                  tenantId,
+                monitorId_field_name: {
+                  monitorId,
                   field: reference,
                   name: wanted,
                 },
@@ -454,7 +469,7 @@ export async function runCanonicalStep(
               target = await survivorOf(db, existing.id);
             } else {
               const created = await db.occurrenceCanonical.create({
-                data: { tenantId, field: reference, name: wanted },
+                data: { tenantId, monitorId, field: reference, name: wanted },
                 select: { id: true, name: true },
               });
               summary.created += 1;
@@ -464,8 +479,16 @@ export async function runCanonicalStep(
           }
           if (!target) return null;
           await db.occurrenceAlias.upsert({
-            where: { tenantId_field_raw: { tenantId, field: reference, raw } },
-            create: { tenantId, field: reference, raw, canonicalId: target.id },
+            where: {
+              monitorId_field_raw: { monitorId, field: reference, raw },
+            },
+            create: {
+              tenantId,
+              monitorId,
+              field: reference,
+              raw,
+              canonicalId: target.id,
+            },
             update: { canonicalId: target.id },
           });
           return target;
@@ -481,7 +504,7 @@ export async function runCanonicalStep(
 // a slow or unreachable Chatwoot spends only what the analytical steps left.
 export async function runCanonicalCopy(
   base: PrismaClient,
-  tenantId: bigint,
+  m: MonitorKey,
   cfg: OccurrencesConfig,
   budget: AbortSignal,
   makeClient?: LoadChatwootClientDeps["makeClient"],
@@ -491,7 +514,7 @@ export async function runCanonicalCopy(
   if (!field?.attribute) return 0;
   return copyCanonicalAttributes(
     base,
-    tenantId,
+    m,
     field.key,
     cfg.inboxIds,
     budget,
@@ -511,7 +534,7 @@ export interface CanonicalMergeSummary {
 // keep the name they have, so a folder built on it keeps its conversations.
 export async function runCanonicalConsolidation(
   base: PrismaClient,
-  tenantId: bigint,
+  { tenantId, monitorId }: MonitorKey,
   cfg: OccurrencesConfig,
   models: RoundModels,
 ): Promise<CanonicalMergeSummary> {
@@ -520,7 +543,7 @@ export async function runCanonicalConsolidation(
   if (reference === null) return summary;
   const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.occurrenceCanonical.findMany({
-      where: { tenantId, field: reference, mergedIntoId: null },
+      where: { monitorId, field: reference, mergedIntoId: null },
       select: { id: true, name: true, _count: { select: { readings: true } } },
       orderBy: { createdAt: "desc" },
       take: CANONICALS_SHOWN,
@@ -564,15 +587,15 @@ export async function runCanonicalConsolidation(
         data: { mergedIntoId: survivor },
       });
       await db.occurrenceCanonical.updateMany({
-        where: { tenantId, mergedIntoId: absorbed },
+        where: { monitorId, mergedIntoId: absorbed },
         data: { mergedIntoId: survivor },
       });
       await db.occurrenceAlias.updateMany({
-        where: { tenantId, canonicalId: absorbed },
+        where: { monitorId, canonicalId: absorbed },
         data: { canonicalId: survivor },
       });
       await db.conversationReading.updateMany({
-        where: { tenantId, canonicalId: absorbed },
+        where: { monitorId, canonicalId: absorbed },
         data: { canonicalId: survivor },
       });
     });

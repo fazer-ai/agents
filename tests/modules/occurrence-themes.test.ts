@@ -14,7 +14,10 @@ import {
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootCalledOffError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { recordWatcherMediaRefusal } from "@/modules/contact-auth/media-refusal";
 import {
   rememberPosted,
@@ -22,6 +25,7 @@ import {
 } from "@/modules/occurrences/canonicals";
 import { flagsOf, runFlagsStep } from "@/modules/occurrences/flags";
 import { roundModels } from "@/modules/occurrences/model";
+import { updateOccurrencesSettings } from "@/modules/occurrences/monitors";
 import {
   READ_FAILURES_MAX,
   runReadingStep,
@@ -44,7 +48,6 @@ import {
 import { THEME_IS } from "@/modules/occurrences/themes";
 import { getTheme, listThemes } from "@/modules/occurrences/views";
 import type { ClaimedJob } from "@/modules/scheduler/service";
-import { updateOccurrencesSettings } from "@/modules/tenant-settings/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -257,12 +260,15 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
     model: step("m-occ"),
     ...over,
   };
-  await suDb.tenant.update({
-    where: { id: t.id },
+  const monitor = await suDb.occurrenceMonitor.create({
     data: {
-      settings: { occurrences: { ...cfg } } as unknown as Prisma.InputJsonValue,
+      tenantId: t.id,
+      name: "Ocorrências",
+      config: { ...cfg } as unknown as Prisma.InputJsonValue,
     },
   });
+  const monitorId = monitor.id;
+  const mkey = { tenantId: t.id, monitorId };
   let cw = 600 + seq * 1000;
   const conv = async (
     opts: { inboxId?: bigint; lastInboundAt?: Date | null } = {},
@@ -281,7 +287,7 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
       })
     ).id;
   const read = (id: bigint, values: Record<string, string>, at = new Date()) =>
-    upsertReadings(appDb, t.id, id, null, values, at);
+    upsertReadings(appDb, mkey, id, values, at);
   const calls: Call[] = [];
   const attributeWrites: Array<{
     conversation: number;
@@ -369,7 +375,7 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
         // As the real client: a write its fence calls off is rejected, not answered, and a fence that
         // throws reads as wanted (`stillWanted().catch(() => true)`).
         if (opts.stillWanted && !(await opts.stillWanted().catch(() => true)))
-          throw new Error("write no longer wanted");
+          throw new ChatwootCalledOffError("custom_attributes");
         await chatwoot.afterFence?.(conversation);
         attributeWrites.push({
           conversation,
@@ -392,7 +398,7 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
     c: OccurrencesConfig = cfg,
     signal?: AbortSignal,
   ) =>
-    runOccurrenceRound(t.id, c, {
+    runOccurrenceRound(mkey, c, {
       base: appDb,
       now: () => now,
       makeModel: (mc) => new ScriptedModel(mc, script, calls),
@@ -405,7 +411,7 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
     role: "TENANT_ADMIN",
   };
   const theme = (title: string) =>
-    suDb.occurrenceTheme.create({ data: { tenantId: t.id, title } });
+    suDb.occurrenceTheme.create({ data: { tenantId: t.id, monitorId, title } });
   // A member as the assignment leaves it: the conversation's reason reading holds the sentence,
   // first read when the member says.
   const member = async (
@@ -415,9 +421,16 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
     readAt = new Date(),
   ) => {
     await suDb.conversationReading.upsert({
-      where: { conversationId_field: { conversationId, field: "queixa" } },
+      where: {
+        monitorId_conversationId_field: {
+          monitorId,
+          conversationId,
+          field: "queixa",
+        },
+      },
       create: {
         tenantId: t.id,
+        monitorId,
         conversationId,
         field: "queixa",
         value: sentence,
@@ -427,11 +440,20 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
       update: { value: sentence, firstReadAt: readAt },
     });
     return suDb.occurrenceThemeMember.create({
-      data: { tenantId: t.id, themeId, conversationId, sentence, readAt },
+      data: {
+        tenantId: t.id,
+        monitorId,
+        themeId,
+        conversationId,
+        sentence,
+        readAt,
+      },
     });
   };
   return {
     tenantId: t.id,
+    monitorId,
+    key: mkey,
     rnd,
     inbox,
     otherInbox,
@@ -510,7 +532,7 @@ describe.skipIf(!dbUp)("assignment", () => {
       include: { members: true },
     });
     expect(created?.members.map((m) => m.conversationId)).toEqual([cb]);
-    const shown = await getTheme(a.ctx, t1.id, appDb);
+    const shown = await getTheme(a.ctx, a.monitorId, t1.id, appDb);
     const byConv = new Map(
       shown.conversationsShown.map((c) => [c.conversationId, c.sentence]),
     );
@@ -543,7 +565,7 @@ describe.skipIf(!dbUp)("assignment", () => {
         : nothing(step, user),
     );
     expect(
-      await suDb.occurrenceThemeMember.findUnique({
+      await suDb.occurrenceThemeMember.findFirst({
         where: { conversationId: c },
       }),
     ).toBeNull();
@@ -562,7 +584,7 @@ describe.skipIf(!dbUp)("assignment", () => {
         : nothing(step, user),
     );
     expect(await count(a.tenantId, t1.id)).toBe(0);
-    const m = await suDb.occurrenceThemeMember.findUnique({
+    const m = await suDb.occurrenceThemeMember.findFirst({
       where: { conversationId: c },
     });
     expect(m?.sentence).toBe("boleto nao gerado");
@@ -578,7 +600,7 @@ describe.skipIf(!dbUp)("assignment", () => {
       return { assignments: [{ i: 0, new: "Pix nao caiu" }] };
     });
     expect(
-      await suDb.occurrenceThemeMember.findUnique({
+      await suDb.occurrenceThemeMember.findFirst({
         where: { conversationId: c },
       }),
     ).toBeNull();
@@ -644,11 +666,11 @@ describe.skipIf(!dbUp)("assignment", () => {
       motivo,
     );
     expect(
-      await suDb.occurrenceThemeMember.findUnique({
+      await suDb.occurrenceThemeMember.findFirst({
         where: { conversationId: gone },
       }),
     ).toBeNull();
-    const kept = await suDb.occurrenceThemeMember.findUniqueOrThrow({
+    const kept = await suDb.occurrenceThemeMember.findFirstOrThrow({
       where: { conversationId: same },
     });
     expect(kept.readAt.toISOString()).toBe(fresh.toISOString());
@@ -696,7 +718,7 @@ describe.skipIf(!dbUp)("assignment", () => {
     await a.round(nothing);
     expect(a.calls.filter((c) => c.step === "assignment")).toEqual([]);
     expect(
-      await suDb.occurrenceThemeMember.findUnique({
+      await suDb.occurrenceThemeMember.findFirst({
         where: { conversationId: cleared },
       }),
     ).toBeNull();
@@ -741,12 +763,12 @@ describe.skipIf(!dbUp)("consolidation", () => {
       .filter((l) => l.startsWith("  - ")).length;
     expect(cSamples).toBeLessThan(30);
     expect(await count(a.tenantId, B.id)).toBe(7);
-    const b = await getTheme(a.ctx, B.id, appDb);
+    const b = await getTheme(a.ctx, a.monitorId, B.id, appDb);
     expect(b.conversationsShown.some((c) => c.sentence === "A frase 0")).toBe(
       true,
     );
     expect(
-      (await listThemes(a.ctx, {}, appDb)).map((t) => t.title),
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).map((t) => t.title),
     ).not.toContain("A");
     await a.round(script, new Date(t0.getTime() + 3_600_000), {
       ...a.cfg,
@@ -767,7 +789,9 @@ describe.skipIf(!dbUp)("consolidation", () => {
       [B.id, C.id],
     ]);
     // An absorbed theme answers as its survivor.
-    expect((await getTheme(a.ctx, A.id, appDb)).conversations).toBe(37);
+    expect(
+      (await getTheme(a.ctx, a.monitorId, A.id, appDb)).conversations,
+    ).toBe(37);
   });
 
   test("a mixed theme is split by the model's partition, and every sentence is kept (c11)", async () => {
@@ -922,7 +946,7 @@ describe.skipIf(!dbUp)("consolidation", () => {
       ["split", C.id, "R-SPLIT"],
       ["rename", D.id, "R-RENAME"],
     ]);
-    const survivor = await getTheme(a.ctx, A.id, appDb);
+    const survivor = await getTheme(a.ctx, a.monitorId, A.id, appDb);
     expect(
       survivor.events
         .map((e) => [
@@ -938,7 +962,8 @@ describe.skipIf(!dbUp)("consolidation", () => {
     const part = await suDb.occurrenceTheme.findFirstOrThrow({
       where: { tenantId: a.tenantId, title: "Pix" },
     });
-    const partEvents = (await getTheme(a.ctx, part.id, appDb)).events;
+    const partEvents = (await getTheme(a.ctx, a.monitorId, part.id, appDb))
+      .events;
     expect(partEvents.map((e) => [e.kind, e.themeTitle])).toEqual([
       ["split", "Pagamento"],
     ]);
@@ -949,7 +974,7 @@ describe.skipIf(!dbUp)("consolidation", () => {
         reason: "R-SPLIT",
       },
     ]);
-    const renamed = (await getTheme(a.ctx, D.id, appDb)).events;
+    const renamed = (await getTheme(a.ctx, a.monitorId, D.id, appDb)).events;
     expect(renamed.map((e) => e.detail)).toEqual([
       { from: "Duvida", to: "Titularidade", reason: "R-RENAME" },
     ]);
@@ -1001,10 +1026,9 @@ describe.skipIf(!dbUp)("consolidation", () => {
     });
     expect(part.mergedIntoId).toBe(X.id);
     for (const id of [X.id, part.id]) {
-      const kinds = (await getTheme(a.ctx, id, appDb)).events.map((e) => [
-        e.kind,
-        (e.detail as { reason?: string }).reason,
-      ]);
+      const kinds = (await getTheme(a.ctx, a.monitorId, id, appDb)).events.map(
+        (e) => [e.kind, (e.detail as { reason?: string }).reason],
+      );
       expect(kinds).toContainEqual(["split", "R-SPLIT"]);
       expect(kinds).toContainEqual(["merge", "R-M"]);
     }
@@ -1647,7 +1671,7 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     for (let i = 0; i < 2; i += 1)
       await runCanonicalCopy(
         appDb,
-        a.tenantId,
+        a.key,
         a.cfg,
         off,
         a.makeChatwootClient as never,
@@ -1691,9 +1715,8 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     await withdrawReadingCopies(appDb, a.tenantId, c);
     await upsertReadings(
       appDb,
-      a.tenantId,
+      a.key,
       c,
-      a.rnd.id,
       { unidade: "Loja Norte" },
       new Date(),
       undefined,
@@ -1704,9 +1727,8 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     // An observation that started in the new episode is copied as ever.
     await upsertReadings(
       appDb,
-      a.tenantId,
+      a.key,
       c,
-      a.rnd.id,
       { unidade: "Loja Sul" },
       new Date(),
       undefined,
@@ -1716,6 +1738,28 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     expect(copiesTo(a, cw)).toEqual([{ unidade: "Loja Sul (loja)" }]);
   });
 
+  test("is not written once the saved monitor no longer copies the reference, or no longer reads the inbox", async () => {
+    // The round holds the configuration it started with; the save since is what the copy obeys.
+    for (const saved of [
+      (cfg: OccurrencesConfig) => ({
+        ...cfg,
+        fields: cfg.fields.map((f) => ({ ...f, attribute: false })),
+      }),
+      (cfg: OccurrencesConfig) => ({ ...cfg, inboxIds: [] }),
+    ]) {
+      const a = await account();
+      const c = await a.conv();
+      const cw = await cwOf(c);
+      await a.read(c, { unidade: "Loja Norte" });
+      await suDb.occurrenceMonitor.update({
+        where: { id: a.monitorId },
+        data: { config: saved(a.cfg) as unknown as Prisma.InputJsonValue },
+      });
+      await a.round(tidy);
+      expect(copiesTo(a, cw)).toEqual([]);
+    }
+  });
+
   test("a reset before the reference's first fit is not undone by the fit", async () => {
     const a = await account();
     const c = await a.conv();
@@ -1723,8 +1767,8 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     await a.read(c, { unidade: "Loja Norte" });
     await withdrawReadingCopies(appDb, a.tenantId, c);
     await a.round(tidy);
-    const row = await suDb.conversationReading.findUniqueOrThrow({
-      where: { conversationId_field: { conversationId: c, field: "unidade" } },
+    const row = await suDb.conversationReading.findFirstOrThrow({
+      where: { conversationId: c, field: "unidade" },
     });
     expect(row.canonicalId).not.toBeNull();
     expect(copiesTo(a, cw)).toEqual([]);
@@ -1734,8 +1778,8 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     const a = await account();
     const c = await a.conv();
     await a.read(c, { unidade: "Loja Norte" });
-    const row = await suDb.conversationReading.findUniqueOrThrow({
-      where: { conversationId_field: { conversationId: c, field: "unidade" } },
+    const row = await suDb.conversationReading.findFirstOrThrow({
+      where: { conversationId: c, field: "unidade" },
     });
     const full = ["n1", "n2", "n3", "n4", "n5"];
     await suDb.conversationReading.update({
@@ -1754,8 +1798,8 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     const a = await account();
     const c = await a.conv();
     await a.read(c, { unidade: "Loja Norte" });
-    const row = await suDb.conversationReading.findUniqueOrThrow({
-      where: { conversationId_field: { conversationId: c, field: "unidade" } },
+    const row = await suDb.conversationReading.findFirstOrThrow({
+      where: { conversationId: c, field: "unidade" },
     });
     let release: () => void = () => undefined;
     const held = new Promise<void>((r) => {
@@ -1806,8 +1850,8 @@ describe.skipIf(!dbUp)("the canonical's copy in Chatwoot", () => {
     const a = await account();
     const c = await a.conv();
     await a.read(c, { unidade: "Loja Norte" });
-    const row = await suDb.conversationReading.findUniqueOrThrow({
-      where: { conversationId_field: { conversationId: c, field: "unidade" } },
+    const row = await suDb.conversationReading.findFirstOrThrow({
+      where: { conversationId: c, field: "unidade" },
     });
     // The copy's mark holds the row while the observer's correction arrives.
     let release: () => void = () => undefined;
@@ -2135,7 +2179,11 @@ describe.skipIf(!dbUp)("flags on the database", () => {
     const twice = await a.theme("Cobrado duas vezes");
     const four = await a.theme("Quatro so");
     const mega = await suDb.occurrenceCanonical.create({
-      data: { tenantId: a.tenantId, name: "Loja Central" },
+      data: {
+        tenantId: a.tenantId,
+        monitorId: a.monitorId,
+        name: "Loja Central",
+      },
     });
     // The observer has been reading for days.
     const old = await a.conv();
@@ -2157,6 +2205,7 @@ describe.skipIf(!dbUp)("flags on the database", () => {
           await suDb.conversationReading.create({
             data: {
               tenantId: a.tenantId,
+              monitorId: a.monitorId,
               conversationId: c,
               field: "unidade",
               value: "mega",
@@ -2173,7 +2222,12 @@ describe.skipIf(!dbUp)("flags on the database", () => {
     await add(twice.id, 15, recent, mega.id);
     await add(four.id, 4, recent);
     await a.round(nothing, now);
-    const flagged = await listThemes(a.ctx, { flaggedOnly: true }, appDb);
+    const flagged = await listThemes(
+      a.ctx,
+      a.monitorId,
+      { flaggedOnly: true },
+      appDb,
+    );
     const byTitle = new Map(flagged.map((t) => [t.title, t]));
     expect(byTitle.get("Pix nao confirma")?.flags).toEqual(["new"]);
     expect(byTitle.get("Pix nao confirma")?.conversations).toBe(8);
@@ -2184,9 +2238,9 @@ describe.skipIf(!dbUp)("flags on the database", () => {
     expect(byTitle.get("Cobrado duas vezes")?.reference).toBe("Loja Central");
     expect(byTitle.has("Duvida sobre pedido")).toBe(false);
     expect(byTitle.has("Quatro so")).toBe(false);
-    expect((await listThemes(a.ctx, {}, appDb)).map((t) => t.title)).toContain(
-      "Quatro so",
-    );
+    expect(
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).map((t) => t.title),
+    ).toContain("Quatro so");
   });
 });
 
@@ -2212,7 +2266,12 @@ describe.skipIf(!dbUp)("flags follow the saved block", () => {
     const now = new Date();
     const twice = await a.theme("Cobrado duas vezes");
     const one = await suDb.occurrenceCanonical.create({
-      data: { tenantId: a.tenantId, name: "Loja Central", field: "unidade" },
+      data: {
+        tenantId: a.tenantId,
+        monitorId: a.monitorId,
+        name: "Loja Central",
+        field: "unidade",
+      },
     });
     const recent = new Date(now.getTime() - 10 * 60_000);
     for (let i = 0; i < 15; i += 1) {
@@ -2221,6 +2280,7 @@ describe.skipIf(!dbUp)("flags follow the saved block", () => {
       await suDb.conversationReading.create({
         data: {
           tenantId: a.tenantId,
+          monitorId: a.monitorId,
           conversationId: c,
           field: "unidade",
           value: "loja",
@@ -2230,7 +2290,7 @@ describe.skipIf(!dbUp)("flags follow the saved block", () => {
     }
     await a.round(nothing, now);
     const flagged = async () =>
-      (await listThemes(a.ctx, { flaggedOnly: true }, appDb))[0];
+      (await listThemes(a.ctx, a.monitorId, { flaggedOnly: true }, appDb))[0];
     expect((await flagged())?.flags).toEqual(["new", "concentrated"]);
     expect((await flagged())?.reference).toBe("Loja Central");
     await updateOccurrencesSettings(a.ctx, { referenceField: null }, appDb);
@@ -2245,7 +2305,11 @@ describe.skipIf(!dbUp)("flags without a reference", () => {
     const now = new Date();
     const twice = await a.theme("Cobrado duas vezes");
     const one = await suDb.occurrenceCanonical.create({
-      data: { tenantId: a.tenantId, name: "Loja Central" },
+      data: {
+        tenantId: a.tenantId,
+        monitorId: a.monitorId,
+        name: "Loja Central",
+      },
     });
     const recent = new Date(now.getTime() - 10 * 60_000);
     // Every conversation carries the same canonical under the field that was the reference before.
@@ -2255,6 +2319,7 @@ describe.skipIf(!dbUp)("flags without a reference", () => {
       await suDb.conversationReading.create({
         data: {
           tenantId: a.tenantId,
+          monitorId: a.monitorId,
           conversationId: c,
           field: "unidade",
           value: "loja",
@@ -2263,7 +2328,12 @@ describe.skipIf(!dbUp)("flags without a reference", () => {
       });
     }
     await a.round(nothing, now);
-    const [theme] = await listThemes(a.ctx, { flaggedOnly: true }, appDb);
+    const [theme] = await listThemes(
+      a.ctx,
+      a.monitorId,
+      { flaggedOnly: true },
+      appDb,
+    );
     expect(theme?.title).toBe("Cobrado duas vezes");
     expect(theme?.flags).toEqual(["new"]);
     expect(theme?.reference ?? null).toBeNull();
@@ -2322,7 +2392,7 @@ describe.skipIf(!dbUp)("the round's cost, cadence and switch", () => {
     const run = await suDb.occurrenceRun.findFirstOrThrow({
       where: { tenantId: a.tenantId },
     });
-    const before = (await listOccurrenceRuns(a.ctx, 5, appDb))[0];
+    const before = (await listOccurrenceRuns(a.ctx, a.monitorId, 5, appDb))[0];
     // An adapter that ignored the cancellation writes its row once the run's totals are saved.
     await suDb.llmUsage.create({
       data: {
@@ -2334,7 +2404,7 @@ describe.skipIf(!dbUp)("the round's cost, cadence and switch", () => {
         costUsd: "0.0125",
       },
     });
-    const after = (await listOccurrenceRuns(a.ctx, 5, appDb))[0];
+    const after = (await listOccurrenceRuns(a.ctx, a.monitorId, 5, appDb))[0];
     expect(after?.modelCalls).toBe((before?.modelCalls ?? 0) + 1);
     expect(after?.costUsd).toBeCloseTo(0.0125, 6);
   });
@@ -2366,12 +2436,16 @@ describe.skipIf(!dbUp)("the round's cost, cadence and switch", () => {
     expect(
       a.calls.filter((c) => c.step === "consolidation").length,
     ).toBeLessThanOrEqual(1);
-    const job = { tenantId: a.tenantId } as ClaimedJob;
-    await suDb.tenant.update({
-      where: { id: a.tenantId },
+    const job = {
+      tenantId: a.tenantId,
+      payload: { monitorId: String(a.monitorId) },
+    } as unknown as ClaimedJob;
+    await suDb.occurrenceMonitor.update({
+      where: { id: a.monitorId },
       data: {
-        settings: {
-          occurrences: { ...a.cfg, enabled: false },
+        config: {
+          ...a.cfg,
+          enabled: false,
         } as unknown as Prisma.InputJsonValue,
       },
     });
@@ -2413,8 +2487,8 @@ describe.skipIf(!dbUp)("the reading step", () => {
       return hit ? answers[hit] : {};
     };
   const readingOf = (conversationId: bigint, field: string) =>
-    suDb.conversationReading.findUnique({
-      where: { conversationId_field: { conversationId, field } },
+    suDb.conversationReading.findFirst({
+      where: { conversationId, field },
     });
 
   test("reads the monitored inboxes' conversations and only those, with the field descriptions and no private note", async () => {
@@ -2446,7 +2520,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     expect(await readingOf(other.id, "queixa")).toBeNull();
     // Not even admitted for a later read.
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: other.id },
       }),
     ).toBeNull();
@@ -2461,6 +2535,188 @@ describe.skipIf(!dbUp)("the reading step", () => {
         (w) => (w.attrs as Record<string, unknown>).queixa !== undefined,
       ),
     ).toBe(false);
+  });
+
+  test("an inbox two monitors read is read by each, into its own readings, read marks and themes", async () => {
+    const a = await account();
+    const c = await customer(a, "o pix da loja norte não confirma");
+    const cfg2: OccurrencesConfig = {
+      ...a.cfg,
+      fields: [
+        {
+          key: "assunto",
+          name: "Assunto",
+          description: "Do que o cliente fala.",
+          attribute: false,
+        },
+      ],
+      reasonField: "assunto",
+      referenceField: null,
+    };
+    const second = await suDb.occurrenceMonitor.create({
+      data: {
+        tenantId: a.tenantId,
+        name: "Produtor",
+        position: 1,
+        config: cfg2 as unknown as Prisma.InputJsonValue,
+      },
+    });
+    const script: Script = (step, user) =>
+      step === "reading"
+        ? user.includes("assunto (Assunto)") ||
+          a.calls.at(-1)?.system.includes("assunto (Assunto)")
+          ? { assunto: "pagamento" }
+          : { unidade: "Loja Norte", queixa: "pix não confirma" }
+        : step === "assignment"
+          ? {
+              assignments: numbered(user, "New sentences:").map((s, i) => ({
+                i,
+                new: `Tema de ${s}`,
+              })),
+            }
+          : nothing(step, user);
+    await a.round(script);
+    await runOccurrenceRound(
+      { tenantId: a.tenantId, monitorId: second.id },
+      cfg2,
+      {
+        base: appDb,
+        now: () => new Date(),
+        makeModel: (mc) => new ScriptedModel(mc, script, a.calls),
+        makeChatwootClient: a.makeChatwootClient,
+      },
+    );
+    // Two readings of one conversation, one per monitor, each with its own fields.
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(2);
+    const readings = await suDb.conversationReading.findMany({
+      where: { conversationId: c.id },
+      select: { monitorId: true, field: true, value: true },
+      orderBy: [{ monitorId: "asc" }, { field: "asc" }],
+    });
+    expect(readings).toEqual([
+      { monitorId: a.monitorId, field: "queixa", value: "pix não confirma" },
+      { monitorId: a.monitorId, field: "unidade", value: "Loja Norte" },
+      { monitorId: second.id, field: "assunto", value: "pagamento" },
+    ]);
+    expect(
+      await suDb.occurrenceConversationRead.count({
+        where: { conversationId: c.id },
+      }),
+    ).toBe(2);
+    const members = await suDb.occurrenceThemeMember.findMany({
+      where: { conversationId: c.id },
+      select: { monitorId: true, sentence: true, theme: true },
+      orderBy: { monitorId: "asc" },
+    });
+    expect(
+      members.map((m) => [m.monitorId, m.sentence, m.theme.monitorId]),
+    ).toEqual([
+      [a.monitorId, "pix não confirma", a.monitorId],
+      [second.id, "pagamento", second.id],
+    ]);
+    // A monitor's due conversations are by its own read mark: the other one still waiting to read
+    // the conversation does not make it due here.
+    await suDb.occurrenceConversationRead.updateMany({
+      where: { conversationId: c.id, monitorId: second.id },
+      data: { readInboundAt: null, readInboundMessageId: null },
+    });
+    await a.round(script, new Date(Date.now() + 60_000));
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(2);
+    // Each monitor lists its own theme only.
+    const titles = async (monitorId: bigint) =>
+      (await listThemes(a.ctx, monitorId, {}, appDb)).map((t) => t.title);
+    expect(await titles(a.monitorId)).toEqual(["Tema de pix não confirma"]);
+    expect(await titles(second.id)).toEqual(["Tema de pagamento"]);
+    // And each round is its monitor's: the first ran twice.
+    expect(
+      await suDb.occurrenceRun.groupBy({
+        by: ["monitorId"],
+        where: { tenantId: a.tenantId },
+        _count: { _all: true },
+        orderBy: { monitorId: "asc" },
+      }),
+    ).toEqual([
+      { monitorId: a.monitorId, _count: { _all: 2 } },
+      { monitorId: second.id, _count: { _all: 1 } },
+    ]);
+  });
+
+  test("a monitor deleted while its reading is in flight writes nothing to Chatwoot", async () => {
+    const a = await account();
+    const c = await customer(a, "o pix da loja norte não confirma");
+    a.chatwoot.beforeWrite = async () => {
+      await suDb.occurrenceMonitor.delete({ where: { id: a.monitorId } });
+    };
+    // The round's own rows went with the monitor, so closing it fails: what matters is Chatwoot.
+    await a
+      .round(
+        reads({
+          "loja norte": { unidade: "Loja Norte", queixa: "pix não confirma" },
+        }),
+      )
+      .catch(() => {});
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+    expect(a.attributeWrites.filter((w) => w.conversation === c.cw)).toEqual(
+      [],
+    );
+    expect(
+      await suDb.conversationReading.count({ where: { conversationId: c.id } }),
+    ).toBe(0);
+  });
+
+  test("a reading's copy obeys the monitor as saved when it writes, not as the round read it", async () => {
+    const a = await account();
+    const c = await customer(a, "o pix da loja norte não confirma");
+    // While the model reads, the field's copy to Chatwoot is switched off (another monitor may take
+    // the attribute on this inbox now).
+    a.chatwoot.beforeWrite = async () => {
+      await suDb.occurrenceMonitor.update({
+        where: { id: a.monitorId },
+        data: {
+          config: {
+            ...a.cfg,
+            fields: a.cfg.fields.map((f) => ({ ...f, attribute: false })),
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+    };
+    await a.round(
+      reads({
+        "loja norte": { unidade: "Loja Norte", queixa: "pix não confirma" },
+      }),
+    );
+    expect(a.attributeWrites.filter((w) => w.conversation === c.cw)).toEqual(
+      [],
+    );
+    // Only the copy is called off: the reading is paid for, kept, and the conversation marked read.
+    expect((await readingOf(c.id, "queixa"))?.value).toBe("pix não confirma");
+    expect(
+      (
+        await suDb.occurrenceConversationRead.findFirstOrThrow({
+          where: { conversationId: c.id, monitorId: a.monitorId },
+        })
+      ).readAt,
+    ).not.toBeNull();
+  });
+
+  test("a monitor deleted mid-round starts no other reading", async () => {
+    const a = await account();
+    // More conversations than the step reads at once (READING_CONCURRENCY, 4).
+    const texts = Array.from({ length: 8 }, (_, i) => `conversa numero ${i}`);
+    for (const t of texts) await customer(a, t);
+    let reads = 0;
+    const script: Script = async (step, user) => {
+      if (step !== "reading") return nothing(step, user);
+      reads += 1;
+      if (reads === 1)
+        await suDb.occurrenceMonitor.delete({ where: { id: a.monitorId } });
+      return { queixa: "algo" };
+    };
+    await a.round(script).catch(() => {});
+    // The readings already in flight when it went may finish; none starts after.
+    expect(
+      a.calls.filter((x) => x.step === "reading").length,
+    ).toBeLessThanOrEqual(4);
   });
 
   test("a conversation is read again only after the customer writes again", async () => {
@@ -2507,7 +2763,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
       makeModel: (mc) =>
         new ScriptedModel(mc, () => ({ queixa: "algo" }), a.calls),
     });
-    const summary = await runReadingStep(appDb, a.tenantId, a.cfg, models, {
+    const summary = await runReadingStep(appDb, a.key, a.cfg, models, {
       makeChatwootClient: a.makeChatwootClient,
       perRound: 2,
     });
@@ -2526,7 +2782,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     const step = async (at: Date) =>
       runReadingStep(
         appDb,
-        a.tenantId,
+        a.key,
         a.cfg,
         await roundModels(a.tenantId, a.cfg, {
           base: appDb,
@@ -2571,12 +2827,12 @@ describe.skipIf(!dbUp)("the reading step", () => {
           a.calls,
         ),
     });
-    const summary = await runReadingStep(appDb, a.tenantId, a.cfg, models, {
+    const summary = await runReadingStep(appDb, a.key, a.cfg, models, {
       makeChatwootClient: a.makeChatwootClient,
     });
     expect(summary).toMatchObject({ read: 0, failed: 0 });
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: null, failures: 0 });
@@ -2596,7 +2852,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
         new ScriptedModel(mc, () => new Promise(() => {}), a.calls),
     });
     const t0 = Date.now();
-    const summary = await runReadingStep(appDb, a.tenantId, a.cfg, models, {
+    const summary = await runReadingStep(appDb, a.key, a.cfg, models, {
       makeChatwootClient: a.makeChatwootClient,
     });
     // Back with the round's other half still left for the themes and the flags.
@@ -2604,7 +2860,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     expect(models.budget.aborted).toBe(false);
     expect(summary).toMatchObject({ read: 0, failed: 0 });
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: null, failures: 0 });
@@ -2623,7 +2879,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     });
     // The page never answers on its own: it ends as the real client does, when the signal the
     // reading gave the client aborts.
-    const summary = await runReadingStep(appDb, a.tenantId, a.cfg, models, {
+    const summary = await runReadingStep(appDb, a.key, a.cfg, models, {
       makeChatwootClient: async (cfg) => {
         const real = await a.makeChatwootClient();
         return Object.assign(Object.create(real), {
@@ -2642,7 +2898,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     expect(models.budget.aborted).toBe(false);
     expect(summary).toMatchObject({ read: 0, failed: 0 });
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: null, failures: 0 });
@@ -2721,7 +2977,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     });
     // Still due: the next round reads the new episode.
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: null, failures: 0 });
@@ -2768,7 +3024,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     });
     await a.round(script);
     expect((await readingOf(c.id, "queixa"))?.value).toBe("pix não confirma");
-    const before = await suDb.occurrenceConversationRead.findUniqueOrThrow({
+    const before = await suDb.occurrenceConversationRead.findFirstOrThrow({
       where: { conversationId: c.id },
     });
     // The customer writes again, and Chatwoot answers the page with rows that do not parse.
@@ -2782,7 +3038,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
       deadline: Date.now() + 120_000,
       makeModel: (mc) => new ScriptedModel(mc, script, a.calls),
     });
-    const summary = await runReadingStep(appDb, a.tenantId, a.cfg, models, {
+    const summary = await runReadingStep(appDb, a.key, a.cfg, models, {
       makeChatwootClient: async () => {
         const real = await a.makeChatwootClient();
         return Object.assign(Object.create(real), {
@@ -2793,7 +3049,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     expect(summary).toMatchObject({ read: 0, failed: 1 });
     expect((await readingOf(c.id, "queixa"))?.value).toBe("pix não confirma");
     expect(
-      await suDb.occurrenceConversationRead.findUniqueOrThrow({
+      await suDb.occurrenceConversationRead.findFirstOrThrow({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: before.readInboundAt, failures: 1 });
@@ -2910,7 +3166,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     await a.round(script, new Date(Date.now() + 15 * MIN));
     expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(2);
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundMessageId: c.cw * 100 + 4 });
@@ -2958,7 +3214,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
       await a.round(script);
       expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(0);
       expect(
-        await suDb.occurrenceConversationRead.findUnique({
+        await suDb.occurrenceConversationRead.findFirst({
           where: { conversationId: c.id },
         }),
       ).toMatchObject({ readInboundAt: null, failures: 0 });
@@ -3100,7 +3356,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
       }) as ChatwootClient;
     };
     const round = (cfg: OccurrencesConfig, now = new Date()) =>
-      runOccurrenceRound(a.tenantId, cfg, {
+      runOccurrenceRound(a.key, cfg, {
         base: appDb,
         now: () => now,
         // Every reading answers, so a conversation read is marked read.
@@ -3209,20 +3465,20 @@ describe.skipIf(!dbUp)("the reading step", () => {
     await r.round({ ...r.a.cfg, recoverMedia: true });
     expect(
       (
-        await suDb.occurrenceConversationRead.findUniqueOrThrow({
+        await suDb.occurrenceConversationRead.findFirstOrThrow({
           where: { conversationId: image.id },
         })
       ).readInboundAt,
     ).not.toBeNull();
     expect(r.providers).toEqual({ stt: 0, vision: 0 });
     expect(
-      await suDb.occurrenceConversationRead.findUniqueOrThrow({
+      await suDb.occurrenceConversationRead.findFirstOrThrow({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ failures: 0 });
     expect(
       (
-        await suDb.occurrenceConversationRead.findUniqueOrThrow({
+        await suDb.occurrenceConversationRead.findFirstOrThrow({
           where: { conversationId: c.id },
         })
       ).readInboundAt,
@@ -3392,7 +3648,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
         new ScriptedModel(mc, () => ({ queixa: "contato" }), r.a.calls),
     });
     let stopped = false;
-    const summary = await runReadingStep(appDb, r.a.tenantId, cfg, models, {
+    const summary = await runReadingStep(appDb, r.a.key, cfg, models, {
       makeChatwootClient: r.makeChatwootClient,
       // A provider that never answers: the recovery waits until its share of the time is up.
       transcribe: (p) =>
@@ -3465,7 +3721,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
         new ScriptedModel(mc, () => ({ queixa: "contato" }), r.a.calls),
     });
     try {
-      await runReadingStep(appDb, r.a.tenantId, cfg, models, {
+      await runReadingStep(appDb, r.a.key, cfg, models, {
         makeChatwootClient: r.makeChatwootClient,
         visionFetch: r.visionFetch,
       });
@@ -3692,7 +3948,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     const step = async () =>
       runReadingStep(
         appDb,
-        a.tenantId,
+        a.key,
         a.cfg,
         await roundModels(a.tenantId, a.cfg, {
           base: appDb,
@@ -3765,7 +4021,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     for (let i = 0; i < READ_FAILURES_MAX; i += 1)
       await a.round(garbage, new Date(Date.now() + i * 15 * MIN));
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({
@@ -3780,7 +4036,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     // Its own first failure is its first, not the old message's fourth.
     await a.round(garbage, new Date(Date.now() + 60 * MIN));
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ failures: 1, failedInboundMessageId: c.cw * 100 + 4 });
@@ -3792,7 +4048,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
       READ_FAILURES_MAX + 2,
     );
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({
@@ -3821,7 +4077,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
       "reading: the credential does not resolve",
     ]);
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: null, failures: 0 });
@@ -3895,7 +4151,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     // stays due for the new episode.
     expect(await readingOf(c.id, "unidade")).toBeNull();
     expect(
-      await suDb.occurrenceConversationRead.findUnique({
+      await suDb.occurrenceConversationRead.findFirst({
         where: { conversationId: c.id },
       }),
     ).toMatchObject({ readInboundAt: null });
@@ -3919,7 +4175,7 @@ describe.skipIf(!dbUp)("the monitored inboxes", () => {
       }),
     ).toBe(1);
     expect(
-      (await listThemes(a.ctx, {}, appDb)).map((t) => t.title),
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).map((t) => t.title),
     ).not.toContain("Repasse atrasado");
     // With its inbox back on the list, the sentence is placed again.
     const both = {
@@ -3940,11 +4196,12 @@ describe.skipIf(!dbUp)("the monitored inboxes", () => {
   test("taking an inbox off the list takes its conversations off every read at once, and the flags are counted again", async () => {
     const a = await account();
     const both = [String(a.inbox.id), String(a.otherInbox.id)];
-    await suDb.tenant.update({
-      where: { id: a.tenantId },
+    await suDb.occurrenceMonitor.update({
+      where: { id: a.monitorId },
       data: {
-        settings: {
-          occurrences: { ...a.cfg, inboxIds: both },
+        config: {
+          ...a.cfg,
+          inboxIds: both,
         } as unknown as Prisma.InputJsonValue,
       },
     });
@@ -3966,8 +4223,9 @@ describe.skipIf(!dbUp)("the monitored inboxes", () => {
       data: { flags: ["new"], flaggedAt: new Date() },
     });
     expect(
-      (await listThemes(a.ctx, {}, appDb)).find((t) => t.id === String(t1.id))
-        ?.conversations,
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).find(
+        (t) => t.id === String(t1.id),
+      )?.conversations,
     ).toBe(2);
     await updateOccurrencesSettings(
       a.ctx,
@@ -3975,16 +4233,16 @@ describe.skipIf(!dbUp)("the monitored inboxes", () => {
       appDb,
     );
     // No round has run: the list, the theme and its flags already answer for the one inbox.
-    const listed = (await listThemes(a.ctx, {}, appDb)).find(
+    const listed = (await listThemes(a.ctx, a.monitorId, {}, appDb)).find(
       (t) => t.id === String(t1.id),
     );
     expect(listed?.conversations).toBe(1);
     expect(listed?.flags).toEqual([]);
     // One with no conversation left on the list is not shown.
     expect(
-      (await listThemes(a.ctx, {}, appDb)).map((t) => t.title),
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).map((t) => t.title),
     ).not.toContain("Repasse do produtor");
-    const shown = await getTheme(a.ctx, t1.id, appDb);
+    const shown = await getTheme(a.ctx, a.monitorId, t1.id, appDb);
     expect(shown.conversations).toBe(1);
     expect(shown.conversationsShown.map((c) => c.conversationId)).toEqual([
       String(inside),
@@ -4000,12 +4258,9 @@ describe.skipIf(!dbUp)("the monitored inboxes", () => {
         await a.conv({ inboxId: a.otherInbox.id }),
         `repasse ${i}`,
       );
-    // The round started when both inboxes were listed; the save already left only the first.
-    const stale = {
-      ...a.cfg,
-      inboxIds: [String(a.inbox.id), String(a.otherInbox.id)],
-    };
-    await runFlagsStep(appDb, a.tenantId, stale, new Date());
+    // The round started when both inboxes were listed; the save already left only the first, and
+    // the step reads the list from the monitor's row, not from the round's copy.
+    await runFlagsStep(appDb, a.key, new Date());
     const t = await suDb.occurrenceTheme.findUniqueOrThrow({
       where: { id: t1.id },
     });

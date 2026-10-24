@@ -9,6 +9,7 @@ import {
   pageOccurrenceRuns,
   parseSkipped,
   runSteps,
+  runThreadId,
 } from "@/modules/occurrences/runs";
 import { OCCURRENCE_STEPS } from "@/modules/occurrences/settings";
 import { countThemes, getTheme, listThemes } from "@/modules/occurrences/views";
@@ -192,6 +193,21 @@ if (!process.env.TEST_APP_DATABASE_URL) {
 describe.skipIf(!dbUp)("against the database", () => {
   let tenantId = 0n;
   let otherTenantId = 0n;
+  // The account's monitor, a second one of the same account, and the other account's.
+  let mon = 0n;
+  let mon2 = 0n;
+  let otherMon = 0n;
+  const monitor = async (tenant: bigint, name: string, position = 0) =>
+    (
+      await suDb.occurrenceMonitor.create({
+        data: { tenantId: tenant, name, position, config: {} },
+      })
+    ).id;
+  const setInboxes = (monitorId: bigint, inboxIds: string[]) =>
+    suDb.occurrenceMonitor.update({
+      where: { id: monitorId },
+      data: { config: { inboxIds } },
+    });
   const ctx = (id = tenantId): TenantContext => ({
     tenantId: id,
     userId: null,
@@ -209,6 +225,9 @@ describe.skipIf(!dbUp)("against the database", () => {
       ).id;
     tenantId = await mk("occ-console");
     otherTenantId = await mk("occ-console-other");
+    mon = await monitor(tenantId, "Ocorrências");
+    mon2 = await monitor(tenantId, "Produtor", 1);
+    otherMon = await monitor(otherTenantId, "Ocorrências");
   });
 
   afterAll(async () => {
@@ -224,16 +243,25 @@ describe.skipIf(!dbUp)("against the database", () => {
       await suDb.occurrenceRun.create({
         data: {
           tenantId,
+          monitorId: mon,
           startedAt: new Date(base.getTime() - i * 15 * minute),
           status: "ok",
           detail: { reading: { read: i, failed: 0, withdrawn: 0, pending: 0 } },
         },
       });
-    // Another account's rounds are neither listed nor counted.
+    // Another account's rounds, and another monitor's, are neither listed nor counted.
     await suDb.occurrenceRun.create({
-      data: { tenantId: otherTenantId, startedAt: base, status: "ok" },
+      data: {
+        tenantId: otherTenantId,
+        monitorId: otherMon,
+        startedAt: base,
+        status: "ok",
+      },
     });
-    const first = await pageOccurrenceRuns(ctx(), { limit: 2 }, appDb);
+    await suDb.occurrenceRun.create({
+      data: { tenantId, monitorId: mon2, startedAt: base, status: "ok" },
+    });
+    const first = await pageOccurrenceRuns(ctx(), mon, { limit: 2 }, appDb);
     expect(first.total).toBe(5);
     expect(first.runs.map((r) => r.steps.reading?.read)).toEqual([0, 1]);
     expect(first.nextBefore).not.toBeNull();
@@ -241,12 +269,14 @@ describe.skipIf(!dbUp)("against the database", () => {
     await suDb.occurrenceRun.create({
       data: {
         tenantId,
+        monitorId: mon,
         startedAt: new Date(base.getTime() + 15 * minute),
         status: "running",
       },
     });
     const second = await pageOccurrenceRuns(
       ctx(),
+      mon,
       { limit: 2, before: first.nextBefore },
       appDb,
     );
@@ -254,6 +284,7 @@ describe.skipIf(!dbUp)("against the database", () => {
     expect(second.total).toBe(6);
     const third = await pageOccurrenceRuns(
       ctx(),
+      mon,
       { limit: 2, before: second.nextBefore },
       appDb,
     );
@@ -265,12 +296,13 @@ describe.skipIf(!dbUp)("against the database", () => {
     });
     const foreign = await pageOccurrenceRuns(
       ctx(),
+      mon,
       { limit: 2, before: String(theirs.id) },
       appDb,
     );
     expect(foreign.runs).toEqual([]);
     await expect(
-      pageOccurrenceRuns(ctx(), { before: "abc" }, appDb),
+      pageOccurrenceRuns(ctx(), mon, { before: "abc" }, appDb),
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
@@ -280,15 +312,22 @@ describe.skipIf(!dbUp)("against the database", () => {
       data: { name: "occ-tied", slug: `occ-tied-${process.pid}` },
     });
     try {
+      const tiedMon = await monitor(tied.id, "Ocorrências");
       for (let i = 0; i < 3; i += 1)
         await suDb.occurrenceRun.create({
-          data: { tenantId: tied.id, startedAt: at, status: "ok" },
+          data: {
+            tenantId: tied.id,
+            monitorId: tiedMon,
+            startedAt: at,
+            status: "ok",
+          },
         });
       const ids: string[] = [];
       let before: string | null = null;
       for (let n = 0; n < 4; n += 1) {
         const page = await pageOccurrenceRuns(
           ctx(tied.id),
+          tiedMon,
           { limit: 1, before },
           appDb,
         );
@@ -306,12 +345,27 @@ describe.skipIf(!dbUp)("against the database", () => {
   test("the monitor's cost sums its steps' and its media recovery's ledger lines over 7 and 30 days, nothing else", async () => {
     const now = new Date();
     const day = 24 * 60 * minute;
-    const row = (node: string | null, ago: number, cost: number | null) =>
+    // Each monitor's calls carry their round's thread.
+    const runOf = async (monitorId: bigint) =>
+      (
+        await suDb.occurrenceRun.create({
+          data: { tenantId, monitorId, startedAt: now, status: "ok" },
+        })
+      ).id;
+    const mine = runThreadId(tenantId, await runOf(mon));
+    const theirs = runThreadId(tenantId, await runOf(mon2));
+    const row = (
+      node: string | null,
+      ago: number,
+      cost: number | null,
+      threadId: string | null = node?.startsWith("occurrence_") ? mine : null,
+    ) =>
       suDb.llmUsage.create({
         data: {
           tenantId,
           model: "m",
           node,
+          threadId,
           createdAt: new Date(now.getTime() - ago),
           costUsd: cost,
         },
@@ -328,17 +382,26 @@ describe.skipIf(!dbUp)("against the database", () => {
     await row("observer", day, 5);
     // Older than 30 days.
     await row("occurrence_reading", 40 * day, 9);
-    const cost = await occurrenceCost(ctx(), now, appDb);
+    // The account's other monitor: its calls are its own.
+    await row("occurrence_reading", day, 7, theirs);
+    await row("occurrence_assignment", day, null, theirs);
+    const cost = await occurrenceCost(ctx(), mon, now, appDb);
     expect(cost.last7Days.calls).toBe(5);
     expect(cost.last7Days.unpricedCalls).toBe(2);
     expect(cost.last7Days.costUsd).toBeCloseTo(0.035, 10);
     expect(cost.last30Days.calls).toBe(6);
     expect(cost.last30Days.costUsd).toBeCloseTo(0.135, 10);
-    const none = await occurrenceCost(ctx(otherTenantId), now, appDb);
+    const none = await occurrenceCost(ctx(otherTenantId), otherMon, now, appDb);
     expect(none.last30Days).toEqual({
       calls: 0,
       unpricedCalls: 0,
       costUsd: null,
+    });
+    const other = await occurrenceCost(ctx(), mon2, now, appDb);
+    expect(other.last7Days).toEqual({
+      calls: 2,
+      unpricedCalls: 1,
+      costUsd: 7,
     });
   });
 
@@ -379,13 +442,14 @@ describe.skipIf(!dbUp)("against the database", () => {
         },
       });
       const theme = await suDb.occurrenceTheme.create({
-        data: { tenantId, title: `Tema ${i}` },
+        data: { tenantId, monitorId: mon, title: `Tema ${i}` },
       });
       // The last theme has no conversation, so no list shows it.
       if (i < 3)
         await suDb.occurrenceThemeMember.create({
           data: {
             tenantId,
+            monitorId: mon,
             themeId: theme.id,
             conversationId: conv.id,
             sentence: "x",
@@ -394,18 +458,15 @@ describe.skipIf(!dbUp)("against the database", () => {
         });
     }
     // Only the monitored inboxes' conversations count: before the inbox is on the list, none does.
-    expect(await countThemes(ctx(), {}, appDb)).toBe(0);
-    await suDb.tenant.update({
-      where: { id: tenantId },
-      data: { settings: { occurrences: { inboxIds: [String(inbox.id)] } } },
-    });
-    const listed = await listThemes(ctx(), { limit: 2 }, appDb);
+    expect(await countThemes(ctx(), mon, {}, appDb)).toBe(0);
+    await setInboxes(mon, [String(inbox.id)]);
+    const listed = await listThemes(ctx(), mon, { limit: 2 }, appDb);
     expect(listed).toHaveLength(2);
-    expect(await countThemes(ctx(), {}, appDb)).toBe(3);
-    expect(await countThemes(ctx(otherTenantId), {}, appDb)).toBe(0);
+    expect(await countThemes(ctx(), mon, {}, appDb)).toBe(3);
+    expect(await countThemes(ctx(otherTenantId), otherMon, {}, appDb)).toBe(0);
     // Two reads list the same themes in the same order.
-    const again = await listThemes(ctx(), { limit: 3 }, appDb);
-    const twice = await listThemes(ctx(), { limit: 3 }, appDb);
+    const again = await listThemes(ctx(), mon, { limit: 3 }, appDb);
+    const twice = await listThemes(ctx(), mon, { limit: 3 }, appDb);
     expect(again.map((t) => t.id)).toEqual(twice.map((t) => t.id));
   });
   test("a theme's first and last seen and its place in the list follow the monitored inboxes only", async () => {
@@ -460,6 +521,7 @@ describe.skipIf(!dbUp)("against the database", () => {
       await suDb.occurrenceThemeMember.create({
         data: {
           tenantId,
+          monitorId: mon,
           themeId,
           conversationId: conv.id,
           sentence: "x",
@@ -471,6 +533,7 @@ describe.skipIf(!dbUp)("against the database", () => {
     const wide = await suDb.occurrenceTheme.create({
       data: {
         tenantId,
+        monitorId: mon,
         title: "Largo",
         firstSeenAt: base,
         lastSeenAt: new Date(base.getTime() + 2 * hour),
@@ -479,6 +542,7 @@ describe.skipIf(!dbUp)("against the database", () => {
     const narrow = await suDb.occurrenceTheme.create({
       data: {
         tenantId,
+        monitorId: mon,
         title: "Estreito",
         firstSeenAt: new Date(base.getTime() + hour),
         lastSeenAt: new Date(base.getTime() + hour),
@@ -487,11 +551,8 @@ describe.skipIf(!dbUp)("against the database", () => {
     await member(wide.id, kept.id, 0);
     await member(wide.id, dropped.id, 2 * hour);
     await member(narrow.id, kept.id, hour);
-    await suDb.tenant.update({
-      where: { id: tenantId },
-      data: { settings: { occurrences: { inboxIds: [String(kept.id)] } } },
-    });
-    const listed = (await listThemes(ctx(), { limit: 100 }, appDb)).filter(
+    await setInboxes(mon, [String(kept.id)]);
+    const listed = (await listThemes(ctx(), mon, { limit: 100 }, appDb)).filter(
       (t) => t.id === String(wide.id) || t.id === String(narrow.id),
     );
     expect(listed.map((t) => t.title)).toEqual(["Estreito", "Largo"]);
@@ -499,7 +560,7 @@ describe.skipIf(!dbUp)("against the database", () => {
     expect(shown?.firstSeenAt).toBe(base.toISOString());
     expect(shown?.lastSeenAt).toBe(base.toISOString());
     expect(shown?.conversations).toBe(1);
-    const detail = await getTheme(ctx(), wide.id, appDb);
+    const detail = await getTheme(ctx(), mon, wide.id, appDb);
     expect(detail.lastSeenAt).toBe(base.toISOString());
     expect(detail.conversations).toBe(1);
   });

@@ -297,6 +297,22 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/occurrences/cost": { tool: "occurrence_runs_list" },
   "GET /v1/occurrences/themes": { tool: "occurrence_themes_list" },
   "GET /v1/occurrences/themes/:id": { tool: "occurrence_themes_list" },
+  "GET /v1/occurrences/monitors": { tool: "occurrence_monitors_list" },
+  "POST /v1/occurrences/monitors": { tool: "occurrence_monitor_create" },
+  "GET /v1/occurrences/monitors/:id": { tool: "occurrences_get" },
+  "PATCH /v1/occurrences/monitors/:id": { tool: "occurrence_monitor_update" },
+  "DELETE /v1/occurrences/monitors/:id": { tool: "occurrence_monitor_delete" },
+  "POST /v1/occurrences/monitors/:id/duplicate": {
+    tool: "occurrence_monitor_create",
+  },
+  "GET /v1/occurrences/monitors/:id/config": { tool: "occurrences_get" },
+  "PUT /v1/occurrences/monitors/:id/config": { tool: "occurrences_set" },
+  "GET /v1/occurrences/monitors/:id/runs": { tool: "occurrence_runs_list" },
+  "GET /v1/occurrences/monitors/:id/cost": { tool: "occurrence_runs_list" },
+  "GET /v1/occurrences/monitors/:id/themes": { tool: "occurrence_themes_list" },
+  "GET /v1/occurrences/monitors/:id/themes/:themeId": {
+    tool: "occurrence_themes_list",
+  },
   "POST /v1/tenant-settings/langfuse/test": {
     gap: "probe the Langfuse credential",
   },

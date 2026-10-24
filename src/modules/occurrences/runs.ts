@@ -229,6 +229,7 @@ export function runSteps(detail: Record<string, unknown>): RunSteps {
 // never pushes a row of page one onto page two.
 export async function pageOccurrenceRuns(
   ctx: TenantContext,
+  monitorId: bigint,
   opts: { limit?: number; before?: string | null } = {},
   base: PrismaClient = basePrisma,
 ): Promise<OccurrenceRunsPage> {
@@ -252,12 +253,12 @@ export async function pageOccurrenceRuns(
       before === null
         ? null
         : await db.occurrenceRun.findFirst({
-            where: { id: before, tenantId },
+            where: { id: before, monitorId },
             select: { id: true, startedAt: true },
           });
     const rows = await db.occurrenceRun.findMany({
       where: {
-        tenantId,
+        monitorId,
         ...(anchor
           ? {
               OR: [
@@ -266,14 +267,14 @@ export async function pageOccurrenceRuns(
               ],
             }
           : before !== null
-            ? // A cursor naming no round of this account has nothing after it.
+            ? // A cursor naming no round of this monitor has nothing after it.
               { id: { in: [] } }
             : {}),
       },
       orderBy: [{ startedAt: "desc" }, { id: "desc" }],
       take: limit + 1,
     });
-    const total = await db.occurrenceRun.count({ where: { tenantId } });
+    const total = await db.occurrenceRun.count({ where: { monitorId } });
     return { rows, total };
   });
   const page = rows.slice(0, limit);
@@ -287,11 +288,12 @@ export async function pageOccurrenceRuns(
 
 export async function listOccurrenceRuns(
   ctx: TenantContext,
+  monitorId: bigint,
   limit = 20,
   base: PrismaClient = basePrisma,
 ): Promise<OccurrenceRunView[]> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  return (await pageOccurrenceRuns(ctx, { limit }, base)).runs;
+  return (await pageOccurrenceRuns(ctx, monitorId, { limit }, base)).runs;
 }
 
 type RunRow = Awaited<
@@ -376,9 +378,11 @@ export interface MonitorCost {
 }
 
 // What the monitor cost over the last 7 and the last 30 days, from the usage ledger: every call of
-// every step, a round that failed half-way included.
+// every step, a round that failed half-way included. A call is the monitor's by its round's thread
+// (`runThreadId`), which every one of its ledger rows carries, so two monitors' costs never mix.
 export async function occurrenceCost(
   ctx: TenantContext,
+  monitorId: bigint,
   now: Date = new Date(),
   base: PrismaClient = basePrisma,
 ): Promise<{ last7Days: MonitorCost; last30Days: MonitorCost }> {
@@ -412,7 +416,11 @@ export async function occurrenceCost(
       WHERE tenant_id = ${tenantId}
         AND node = ANY(${MONITOR_NODES})
         AND created_at > ${since30}
-        AND created_at <= ${now}`,
+        AND created_at <= ${now}
+        AND thread_id IN (
+          SELECT 'occurrences:' || r.tenant_id || ':' || r.id
+            FROM occurrence_runs r
+           WHERE r.monitor_id = ${monitorId})`,
   );
   const of = (
     calls: bigint | undefined,

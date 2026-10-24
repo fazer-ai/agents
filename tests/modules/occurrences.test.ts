@@ -8,12 +8,16 @@ import type { TenantContext } from "@/lib/tenancy";
 import { runScopedOn } from "@/lib/tenancy";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { occurrencesSet } from "@/modules/mcp/write-occurrences";
-import { syncTenantOccurrenceRound } from "@/modules/occurrences/arm";
+import { syncMonitorRound } from "@/modules/occurrences/arm";
 import { sysCtx } from "@/modules/occurrences/config";
 import {
   KEYLESS_API_KEY,
   resolveMonitorModel,
 } from "@/modules/occurrences/model";
+import {
+  getOccurrencesSettings,
+  updateOccurrencesSettings,
+} from "@/modules/occurrences/monitors";
 import {
   READING_VALUE_MAX,
   readingValue,
@@ -27,10 +31,6 @@ import {
   occurrencesSettingsSchema,
   readOccurrencesConfig,
 } from "@/modules/occurrences/settings";
-import {
-  getOccurrencesSettings,
-  updateOccurrencesSettings,
-} from "@/modules/tenant-settings/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
 
@@ -394,6 +394,14 @@ describe.skipIf(!dbUp)("against the database", () => {
     await suDb.$disconnect();
   });
 
+  // The account's first monitor, which the paths that name none created on the first save.
+  const firstKey = async () => ({
+    tenantId,
+    monitorId: (
+      await suDb.occurrenceMonitor.findFirstOrThrow({ where: { tenantId } })
+    ).id,
+  });
+
   const pendingRounds = () =>
     suDb.schedulerJob.count({
       where: { tenantId, kind: "OCCURRENCE_ROUND", status: "PENDING" },
@@ -472,7 +480,10 @@ describe.skipIf(!dbUp)("against the database", () => {
     const read = new Promise<void>((r) => {
       readIt = r;
     });
-    const older = syncTenantOccurrenceRound(tenantId, appDb, async () => {
+    const { id: monitorId } = await suDb.occurrenceMonitor.findFirstOrThrow({
+      where: { tenantId },
+    });
+    const older = syncMonitorRound(tenantId, monitorId, appDb, async () => {
       readIt();
       await held;
     });
@@ -669,7 +680,7 @@ describe.skipIf(!dbUp)("against the database", () => {
       appDb,
     );
     const row = await suDb.auditLog.findFirstOrThrow({
-      where: { tenantId, action: "tenant_settings.occurrences_set" },
+      where: { tenantId, action: "occurrence_monitor.updated" },
       orderBy: { id: "desc" },
     });
     const kept = JSON.stringify([row.before, row.after]);
@@ -724,26 +735,36 @@ describe.skipIf(!dbUp)("against the database", () => {
     const first = new Date(later.getTime() - 3_600_000);
     await upsertReadings(
       appDb,
-      tenantId,
+      await firstKey(),
       conversationId,
-      agentId,
       { motivo: "cobrança em dobro" },
       first,
     );
     await suDb.conversationReading.update({
-      where: { conversationId_field: { conversationId, field: "motivo" } },
+      where: {
+        monitorId_conversationId_field: {
+          monitorId: (await firstKey()).monitorId,
+          conversationId,
+          field: "motivo",
+        },
+      },
       data: { firstReadAt: first },
     });
     await upsertReadings(
       appDb,
-      tenantId,
+      await firstKey(),
       conversationId,
-      agentId,
       { motivo: "cobrado duas vezes no cartão" },
       later,
     );
     const row = await suDb.conversationReading.findUnique({
-      where: { conversationId_field: { conversationId, field: "motivo" } },
+      where: {
+        monitorId_conversationId_field: {
+          monitorId: (await firstKey()).monitorId,
+          conversationId,
+          field: "motivo",
+        },
+      },
     });
     expect(row?.value).toBe("cobrado duas vezes no cartão");
     expect(row?.firstReadAt.toISOString()).toBe(first.toISOString());
@@ -857,13 +878,20 @@ describe.skipIf(!dbUp)("against the database", () => {
     });
     // A reading written outside a round is not this round's: `readings` counts the conversations the
     // round's own reading step read, and here it read none.
-    await upsertReadings(appDb, tenantId, conversationId, null, {
+    await upsertReadings(appDb, await firstKey(), conversationId, {
       referencia: "Loja Centro",
     });
-    const summary = await runOccurrenceRound(tenantId, cfg, { base: appDb });
+    const summary = await runOccurrenceRound(await firstKey(), cfg, {
+      base: appDb,
+    });
     expect(summary.status).toBe("ok");
     expect(summary.readings).toBe(0);
-    const runs = await listOccurrenceRuns(ctx(), 5, appDb);
+    const runs = await listOccurrenceRuns(
+      ctx(),
+      (await firstKey()).monitorId,
+      5,
+      appDb,
+    );
     expect(runs[0]).toMatchObject({ status: "ok", readings: 0, error: null });
     expect(runs[0]?.finishedAt).not.toBeNull();
     const theirs = await runScopedOn(appDb, sysCtx(otherTenantId), (db) =>

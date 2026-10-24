@@ -2,7 +2,11 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { readOccurrencesConfig, THEMES_LIMIT_RANGE } from "./settings";
+import {
+  type OccurrencesConfig,
+  readMonitorConfig,
+  THEMES_LIMIT_RANGE,
+} from "./settings";
 
 // The themes as the console, REST and MCP read them (docs/occurrences.md). A theme's conversations
 // are its members, which a merge moved to the survivor, so an absorbed theme's conversations count
@@ -66,18 +70,34 @@ export interface ThemeLink {
   url: string;
 }
 
-// The inboxes the monitor reads NOW, from the saved block: every read path filters a theme's
-// conversations by them, so taking an inbox off the list takes its conversations off at once, not
-// at the next round's assignment (which prunes the memberships for good).
+// The monitor's block as saved NOW: every read path filters a theme's conversations by its inboxes,
+// so taking an inbox off the list takes its conversations off at once, not at the next round's
+// assignment (which prunes the memberships for good). A monitor of another account, or none, is a
+// 404 like a theme of none.
+async function monitorConfigOn(
+  db: ScopedDb,
+  tenantId: bigint,
+  monitorId: bigint,
+): Promise<OccurrencesConfig> {
+  const row = await db.occurrenceMonitor.findFirst({
+    where: { id: monitorId, tenantId },
+    select: { config: true },
+  });
+  if (!row)
+    throw new AppError(
+      "monitor not found",
+      404,
+      "errors.occurrenceMonitorNotFound",
+    );
+  return readMonitorConfig(row.config);
+}
+
 async function monitoredInboxes(
   db: ScopedDb,
   tenantId: bigint,
+  monitorId: bigint,
 ): Promise<bigint[]> {
-  const row = await db.tenant.findUnique({
-    where: { id: tenantId },
-    select: { settings: true },
-  });
-  return readOccurrencesConfig(row?.settings).inboxIds.map(BigInt);
+  return (await monitorConfigOn(db, tenantId, monitorId)).inboxIds.map(BigInt);
 }
 
 const memberOf = (inboxIds: bigint[]) => ({
@@ -94,12 +114,12 @@ const conversationUrl = (c: {
 // left it (its inbox taken off the monitor, its reason cleared) has nothing to show until one is
 // placed in it again.
 function openThemesWhere(
-  tenantId: bigint,
+  monitorId: bigint,
   inboxIds: bigint[],
   flaggedOnly?: boolean,
 ) {
   return {
-    tenantId,
+    monitorId,
     status: "open",
     members: { some: memberOf(inboxIds) },
     ...(flaggedOnly ? { NOT: { flags: { isEmpty: true } } } : {}),
@@ -109,6 +129,7 @@ function openThemesWhere(
 // How many themes the list has in all, whatever its limit.
 export async function countThemes(
   ctx: TenantContext,
+  monitorId: bigint,
   opts: { flaggedOnly?: boolean } = {},
   base: PrismaClient = basePrisma,
 ): Promise<number> {
@@ -116,8 +137,8 @@ export async function countThemes(
   return runScopedOn(base, ctx, async (db) =>
     db.occurrenceTheme.count({
       where: openThemesWhere(
-        tenantId,
-        await monitoredInboxes(db, tenantId),
+        monitorId,
+        await monitoredInboxes(db, tenantId, monitorId),
         opts.flaggedOnly,
       ),
     }),
@@ -127,12 +148,12 @@ export async function countThemes(
 // Each open theme's conversations of the monitored inboxes: how many, and the first and last read.
 async function themeSpans(
   db: ScopedDb,
-  tenantId: bigint,
+  monitorId: bigint,
   inboxIds: bigint[],
   flaggedOnly?: boolean,
 ) {
   const open = await db.occurrenceTheme.findMany({
-    where: openThemesWhere(tenantId, inboxIds, flaggedOnly),
+    where: openThemesWhere(monitorId, inboxIds, flaggedOnly),
     select: { id: true, flaggedAt: true },
   });
   const stats = open.length
@@ -165,21 +186,22 @@ async function themeSpans(
   );
 }
 
-// The open themes, flagged first, inside a scope the caller holds (the console's, or a dashboard
-// panel's metrics read). `links` adds each theme's first conversations, oldest first.
+// A monitor's open themes, flagged first, inside a scope the caller holds (the console's, or a
+// dashboard panel's metrics read). `links` adds each theme's first conversations, oldest first.
 export async function themeRowsOn(
   db: ScopedDb,
   tenantId: bigint,
+  monitorId: bigint,
   opts: { flaggedOnly?: boolean; limit?: number; links?: number } = {},
 ): Promise<(ThemeListItem & { links?: ThemeLink[] })[]> {
   const limit = Math.min(
     Math.max(1, Math.trunc(opts.limit ?? 100)),
     THEMES_LIMIT_RANGE.max,
   );
-  const inboxIds = await monitoredInboxes(db, tenantId);
+  const inboxIds = await monitoredInboxes(db, tenantId, monitorId);
   // Counted, dated and ordered over the conversations of the inboxes monitored now: the stored first
   // and last seen still hold an inbox taken off the list until the next assignment prunes it.
-  const spans = await themeSpans(db, tenantId, inboxIds, opts.flaggedOnly);
+  const spans = await themeSpans(db, monitorId, inboxIds, opts.flaggedOnly);
   const time = (d: Date | null) => d?.getTime() ?? -Infinity;
   const order = [...spans.values()]
     .sort(
@@ -221,7 +243,7 @@ export async function themeRowsOn(
         FROM occurrence_theme_members m
         JOIN conversations cv ON cv.id = m.conversation_id
                              AND cv.inbox_id = ANY(${inboxIds.map(String)}::bigint[])
-        WHERE m.tenant_id = ${tenantId} AND m.theme_id = t.id
+        WHERE m.monitor_id = ${monitorId} AND m.theme_id = t.id
         ORDER BY m.read_at ASC, m.id ASC
         LIMIT ${opts.links}
       ) f`;
@@ -270,32 +292,43 @@ export async function themeRowsOn(
 
 export async function listThemes(
   ctx: TenantContext,
+  monitorId: bigint,
   opts: { flaggedOnly?: boolean; limit?: number } = {},
   base: PrismaClient = basePrisma,
 ): Promise<ThemeListItem[]> {
   const tenantId = tenantOf(ctx);
-  return runScopedOn(base, ctx, (db) => themeRowsOn(db, tenantId, opts));
+  return runScopedOn(base, ctx, (db) =>
+    themeRowsOn(db, tenantId, monitorId, opts),
+  );
 }
 
+// A theme of this monitor: a theme of another monitor of the account is a 404, as one of no account.
 export async function getTheme(
   ctx: TenantContext,
+  monitorId: bigint,
   themeId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<ThemeDetail> {
   const tenantId = tenantOf(ctx);
   return runScopedOn(base, ctx, async (db) => {
+    const cfg = await monitorConfigOn(db, tenantId, monitorId);
     const found = await db.occurrenceTheme.findFirst({
-      where: { id: themeId, tenantId },
+      where: { id: themeId, monitorId },
     });
-    if (!found) throw new AppError("theme not found", 404);
+    if (!found)
+      throw new AppError(
+        "theme not found",
+        404,
+        "errors.occurrenceThemeNotFound",
+      );
     // An absorbed theme answers as its survivor: its conversations are there now.
     const t =
       found.mergedIntoId === null
         ? found
         : ((await db.occurrenceTheme.findFirst({
-            where: { id: found.mergedIntoId, tenantId },
+            where: { id: found.mergedIntoId, monitorId },
           })) ?? found);
-    const inboxIds = await monitoredInboxes(db, tenantId);
+    const inboxIds = cfg.inboxIds.map(BigInt);
     const span = await db.occurrenceThemeMember.aggregate({
       where: { themeId: t.id, ...memberOf(inboxIds) },
       _count: { _all: true },
@@ -324,17 +357,11 @@ export async function getTheme(
         },
       },
     });
-    const referenceField = readOccurrencesConfig(
-      (
-        await db.tenant.findUnique({
-          where: { id: tenantId },
-          select: { settings: true },
-        })
-      )?.settings,
-    ).referenceField;
+    const referenceField = cfg.referenceField;
     const readings = referenceField
       ? await db.conversationReading.findMany({
           where: {
+            monitorId,
             conversationId: { in: members.map((m) => m.conversationId) },
             field: referenceField,
           },
@@ -379,13 +406,13 @@ export async function getTheme(
             select: { name: true },
           });
     const absorbed = await db.occurrenceTheme.findMany({
-      where: { tenantId, mergedIntoId: t.id },
+      where: { monitorId, mergedIntoId: t.id },
       select: { id: true },
     });
     const lineage = [t.id, ...absorbed.map((a) => a.id)];
     const eventRows = await db.occurrenceThemeEvent.findMany({
       where: {
-        tenantId,
+        monitorId,
         OR: [
           { themeId: { in: lineage } },
           { intoId: t.id },

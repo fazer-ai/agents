@@ -487,6 +487,19 @@ const TABLE: Record<string, Row> = {
   proactive_breaker_resume: {
     skip: "takes no input it could refuse: resuming an open breaker changes nothing, so the preview and the apply agree by construction",
   },
+  occurrence_monitor_create: { args: { name: "" }, why: "empty name" },
+  occurrence_monitor_update: {
+    args: { monitor_id: NOPE, name: "x" },
+    why: "monitor does not exist",
+    pastOwnership:
+      "measured on a monitor that EXISTS: the preview runs the apply's own service call in a transaction it rolls back (`previewBase`), so whatever the core refuses past ownership both halves refuse; a taken name and the cap on monitors are the cases tests/modules/occurrence-monitors.test.ts drives.",
+  },
+  occurrence_monitor_delete: {
+    args: { monitor_id: NOPE },
+    why: "monitor does not exist",
+    pastOwnership:
+      "measured on a monitor that EXISTS: the preview runs the apply's own service call in a transaction it rolls back (`previewBase`), so whatever the core refuses past ownership both halves refuse; a taken name and the cap on monitors are the cases tests/modules/occurrence-monitors.test.ts drives.",
+  },
   occurrences_set: {
     args: { enabled: true },
     why: "switched on with no inbox, model or reason field",

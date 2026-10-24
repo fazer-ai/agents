@@ -66,6 +66,7 @@ import {
   type CaseInbox,
   type CustomerTextVerdict,
   type DetachedCaseOrigin,
+  deliverableEmail,
   normalizeEmail,
   type OpenCaseResult,
   openCaseInInbox,
@@ -2976,6 +2977,11 @@ function additionLost(r: OpenCaseResult): boolean {
 // What the model reads after `open_case_in_inbox`, one sentence per outcome. The ones that ask for
 // something are instructions the model acts on in its reply; none of them tells it to stay silent,
 // because the customer still has to hear, on the channel they are on, where their case went.
+// Email cannot be delivered to a mailbox name with an accent, and on this domain the plain spelling
+// may belong to someone else, so the customer is the one to say which address is theirs.
+const NON_ASCII_EMAIL_TEXT = (who: "customer" | "user") =>
+  `Nothing was opened: that email address has an accent or another non-ASCII character before the @, and email cannot be delivered to it. Ask the ${who} to confirm their address written without the accent, then call this tool again with \`email\` set to exactly what they type.`;
+
 function openCaseOutcomeText(
   r: OpenCaseResult,
   closing: "scheduled" | "not_here" | null = null,
@@ -3021,9 +3027,10 @@ function openCaseOutcomeText(
     case "needs_phone":
       return "Nothing was opened: the destination needs the contact's phone number, and this contact has none. Hand off to a human instead.";
     case "rejected_email":
-      return r.why === "invalid"
-        ? "Nothing was opened: that is not a valid email address. Ask the customer to type their email again."
-        : "Nothing was opened: `email` must be an address the customer typed in this conversation, and this one is not among their messages. Ask the customer for their email and pass exactly what they typed.";
+      if (r.why === "invalid")
+        return "Nothing was opened: that is not a valid email address. Ask the customer to type their email again.";
+      if (r.why === "non_ascii") return NON_ASCII_EMAIL_TEXT("customer");
+      return "Nothing was opened: `email` must be an address the customer typed in this conversation, and this one is not among their messages. Ask the customer for their email and pass exactly what they typed.";
     case "unsupported_channel":
       return "Nothing was opened: the configured destination inbox cannot start conversations. Hand off to a human instead.";
     case "same_inbox":
@@ -3451,10 +3458,16 @@ function detachedOpenCaseTool(
     // An anonymous visitor's address comes through the model: only a well-formed one the visitor
     // typed on this thread is used, checked before any contact is touched.
     let typed: string | undefined;
+    let typedAs: string | undefined;
     if (anonymous && email?.trim()) {
       const normalized = normalizeEmail(email);
-      if (!normalized)
+      const deliverable = normalized ? deliverableEmail(normalized) : null;
+      if (
+        !normalized ||
+        (deliverable && !deliverable.ok && deliverable.why === "invalid")
+      )
         return "Nothing was opened: that is not a valid email address. Ask the user to type it again.";
+      if (!deliverable?.ok) return NON_ASCII_EMAIL_TEXT("user");
       try {
         if (!(await detached.userTyped?.(normalized)))
           return "Nothing was opened: the user did not write that address in this chat. Ask them to type the address where the team should reply, and pass exactly what they wrote.";
@@ -3463,7 +3476,8 @@ function detachedOpenCaseTool(
           "Could not open the case (failed at: read_messages). Tell the user you could not pass the request on to the team right now.",
         );
       }
-      typed = normalized;
+      typed = deliverable.address;
+      if (deliverable.adjusted) typedAs = normalized;
     }
     let contact:
       | { id: number; addressUpdated: boolean; email: string }
@@ -3490,6 +3504,7 @@ function detachedOpenCaseTool(
       originContactId: contact.id,
       freshCase: contact.addressUpdated,
       recipientEmail: contact.email,
+      ...(typedAs && contact.email === typed ? { emailTypedAs: typedAs } : {}),
       detachedOrigin: detached.origin,
       reason: reason.trim(),
       customerMessage: (asksMessage && customerLine(customer_message)) || null,

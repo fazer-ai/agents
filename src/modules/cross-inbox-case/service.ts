@@ -6,6 +6,7 @@
 // NOT close the origin: `resolve_conversation` defers that until after delivery and drops it when the
 // customer writes again, and closing here would lose that protection.
 
+import { domainToASCII } from "node:url";
 import { withKeyedQueue } from "@/lib/locks";
 import {
   ChatwootApiError,
@@ -90,6 +91,8 @@ export interface OpenCaseInput {
   // The address the host states for the user, set with `detachedOrigin`: the opening goes there,
   // whatever the contact holds when it is sent (another writer can change it in between).
   recipientEmail?: string;
+  // What the user typed, when the address written for them is not it (see `deliverableEmail`).
+  emailTypedAs?: string;
   reason: string;
   customerMessage: string | null;
   email: string | null;
@@ -158,7 +161,10 @@ export type OpenCaseResult =
   | { kind: "same_inbox" }
   | { kind: "needs_email" }
   | { kind: "needs_phone" }
-  | { kind: "rejected_email"; why: "invalid" | "not_in_conversation" }
+  | {
+      kind: "rejected_email";
+      why: "invalid" | "not_in_conversation" | "non_ascii";
+    }
   | { kind: "called_off" }
   // The output check's policy transferred the origin to the team over the opening message: nothing
   // was opened, and the conversation is the team's now.
@@ -170,6 +176,46 @@ const EMAIL_RE = /^[^\s@<>"',;]+@[^\s@<>"',;]+\.[^\s@<>"',;.]{2,}$/;
 export function normalizeEmail(raw: string): string | null {
   const v = raw.trim().replace(/^mailto:/i, "");
   return EMAIL_RE.test(v) ? v : null;
+}
+
+// Providers whose mailbox names are ASCII only: an accent typed there can only stand for the plain
+// letter, so it is dropped. Anywhere else an accented mailbox may be someone else's, so the address
+// is refused and confirmed with the customer.
+const ASCII_ONLY_DOMAINS = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "msn.com",
+  "icloud.com",
+  "me.com",
+  "uol.com.br",
+  "bol.com.br",
+  "terra.com.br",
+]);
+const ASCII_ONLY_FAMILY_RE =
+  /^(yahoo|hotmail|outlook|live)(\.[a-z]{2,3}){1,2}$/;
+const ASCII_RE = /^[\x21-\x7e]+$/;
+
+// The address mail can be sent to, from a well-formed one the customer typed: SMTP refuses a mailbox
+// name outside ASCII, and a domain outside it goes as its punycode form, which is the same domain.
+export function deliverableEmail(
+  typed: string,
+):
+  | { ok: true; address: string; adjusted: boolean }
+  | { ok: false; why: "invalid" | "non_ascii" } {
+  const [local = "", typedDomain = ""] = typed.split("@");
+  let domain = typedDomain;
+  if (!ASCII_RE.test(domain)) {
+    domain = domainToASCII(domain);
+    if (!domain) return { ok: false, why: "invalid" };
+  }
+  if (ASCII_RE.test(local))
+    return { ok: true, address: `${local}@${domain}`, adjusted: false };
+  const lower = domain.toLowerCase();
+  if (!ASCII_ONLY_DOMAINS.has(lower) && !ASCII_ONLY_FAMILY_RE.test(lower))
+    return { ok: false, why: "non_ascii" };
+  const plain = local.normalize("NFD").replace(/\p{M}/gu, "");
+  if (!ASCII_RE.test(plain)) return { ok: false, why: "non_ascii" };
+  return { ok: true, address: `${plain}@${domain}`, adjusted: true };
 }
 
 // The customer's own messages on one page of the conversation. An address the tool writes on the
@@ -335,6 +381,10 @@ export const CONTACT_CONVERSATIONS_PAGE = 25;
 // Pure: the private notes. PT-BR, like the webhook's other system notes.
 export function addressUpdatedNote(email: string): string {
   return `⚠️ O e-mail do cliente agora é ${literalForChatwoot(email)}. As respostas desta conversa podem estar endereçadas ao e-mail anterior: confira o destinatário antes de responder.`;
+}
+
+export function addressAdjustedNote(typed: string, written: string): string {
+  return `ℹ️ O cliente escreveu o e-mail como ${literalForChatwoot(typed)}, e ele foi gravado como ${literalForChatwoot(written)}: o provedor não aceita acento no endereço.`;
 }
 
 export function originLinkNote(caseUrl: string, inboxName: string): string {
@@ -547,6 +597,7 @@ async function run(
     let caseContactId = contactId;
     let identity: "held" | "written" | "merged" | "other_contact" | null = null;
     let pendingEmail: string | null = null;
+    let emailTypedAs = input.emailTypedAs ?? null;
     if (needs === "phone") {
       if (!contact?.phoneNumber) return { kind: "needs_phone" };
       identity = "held";
@@ -559,11 +610,15 @@ async function run(
         if (!input.email || detached) return { kind: "needs_email" };
         const email = normalizeEmail(input.email);
         if (!email) return { kind: "rejected_email", why: "invalid" };
+        const deliverable = deliverableEmail(email);
+        if (!deliverable.ok)
+          return { kind: "rejected_email", why: deliverable.why };
         step = "read_messages";
         if (!(await customerTypedInConversation(client, origin, email))) {
           return { kind: "rejected_email", why: "not_in_conversation" };
         }
-        pendingEmail = email;
+        pendingEmail = deliverable.address;
+        if (deliverable.adjusted) emailTypedAs = email;
       }
     }
 
@@ -857,6 +912,17 @@ async function run(
         noteDelivered = true;
       });
       const currentEmail = input.recipientEmail ?? contact?.email ?? null;
+      const writtenEmail = pendingEmail ?? input.recipientEmail ?? null;
+      if (emailTypedAs && writtenEmail) {
+        const typed = emailTypedAs;
+        await attempt("address_adjusted_note", () =>
+          client.sendMessageAsAdmin(
+            caseId,
+            addressAdjustedNote(typed, writtenEmail),
+            { private: true },
+          ),
+        );
+      }
       // NOTE: the inbox handed back an open conversation of the contact (it continues or locks to one
       // conversation per contact). For a detached origin that conversation was not opened under an
       // address this side knows, and its next reply can be addressed from earlier messages, so the

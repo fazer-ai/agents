@@ -182,7 +182,9 @@ function buildConversationsWhere(
   q: string | undefined,
   agentId: bigint | undefined,
 ): Prisma.ConversationWhereInput {
-  const where: Prisma.ConversationWhereInput = {};
+  // A conversation only the occurrences sweep knows of is no agent's: the list shows what the agents
+  // received.
+  const where: Prisma.ConversationWhereInput = { sweepOnly: false };
   if (status) where.status = status;
   if (agentId !== undefined) {
     where.inbox = {

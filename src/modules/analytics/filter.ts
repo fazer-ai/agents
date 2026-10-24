@@ -78,6 +78,7 @@ export function cohortWhereSql(
   const inbox = f.inboxId ?? null;
   const agent = f.agentId ?? null;
   return Prisma.sql`${windowSql(Prisma.sql`${c}.created_at`, f)}
+    AND NOT ${c}.sweep_only
     AND (${inbox}::bigint IS NULL OR ${c}.inbox_id = ${inbox})
     AND (${agent}::bigint IS NULL
          OR EXISTS (SELECT 1 FROM inboxes bi WHERE bi.id = ${c}.inbox_id AND bi.agent_id = ${agent})

@@ -13,7 +13,11 @@ import {
   requireVaultRefFor,
   tryResolveApiKeyEntry,
 } from "@/modules/vault/service";
-import { monitorRoundDedupeKey, syncMonitorRound } from "./arm";
+import {
+  monitorRoundDedupeKey,
+  monitorSweepDedupeKey,
+  syncMonitorRound,
+} from "./arm";
 import { runFlagsStep } from "./flags";
 import {
   mergeOccurrences,
@@ -516,6 +520,12 @@ export async function deleteMonitor(
       "OCCURRENCE_ROUND",
       monitorRoundDedupeKey(m.id),
     );
+    await retireJobsByDedupeKeyOn(
+      db,
+      tenantId,
+      "OCCURRENCE_SWEEP",
+      monitorSweepDedupeKey(m.id),
+    );
     await db.occurrenceMonitor.delete({ where: { id: m.id } });
     await auditMutation(db, ctx, {
       action: "occurrence_monitor.deleted",
@@ -530,12 +540,9 @@ export async function deleteMonitor(
   });
 }
 
-// The inboxes a write ADDS to the monitor exist in this account and are received by the product (a
-// responder bound, or an observer watching): the monitor reads the conversations the product already
-// receives, and an inbox nobody receives would give it nothing to read while looking configured. An
-// inbox already on the list that loses its agent later is not refused on the next save: it simply
-// stops producing readings, and the console says so. Asked by the write under its lock and by the
-// MCP preview, so the two refuse the same block.
+// The inboxes a write ADDS to the monitor exist in this account. One no agent receives is accepted:
+// the reading sweeps it from Chatwoot every round (./sweep.ts). Asked by the write under its lock and
+// by the MCP preview, so the two refuse the same block.
 export async function assertOccurrencesInboxes(
   db: Pick<PrismaClient, "inbox">,
   tenantId: bigint,
@@ -549,24 +556,13 @@ export async function assertOccurrencesInboxes(
     .filter((id): id is bigint => id !== null);
   const rows = await db.inbox.findMany({
     where: { tenantId, id: { in: ids } },
-    select: {
-      id: true,
-      name: true,
-      agentId: true,
-      _count: { select: { observers: true } },
-    },
+    select: { id: true },
   });
-  const byId = new Map(rows.map((r) => [String(r.id), r]));
+  const byId = new Set(rows.map((r) => String(r.id)));
   for (const id of added) {
-    const row = byId.get(id);
-    if (!row)
+    if (!byId.has(id))
       throw new AppError(
         `occurrences: inboxIds names no inbox of this account (${id})`,
-        422,
-      );
-    if (row.agentId === null && row._count.observers === 0)
-      throw new AppError(
-        `occurrences: no agent receives the conversations of the inbox "${row.name}" (bind an agent to it, or have one observe it)`,
         422,
       );
   }
@@ -698,7 +694,7 @@ function flagInputsChanged(a: OccurrencesConfig, b: OccurrencesConfig) {
 // Updates a monitor's configuration (docs/occurrences.md). Validated on the way in, so a cadence of 0,
 // or a monitor switched on without its reason field, is a 422 rather than a block read as the default.
 // The model's credential is stored as `vault:<id>` of a kind that holds an API key, an inbox the write
-// adds must be received by an agent, and a Chatwoot attribute it copies to must not be another
+// adds must be one of the account's, and a Chatwoot attribute it copies to must not be another
 // monitor's on a shared inbox: both checked under the account's monitor lock with the write. Arms or
 // cancels the monitor's round after the commit. `"first"` is the account's first monitor, created in
 // the same transaction when there is none, so a refused write leaves an account without a monitor as

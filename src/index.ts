@@ -60,6 +60,7 @@ import {
 import { registerObserveHandler } from "@/modules/observe/job";
 import { ensureAllOccurrenceRounds } from "@/modules/occurrences/arm";
 import { registerOccurrenceRoundHandler } from "@/modules/occurrences/round";
+import { registerOccurrenceSweepHandler } from "@/modules/occurrences/sweep";
 import { registerOtherInboxSummaryHandler } from "@/modules/other-inboxes/summary-job";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
@@ -200,6 +201,7 @@ if (config.schedulerWorker.enabled) {
   registerHumanReplyRecoveryHandler();
   registerSpendPollHandler();
   registerOccurrenceRoundHandler();
+  registerOccurrenceSweepHandler();
   registerKnowledgeSourceHandler();
   registerInboundSweepHandlers();
   startScheduler();

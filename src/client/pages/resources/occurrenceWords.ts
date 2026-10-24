@@ -102,6 +102,7 @@ export type SkipReason =
   | "endpoint_missing"
   | "endpoint_not_taken"
   | "inbox_unreceived"
+  | "inbox_unlisted"
   | "credential_refused"
   | "model_refused"
   | "rate_limited"
@@ -161,6 +162,12 @@ export function skipReasonText(
       return t(
         "occurrences.skip.inboxUnreceived",
         'no agent receives the inbox "{{inbox}}"; link or observe it with an agent in Channels',
+        { inbox: inbox ?? "" },
+      );
+    case "inbox_unlisted":
+      return t(
+        "occurrences.skip.inboxUnlisted",
+        'the conversations of the inbox "{{inbox}}" could not be listed from Chatwoot; the next round tries again',
         { inbox: inbox ?? "" },
       );
     case "credential_refused":

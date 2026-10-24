@@ -15,8 +15,8 @@ import {
 } from "@/client/pages/resources/OccurrenceInboxes";
 
 // The monitor's inbox picker is the agent editor's "Other inboxes" one: chips, a searchable list, the
-// inbox named as the other pickers name it, an inbox no agent receives left out and counted, and one
-// already chosen that lost its agent kept as a chip marked as not read.
+// inbox named as the other pickers name it, and an inbox no agent receives offered like any other,
+// marked as read from Chatwoot every round.
 afterEach(cleanup);
 
 const inbox = (
@@ -95,13 +95,12 @@ describe("the monitor's inbox picker", () => {
     expect(chips()).toEqual(["Vendas", "Suporte"]);
   });
 
-  test("an inbox no agent receives is not offered, and one line says how many and where to fix it", async () => {
+  test("an inbox no agent receives is offered like any other, marked as read from Chatwoot every round, with one line saying how", async () => {
     render(
       <Harness
         inboxes={[
           inbox("1", "Vendas", "7"),
           inbox("2", "Ninguém A", null),
-          inbox("3", "Ninguém B", null),
           { ...inbox("4", "Só observada", null), observerAgentIds: ["9"] },
         ]}
         initial={[]}
@@ -109,14 +108,18 @@ describe("the monitor's inbox picker", () => {
     );
     const menu = await openList();
     expect(
-      within(menu).queryByRole("menuitem", { name: /Ninguém/ }),
-    ).toBeNull();
+      within(menu).getByRole("menuitem", { name: /Ninguém A/ }).textContent,
+    ).toContain("read from Chatwoot every round");
     expect(
-      within(menu).getByRole("menuitem", { name: /Só observada/ }),
-    ).toBeTruthy();
+      within(menu).getByRole("menuitem", { name: /Só observada/ }).textContent,
+    ).not.toContain("read from Chatwoot");
+    expect(screen.queryByText(/not listed/)).toBeNull();
+    expect(screen.queryByText(/read through the Chatwoot API/)).toBeNull();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Ninguém A/ }));
+    await waitFor(() => expect(saved).toEqual(["2"]));
     expect(
       screen.getByText(
-        "2 inboxes no agent receives are not listed. Bind or observe them with an agent in Channels to monitor them.",
+        "An inbox no agent receives is read through the Chatwoot API once per round, not as its messages arrive: each round lists its recent conversations and reads the ones whose customer wrote. Nothing is changed in Chatwoot.",
       ),
     ).toBeTruthy();
   });
@@ -148,22 +151,17 @@ describe("the monitor's inbox picker", () => {
     );
   });
 
-  test("a chosen inbox that lost its agent stays as a chip marked as not read, is not offered, and is removed like any other", async () => {
+  test("a chosen inbox that lost its agent stays as a chip marked as read from Chatwoot, and is removed like any other", async () => {
     render(
       <Harness
         inboxes={[inbox("1", "Vendas", "7"), inbox("2", "Suporte", null)]}
         initial={["1", "2"]}
       />,
     );
-    expect(chips()).toEqual(["Vendas", "Suportenot read"]);
-    expect(
-      screen.queryByText(/no agent receives (is|are) not listed/),
-    ).toBeNull();
-    const menu = await openList();
-    expect(
-      within(menu).queryByRole("menuitem", { name: /Suporte/ }),
-    ).toBeNull();
-    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(chips()).toEqual([
+      "Vendas",
+      "Suporteread from Chatwoot every round",
+    ]);
     const remove = screen.getAllByRole("button", { name: "Remove" })[1];
     fireEvent.click(remove as HTMLElement);
     await waitFor(() => expect(saved).toEqual(["1"]));

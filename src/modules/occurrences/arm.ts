@@ -11,10 +11,14 @@ import { readMonitorConfig } from "./settings";
 // Arms each monitor's `OCCURRENCE_ROUND` job while the monitor is ON: on every save of its block and
 // at boot, so a lost row does not leave a monitor that stopped running without anyone switching it
 // off. Off, there is no row at all, which is what keeps a switched-off monitor from spending a model.
-// One row per monitor, each on its own cadence.
+// One row per monitor, each on its own cadence. Its `OCCURRENCE_SWEEP` job (./sweep.ts), which lists
+// the inboxes no agent receives into the reading's queue, is armed and cancelled with it, on the
+// same cadence and under its own key, so the reading never shares its time with the listing.
 
 export const monitorRoundDedupeKey = (monitorId: bigint) =>
   `occurrences:${monitorId}`;
+export const monitorSweepDedupeKey = (monitorId: bigint) =>
+  `occurrences-sweep:${monitorId}`;
 
 // The monitor a job runs, from its payload; null on a row armed before there were several monitors,
 // which the migration rekeys (prisma/migrations/*_occurrence_monitors).
@@ -41,6 +45,14 @@ async function armRound(
     // Due now: the admin who just switched it on is waiting for the first round.
     runAt: new Date(),
   });
+  await upsertJobRow(db, {
+    tenantId,
+    kind: "OCCURRENCE_SWEEP",
+    dedupeKey: monitorSweepDedupeKey(monitorId),
+    payload: { monitorId: String(monitorId) },
+    rearm: "same-work",
+    runAt: new Date(),
+  });
 }
 
 export async function cancelMonitorRound(
@@ -49,8 +61,16 @@ export async function cancelMonitorRound(
 ): Promise<void> {
   await db.schedulerJob.updateMany({
     where: {
-      kind: "OCCURRENCE_ROUND",
-      dedupeKey: monitorRoundDedupeKey(monitorId),
+      OR: [
+        {
+          kind: "OCCURRENCE_ROUND",
+          dedupeKey: monitorRoundDedupeKey(monitorId),
+        },
+        {
+          kind: "OCCURRENCE_SWEEP",
+          dedupeKey: monitorSweepDedupeKey(monitorId),
+        },
+      ],
       status: "PENDING",
     },
     data: { status: "DONE" },

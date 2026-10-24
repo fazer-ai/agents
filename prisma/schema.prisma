@@ -86,6 +86,7 @@ enum SchedulerJobKind {
   INGEST_FALLBACK
   OTHER_INBOX_SUMMARY
   OCCURRENCE_ROUND
+  OCCURRENCE_SWEEP
 }
 
 enum SchedulerJobStatus {
@@ -212,6 +213,7 @@ model Tenant {
   occurrenceThemeEvents         OccurrenceThemeEvent[]
   occurrenceCanonicals          OccurrenceCanonical[]
   occurrenceAlias               OccurrenceAlias[]
+  occurrenceSweepCursors        OccurrenceSweepCursor[]
 
   @@map("tenants")
 }
@@ -717,10 +719,11 @@ model Inbox {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance      ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
-  conversations Conversation[]
-  observers     InboxObserver[]
+  tenant                 Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance               ChatwootInstance        @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  conversations          Conversation[]
+  observers              InboxObserver[]
+  occurrenceSweepCursors OccurrenceSweepCursor[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootInboxId])
   @@map("inboxes")
@@ -1095,6 +1098,11 @@ model Conversation {
   // (src/modules/conversations/failure-note.ts), so a message mirrored after its last ask makes the
   // claim lose. NULL = none mirrored since the column existed.
   lastInboundMessageId            Int?      @map("last_inbound_message_id")
+  // A row the occurrences sweep inserted for an inbox no agent receives (src/modules/occurrences/sweep.ts):
+  // written once, with the inbox, and never touched by the sweep again. The conversation list and the
+  // dashboards count what the agents received and leave it out; the first webhook that mirrors the
+  // conversation writes it as new and clears the flag.
+  sweepOnly                       Boolean   @default(false) @map("sweep_only")
   // The newest Chatwoot message id the contact authorization gate REFUSED here (issue #890). Media of a
   // message at or below it is never sent to an STT or vision provider, whatever the gate answers
   // later: a consent given after a file was sent does not cover that file, and a late update of the
@@ -3444,6 +3452,7 @@ model OccurrenceMonitor {
   tenant            Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   readings          ConversationReading[]
   conversationReads OccurrenceConversationRead[]
+  sweepCursors      OccurrenceSweepCursor[]
   runs              OccurrenceRun[]
   themes            OccurrenceTheme[]
   members           OccurrenceThemeMember[]
@@ -3516,6 +3525,15 @@ model OccurrenceConversationRead {
   failedInboundAt        DateTime? @map("failed_inbound_at")
   // The failed message's Chatwoot id, beside its time, as `readInboundMessageId`.
   failedInboundMessageId Int?      @map("failed_inbound_message_id")
+  // The conversation's latest activity as the sweep last listed it (an inbox no agent receives), and
+  // what the last reading covered of it: newer listed than read makes the conversation due. Only the
+  // sweep writes the first, only the reading the second.
+  sweptActivityAt        DateTime? @map("swept_activity_at")
+  // The listed activity at which the conversation last became due (newer than what was covered),
+  // kept while it waits: a first reading's window is measured from it, so later activity by the
+  // team does not age out a customer message the cap left for later. Written by the sweep only.
+  sweptDueSince          DateTime? @map("swept_due_since")
+  readSweptActivityAt    DateTime? @map("read_swept_activity_at")
 
   tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   monitor      OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
@@ -3525,6 +3543,28 @@ model OccurrenceConversationRead {
   @@index([tenantId])
   @@index([conversationId])
   @@map("occurrence_conversation_reads")
+}
+
+// How far the occurrences sweep has listed an inbox no agent receives, per monitor (docs/occurrences.md,
+// "Inboxes no agent receives"). Only the sweep writes it.
+model OccurrenceSweepCursor {
+  tenantId   BigInt    @map("tenant_id")
+  monitorId  BigInt    @map("monitor_id")
+  inboxId    BigInt    @map("inbox_id")
+  // Every conversation listed with this activity or later was queued: the next listing stops here.
+  activityAt DateTime? @map("activity_at")
+  // When the inbox was last swept: the least recently swept goes first.
+  sweptAt    DateTime? @map("swept_at")
+  // When its listing last failed, cleared by the next one that lists: the round says so.
+  unlistedAt DateTime? @map("unlisted_at")
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  inbox   Inbox             @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+
+  @@id([monitorId, inboxId])
+  @@index([tenantId])
+  @@map("occurrence_sweep_cursors")
 }
 
 // One round of the occurrence monitor: when it ran, how long it took, what it read and what its model

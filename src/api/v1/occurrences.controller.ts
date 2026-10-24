@@ -234,7 +234,7 @@ export function refuseUnknownOccurrenceKeys(body: unknown): void {
 const unknownKeyRefusals = new WeakMap<Request, unknown>();
 
 const SET_DOC =
-  "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be received by an agent (bound or observing).";
+  "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be one of the account's; one no agent receives is read through the Chatwoot API once per round.";
 
 const monitorParams = t.Object({
   id: t.String({ description: "The monitor's id." }),

@@ -48,6 +48,9 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Shared, and neither reason applies: one round per account every few minutes at most, whose model
   // calls take the shared lane's provider concurrency like any other proactive spend.
   OCCURRENCE_ROUND: "shared",
+  // The monitor's listing of the inboxes no agent receives (occurrences/sweep.ts): a few Chatwoot
+  // reads per monitor per cadence, and no model call.
+  OCCURRENCE_SWEEP: "shared",
   // Shared, and neither reason applies. Cadence: the message it answers has been unanswered for at
   // least the sweep's staleness window, so a wait of one shared tick is not what the customer feels.
   // Budget: it does spend the model, but the cap that needs is the shared lane's own provider
@@ -145,6 +148,7 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   RECONCILE_SWEEP: "background",
   SPEND_CEILING_POLL: "background",
   OCCURRENCE_ROUND: "background",
+  OCCURRENCE_SWEEP: "background",
   // Background: it repairs a conversation's status; no reply is sent.
   TAKEOVER_RECOVERY: "background",
   // Background: it reads a page of messages and arms an ingest job; no reply is sent.
@@ -188,6 +192,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   // Its model calls (canonical names, grouping) queue for the same provider as a customer's turn.
   OCCURRENCE_ROUND: true,
+  OCCURRENCE_SWEEP: false,
   // It runs the delivery path, which runs a real agent turn: a model call, and whatever tools the
   // turn decides to use. The whole reason it is a kind of its own rather than work the sweep does
   // inline.
@@ -271,6 +276,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   RECONCILE_SWEEP: false,
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: false,
   // Same reason as INGEST_MESSAGE, and the same shape: the key names ONE ledger row — it has to, or
   // a second stranded delivery would overwrite the first — so nothing ever reuses the row and the
   // count is bounded by how many deliveries have ever been stranded. What the record of the work is
@@ -342,6 +348,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // count, not by traffic.
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: false,
   // One row per DELIVERY the sweep declared lost, and one pass can declare a whole batch (a deploy
   // strands every delivery in flight), armed for `now`: the shape that starves a reminder. The cost:
   // the claim is FIFO on `run_at`, so a recovery waits behind ingestion rows armed before it, but
@@ -423,6 +430,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   RECONCILE_SWEEP: 1,
   SPEND_CEILING_POLL: 1,
   OCCURRENCE_ROUND: 1,
+  OCCURRENCE_SWEEP: 1,
   OBSERVE: 1,
   KNOWLEDGE_SOURCE_SYNC: 1,
   INBOUND_SWEEP: 1,
@@ -477,6 +485,7 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // last poll, under-refusing by everything spent since, and nothing on the console moves.
   SPEND_CEILING_POLL: "error",
   OCCURRENCE_ROUND: "warn",
+  OCCURRENCE_SWEEP: "warn",
   // `warn`: what died is the automatic second attempt. The customer's message going unanswered is the
   // delivery's own `error` line, which the recovery writes when it ends with the row still DEAD and its
   // dead-letter hook writes when it dies (../chatwoot/recover-delivery.ts, `announceDeadRecovery`).
@@ -550,6 +559,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   RECONCILE_SWEEP: 2_000,
   SPEND_CEILING_POLL: 2_000,
   OCCURRENCE_ROUND: 2_000,
+  OCCURRENCE_SWEEP: 2_000,
   DELIVERY_RECOVERY: 60_000,
   TAKEOVER_RECOVERY: 60_000,
   HUMAN_REPLY_RECOVERY: 60_000,

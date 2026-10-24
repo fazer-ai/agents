@@ -18,6 +18,8 @@ import {
   ChatwootCalledOffError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
+import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
+import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { recordWatcherMediaRefusal } from "@/modules/contact-auth/media-refusal";
 import {
   rememberPosted,
@@ -45,6 +47,12 @@ import {
   OCCURRENCES_DEFAULTS,
   type OccurrencesConfig,
 } from "@/modules/occurrences/settings";
+import {
+  runOccurrenceSweep,
+  SWEEP_PAGES,
+  SWEEP_REQUESTS_PER_ROUND,
+  sweepInboxes,
+} from "@/modules/occurrences/sweep";
 import { THEME_IS } from "@/modules/occurrences/themes";
 import { getTheme, listThemes } from "@/modules/occurrences/views";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -330,9 +338,52 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
       at?: Date;
     }>
   >();
+  // What the sweep lists: the conversations of each Chatwoot inbox and the pinned ones, and every
+  // call made to Chatwoot's reads, so a test can tell what was asked of it.
+  const listing = new Map<
+    number,
+    Array<{ id: number; status: string; lastActivityAt: Date | null }>
+  >();
+  const sweep: {
+    failListing: number;
+    pinned: Set<number>;
+    calls: string[];
+    // Runs after each listing page is answered (Chatwoot changing meanwhile).
+    afterPage?: (page: number) => void;
+  } = { failListing: 0, pinned: new Set(), calls: [] };
   const makeChatwootClient = async () =>
     ({
+      listPinnedConversationIds: async () => {
+        sweep.calls.push("GET /conversations/pins");
+        return new Set(sweep.pinned);
+      },
+      listInboxConversations: async (
+        inboxId: number,
+        status: string,
+        page: number,
+      ) => {
+        sweep.calls.push(
+          `GET /conversations?inbox_id=${inboxId}&status=${status}&page=${page}`,
+        );
+        if (sweep.failListing > 0) {
+          sweep.failListing -= 1;
+          throw new Error("Chatwoot API 503");
+        }
+        // Pinned first, then by activity, as the fork's listing.
+        const rows = [...(listing.get(inboxId) ?? [])].sort(
+          (x, y) =>
+            Number(sweep.pinned.has(y.id)) - Number(sweep.pinned.has(x.id)) ||
+            (y.lastActivityAt?.getTime() ?? 0) -
+              (x.lastActivityAt?.getTime() ?? 0),
+        );
+        const answer = rows
+          .slice((page - 1) * 25, page * 25)
+          .map((r) => ({ ...r, assigneeType: null }));
+        sweep.afterPage?.(page);
+        return answer;
+      },
       getMessages: async (conversation: number) => {
+        sweep.calls.push(`GET /conversations/${conversation}/messages`);
         if (chatwoot.failReads > 0) {
           chatwoot.failReads -= 1;
           throw new Error("Chatwoot API 503");
@@ -392,19 +443,26 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
         }
       },
     }) as unknown as ChatwootClient;
-  const round = (
+  // As the scheduler runs them: the monitor's sweep job, then its round, each with its own time.
+  const round = async (
     script: Script,
     now = new Date(),
     c: OccurrencesConfig = cfg,
     signal?: AbortSignal,
-  ) =>
-    runOccurrenceRound(mkey, c, {
+  ) => {
+    await runOccurrenceSweep(mkey, c, {
+      base: appDb,
+      now: () => now,
+      makeChatwootClient,
+    });
+    return runOccurrenceRound(mkey, c, {
       base: appDb,
       now: () => now,
       makeModel: (mc) => new ScriptedModel(mc, script, calls),
       makeChatwootClient,
       ...(signal ? { signal } : {}),
     });
+  };
   const ctx: TenantContext = {
     tenantId: t.id,
     userId: null,
@@ -467,6 +525,8 @@ async function account(over: Partial<OccurrencesConfig> = {}) {
     calls,
     attributeWrites,
     chatwoot,
+    listing,
+    sweep,
     makeChatwootClient,
     ctx,
     theme,
@@ -3125,7 +3185,7 @@ describe.skipIf(!dbUp)("the reading step", () => {
     expect(runs.map((r) => r.readings)).toEqual([1, 1, 1]);
   });
 
-  test("an inbox whose agent was unbound is read no more, at once, and the round says why", async () => {
+  test("an inbox whose agent was unbound is swept from Chatwoot, and what its mirror already queued is still read", async () => {
     const a = await account();
     await customer(a, "cartão recusado depois do desvínculo");
     await suDb.inbox.update({
@@ -3133,19 +3193,894 @@ describe.skipIf(!dbUp)("the reading step", () => {
       data: { agentId: null },
     });
     await a.round(reads({}));
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+    expect(a.sweep.calls).toContain(
+      `GET /conversations?inbox_id=${a.inbox.chatwootInboxId}&status=all&page=1`,
+    );
+    const run = await suDb.occurrenceRun.findFirstOrThrow({
+      where: { tenantId: a.tenantId },
+      orderBy: { id: "desc" },
+    });
+    expect((run.detail as { skipped?: string[] }).skipped ?? []).toEqual([]);
+  });
+
+  // THE SWEEP (docs/occurrences.md, "Inboxes no agent receives"): an inbox only people answer is
+  // listed from Chatwoot before the reading, and what moved enters the monitor's queue.
+  let humanCw = 0;
+  async function humanInbox(
+    a: Awaited<ReturnType<typeof account>>,
+    name = "Humanos",
+  ) {
+    humanCw += 1;
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId: a.tenantId,
+        chatwootInstanceId: (
+          await suDb.inbox.findUniqueOrThrow({ where: { id: a.inbox.id } })
+        ).chatwootInstanceId,
+        chatwootInboxId: 5000 + Number(a.inbox.chatwootInboxId) * 10 + humanCw,
+        name: `${name} ${a.inbox.chatwootInboxId}`,
+      },
+    });
+    return inbox;
+  }
+  // The monitor reading these inboxes too, saved: the attribute copy obeys the monitor as saved.
+  async function monitoring(
+    a: Awaited<ReturnType<typeof account>>,
+    inboxes: Array<{ id: bigint }>,
+  ) {
+    const cfg: OccurrencesConfig = {
+      ...a.cfg,
+      inboxIds: [...a.cfg.inboxIds, ...inboxes.map((i) => String(i.id))],
+    };
+    await suDb.occurrenceMonitor.update({
+      where: { id: a.monitorId },
+      data: { config: { ...cfg } as unknown as Prisma.InputJsonValue },
+    });
+    return cfg;
+  }
+  // In whole seconds, as Chatwoot states it.
+  const sec = (d: Date) => new Date(Math.floor(d.getTime() / 1000) * 1000);
+  // A conversation only Chatwoot knows of: one customer message at `at`, and the latest activity at
+  // `activity` (a reply after it, or the message itself).
+  function humanConversation(
+    a: Awaited<ReturnType<typeof account>>,
+    inbox: { chatwootInboxId: number },
+    text: string,
+    at: Date,
+    activity: Date = at,
+  ) {
+    humanCw += 1;
+    const cw = 900_000 + humanCw;
+    a.messages.set(cw, [
+      { type: "incoming", content: text, at },
+      ...(activity > at
+        ? [
+            {
+              type: "outgoing" as const,
+              content: "Já vejo isso.",
+              at: activity,
+            },
+          ]
+        : []),
+    ]);
+    const rows = a.listing.get(inbox.chatwootInboxId) ?? [];
+    rows.push({ id: cw, status: "open", lastActivityAt: sec(activity) });
+    a.listing.set(inbox.chatwootInboxId, rows);
+    return cw;
+  }
+  // The conversation moves at `at`: a message lands and the listing shows it.
+  function moves(
+    a: Awaited<ReturnType<typeof account>>,
+    inbox: { chatwootInboxId: number },
+    cw: number,
+    message: { type: "incoming" | "outgoing"; content: string },
+    at: Date,
+  ) {
+    a.messages.get(cw)?.push({ ...message, at });
+    const listed = a.listing
+      .get(inbox.chatwootInboxId)
+      ?.find((r) => r.id === cw);
+    if (listed) listed.lastActivityAt = sec(at);
+  }
+  // Every conversation reads as something, so a read never fails and stays due.
+  const something: Script = (step, user) =>
+    step === "reading" ? { queixa: "algo" } : nothing(step, user);
+  const mirrorRow = (a: Awaited<ReturnType<typeof account>>, cw: number) =>
+    suDb.conversation.findFirst({
+      where: { tenantId: a.tenantId, chatwootConversationId: cw },
+    });
+  const messageGets = (a: Awaited<ReturnType<typeof account>>, cw: number) =>
+    a.sweep.calls.filter((c) => c === `GET /conversations/${cw}/messages`)
+      .length;
+  const listings = (
+    a: Awaited<ReturnType<typeof account>>,
+    inbox: { chatwootInboxId: number },
+  ) =>
+    a.sweep.calls.filter((c) =>
+      c.startsWith(`GET /conversations?inbox_id=${inbox.chatwootInboxId}&`),
+    );
+  const cursorOf = (a: Awaited<ReturnType<typeof account>>, inboxId: bigint) =>
+    suDb.occurrenceSweepCursor.findUnique({
+      where: { monitorId_inboxId: { monitorId: a.monitorId, inboxId } },
+    });
+
+  test("an inbox no agent receives is read from Chatwoot: a customer message inside the window is read, one before it is not, and nothing but GETs is asked", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const now = Date.now();
+    const recent = humanConversation(
+      a,
+      h,
+      "cobrança em dobro na loja leste",
+      new Date(now - 5 * MIN),
+    );
+    // Answered a minute ago, but the customer wrote three hours ago: outside the 60-minute window.
+    const answered = humanConversation(
+      a,
+      h,
+      "mensagem de três horas atrás",
+      new Date(now - 180 * MIN),
+      new Date(now - MIN),
+    );
+    const old = humanConversation(
+      a,
+      h,
+      "mensagem de ontem",
+      new Date(now - 24 * 60 * MIN),
+    );
+    await a.round(
+      reads({
+        "loja leste": { unidade: "Loja Leste", queixa: "cobrança em dobro" },
+      }),
+      new Date(now),
+      cfg,
+    );
+    const sent = a.calls.filter((x) => x.step === "reading");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.user).toContain("cobrança em dobro na loja leste");
+    const row = await mirrorRow(a, recent);
+    expect(row).toMatchObject({
+      inboxId: h.id,
+      sweepOnly: true,
+      status: "open",
+      lastInboundAt: null,
+    });
+    expect((await readingOf(row?.id as bigint, "queixa"))?.value).toBe(
+      "cobrança em dobro",
+    );
+    // Queued by its activity, and its transcript showed no customer message inside the window as of
+    // that activity: marked read, at that message, without the model.
+    const answeredRow = await mirrorRow(a, answered);
+    expect(answeredRow).toMatchObject({ sweepOnly: true });
+    expect(
+      await suDb.occurrenceConversationRead.findFirst({
+        where: { conversationId: answeredRow?.id },
+      }),
+    ).toMatchObject({
+      sweptActivityAt: sec(new Date(now - MIN)),
+      readSweptActivityAt: sec(new Date(now - MIN)),
+      readInboundAt: sec(new Date(now - 180 * MIN)),
+    });
+    expect(await mirrorRow(a, old)).toBeNull();
+    // One page (it reached the old one), then the messages of the two that moved inside the window.
+    expect(a.sweep.calls.slice(0, 3)).toEqual([
+      "GET /conversations/pins",
+      `GET /conversations?inbox_id=${h.chatwootInboxId}&status=all&page=1`,
+      "GET /conversations/pins",
+    ]);
+    expect(a.sweep.calls.slice(3).sort()).toEqual(
+      [
+        `GET /conversations/${recent}/messages`,
+        `GET /conversations/${answered}/messages`,
+      ].sort(),
+    );
+    // The only write is the attribute the field asks for.
+    expect(a.attributeWrites).toEqual([
+      { conversation: recent, attrs: { unidade: "Loja Leste" }, asAdmin: true },
+    ]);
+  });
+
+  test("a swept conversation is read again only when a newer customer message arrives, and one that did not move costs no message fetch", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(
+      a,
+      h,
+      "primeira queixa da loja sul",
+      new Date(t0 - MIN),
+    );
+    const script = reads({ "loja sul": { unidade: "Loja Sul", queixa: "x" } });
+    await a.round(script, new Date(t0), cfg);
+    await a.round(script, new Date(t0 + 15 * MIN), cfg);
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+    expect(messageGets(a, cw)).toBe(1);
+    // The customer writes again: the listing shows the activity, and the next round reads it.
+    moves(
+      a,
+      h,
+      cw,
+      { type: "incoming", content: "e agora?" },
+      new Date(t0 + 20 * MIN),
+    );
+    await a.round(script, new Date(t0 + 30 * MIN), cfg);
+    const sent = a.calls.filter((x) => x.step === "reading");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.user).toContain("e agora?");
+    const r = await suDb.occurrenceConversationRead.findFirstOrThrow({
+      where: { conversationId: (await mirrorRow(a, cw))?.id },
+    });
+    // The mark is the transcript's message, as no mirror holds it.
+    expect(r.readInboundAt).toEqual(sec(new Date(t0 + 20 * MIN)));
+    expect(r.readInboundMessageId).toBe(cw * 100 + 2);
+  });
+
+  test("activity of the team's alone costs one message fetch and no model call, round after round", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(a, h, "minha queixa", new Date(t0 - 2 * MIN));
+    await a.round(something, new Date(t0), cfg);
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+    for (const k of [1, 2]) {
+      moves(
+        a,
+        h,
+        cw,
+        { type: "outgoing", content: `Resposta ${k}` },
+        new Date(t0 + k * 10 * MIN),
+      );
+      await a.round(something, new Date(t0 + (k * 10 + 5) * MIN), cfg);
+    }
+    expect(messageGets(a, cw)).toBe(3);
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+  });
+
+  test("a listing that fits in one page moves the cursor, so a quiet inbox costs one page a round", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    for (let i = 0; i < 10; i++)
+      humanConversation(a, h, `queixa ${i}`, new Date(t0 - (50 - i) * MIN));
+    await a.round(something, new Date(t0), cfg);
+    // A short page is the end of the listing: no second request.
+    expect(listings(a, h)).toHaveLength(1);
+    expect((await cursorOf(a, h.id))?.activityAt).toEqual(
+      sec(new Date(t0 - 41 * MIN)),
+    );
+    a.sweep.calls.length = 0;
+    await a.round(something, new Date(t0 + MIN), cfg);
+    expect(listings(a, h)).toHaveLength(1);
+    expect(a.sweep.calls.filter((c) => c.endsWith("/messages"))).toEqual([]);
+  });
+
+  test("the listing ends at the cursor, so new activity above it still fits in one page", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    for (let i = 0; i < 10; i++)
+      humanConversation(a, h, `antiga ${i}`, new Date(t0 - (50 - i) * MIN));
+    await a.round(something, new Date(t0), cfg);
+    // Twenty new ones: thirty inside the window, but only twenty above the cursor.
+    for (let i = 0; i < 20; i++)
+      humanConversation(a, h, `nova ${i}`, new Date(t0 + i * 1000));
+    a.sweep.calls.length = 0;
+    await a.round(something, new Date(t0 + MIN), cfg);
+    expect(listings(a, h)).toHaveLength(1);
+    expect((await cursorOf(a, h.id))?.activityAt).toEqual(
+      sec(new Date(t0 + 19 * 1000)),
+    );
+  });
+
+  test("a listing longer than one page leaves the cursor, and the next round lists from the window again", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    for (let i = 0; i < 30; i++)
+      humanConversation(a, h, `queixa ${i}`, new Date(t0 - (50 - i) * MIN));
+    await a.round(something, new Date(t0), cfg);
+    expect(listings(a, h)).toHaveLength(2);
+    expect((await cursorOf(a, h.id))?.activityAt).toBeNull();
+    a.sweep.calls.length = 0;
+    await a.round(something, new Date(t0 + MIN), cfg);
+    // Listed again, and nothing moved: no message is fetched.
+    expect(listings(a, h)).toHaveLength(2);
+    expect(a.sweep.calls.filter((c) => c.endsWith("/messages"))).toEqual([]);
+  });
+
+  // Codex's example: 26 conversations, one of the first page leaves the inbox before page two is
+  // asked, and the 26th slides onto the page already read.
+  test("a conversation that slid onto a page already read is listed next round", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const ids: number[] = [];
+    for (let i = 0; i < 26; i++)
+      ids.push(
+        humanConversation(a, h, `queixa ${i}`, new Date(t0 - (50 - i) * MIN)),
+      );
+    const slid = ids[0] as number;
+    const leaving = ids[25] as number;
+    a.sweep.afterPage = (page) => {
+      if (page !== 1) return;
+      a.listing.set(
+        h.chatwootInboxId,
+        (a.listing.get(h.chatwootInboxId) ?? []).filter(
+          (r) => r.id !== leaving,
+        ),
+      );
+    };
+    await a.round(something, new Date(t0), cfg);
+    expect(await mirrorRow(a, slid)).toBeNull();
+    expect((await cursorOf(a, h.id))?.activityAt).toBeNull();
+    a.sweep.afterPage = undefined;
+    await a.round(something, new Date(t0 + MIN), cfg);
+    expect(await mirrorRow(a, slid)).toMatchObject({ sweepOnly: true });
+  });
+
+  test("a listing that does not reach the cursor in eight pages leaves it, and lists from the top next round", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    // More than eight pages of 25 inside the window.
+    const ids: number[] = [];
+    for (let i = 0; i < SWEEP_PAGES * 25 + 5; i++) {
+      const cw = humanConversation(
+        a,
+        h,
+        `q${i}`,
+        new Date(t0 - 50 * MIN + i * 1000),
+      );
+      // No customer message to read: each queued one costs its fetch and no model call.
+      a.messages.delete(cw);
+      ids.push(cw);
+    }
+    await a.round(something, new Date(t0), cfg);
+    expect(listings(a, h)).toHaveLength(SWEEP_PAGES);
+    expect((await cursorOf(a, h.id))?.activityAt).toBeNull();
+    // The five oldest were past the last page: never queued.
+    for (const cw of ids.slice(0, 5)) expect(await mirrorRow(a, cw)).toBeNull();
+    a.sweep.calls.length = 0;
+    await a.round(something, new Date(t0 + MIN), cfg);
+    expect(listings(a, h)).toHaveLength(SWEEP_PAGES);
+  });
+
+  test("a pinned old conversation does not end the listing early, and is not queued", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    // A whole page of them, so the recent one is on page two.
+    const pinned: number[] = [];
+    for (let i = 0; i < 25; i++) {
+      const cw = humanConversation(
+        a,
+        h,
+        `fixada ${i}`,
+        new Date(t0 - (24 * 60 + i) * MIN),
+      );
+      a.sweep.pinned.add(cw);
+      pinned.push(cw);
+    }
+    const recent = humanConversation(a, h, "queixa nova", new Date(t0 - MIN));
+    await a.round(something, new Date(t0), cfg);
+    for (const cw of pinned) expect(await mirrorRow(a, cw)).toBeNull();
+    expect(await mirrorRow(a, recent)).toMatchObject({ sweepOnly: true });
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+  });
+
+  test("a conversation two pages both list is queued once, and the inbox is still swept", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    for (let i = 0; i < 26; i++)
+      humanConversation(a, h, `queixa ${i}`, new Date(t0 - (50 - i) * MIN));
+    // A new conversation lands after page one: the last row of page one is the first of page two.
+    a.sweep.afterPage = (page) => {
+      if (page === 1) humanConversation(a, h, "nova", new Date(t0 - MIN / 2));
+    };
+    await a.round(something, new Date(t0), cfg);
+    const run = await suDb.occurrenceRun.findFirstOrThrow({
+      where: { tenantId: a.tenantId },
+      orderBy: { id: "desc" },
+    });
+    expect((run.detail as { skipped?: string[] }).skipped ?? []).toEqual([]);
+    expect(
+      await suDb.occurrenceConversationRead.count({
+        where: { monitorId: a.monitorId, sweptActivityAt: { not: null } },
+      }),
+    ).toBe(26);
+  });
+
+  test("a pin made during the listing leaves the cursor where it was", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const old = humanConversation(
+      a,
+      h,
+      "de ontem",
+      new Date(t0 - 24 * 60 * MIN),
+    );
+    humanConversation(a, h, "recente", new Date(t0 - MIN));
+    a.sweep.afterPage = () => a.sweep.pinned.add(old);
+    await a.round(something, new Date(t0), cfg);
+    expect((await cursorOf(a, h.id))?.activityAt).toBeNull();
+  });
+
+  // Queued at 10:00, left by the cap, the team answers at 11:10, and the next round reads it.
+  test("a conversation the cap left for later is read even after the team's activity moves past its window", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    humanConversation(a, h, "a primeira da fila", new Date(t0 - 2 * MIN));
+    const later = humanConversation(
+      a,
+      h,
+      "a que o teto adiou",
+      new Date(t0 - MIN),
+    );
+    const step = async (at: Date) => {
+      await runOccurrenceSweep(a.key, cfg, {
+        base: appDb,
+        now: () => at,
+        makeChatwootClient: a.makeChatwootClient,
+      });
+      return runReadingStep(
+        appDb,
+        a.key,
+        cfg,
+        await roundModels(a.tenantId, cfg, {
+          base: appDb,
+          threadId: `occurrences:${a.tenantId}:due-since`,
+          deadline: Date.now() + 120_000,
+          makeModel: (mc) =>
+            new ScriptedModel(mc, () => ({ queixa: "algo" }), a.calls),
+        }),
+        {
+          makeChatwootClient: a.makeChatwootClient,
+          perRound: 1,
+          now: () => at,
+        },
+      );
+    };
+    expect(await step(new Date(t0))).toMatchObject({ read: 1, pending: 1 });
+    moves(
+      a,
+      h,
+      later,
+      { type: "outgoing", content: "Estamos vendo." },
+      new Date(t0 + 70 * MIN),
+    );
+    expect(await step(new Date(t0 + 75 * MIN))).toMatchObject({
+      read: 1,
+      pending: 0,
+    });
+    expect(
+      await readingOf((await mirrorRow(a, later))?.id as bigint, "queixa"),
+    ).not.toBeNull();
+  });
+
+  test("a customer message after the conversation was covered makes it due from that activity", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(a, h, "primeira", new Date(t0 - MIN));
+    await a.round(something, new Date(t0), cfg);
+    const at = new Date(t0 + 3 * 60 * MIN);
+    moves(a, h, cw, { type: "incoming", content: "três horas depois" }, at);
+    await a.round(something, new Date(t0 + 3 * 60 * MIN + MIN), cfg);
+    const r = await suDb.occurrenceConversationRead.findFirstOrThrow({
+      where: { conversationId: (await mirrorRow(a, cw))?.id },
+    });
+    expect(r.sweptDueSince).toEqual(sec(at));
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(2);
+  });
+
+  test("two customer messages in the same second are both read, though the listing shows one activity", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const S = sec(new Date());
+    const cw = humanConversation(a, h, "primeira do segundo", S);
+    // Fetched within the activity's own second: a message later in it would not move the activity.
+    await a.round(something, new Date(S.getTime() + 500), cfg);
+    a.messages.get(cw)?.push({
+      type: "incoming",
+      content: "segunda do mesmo segundo",
+      at: new Date(S.getTime() + 800),
+    });
+    await a.round(something, new Date(S.getTime() + 2 * MIN), cfg);
+    await a.round(something, new Date(S.getTime() + 4 * MIN), cfg);
+    const sent = a.calls.filter((x) => x.step === "reading");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.user).toContain("segunda do mesmo segundo");
+    const r = await suDb.occurrenceConversationRead.findFirstOrThrow({
+      where: { conversationId: (await mirrorRow(a, cw))?.id },
+    });
+    expect(r.readSweptActivityAt).toEqual(S);
+  });
+
+  test("a listing that shows an older activity than the one queued does not move the queue back", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(a, h, "queixa", new Date(t0 - 2 * MIN));
+    await a.round(something, new Date(t0), cfg);
+    // A lagging answer: the conversation listed a minute earlier than it was.
+    const listed = a.listing.get(h.chatwootInboxId)?.[0];
+    if (listed) listed.lastActivityAt = sec(new Date(t0 - 3 * MIN));
+    await suDb.occurrenceSweepCursor.deleteMany({
+      where: { monitorId: a.monitorId },
+    });
+    await a.round(something, new Date(t0 + MIN), cfg);
+    expect(
+      (
+        await suDb.occurrenceConversationRead.findFirstOrThrow({
+          where: { conversationId: (await mirrorRow(a, cw))?.id },
+        })
+      ).sweptActivityAt,
+    ).toEqual(sec(new Date(t0 - 2 * MIN)));
+  });
+
+  test("a conversation the mirror holds in another inbox is not queued by this inbox's listing", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    // The agent's conversation, listed by the human inbox too (Chatwoot moved it there).
+    const c = await customer(a, "movida para os humanos", {
+      at: new Date(Date.now() - 90 * MIN),
+    });
+    a.listing.set(h.chatwootInboxId, [
+      { id: c.cw, status: "open", lastActivityAt: sec(new Date()) },
+    ]);
+    await a.round(something, new Date(), cfg);
+    expect(
+      await suDb.occurrenceConversationRead.findFirst({
+        where: { conversationId: c.id },
+      }),
+    ).toBeNull();
     expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(0);
+  });
+
+  test("fifty quiet inboxes are all swept within two rounds, and the reading goes on in each", async () => {
+    const a = await account();
+    const quiet = [];
+    for (let i = 0; i < 50; i++) quiet.push(await humanInbox(a, `Quieta${i}`));
+    const cfg = await monitoring(a, quiet);
+    const t0 = Date.now();
+    const listedInboxes = new Set<string>();
+    for (const k of [0, 1]) {
+      await customer(a, `queixa da rodada ${k}`, {
+        at: new Date(t0 + k * MIN - 1000),
+      });
+      a.sweep.calls.length = 0;
+      await a.round(something, new Date(t0 + k * MIN), cfg);
+      const asked = a.sweep.calls.filter(
+        (c) => c.startsWith("GET /conversations?") || c.endsWith("/pins"),
+      );
+      expect(asked.length).toBeLessThanOrEqual(SWEEP_REQUESTS_PER_ROUND);
+      for (const c of asked) {
+        const id = /inbox_id=(\d+)/.exec(c)?.[1];
+        if (id) listedInboxes.add(id);
+      }
+      expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(k + 1);
+    }
+    expect(listedInboxes.size).toBe(50);
+  });
+
+  test("an inbox the round cut off mid-listing is not first in line next time", async () => {
+    const a = await account();
+    const cut = await humanInbox(a, "Cortada");
+    const next = await humanInbox(a, "Seguinte");
+    const t0 = Date.now();
+    humanConversation(a, cut, "queixa", new Date(t0 - MIN));
+    const stop = new AbortController();
+    a.sweep.afterPage = () => stop.abort();
+    const deps = {
+      clientOf: async () => a.makeChatwootClient(),
+      windowStart: new Date(t0 - 60 * MIN),
+      now: () => new Date(),
+    };
+    await sweepInboxes(appDb, a.key, [cut, next], {
+      ...deps,
+      signal: stop.signal,
+    });
+    a.sweep.afterPage = undefined;
+    a.sweep.calls.length = 0;
+    await sweepInboxes(appDb, a.key, [cut, next], {
+      ...deps,
+      signal: new AbortController().signal,
+    });
+    expect(
+      a.sweep.calls.filter((c) => c.startsWith("GET /conversations?"))[0],
+    ).toBe(
+      `GET /conversations?inbox_id=${next.chatwootInboxId}&status=all&page=1`,
+    );
+  });
+
+  test("a swept conversation given up on is read through the webhook once its inbox gets an agent", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(a, h, "falha sempre", new Date(t0 - MIN));
+    a.chatwoot.failReads = 100;
+    for (const k of [0, 1, 2])
+      await a.round(something, new Date(t0 + k * MIN), cfg);
+    a.chatwoot.failReads = 0;
+    const { agentId } = await suDb.inbox.findUniqueOrThrow({
+      where: { id: a.inbox.id },
+    });
+    await suDb.inbox.update({ where: { id: h.id }, data: { agentId } });
+    // The customer writes, and the agent's webhook mirrors it.
+    const at = new Date(t0 + 5 * MIN);
+    moves(a, h, cw, { type: "incoming", content: "pelo webhook" }, at);
+    const s = Math.floor(at.getTime() / 1000);
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: cw * 100 + 60,
+      content: "pelo webhook",
+      message_type: "incoming",
+      private: false,
+      created_at: s,
+      conversation: {
+        id: cw,
+        inbox_id: h.chatwootInboxId,
+        status: "open",
+        contact_inbox: { id: 7_000 + (cw % 1000) },
+        meta: { sender: { id: 8_000 + (cw % 1000), type: "contact" } },
+        channel: "Channel::Whatsapp",
+        last_activity_at: s,
+      },
+      sender: { id: 8_000 + (cw % 1000), type: "contact" },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const row = await mirrorRow(a, cw);
+    await mirrorChatwootEvent(
+      a.tenantId,
+      row?.chatwootInstanceId as bigint,
+      n,
+      appDb,
+    );
+    a.sweep.calls.length = 0;
+    await a.round(something, new Date(t0 + 6 * MIN), cfg);
+    expect(listings(a, h)).toEqual([]);
+    const sent = a.calls.filter((x) => x.step === "reading");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.user).toContain("pelo webhook");
+    const r = await suDb.occurrenceConversationRead.findFirstOrThrow({
+      where: { conversationId: row?.id },
+    });
+    // The reading closed what the sweep had left open.
+    expect(r.readSweptActivityAt).toEqual(r.sweptActivityAt);
+  });
+
+  test("the inbox swept longest ago is swept first", async () => {
+    const a = await account();
+    const first = await humanInbox(a, "Primeira");
+    const second = await humanInbox(a, "Segunda");
+    const cfg = await monitoring(a, [first, second]);
+    await suDb.occurrenceSweepCursor.createMany({
+      data: [
+        {
+          tenantId: a.tenantId,
+          monitorId: a.monitorId,
+          inboxId: first.id,
+          sweptAt: new Date(Date.now() - MIN),
+        },
+        {
+          tenantId: a.tenantId,
+          monitorId: a.monitorId,
+          inboxId: second.id,
+          sweptAt: new Date(Date.now() - 10 * MIN),
+        },
+      ],
+    });
+    await a.round(something, new Date(), cfg);
+    const order = a.sweep.calls.filter((c) =>
+      c.startsWith("GET /conversations?inbox_id="),
+    );
+    expect(order).toEqual([
+      `GET /conversations?inbox_id=${second.chatwootInboxId}&status=all&page=1`,
+      `GET /conversations?inbox_id=${first.chatwootInboxId}&status=all&page=1`,
+    ]);
+  });
+
+  test("a listing Chatwoot refuses shows on the round and keeps its cursor, the other inboxes are still read, and the next round lists again", async () => {
+    const a = await account();
+    const failing = await humanInbox(a, "Falha");
+    const fine = await humanInbox(a, "Boa");
+    const cfg = await monitoring(a, [failing, fine]);
+    const t0 = Date.now();
+    const lost = humanConversation(
+      a,
+      failing,
+      "queixa da caixa que falha",
+      new Date(t0 - 2 * MIN),
+    );
+    const kept = humanConversation(
+      a,
+      fine,
+      "queixa da caixa boa",
+      new Date(t0 - 2 * MIN),
+    );
+    a.sweep.failListing = 1;
+    await a.round(something, new Date(t0), cfg);
     const run = await suDb.occurrenceRun.findFirstOrThrow({
       where: { tenantId: a.tenantId },
       orderBy: { id: "desc" },
     });
     expect((run.detail as { skipped?: string[] }).skipped).toContain(
-      `reading: no agent receives the inbox "${a.inbox.name}"`,
+      `reading: the conversations of the inbox "${failing.name}" could not be listed from Chatwoot`,
     );
+    expect(await mirrorRow(a, lost)).toBeNull();
+    expect((await cursorOf(a, failing.id))?.activityAt).toBeNull();
+    expect(await mirrorRow(a, kept)).toMatchObject({ sweepOnly: true });
+    await a.round(something, new Date(t0 + MIN), cfg);
+    expect(await mirrorRow(a, lost)).toMatchObject({ sweepOnly: true });
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(2);
+    // Listed again: the round no longer says it.
+    const next = await suDb.occurrenceRun.findFirstOrThrow({
+      where: { tenantId: a.tenantId },
+      orderBy: { id: "desc" },
+    });
+    expect((next.detail as { skipped?: string[] }).skipped ?? []).toEqual([]);
+  });
+
+  test("an inbox of a disconnected account is not swept", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    humanConversation(a, h, "conta desconectada", new Date(Date.now() - MIN));
+    await suDb.chatwootInstance.update({
+      where: { id: h.chatwootInstanceId },
+      data: { disconnectedAt: new Date() },
+    });
+    await a.round(something, new Date(), cfg);
+    expect(a.sweep.calls).toEqual([]);
+  });
+
+  test("a swept conversation whose read fails three times waits for its next activity", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(a, h, "falha sempre", new Date(t0 - MIN));
+    a.chatwoot.failReads = 100;
+    for (const k of [0, 1, 2, 3])
+      await a.round(something, new Date(t0 + k * MIN), cfg);
+    expect(messageGets(a, cw)).toBe(READ_FAILURES_MAX);
+    a.chatwoot.failReads = 0;
+    moves(
+      a,
+      h,
+      cw,
+      { type: "incoming", content: "ainda falha?" },
+      new Date(t0 + 5 * MIN),
+    );
+    await a.round(something, new Date(t0 + 6 * MIN), cfg);
+    expect(a.calls.filter((x) => x.step === "reading")).toHaveLength(1);
+  });
+
+  test("the cap holds the swept conversations too, and those it left are the next round's", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const now = Date.now();
+    for (const k of [3, 2, 1])
+      humanConversation(a, h, `queixa ${k}`, new Date(now - k * MIN));
+    const step = async (at: Date) => {
+      await runOccurrenceSweep(a.key, cfg, {
+        base: appDb,
+        now: () => at,
+        makeChatwootClient: a.makeChatwootClient,
+      });
+      return runReadingStep(
+        appDb,
+        a.key,
+        cfg,
+        await roundModels(a.tenantId, cfg, {
+          base: appDb,
+          threadId: `occurrences:${a.tenantId}:sweep-cap`,
+          deadline: Date.now() + 120_000,
+          makeModel: (mc) =>
+            new ScriptedModel(mc, () => ({ queixa: "algo" }), a.calls),
+        }),
+        {
+          makeChatwootClient: a.makeChatwootClient,
+          perRound: 2,
+          now: () => at,
+        },
+      );
+    };
+    expect(await step(new Date(now))).toMatchObject({ read: 2, pending: 1 });
+    expect(await step(new Date(now + 120 * MIN))).toMatchObject({
+      read: 1,
+      pending: 0,
+    });
+  });
+
+  test("an agent's first webhook mirrors a swept conversation as new over its row, which keeps its queue", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const at = sec(new Date(Date.now() - MIN));
+    const cw = humanConversation(a, h, "antes do agente", at);
+    await a.round(something, new Date(), cfg);
+    const before = await mirrorRow(a, cw);
+    const s = Math.floor(at.getTime() / 1000) + 30;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: cw * 100 + 50,
+      content: "resolvido",
+      message_type: "outgoing",
+      private: false,
+      created_at: s,
+      conversation: {
+        id: cw,
+        inbox_id: h.chatwootInboxId,
+        status: "resolved",
+        contact_inbox: { id: 7_000 + (cw % 1000) },
+        meta: {
+          assignee: { id: 44, name: "Fran" },
+          assignee_type: "User",
+          sender: { id: 8_000 + (cw % 1000), type: "contact" },
+        },
+        channel: "Channel::Whatsapp",
+        last_activity_at: s,
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    await mirrorChatwootEvent(
+      a.tenantId,
+      before?.chatwootInstanceId as bigint,
+      n,
+      appDb,
+    );
+    expect(await mirrorRow(a, cw)).toMatchObject({
+      id: before?.id,
+      sweepOnly: false,
+      status: "resolved",
+      assigneeId: 44,
+      assigneeType: "User",
+    });
     expect(
-      await suDb.llmUsage.count({
-        where: { tenantId: a.tenantId, node: "occurrence_reading" },
+      await suDb.occurrenceConversationRead.count({
+        where: { conversationId: before?.id },
       }),
-    ).toBe(0);
+    ).toBe(1);
+  });
+
+  test("the sweep never writes a row it inserted again, nor the mirror's", async () => {
+    const a = await account();
+    const h = await humanInbox(a);
+    const cfg = await monitoring(a, [h]);
+    const t0 = Date.now();
+    const cw = humanConversation(a, h, "primeira", new Date(t0 - 2 * MIN));
+    await a.round(something, new Date(t0), cfg);
+    const first = await mirrorRow(a, cw);
+    moves(a, h, cw, { type: "incoming", content: "segunda" }, new Date(t0));
+    const listed = a.listing.get(h.chatwootInboxId)?.[0];
+    if (listed) listed.status = "resolved";
+    await a.round(something, new Date(t0 + MIN), cfg);
+    const after = await mirrorRow(a, cw);
+    expect(after?.updatedAt).toEqual(first?.updatedAt);
+    expect(after?.status).toBe("open");
   });
 
   test("a second customer message in the same second as the one read makes the conversation due again", async () => {

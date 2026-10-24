@@ -22851,7 +22851,7 @@
           "Resources"
         ],
         "summary": "Set the first monitor's configuration",
-        "description": "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be received by an agent (bound or observing). Writes the account's first monitor, and creates it (named \"Ocorrências\") when the account has none. From before there were several monitors; name the monitor instead.",
+        "description": "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be one of the account's; one no agent receives is read through the Chatwoot API once per round. Writes the account's first monitor, and creates it (named \"Ocorrências\") when the account has none. From before there were several monitors; name the monitor instead.",
         "requestBody": {
           "required": true,
           "content": {
@@ -25496,7 +25496,7 @@
           "Resources"
         ],
         "summary": "Set a monitor's configuration",
-        "description": "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be received by an agent (bound or observing). A field copied to a Chatwoot attribute that another monitor already copies to on a shared inbox is refused (422), naming that monitor.",
+        "description": "Changes any part of the monitor; a field left out keeps its value, `fields` and `inboxIds` replace their lists. Switching it on needs an inbox, the model and a reason field (a declared field); the reference field is optional. An inbox the write adds must be one of the account's; one no agent receives is read through the Chatwoot API once per round. A field copied to a Chatwoot attribute that another monitor already copies to on a shared inbox is refused (422), naming that monitor.",
         "parameters": [
           {
             "name": "id",

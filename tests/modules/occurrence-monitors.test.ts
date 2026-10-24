@@ -25,6 +25,7 @@ import {
 } from "@/modules/occurrences/monitors";
 import { occurrenceRoundHandler } from "@/modules/occurrences/round";
 import type { OccurrenceField } from "@/modules/occurrences/settings";
+import { occurrenceSweepHandler } from "@/modules/occurrences/sweep";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 
@@ -425,6 +426,87 @@ describe.skipIf(!dbUp)("occurrence monitors", () => {
     expect((await a.jobs()).map((j) => j.dedupeKey)).toEqual([
       `occurrences:${second.id}`,
     ]);
+  });
+
+  // The sweep of the inboxes no agent receives is a job of its own (occurrences/sweep.ts), so the
+  // reading never shares its time with it: it lives and dies with the monitor's round.
+  test("each monitor's sweep job is armed with its round, cancelled with it, and retired when the monitor goes", async () => {
+    const a = await account();
+    const sweeps = () =>
+      suDb.schedulerJob.findMany({
+        where: {
+          tenantId: a.tenantId,
+          kind: "OCCURRENCE_SWEEP",
+          status: "PENDING",
+        },
+        select: { dedupeKey: true, payload: true },
+        orderBy: { dedupeKey: "asc" },
+      });
+    await updateOccurrencesSettings(a.ctx, a.on([a.sac.id]), appDb);
+    const first = (await listMonitors(a.ctx, appDb))[0]?.id as string;
+    expect(await sweeps()).toEqual([
+      {
+        dedupeKey: `occurrences-sweep:${first}`,
+        payload: { monitorId: first },
+      },
+    ]);
+    // A save that changes the cadence re-arms the same row, due now.
+    await updateOccurrencesSettings(a.ctx, { cadenceMinutes: 30 }, appDb);
+    expect(await sweeps()).toHaveLength(1);
+    await updateOccurrencesSettings(a.ctx, { enabled: false }, appDb);
+    expect(await sweeps()).toEqual([]);
+    // At boot, with the round.
+    await updateOccurrencesSettings(a.ctx, { enabled: true }, appDb);
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId: a.tenantId, kind: "OCCURRENCE_SWEEP" },
+    });
+    await ensureAllOccurrenceRounds(appDb);
+    expect(await sweeps()).toHaveLength(1);
+    // A sweep claimed when the monitor goes is retired too.
+    const claimed = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId: a.tenantId, kind: "OCCURRENCE_SWEEP" },
+    });
+    await suDb.schedulerJob.update({
+      where: { id: claimed.id },
+      data: { status: "CLAIMED" },
+    });
+    await deleteMonitor(a.ctx, BigInt(first), appDb);
+    expect(
+      (await suDb.schedulerJob.findUniqueOrThrow({ where: { id: claimed.id } }))
+        .status,
+    ).toBe("DONE");
+  });
+
+  test("the sweep job re-arms one cadence later while on, and ends when the monitor is off or gone", async () => {
+    const a = await account();
+    await updateOccurrencesSettings(
+      a.ctx,
+      { ...a.on([a.sac.id]), cadenceMinutes: 15 },
+      appDb,
+    );
+    const id = (await listMonitors(a.ctx, appDb))[0]?.id as string;
+    const now = new Date();
+    expect(
+      await occurrenceSweepHandler(
+        {
+          tenantId: a.tenantId,
+          payload: { monitorId: id },
+        } as unknown as ClaimedJob,
+        appDb,
+        { now: () => now },
+      ),
+    ).toEqual({
+      outcome: "reschedule",
+      runAt: new Date(now.getTime() + 15 * 60_000),
+    });
+    await updateOccurrencesSettings(a.ctx, { enabled: false }, appDb);
+    for (const payload of [{}, { monitorId: "999999999" }, { monitorId: id }])
+      expect(
+        await occurrenceSweepHandler(
+          { tenantId: a.tenantId, payload } as unknown as ClaimedJob,
+          appDb,
+        ),
+      ).toEqual({ outcome: "done" });
   });
 
   test("an id of another account's monitor, or of none, is a 404", async () => {

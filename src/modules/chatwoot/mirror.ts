@@ -237,7 +237,7 @@ export async function mirrorChatwootEvent(
     runScopedOn(base, sysCtx(tenantId), async (db) => {
       const threadId = `${tenantId}:${instanceId}:${convId}`;
       return withEntityLock(db, threadId, async () => {
-        const existing = await db.conversation.findUnique({
+        const loaded = await db.conversation.findUnique({
           where: {
             tenantId_chatwootInstanceId_chatwootConversationId: {
               tenantId,
@@ -278,6 +278,7 @@ export async function mirrorChatwootEvent(
             // ahead of it. See the write there.
             lastInboundAt: true,
             lastInboundMessageId: true,
+            sweepOnly: true,
             // Read so an empty relation is filled by any payload naming it, and so a recovery's inherited
             // pairing fills an empty one and never replaces a stored one.
             inboxId: true,
@@ -291,6 +292,10 @@ export async function mirrorChatwootEvent(
             statusClaimRefusedAt: true,
           },
         });
+        // A row only the occurrences sweep inserted (occurrences/sweep.ts) holds none of the
+        // conversation's state: the first webhook mirrors the conversation as new, over that row.
+        const sweptRow = loaded?.sweepOnly ? loaded : null;
+        const existing = sweptRow ? null : loaded;
         const prevAssigneeId = existing?.assigneeId ?? null;
         const decision = decideConversationWrites(
           statePayload,
@@ -511,61 +516,68 @@ export async function mirrorChatwootEvent(
               n.createActivityAt * 1000 > decision.activityAt.getTime())
               ? new Date(n.createActivityAt * 1000)
               : decision.activityAt;
-          const created = await db.conversation.create({
-            data: {
-              tenantId,
-              chatwootInstanceId: instanceId,
-              chatwootConversationId: convId,
-              contactInboxId: n.contactInboxId,
-              inboxId: inboxRowId,
-              contactId,
-              ...relations,
-              status: createdStatus,
-              assigneeId: n.assigneeId ?? null,
-              assigneeType: n.assigneeType ?? null,
-              assigneeName: n.assigneeName ?? null,
-              threadId,
-              lastEventAt: createdLastEventAt,
-              chatwootStatusAt: decision.statusAt,
-              chatwootOwnershipChangedAt: decision.ownershipChangedAt,
-              chatwootAssigneeAt: decision.assigneeAt,
-              chatwootRedirectOriginAt: decision.redirectOriginAt,
-              chatwootLabelsAt: decision.facts.labels.at,
-              chatwootCustomAttributesAt: decision.facts.customAttributes.at,
-              chatwootConversationTypeAt: decision.facts.conversationType.at,
-              chatwootKanbanAttributesAt: decision.facts.kanbanAttributes.at,
-              chatwootRedirectOriginClearedAt: decision.redirectOriginClearedAt,
-              lastInboundAt: inboundAt,
-              lastInboundMessageId: inboundId,
-              // A row created mid-dialogue needs no special case here: what it stores is what
-              // Chatwoot measured over the whole conversation, not what we happened to witness.
-              ...slaWrites,
-              ...platformReplyWrite(null),
+          const fresh = {
+            contactInboxId: n.contactInboxId,
+            inboxId: inboxRowId,
+            contactId,
+            ...relations,
+            status: createdStatus,
+            assigneeId: n.assigneeId ?? null,
+            assigneeType: n.assigneeType ?? null,
+            assigneeName: n.assigneeName ?? null,
+            threadId,
+            lastEventAt: createdLastEventAt,
+            chatwootStatusAt: decision.statusAt,
+            chatwootOwnershipChangedAt: decision.ownershipChangedAt,
+            chatwootAssigneeAt: decision.assigneeAt,
+            chatwootRedirectOriginAt: decision.redirectOriginAt,
+            chatwootLabelsAt: decision.facts.labels.at,
+            chatwootCustomAttributesAt: decision.facts.customAttributes.at,
+            chatwootConversationTypeAt: decision.facts.conversationType.at,
+            chatwootKanbanAttributesAt: decision.facts.kanbanAttributes.at,
+            chatwootRedirectOriginClearedAt: decision.redirectOriginClearedAt,
+            lastInboundAt: inboundAt,
+            lastInboundMessageId: inboundId,
+            // A row created mid-dialogue needs no special case here: what it stores is what
+            // Chatwoot measured over the whole conversation, not what we happened to witness.
+            ...slaWrites,
+            ...platformReplyWrite(null),
 
-              ...(n.customAttributes
-                ? {
-                    customAttributes:
-                      n.customAttributes as Prisma.InputJsonValue,
-                  }
-                : {}),
-              ...(n.kanbanAttributes
-                ? {
-                    kanbanAttributes:
-                      n.kanbanAttributes as Prisma.InputJsonValue,
-                    chatwootKanbanCardId: n.kanbanCardId ?? null,
-                    chatwootKanbanCardAt: n.kanbanCardAt ?? null,
-                  }
-                : {}),
-              ...(n.conversationType
-                ? { conversationType: n.conversationType }
-                : {}),
-              ...(n.labels !== undefined ? { labels: n.labels } : {}),
-              ...(decision.redirectOrigin
-                ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
-                : {}),
-            },
-            select: { id: true },
-          });
+            ...(n.customAttributes
+              ? {
+                  customAttributes: n.customAttributes as Prisma.InputJsonValue,
+                }
+              : {}),
+            ...(n.kanbanAttributes
+              ? {
+                  kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
+                  chatwootKanbanCardId: n.kanbanCardId ?? null,
+                  chatwootKanbanCardAt: n.kanbanCardAt ?? null,
+                }
+              : {}),
+            ...(n.conversationType
+              ? { conversationType: n.conversationType }
+              : {}),
+            ...(n.labels !== undefined ? { labels: n.labels } : {}),
+            ...(decision.redirectOrigin
+              ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
+              : {}),
+          };
+          const created = sweptRow
+            ? await db.conversation.update({
+                where: { id: sweptRow.id },
+                data: { ...fresh, sweepOnly: false },
+                select: { id: true },
+              })
+            : await db.conversation.create({
+                data: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  chatwootConversationId: convId,
+                  ...fresh,
+                },
+                select: { id: true },
+              });
           await emitMirrorEvent(db, tenantId, "conversation.created", {
             conversation_id: String(created.id),
             inbox_id: inboxRowId != null ? String(inboxRowId) : null,

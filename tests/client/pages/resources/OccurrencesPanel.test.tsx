@@ -416,10 +416,10 @@ describe("OccurrencesPanel", () => {
       target: { value: "A que se refere." },
     });
     addField("Canal", "Por onde chegou.");
-    // The inbox no agent receives is not offered, and one line counts it; the other is picked.
+    // The inbox no agent receives is offered too, with no line leaving it out.
     expect(
-      screen.getByText(/^1 inbox no agent receives is not listed\./),
-    ).toBeTruthy();
+      screen.queryByText(/no agent receives (is|are) not listed/),
+    ).toBeNull();
     await pickInbox("SAC");
     fireEvent.click(screen.getByRole("switch", { name: "Monitor on" }));
     const save = screen.getByRole("button", { name: "Save" });
@@ -1704,6 +1704,13 @@ describe("OccurrencesPanel", () => {
                 inbox: "E-mail Financeiro",
                 count: 1,
               },
+              {
+                step: "reading",
+                reason: "inbox_unlisted",
+                message: null,
+                inbox: "SAC Humanos",
+                count: 1,
+              },
             ],
           },
         },
@@ -1724,6 +1731,9 @@ describe("OccurrencesPanel", () => {
     );
     expect(text).toContain(
       'Conversation reading did not complete: no agent receives the inbox "E-mail Financeiro"',
+    );
+    expect(text).toContain(
+      'the conversations of the inbox "SAC Humanos" could not be listed from Chatwoot; the next round tries again',
     );
     expect(text).not.toContain("Incorrect API key");
     // One popover explains the dropped readings, one holds the provider's own text.

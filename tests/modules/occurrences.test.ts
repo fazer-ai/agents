@@ -576,16 +576,22 @@ describe.skipIf(!dbUp)("against the database", () => {
     expect(res).toMatchObject({ ok: true });
   });
 
-  test("refuses an inbox of another account, one no agent receives, a credential that is not a key, and an incomplete block switched on", async () => {
+  test("saves an inbox no agent receives, which the sweep reads from Chatwoot", async () => {
+    const before = (await getOccurrencesSettings(ctx(), appDb)).inboxIds;
+    const res = await updateOccurrencesSettings(
+      ctx(),
+      { inboxIds: [String(silentInboxId)] },
+      appDb,
+    );
+    expect(res.inboxIds).toEqual([String(silentInboxId)]);
+    await updateOccurrencesSettings(ctx(), { inboxIds: before }, appDb);
+  });
+
+  test("refuses an inbox of another account, a credential that is not a key, and an incomplete block switched on", async () => {
     for (const patch of [
       {
         enabled: true,
         inboxIds: [String(foreignInboxId)],
-        model: reading(),
-      },
-      {
-        enabled: true,
-        inboxIds: [String(silentInboxId)],
         model: reading(),
       },
       {
@@ -621,14 +627,6 @@ describe.skipIf(!dbUp)("against the database", () => {
     await expect(
       updateOccurrencesSettings(ctx(), { model: compatible }, appDb),
     ).rejects.toMatchObject({ statusCode: 422 });
-    // The refusal names the inbox no agent receives, so the admin knows which one and why.
-    await expect(
-      updateOccurrencesSettings(
-        ctx(),
-        { inboxIds: [String(silentInboxId)] },
-        appDb,
-      ),
-    ).rejects.toThrow(/"Só gente"/);
     expect((await getOccurrencesSettings(ctx(), appDb)).enabled).toBe(false);
     expect(await pendingRounds()).toBe(0);
   });
@@ -771,7 +769,7 @@ describe.skipIf(!dbUp)("against the database", () => {
     expect(row?.lastReadAt.toISOString()).toBe(later.toISOString());
   });
 
-  test("an inbox that lost its agent stays on the list and does not block the next save", async () => {
+  test("an inbox that lost its agent stays on the list, does not block the next save, and saves again once taken off", async () => {
     const lonely = await suDb.inbox.create({
       data: {
         tenantId,
@@ -807,19 +805,21 @@ describe.skipIf(!dbUp)("against the database", () => {
       appDb,
     );
     expect(saved.inboxIds).toContain(String(lonely.id));
-    // Taken off and put back, it is a new inbox again, and refused.
+    // Taken off and put back, it saves too: the sweep reads it from Chatwoot.
     await updateOccurrencesSettings(
       ctx(),
       { inboxIds: [String(inboxId)] },
       appDb,
     );
-    await expect(
-      updateOccurrencesSettings(
-        ctx(),
-        { inboxIds: [String(inboxId), String(lonely.id)] },
-        appDb,
-      ),
-    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(
+      (
+        await updateOccurrencesSettings(
+          ctx(),
+          { inboxIds: [String(inboxId), String(lonely.id)] },
+          appDb,
+        )
+      ).inboxIds,
+    ).toContain(String(lonely.id));
     const off = await updateOccurrencesSettings(
       ctx(),
       { enabled: false, cadenceMinutes: 15 },

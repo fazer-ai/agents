@@ -40,6 +40,7 @@ import {
   READING_MESSAGES,
   READINGS_PER_ROUND,
 } from "./settings";
+import { splitInboxes } from "./sweep";
 
 // THE READING STEP (docs/occurrences.md, "Readings"). The monitor reads the conversations of the
 // inboxes it names, by itself, before the round's other steps: each one whose customer wrote after
@@ -70,7 +71,8 @@ interface DueConversation {
   inboxId: bigint | null;
   chatwootInstanceId: bigint;
   chatwootConversationId: number;
-  lastInboundAt: Date;
+  // Null on a row only the sweep knows of (./sweep.ts).
+  lastInboundAt: Date | null;
   // The newest customer message's Chatwoot id, when the mirror knows it.
   lastInboundMessageId: number | null;
   // The last `/reset`'s message id: what came before it is the episode the reset ended.
@@ -78,6 +80,20 @@ interface DueConversation {
   // The customer message the conversation's last reading covered, for the media recovery.
   readInboundAt: Date | null;
   readInboundMessageId: number | null;
+  // Due because the sweep listed activity its last reading did not cover, at that activity: the
+  // reading then finds the customer's newest message in the transcript, as no mirror holds it.
+  swept: Date | null;
+  // The listed activity it became due at, which a first reading's window is measured from.
+  sweptSince: Date | null;
+  // What the sweep listed and no reading covered, whatever the inbox is now: a reading of the whole
+  // transcript covers it too.
+  sweptOpen: Date | null;
+}
+
+// A customer message as the reading marks it covered.
+interface InboundMark {
+  at: Date | null;
+  id: number | null;
 }
 
 export interface ReadingSummary {
@@ -90,44 +106,19 @@ export interface ReadingSummary {
   pending: number;
 }
 
-// Of the monitored inboxes, those an agent receives right now (bound, or observing), the rule the
-// console shows and the save checks (monitors.ts, assertOccurrencesInboxes).
-async function receivedInboxes(
-  base: PrismaClient,
-  tenantId: bigint,
-  inboxIds: string[],
-): Promise<{ received: string[]; unreceived: string[] }> {
-  if (inboxIds.length === 0) return { received: [], unreceived: [] };
-  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.inbox.findMany({
-      where: { tenantId, id: { in: inboxIds.map(BigInt) } },
-      select: {
-        id: true,
-        name: true,
-        agentId: true,
-        _count: { select: { observers: true } },
-      },
-    }),
-  );
-  const received: string[] = [];
-  const unreceived: string[] = [];
-  for (const r of rows) {
-    if (r.agentId !== null || r._count.observers > 0)
-      received.push(String(r.id));
-    else unreceived.push(r.name);
-  }
-  return { received, unreceived };
-}
-
 // The conversations of the monitored inboxes with a customer message their last reading did not
 // cover. One never read is admitted only while that message is inside the recent window, so switching
 // the monitor on reads what is happening now and never the whole history; admitting writes its read
 // row, so one the cap or the budget left for later stays due after the window moves past it. A
 // message the read failed on READ_FAILURES_MAX times is given up on until the customer writes again.
+// A conversation of an inbox swept this round is due by the activity the sweep listed instead, which
+// its own queue row carries; its failures count against that activity. One of an inbox an agent
+// receives now follows its mirror whatever the sweep left, and its reading closes that.
 async function dueConversations(
   base: PrismaClient,
   { tenantId, monitorId }: MonitorKey,
   inboxIds: string[],
+  sweptInboxIds: string[],
   windowStart: Date,
   limit: number,
 ): Promise<{ due: DueConversation[]; total: number }> {
@@ -147,40 +138,64 @@ async function dueConversations(
         inbox_id: bigint | null;
         chatwoot_instance_id: bigint;
         chatwoot_conversation_id: number;
-        last_inbound_at: Date;
+        last_inbound_at: Date | null;
         last_inbound_message_id: number | null;
         reset_at_message_id: number | null;
         read_inbound_at: Date | null;
         read_inbound_message_id: number | null;
+        swept: Date | null;
+        swept_since: Date | null;
+        swept_open: Date | null;
         total: bigint;
       }>
     >`
       SELECT c.id, c.inbox_id, c.chatwoot_instance_id, c.chatwoot_conversation_id,
              c.last_inbound_at, c.last_inbound_message_id, c.reset_at_message_id,
              r.read_inbound_at, r.read_inbound_message_id,
+             CASE WHEN d.swept_pending THEN r.swept_activity_at END AS swept,
+             CASE WHEN d.swept_pending THEN r.swept_due_since END AS swept_since,
+             CASE WHEN o.swept_open THEN r.swept_activity_at END AS swept_open,
              count(*) OVER () AS total
         FROM conversations c
         JOIN occurrence_conversation_reads r ON r.conversation_id = c.id
                                              AND r.monitor_id = ${monitorId}
+        CROSS JOIN LATERAL (
+          SELECT r.swept_activity_at IS NOT NULL
+                 AND (r.read_swept_activity_at IS NULL
+                      OR r.read_swept_activity_at < r.swept_activity_at) AS swept_open
+        ) o
+        CROSS JOIN LATERAL (
+          SELECT o.swept_open AND c.inbox_id = ANY(${sweptInboxIds}::bigint[]) AS swept_pending
+        ) d
        WHERE c.tenant_id = ${tenantId}
          AND c.inbox_id = ANY(${inboxIds}::bigint[])
-         AND c.last_inbound_at IS NOT NULL
-         -- By time, and by message id where the mirror has one: two messages in the same second
-         -- share a time, and only the id says the second one was not covered.
-         AND (
-           r.read_inbound_at IS NULL
-           OR r.read_inbound_at < c.last_inbound_at
-           OR (
-             c.last_inbound_message_id IS NOT NULL
-             AND r.read_inbound_message_id IS DISTINCT FROM c.last_inbound_message_id
+         AND CASE WHEN d.swept_pending THEN
+           NOT (
+             r.failures >= ${READ_FAILURES_MAX}
+             AND r.failed_inbound_at IS NOT DISTINCT FROM r.swept_activity_at
+             AND r.failed_inbound_message_id IS NULL
            )
-         )
-         AND NOT (
-           r.failures >= ${READ_FAILURES_MAX}
-           AND r.failed_inbound_at IS NOT DISTINCT FROM c.last_inbound_at
-           AND r.failed_inbound_message_id IS NOT DISTINCT FROM c.last_inbound_message_id
-         )
-       ORDER BY c.last_inbound_at ASC, c.id ASC
+         ELSE
+           c.last_inbound_at IS NOT NULL
+           -- By time, and by message id where the mirror has one: two messages in the same second
+           -- share a time, and only the id says the second one was not covered.
+           AND (
+             r.read_inbound_at IS NULL
+             OR r.read_inbound_at < c.last_inbound_at
+             OR (
+               r.read_inbound_at = c.last_inbound_at
+               AND c.last_inbound_message_id IS NOT NULL
+               AND r.read_inbound_message_id IS DISTINCT FROM c.last_inbound_message_id
+             )
+           )
+           AND NOT (
+             r.failures >= ${READ_FAILURES_MAX}
+             AND r.failed_inbound_at IS NOT DISTINCT FROM c.last_inbound_at
+             AND r.failed_inbound_message_id IS NOT DISTINCT FROM c.last_inbound_message_id
+           )
+         END
+       ORDER BY GREATEST(c.last_inbound_at, CASE WHEN d.swept_pending THEN r.swept_activity_at END) ASC,
+                c.id ASC
        LIMIT ${limit}`;
     return {
       due: rows.map((r) => ({
@@ -193,6 +208,9 @@ async function dueConversations(
         resetAtMessageId: r.reset_at_message_id,
         readInboundAt: r.read_inbound_at,
         readInboundMessageId: r.read_inbound_message_id,
+        swept: r.swept,
+        sweptSince: r.swept_since,
+        sweptOpen: r.swept_open,
       })),
       total: rows.length > 0 ? Number(rows[0]?.total ?? 0) : 0,
     };
@@ -213,27 +231,35 @@ function answerSchema(fields: OccurrenceField[]) {
   );
 }
 
+// The customer message read, and for a swept conversation the listed activity it was due by, when
+// the transcript was fetched a whole second after it (`fetchedAt`): Chatwoot states activity in
+// seconds, so a message later in that same second would not move it, and only the next fetch, once
+// the second is over, can say it was all read.
 async function markRead(
   base: PrismaClient,
   { tenantId, monitorId }: MonitorKey,
   c: DueConversation,
+  mark: InboundMark,
   now: Date,
+  fetchedAt: Date,
 ): Promise<void> {
+  const closes = c.swept
+    ? fetchedAt.getTime() >= c.swept.getTime() + 1000
+      ? c.swept
+      : null
+    : c.sweptOpen;
+  const covered = {
+    readInboundAt: mark.at,
+    readInboundMessageId: mark.id,
+    readAt: now,
+    ...(closes ? { readSweptActivityAt: closes } : {}),
+  };
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.occurrenceConversationRead.upsert({
       where: { monitorId_conversationId: { monitorId, conversationId: c.id } },
-      create: {
-        tenantId,
-        monitorId,
-        conversationId: c.id,
-        readInboundAt: c.lastInboundAt,
-        readInboundMessageId: c.lastInboundMessageId,
-        readAt: now,
-      },
+      create: { tenantId, monitorId, conversationId: c.id, ...covered },
       update: {
-        readInboundAt: c.lastInboundAt,
-        readInboundMessageId: c.lastInboundMessageId,
-        readAt: now,
+        ...covered,
         failures: 0,
         failedInboundAt: null,
         failedInboundMessageId: null,
@@ -242,13 +268,16 @@ async function markRead(
   );
 }
 
-// A failure is counted against the customer message it was for: a newer message starts the count
-// again.
+// A failure is counted against the customer message it was for, or for a swept conversation the
+// listed activity: a newer one starts the count again.
 async function markFailed(
   base: PrismaClient,
   { tenantId, monitorId }: MonitorKey,
   c: DueConversation,
 ): Promise<void> {
+  const key: InboundMark = c.swept
+    ? { at: c.swept, id: null }
+    : { at: c.lastInboundAt, id: c.lastInboundMessageId };
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const row = await db.occurrenceConversationRead.findUnique({
       where: { monitorId_conversationId: { monitorId, conversationId: c.id } },
@@ -260,8 +289,9 @@ async function markFailed(
     });
     // The same message by time AND id: one in the same second is another message.
     const same =
-      row?.failedInboundAt?.getTime() === c.lastInboundAt.getTime() &&
-      (row?.failedInboundMessageId ?? null) === c.lastInboundMessageId;
+      (row?.failedInboundAt?.getTime() ?? null) ===
+        (key.at?.getTime() ?? null) &&
+      (row?.failedInboundMessageId ?? null) === key.id;
     const failures = same ? (row?.failures ?? 0) + 1 : 1;
     await db.occurrenceConversationRead.upsert({
       where: { monitorId_conversationId: { monitorId, conversationId: c.id } },
@@ -270,20 +300,73 @@ async function markFailed(
         monitorId,
         conversationId: c.id,
         failures,
-        failedInboundAt: c.lastInboundAt,
-        failedInboundMessageId: c.lastInboundMessageId,
+        failedInboundAt: key.at,
+        failedInboundMessageId: key.id,
       },
       update: {
         failures,
-        failedInboundAt: c.lastInboundAt,
-        failedInboundMessageId: c.lastInboundMessageId,
+        failedInboundAt: key.at,
+        failedInboundMessageId: key.id,
       },
     });
   });
 }
 
+// The newest customer message of a swept conversation's transcript, and whether its last reading
+// covered it. One never read is read when that message was inside the window as of the activity it
+// became due at, so one the cap left for later stays due after the window, or the team's later
+// activity, moves past it. A row without its time fails the read.
+function sweptMark(
+  c: DueConversation,
+  swept: Date,
+  rows: Awaited<ReturnType<typeof readWindowRows>>,
+  windowMinutes: number,
+): { mark: InboundMark; covered: boolean } {
+  let newest: { at: Date; id: number } | null = null;
+  for (const r of rows) {
+    if (r.messageType !== "incoming" || r.private || r.isReaction) continue;
+    if (!r.createdAt)
+      throw new Error(`message ${r.id} of the conversation has no time`);
+    if (
+      newest === null ||
+      r.createdAt > newest.at ||
+      (r.createdAt.getTime() === newest.at.getTime() && r.id > newest.id)
+    )
+      newest = { at: r.createdAt, id: r.id };
+  }
+  // None in the transcript: what the mirror or the last reading had stays the mark, the later one.
+  if (newest === null)
+    return {
+      mark:
+        c.lastInboundAt &&
+        (c.readInboundAt === null || c.lastInboundAt > c.readInboundAt)
+          ? { at: c.lastInboundAt, id: c.lastInboundMessageId }
+          : { at: c.readInboundAt, id: c.readInboundMessageId },
+      covered: true,
+    };
+  const mark = { at: newest.at, id: newest.id };
+  if (c.readInboundAt === null)
+    return {
+      mark,
+      covered: newest.at.getTime() < swept.getTime() - windowMinutes * 60_000,
+    };
+  const covered =
+    newest.at < c.readInboundAt ||
+    (newest.at.getTime() === c.readInboundAt.getTime() &&
+      (c.readInboundMessageId === null ||
+        c.readInboundMessageId === newest.id));
+  return { mark, covered };
+}
+
 // `deferred`: left due for the next round without a failure (a transcription still running).
-type ReadOutcome = "read" | "failed" | "withdrawn" | "skipped" | "deferred";
+// `covered`: a swept conversation whose activity brought no customer message the reading had not read.
+type ReadOutcome =
+  | "read"
+  | "failed"
+  | "withdrawn"
+  | "skipped"
+  | "deferred"
+  | "covered";
 
 export interface ReadingDeps extends RecoveryDeps {
   makeChatwootClient?: LoadChatwootClientDeps["makeClient"];
@@ -314,26 +397,10 @@ export async function runReadingStep(
   const windowStart = new Date(
     startedAt.getTime() - cfg.windowMinutes * 60_000,
   );
-  // Asked now, not from the saved list: an inbox whose agent was unbound since is read no more, as
-  // the console says, and the round says why once.
-  const { received, unreceived } = await receivedInboxes(
-    base,
-    tenantId,
-    cfg.inboxIds,
-  );
-  for (const name of unreceived)
-    models.skipped.push(`reading: no agent receives the inbox "${name}"`);
-  const { due, total } = await dueConversations(
-    base,
-    m,
-    received,
-    windowStart,
-    deps.perRound ?? READINGS_PER_ROUND,
-  );
-  if (due.length === 0) return summary;
-  // The reading's share of the round's budget: no read starts past it, and the reads under way stop
-  // there too (their model call, its wait for a permit, and Chatwoot's), leaving their conversations
-  // due, so the later steps keep the time they were left.
+  const perRound = deps.perRound ?? READINGS_PER_ROUND;
+  // The reading's share of the round's budget, the sweep's included: no read starts past it, and the
+  // reads under way stop there too (their model call, its wait for a permit, and Chatwoot's), leaving
+  // their conversations due, so the later steps keep the time they were left.
   const stopAt =
     Date.now() + (models.deadline - Date.now()) * READING_BUDGET_SHARE;
   const cut = AbortSignal.any([
@@ -359,6 +426,36 @@ export async function runReadingStep(
     }
     return c;
   };
+  // Asked now, not from the saved list: an inbox no agent receives (never had one, or lost it since it
+  // was listed) is read from what its own job, the sweep (./sweep.ts), queued, and one whose last
+  // listing failed is said once by the round.
+  const { received, swept } = await splitInboxes(base, tenantId, cfg.inboxIds);
+  const unlisted =
+    swept.length === 0
+      ? []
+      : await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.occurrenceSweepCursor.findMany({
+            where: {
+              monitorId: m.monitorId,
+              inboxId: { in: swept.map((i) => i.id) },
+              unlistedAt: { not: null },
+            },
+            select: { inboxId: true },
+          }),
+        );
+  for (const { inboxId } of unlisted)
+    models.skipped.push(
+      `reading: the conversations of the inbox "${swept.find((i) => i.id === inboxId)?.name}" could not be listed from Chatwoot`,
+    );
+  const { due, total } = await dueConversations(
+    base,
+    m,
+    [...received, ...swept.map((i) => String(i.id))],
+    swept.map((i) => String(i.id)),
+    windowStart,
+    perRound,
+  );
+  if (due.length === 0) return summary;
   const botIdsOf = (inst: bigint) => {
     let b = botIds.get(inst);
     if (!b) {
@@ -389,8 +486,11 @@ export async function runReadingStep(
   async function readOne(c: DueConversation): Promise<ReadOutcome> {
     let transcript: string;
     let client: ChatwootClient;
+    let mark: InboundMark = { at: c.lastInboundAt, id: c.lastInboundMessageId };
+    let fetchedAt = now();
     try {
       client = await clientOf(c.chatwootInstanceId);
+      fetchedAt = now();
       // Strict: a page Chatwoot answered but that does not read fails the read, rather than storing
       // empty values as the conversation's and marking its message covered.
       const fetched = await readWindowRows(
@@ -408,6 +508,21 @@ export async function runReadingStep(
       const boundary = c.resetAtMessageId;
       const rows =
         boundary === null ? fetched : fetched.filter((r) => r.id > boundary);
+      // A swept conversation is due by its activity, which may be the team's or an automation's: only
+      // a customer message the last reading did not cover is worth the model.
+      if (c.swept) {
+        const found = sweptMark(
+          c,
+          c.sweptSince ?? c.swept,
+          rows,
+          cfg.windowMinutes,
+        );
+        if (found.covered) {
+          await markRead(base, m, c, found.mark, now(), fetchedAt);
+          return "covered";
+        }
+        mark = found.mark;
+      }
       const media = settleMedia(tenantId, c.chatwootInstanceId, rows, now());
       if (media.verdict === "defer") return "deferred";
       const lineOpts = {
@@ -573,7 +688,7 @@ export async function runReadingStep(
       if (err instanceof ReadingsExpiredError) return "withdrawn";
       throw err;
     }
-    await markRead(base, m, c, now());
+    await markRead(base, m, c, mark, now(), fetchedAt);
     return "read";
   }
 

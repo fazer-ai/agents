@@ -89,6 +89,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "OccurrenceTheme",
   "OccurrenceThemeMember",
   "OccurrenceConversationRead",
+  "OccurrenceSweepCursor",
   "OccurrenceThemeEvent",
   "OccurrenceCanonical",
   "OccurrenceAlias",

@@ -25,6 +25,7 @@ export type SkipReason =
   | "endpoint_missing"
   | "endpoint_not_taken"
   | "inbox_unreceived"
+  | "inbox_unlisted"
   | "credential_refused"
   | "model_refused"
   | "rate_limited"
@@ -38,7 +39,7 @@ export interface SkippedStep {
   // The stored text, for any reason not written by the monitor in a fixed phrase: a provider's error
   // keeps its own words for whoever needs the detail.
   message: string | null;
-  // The inbox no agent receives, for `inbox_unreceived`.
+  // The inbox the reason names, for `inbox_unreceived` (rounds before the sweep) and `inbox_unlisted`.
   inbox: string | null;
   count: number;
 }
@@ -144,7 +145,11 @@ const ERROR_REASONS: [RegExp, SkipReason][] = [
   ],
 ];
 
+// Written by the rounds before the sweep (./sweep.ts), when an inbox no agent received was not read.
 const UNRECEIVED_INBOX = /^no agent receives the inbox "(.*)"$/s;
+// The sweep could not list an inbox's conversations: the round read what was already queued for it.
+const UNLISTED_INBOX =
+  /^the conversations of the inbox "(.*)" could not be listed from Chatwoot$/s;
 
 export function parseSkipped(line: string): SkippedStep {
   const folded = /^(.*) \((\d+)x\)$/s.exec(line);
@@ -165,6 +170,15 @@ export function parseSkipped(line: string): SkippedStep {
       reason: "inbox_unreceived",
       message: null,
       inbox: inbox[1] ?? "",
+      count,
+    };
+  const unlisted = UNLISTED_INBOX.exec(rest);
+  if (unlisted)
+    return {
+      step,
+      reason: "inbox_unlisted",
+      message: null,
+      inbox: unlisted[1] ?? "",
       count,
     };
   const reason =

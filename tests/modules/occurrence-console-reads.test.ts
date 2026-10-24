@@ -108,6 +108,17 @@ describe("a round's steps as stored", () => {
       inbox: "E-mail Financeiro",
       count: 1,
     });
+    expect(
+      parseSkipped(
+        'reading: the conversations of the inbox "SAC Humanos" could not be listed from Chatwoot (2x)',
+      ),
+    ).toEqual({
+      step: "reading",
+      reason: "inbox_unlisted",
+      message: null,
+      inbox: "SAC Humanos",
+      count: 2,
+    });
   });
 
   test("each step's counts come out by name, a step the round never reached is null", () => {

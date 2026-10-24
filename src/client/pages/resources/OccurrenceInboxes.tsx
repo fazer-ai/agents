@@ -14,15 +14,15 @@ export type InboxOption = NonNullable<
 export type OtherMonitor = { id: string; name: string; inboxIds: string[] };
 
 // Whether the product receives an inbox's conversations: a responder bound to it, or an observer
-// watching it. The monitor reads only what the product receives.
+// watching it. The monitor reads one the product receives as its messages arrive, and one no agent
+// receives through the Chatwoot API once per round.
 export const inboxReceived = (i: InboxOption) =>
   i.agentId !== null || i.observerAgentIds.length > 0;
 
-// The inboxes the monitor reads, in the picker the agent editor uses for "Other inboxes". An inbox no
-// agent receives is not offered (the save would refuse it), and one line counts them; one already
-// chosen that lost its agent stays as a chip marked as not read, and is removed like any other. An
-// inbox another monitor also reads says which, on its chip and in the list: each monitor reads it and
-// pays for its own reading.
+// The inboxes the monitor reads, in the picker the agent editor uses for "Other inboxes". Every inbox
+// of the account is offered; one no agent receives says, on its chip and in the list, that it is read
+// through the Chatwoot API every round. An inbox another monitor also reads says which, on its chip
+// and in the list: each monitor reads it and pays for its own reading.
 export function OccurrenceInboxesSection({
   inboxes,
   value,
@@ -47,7 +47,10 @@ export function OccurrenceInboxesSection({
         )}
       </p>
     );
-  const notRead = t("occurrences.inboxes.notRead", "not read");
+  const swept = t(
+    "occurrences.inboxes.swept",
+    "read from Chatwoot every round",
+  );
   const alsoReadBy = (id: string) => {
     const names = otherMonitors
       .filter((m) => m.inboxIds.includes(id))
@@ -59,18 +62,16 @@ export function OccurrenceInboxesSection({
         });
   };
   const items = [
-    // One no agent receives is named (a chip if it is chosen) but never offered.
     ...inboxes.map((i) => {
       const shared = alsoReadBy(i.id);
+      const note = [inboxReceived(i) ? null : swept, shared]
+        .filter((m): m is string => m !== null)
+        .join(", ");
       return {
         id: i.id,
         label: inboxOptionLabel(i, t),
-        hint: shared ?? "",
-        ...(inboxReceived(i)
-          ? shared
-            ? { note: shared }
-            : {}
-          : { unlisted: true, note: notRead }),
+        hint: note,
+        ...(note ? { note } : {}),
       };
     }),
     ...gone.map((id) => ({
@@ -83,10 +84,9 @@ export function OccurrenceInboxesSection({
       unlisted: true,
     })),
   ];
-  const leftOut = inboxes.filter(
-    (i) => !inboxReceived(i) && !chosen.has(i.id),
-  ).length;
-  const lost = inboxes.some((i) => chosen.has(i.id) && !inboxReceived(i));
+  const sweptChosen = inboxes.some(
+    (i) => chosen.has(i.id) && !inboxReceived(i),
+  );
   const shared = value.some((id) => alsoReadBy(id) !== null);
   return (
     <div className="flex flex-col gap-1.5">
@@ -109,11 +109,11 @@ export function OccurrenceInboxesSection({
           "Inboxes the monitor reads",
         )}
       />
-      {lost && (
+      {sweptChosen && (
         <p className="text-text-muted text-xs">
           {t(
-            "occurrences.inboxes.lostAgentChips",
-            "No agent receives the inboxes marked as not read any more, so the monitor reads nothing from them. Bind or observe them with an agent in Channels, or remove them.",
+            "occurrences.inboxes.sweptHelp",
+            "An inbox no agent receives is read through the Chatwoot API once per round, not as its messages arrive: each round lists its recent conversations and reads the ones whose customer wrote. Nothing is changed in Chatwoot.",
           )}
         </p>
       )}
@@ -122,15 +122,6 @@ export function OccurrenceInboxesSection({
           {t(
             "occurrences.inboxes.sharedHelp",
             "An inbox marked as also read by another monitor is read by each of them on its own: each one keeps its own themes and pays for its own reading.",
-          )}
-        </p>
-      )}
-      {leftOut > 0 && (
-        <p className="text-text-muted text-xs">
-          {t(
-            "occurrences.inboxes.leftOut",
-            "{{count}} inboxes no agent receives are not listed. Bind or observe them with an agent in Channels to monitor them.",
-            { count: leftOut },
           )}
         </p>
       )}

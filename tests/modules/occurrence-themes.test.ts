@@ -2530,6 +2530,45 @@ describe.skipIf(!dbUp)(
       expect(await flagsOfTheme(theme.id)).toEqual(["above_usual"]);
     });
 
+    test("a member keeps the message it was placed with after the reason field changes", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // Placed from readings that covered messages of 90 minutes ago, read 10 minutes ago.
+      for (let i = 0; i < 5; i += 1) {
+        const c = await a.conv();
+        const m = await a.member(
+          theme.id,
+          c,
+          `frase ${i}`,
+          new Date(t0 - 10 * MIN),
+        );
+        await suDb.occurrenceThemeMember.update({
+          where: { id: m.id },
+          data: { inboundAt: new Date(t0 - 90 * MIN) },
+        });
+      }
+      // The reason is now another field, which none of them has a reading of yet; until the assignment
+      // places them again, they count at the message they were placed with, out of the window.
+      const cfg = (
+        await suDb.occurrenceMonitor.findUniqueOrThrow({
+          where: { id: a.monitorId },
+        })
+      ).config as Record<string, unknown>;
+      await suDb.occurrenceMonitor.update({
+        where: { id: a.monitorId },
+        data: {
+          config: {
+            ...cfg,
+            reasonField: "unidade",
+            referenceField: null,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await runFlagsStep(appDb, a.key, new Date(t0));
+      expect(await flagsOfTheme(theme.id)).toEqual([]);
+    });
+
     test("a reading stored before the messages were kept counts when it was read, as before", async () => {
       const a = await account({ windowMinutes: 60, newMinConversations: 5 });
       const t0 = Date.now();

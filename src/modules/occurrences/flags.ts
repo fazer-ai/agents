@@ -97,24 +97,21 @@ export async function runFlagsStep(
         earliest?.at?.getTime() ?? windowStart.getTime(),
       ),
     );
-    // A member counts at the customer message of the reading it was placed from (the reason reading
-    // first read when the member says), else at the read. Only members read by `now` count. A covered
-    // message precedes its read, so a member read before the horizon cannot count, and the read's
-    // bound keeps the recount on its index as the membership grows.
+    // A member counts at the customer message of the reading it was placed from, which it keeps (a
+    // reason field switched since does not move it back to its read), else at the read. Only members
+    // read by `now` count. A covered message precedes its read, so a member read before the horizon
+    // cannot count, and the read's bound keeps the recount on its index as the membership grows.
     const rows = await db.$queryRaw<
       Array<{ theme_id: bigint; at: Date; reference_id: bigint | null }>
     >`
       SELECT theme_id, at, reference_id FROM (
         SELECT m.theme_id, m.read_at,
-               COALESCE(rr.first_inbound_at, m.read_at) AS at,
+               COALESCE(m.inbound_at, m.read_at) AS at,
                COALESCE(c.merged_into_id, c.id) AS reference_id
           FROM occurrence_theme_members m
           JOIN occurrence_themes t ON t.id = m.theme_id AND t.status = 'open'
           JOIN conversations cv ON cv.id = m.conversation_id
                                AND cv.inbox_id = ANY(${cfg.inboxIds}::bigint[])
-          LEFT JOIN conversation_readings rr
-                 ON rr.conversation_id = m.conversation_id AND rr.monitor_id = m.monitor_id
-                AND rr.field = ${cfg.reasonField ?? ""} AND rr.first_read_at = m.read_at
           LEFT JOIN conversation_readings s
                  ON s.conversation_id = m.conversation_id AND s.monitor_id = m.monitor_id
                 AND s.field = ${cfg.referenceField ?? ""}

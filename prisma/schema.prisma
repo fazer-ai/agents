@@ -3641,6 +3641,9 @@ model OccurrenceThemeMember {
   conversationId BigInt   @map("conversation_id")
   sentence       String
   readAt         DateTime @map("read_at")
+  // The customer message the reading it was placed from covered (`firstInboundAt`), which the flags
+  // count it at. Null on a member placed before it was kept, which counts at `readAt`.
+  inboundAt      DateTime? @map("inbound_at")
   assignedAt     DateTime @default(now()) @map("assigned_at")
 
   tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)

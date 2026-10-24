@@ -27,8 +27,9 @@ describe("how each provider is asked for the verdict", () => {
     // json_schema with strict is OpenAI's own; the adapter falls back to function calling on the
     // ids that predate it (gpt-4 and older), so no id is left without a constrained path.
     openai: "json-schema",
-    // The adapter asks with a FORCED tool call, which every current Anthropic model implements.
-    anthropic: "json-schema",
+    // The response format (`output_config.format`): claude-sonnet-5-5, -opus-5-5 and fable-5-1 refuse
+    // the adapter's default, a forced tool call, with a 400; the seven current models take this.
+    anthropic: "output-format",
     // NOTE: The OpenAPI 3.0 subset, where nullability is a flag and not a type union. On gemini-3.5-flash and
     // -flash-lite the other dialect is refused with a 400; this one answers in a single call.
     google: "openapi",

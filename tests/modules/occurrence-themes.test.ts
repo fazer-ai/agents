@@ -2411,10 +2411,12 @@ describe.skipIf(!dbUp)(
   "flags count the customer's message, not the read",
   () => {
     const MIN = 60_000;
+    // `since`: a customer message the mirror has not heard of yet, written after `wroteAt`.
     async function late(
       a: Awaited<ReturnType<typeof account>>,
       n: number,
       wroteAt: Date,
+      since?: Date,
     ) {
       const ids: bigint[] = [];
       for (let i = 0; i < n; i += 1) {
@@ -2423,7 +2425,14 @@ describe.skipIf(!dbUp)(
           where: { id },
         });
         a.messages.set(row.chatwootConversationId, [
-          { type: "incoming", content: `ingresso nao chegou ${i}` },
+          {
+            type: "incoming",
+            content: `ingresso nao chegou ${i}`,
+            at: wroteAt,
+          },
+          ...(since
+            ? [{ type: "incoming" as const, content: "e agora?", at: since }]
+            : []),
         ]);
         ids.push(id);
       }
@@ -2462,6 +2471,19 @@ describe.skipIf(!dbUp)(
       // 20 minutes later the messages are 70 minutes old: out of the window, though read 20 ago.
       await a.round(nothing, new Date(t0 + 20 * MIN));
       expect(await flagsOfTheme(theme.id)).toEqual([]);
+    });
+
+    test("a customer message the due list missed but the transcript holds is the one a first reading counts at", async () => {
+      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const t0 = Date.now();
+      const theme = await a.theme("Ingresso nao chegou");
+      // The mirror knows the message of 50 minutes ago; the customer wrote again 5 minutes ago, and
+      // the transcript the model reads has it.
+      await late(a, 5, new Date(t0 - 50 * MIN), new Date(t0 - 5 * MIN));
+      await a.round(into(theme.id), new Date(t0));
+      // 20 minutes later the first message has left the window, the one the model read has not.
+      await a.round(nothing, new Date(t0 + 20 * MIN));
+      expect(await flagsOfTheme(theme.id)).toEqual(["new"]);
     });
 
     test("a backlog read in one round leaves the window with its messages, not with the read", async () => {

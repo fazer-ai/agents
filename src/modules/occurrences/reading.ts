@@ -358,6 +358,21 @@ function sweptMark(
   return { mark, covered };
 }
 
+// The newest customer message the transcript holds, which the flags count a first reading at
+// (./flags.ts): a message that arrived after the due list was taken is in the transcript the model
+// reads, so it is what the reading covered. Null when the transcript holds none with a time.
+function newestCustomerAt(
+  rows: Awaited<ReturnType<typeof readWindowRows>>,
+): Date | null {
+  let newest: Date | null = null;
+  for (const r of rows) {
+    if (r.messageType !== "incoming" || r.private || r.isReaction) continue;
+    if (r.createdAt && (newest === null || r.createdAt > newest))
+      newest = r.createdAt;
+  }
+  return newest;
+}
+
 // `deferred`: left due for the next round without a failure (a transcription still running).
 // `covered`: a swept conversation whose activity brought no customer message the reading had not read.
 type ReadOutcome =
@@ -487,6 +502,8 @@ export async function runReadingStep(
     let transcript: string;
     let client: ChatwootClient;
     let mark: InboundMark = { at: c.lastInboundAt, id: c.lastInboundMessageId };
+    // The customer message the flags count this reading at, from the transcript once it is read.
+    let wroteAt: Date | null = mark.at;
     let fetchedAt = now();
     try {
       client = await clientOf(c.chatwootInstanceId);
@@ -523,6 +540,7 @@ export async function runReadingStep(
         }
         mark = found.mark;
       }
+      wroteAt = newestCustomerAt(rows) ?? mark.at;
       const media = settleMedia(tenantId, c.chatwootInstanceId, rows, now());
       if (media.verdict === "defer") return "deferred";
       const lineOpts = {
@@ -683,7 +701,7 @@ export async function runReadingStep(
         now(),
         () => cut.aborted,
         c.resetAtMessageId,
-        mark.at,
+        wroteAt,
       );
     } catch (err) {
       if (err instanceof ReadingsExpiredError) return "withdrawn";

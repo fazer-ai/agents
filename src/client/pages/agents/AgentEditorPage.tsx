@@ -3039,19 +3039,22 @@ function AgentEditor() {
     });
   }
 
-  // Switch to a tab (URL-driven) carrying the focus marker the effect above reads to scroll to the
-  // section and highlight it. One function, because a config-health warning and a refusal are the
-  // same act from here: both hold a place in this editor and have to take the operator to it.
+  // Switch to a tab carrying the focus marker the effect below reads to scroll to the section and
+  // highlight it. One function, because a config-health warning and a refusal are the same act from
+  // here: both hold a place in this editor and have to take the operator to it. Like a tab click it
+  // is no history entry (agents#1647), so the marker is page state, not router state.
   function goToEditorTarget(target: {
     tab: EditorTab;
     sectionId?: string;
   }): void {
-    navigate(
-      `/agents/${id}/${target.tab}${
-        backToConversation ? `?from=${backToConversation}` : ""
-      }`,
-      { state: { focusSection: target.sectionId } },
-    );
+    openTab(target.tab as TabKey);
+    if (target.sectionId) {
+      focusSeq.current += 1;
+      setFocusRequest({
+        section: target.sectionId,
+        key: `target:${focusSeq.current}`,
+      });
+    }
   }
 
   // The sentence for one warning, from the shared renderer (modules/agents/config-health-message.ts)
@@ -3190,12 +3193,7 @@ function AgentEditor() {
         case "agentField":
           // NOTE: Deep-link to the exact field that references the missing credential (model/stt/tts/vision),
           // scrolling + highlighting it — same mechanism config-health uses.
-          navigate(
-            `/agents/${id}/${target.tab}${
-              backToConversation ? `?from=${backToConversation}` : ""
-            }`,
-            { state: { focusSection: target.sectionId } },
-          );
+          goToEditorTarget(target);
           break;
         case "businessHours":
           void openBusinessHoursReview(target.name);
@@ -3254,15 +3252,24 @@ function AgentEditor() {
   }
 
   const focusedKey = useRef<string | null>(null);
+  // A place in this editor asked for from inside it (goToEditorTarget), keyed per request so asking
+  // for the same section again highlights it again.
+  const [focusRequest, setFocusRequest] = useState<{
+    section: string;
+    key: string;
+  } | null>(null);
+  const focusSeq = useRef(0);
   // `?focus=` is the same marker for a link from outside the console (a private note, an alert),
   // which cannot carry router state.
   const focusSection =
+    focusRequest?.section ??
     (location.state as { focusSection?: string } | null)?.focusSection ??
     searchParams.get("focus") ??
     undefined;
+  const focusKey = focusRequest?.key ?? location.key;
   useEffect(() => {
     // NOTE: Once per navigation: a later reload of the agent (a save) must not scroll back.
-    if (!focusSection || loading || focusedKey.current === location.key) return;
+    if (!focusSection || loading || focusedKey.current === focusKey) return;
     // Wait a frame so the freshly-switched tab's section is mounted before scrolling/highlighting.
     const raf = requestAnimationFrame(() => {
       const el = document.getElementById(focusSection);
@@ -3282,10 +3289,10 @@ function AgentEditor() {
       if (el.hasAttribute("data-focus-control")) {
         focusableIn(el)?.focus({ preventScroll: true });
       }
-      focusedKey.current = location.key;
+      focusedKey.current = focusKey;
     });
     return () => cancelAnimationFrame(raf);
-  }, [focusSection, location.key, loading]);
+  }, [focusSection, focusKey, loading]);
 
   // Playground readiness: the playground tests the LIVE draft (prompt/model/settings sent as a
   // non-persisted override), so the hard requirements are read from the CURRENT model form, not the

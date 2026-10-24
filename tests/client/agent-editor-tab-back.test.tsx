@@ -224,3 +224,21 @@ test("a link to another tab of the open agent opens it and the URL stays put, al
   expect([...seen].join(" ")).toBe("/agents/1/general");
   expect(selected().includes("General")).toBe(true);
 });
+
+test("a warning's button opens its tab even when the URL already names it, with an edit pending on another tab", async () => {
+  const {
+    renderEditor: renderInMemory,
+    stubEditorApi,
+    editTab,
+  } = await import("../utils/agent-editor");
+  await renderInMemory(
+    stubEditorApi({ modelConfig: { provider: "not-a-provider", model: "x" } }),
+    "general",
+  );
+  await act(async () => {});
+  editTab("general");
+  fireEvent.click(screen.getByRole("tab", { name: /Behavior/ }));
+  expect(selected().includes("Behavior")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Set up the model" }));
+  await waitFor(() => expect(selected().includes("General")).toBe(true));
+});

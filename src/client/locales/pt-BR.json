@@ -4116,6 +4116,7 @@
     "modelTitle": "Modelo",
     "monitors": {
       "all": "Todos os monitores",
+      "copyName": "Cópia de {{name}}",
       "create": "Criar",
       "deleted": "Excluído.",
       "deleteError": "Não foi possível excluir o monitor.",
@@ -4125,6 +4126,8 @@
       "duplicate": "Duplicar",
       "duplicated": "Cópia criada, desligada e sem caixas.",
       "duplicateError": "Não foi possível duplicar o monitor.",
+      "duplicateHint": "A cópia leva só a configuração deste monitor. Ela começa desligada e sem caixas; os temas e as rodadas ficam com este monitor.",
+      "duplicateTitle": "Duplicar monitor",
       "emptyDescription": "Crie um, escolha as caixas que ele lê e ligue.",
       "emptyTitle": "Nenhum monitor ainda",
       "inboxById": "Caixa {{id}}",
@@ -4132,6 +4135,7 @@
       "intro": "Cada monitor lê as próprias caixas e agrupa os mesmos motivos nos próprios temas. Até {{max}} por conta.",
       "lastFailed": "última rodada falhou {{when}}",
       "lastRun": "última rodada {{when}}",
+      "monitorName": "Nome do monitor",
       "name": "Nome",
       "neverRan": "nenhuma rodada ainda",
       "new": "Novo monitor",
@@ -4140,7 +4144,6 @@
       "off": "desligado",
       "on": "ligado",
       "rename": "Renomear",
-      "renameTitle": "Renomear monitor",
       "running": "rodada em andamento",
       "saveError": "Não foi possível salvar o monitor."
     },

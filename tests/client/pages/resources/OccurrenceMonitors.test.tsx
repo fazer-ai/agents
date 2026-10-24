@@ -22,6 +22,8 @@ import {
 import {
   BrowserRouter,
   MemoryRouter,
+  Route,
+  Routes,
   useLocation,
   useNavigate,
 } from "react-router";
@@ -33,9 +35,9 @@ import { OccurrencesPanel } from "@/client/pages/resources/OccurrencesPanel";
 await import("@/client/lib/i18n");
 
 // The account's monitors: the list says, for each one, whether it is on, what it reads and when it
-// last ran; New and Rename take a name and keep a refusal in the form; Duplicate and Delete act from
-// the list, Delete after a confirmation on the page that says what goes with it; opening one shows
-// its three tabs, and an inbox another monitor also reads says so.
+// last ran, and a row only opens its monitor; New takes a name and keeps a refusal in the form. In
+// the monitor's view the name is edited in place, Duplicate asks for the copy's name and opens it,
+// and Delete asks on the page with what goes with it; an inbox another monitor also reads says so.
 
 const realFetch = globalThis.fetch;
 const requests: Array<{ method: string; path: string; body: unknown }> = [];
@@ -120,7 +122,7 @@ function installFetchStub() {
     const refused = refuse?.(method, path);
     if (refused) return await refused;
     if (path === "/api/v1/occurrences/monitors" && method === "GET") {
-      const snapshot = [...monitors];
+      const snapshot = monitors.map((m) => ({ ...m }));
       const gate = listGate?.();
       if (gate) await gate;
       listAnswered += 1;
@@ -146,6 +148,8 @@ function installFetchStub() {
       const [, id, rest = ""] = one;
       const m = monitors.find((x) => x.id === id);
       if (!m) return json({ error: "not found" }, 404);
+      if (rest === "" && method === "GET")
+        return json({ instance: {}, monitor: m, occurrences: CONFIG });
       if (rest === "" && method === "PATCH") {
         m.name = body.name;
         return json({ instance: {}, monitor: m });
@@ -163,7 +167,7 @@ function installFetchStub() {
         const copy: Monitor = {
           ...m,
           id: String(200 + monitors.length),
-          name: `${m.name} (2)`,
+          name: body?.name ?? `${m.name} (2)`,
           enabled: false,
           inboxIds: [],
           lastRun: null,
@@ -276,6 +280,9 @@ const B: Monitor = {
 
 const rowOf = (name: string) =>
   screen.getByText(name).closest("li") as HTMLElement;
+// The header's name form, open after Rename.
+const nameForm = () =>
+  screen.getByLabelText("Monitor name").closest("form") as HTMLElement;
 
 // The page guard traps browser Back with a history sentinel kept at module level. A browser's
 // history.back() always ends in a popstate; landing it at once keeps one test's leave from being
@@ -369,9 +376,12 @@ describe("occurrence monitors", () => {
       ).toBe(true),
     );
     down = true;
-    fireEvent.click(
-      within(rowOf("Compradores")).getByRole("button", { name: "Duplicate" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /New monitor/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "Outra" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     await waitFor(() =>
       expect(
         (document.body.textContent ?? "").includes(
@@ -496,75 +506,463 @@ describe("occurrence monitors", () => {
     expect((dialog.textContent ?? "").includes("already exists")).toBe(false);
   });
 
-  test("Rename sends the new name and the list shows it", async () => {
+  test("the list has no rename, duplicate or delete control, and a row opens its monitor", async () => {
     monitors = [{ ...A }, { ...B }];
     installFetchStub();
     renderPanel();
     await screen.findByText("Produtores");
-    fireEvent.click(
-      within(rowOf("Produtores")).getByRole("button", { name: "Rename" }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    const input = within(dialog).getByLabelText("Name") as HTMLInputElement;
-    expect(input.value).toBe("Produtores");
-    fireEvent.change(input, { target: { value: "Linha do produtor" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
-    await screen.findByText("Linha do produtor");
-    expect(
-      requests.some(
-        (r) =>
-          r.method === "PATCH" && r.path === "/api/v1/occurrences/monitors/2",
-      ),
-    ).toBe(true);
+    for (const name of ["Rename", "Duplicate", "Delete"])
+      expect(screen.queryByRole("button", { name }) === null).toBe(true);
+    fireEvent.click(within(rowOf("Produtores")).getByRole("button"));
+    await screen.findByRole("tab", { name: "Configuration" });
+    expect(location).toBe("/resources/occurrences?monitor=2");
   });
 
-  test("Duplicate adds the copy, and a refused duplicate says why on the page", async () => {
+  test("two quick renames keep the newest name, whichever list read lands last", async () => {
     monitors = [{ ...A }];
     installFetchStub();
-    renderPanel();
-    await screen.findByText("Compradores");
-    fireEvent.click(
-      within(rowOf("Compradores")).getByRole("button", { name: "Duplicate" }),
-    );
-    await screen.findByText("Compradores (2)");
-    refuse = (method, path) =>
-      method === "POST" && path.endsWith("/duplicate")
-        ? json({ error: "An account has at most 10 monitors." }, 422)
-        : null;
-    fireEvent.click(
-      within(rowOf("Compradores")).getByRole("button", { name: "Duplicate" }),
-    );
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("at most 10 monitors");
-  });
-
-  test("two quick duplicates both stay listed, whichever list read lands last", async () => {
-    monitors = [{ ...A }];
-    installFetchStub();
-    renderPanel();
-    await screen.findByText("Compradores");
-    // The read after the first duplicate is held until the one after the second has landed.
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    await waitFor(() => expect(listAnswered).toBe(1));
+    // The read after the first rename is held until the one after the second has landed.
     let release = () => {};
     const held = new Promise<void>((r) => {
       release = r;
     });
     const gates: (Promise<void> | null)[] = [held, null];
     listGate = () => gates.shift() ?? null;
-    const dup = () =>
-      fireEvent.click(
-        within(rowOf("Compradores")).getByRole("button", { name: "Duplicate" }),
-      );
-    dup();
-    await waitFor(() => expect(monitors.length).toBe(2));
-    dup();
-    await waitFor(() => expect(monitors.length).toBe(3));
-    await waitFor(() =>
-      expect(screen.getAllByText("Compradores (2)").length).toBe(2),
-    );
-    const before = listAnswered;
+    const rename = async (name: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+      fireEvent.change(screen.getByLabelText("Monitor name"), {
+        target: { value: name },
+      });
+      fireEvent.submit(nameForm());
+      await screen.findByRole("heading", { name });
+    };
+    await rename("Primeiro nome");
+    await rename("Segundo nome");
+    await waitFor(() => expect(listAnswered).toBe(2));
     release();
-    await waitFor(() => expect(listAnswered).toBe(before + 1));
-    expect(screen.getAllByText("Compradores (2)").length).toBe(2);
+    await waitFor(() => expect(listAnswered).toBe(3));
+    await act(async () => {});
+    expect(screen.getByRole("heading", { name: "Segundo nome" })).toBeTruthy();
+  });
+
+  test("the name is edited in place in the monitor's header, and the header and the list show the new one", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=2");
+    await screen.findByRole("tab", { name: "Configuration" });
+    expect(screen.queryByRole("dialog") === null).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const input = screen.getByLabelText("Monitor name") as HTMLInputElement;
+    expect(input.value).toBe("Produtores");
+    fireEvent.change(input, { target: { value: "  Linha do produtor " } });
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+    await screen.findByRole("heading", { name: "Linha do produtor" });
+    expect(screen.queryByLabelText("Monitor name") === null).toBe(true);
+    const patch = requests.filter(
+      (r) =>
+        r.method === "PATCH" && r.path === "/api/v1/occurrences/monitors/2",
+    );
+    expect(patch.length).toBe(1);
+    expect((patch[0]?.body as { name: string } | undefined)?.name).toBe(
+      "Linha do produtor",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /All monitors/ }));
+    await screen.findByText("Linha do produtor");
+    expect(screen.queryByText("Produtores") === null).toBe(true);
+  });
+
+  test("the header follows a name changed elsewhere once the list is read again", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    const ctx = await screen.findByLabelText("Business context");
+    (monitors[0] as Monitor).name = "Renomeado por fora";
+    fireEvent.change(ctx, { target: { value: "algo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("heading", { name: "Renomeado por fora" });
+  });
+
+  test("a name another monitor has is refused in the header, and the monitor keeps its name", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    refuse = (method, path) =>
+      method === "PATCH" && path === "/api/v1/occurrences/monitors/2"
+        ? json({ error: 'A monitor named "Compradores" already exists.' }, 409)
+        : null;
+    renderPanel("/resources/occurrences?monitor=2");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const input = screen.getByLabelText("Monitor name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Compradores" } });
+    fireEvent.click(within(nameForm()).getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("already exists");
+    expect(
+      (screen.getByLabelText("Monitor name") as HTMLInputElement).value,
+    ).toBe("Compradores");
+    fireEvent.click(within(nameForm()).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("heading", { name: "Produtores" })).toBeTruthy();
+    expect(monitors.find((m) => m.id === "2")?.name).toBe("Produtores");
+  });
+
+  test("the name cannot change while its save is on the wire, so a refusal is always about the name shown", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    let answer = () => {};
+    const held = new Promise<void>((r) => {
+      answer = r;
+    });
+    refuse = (method, path) =>
+      method === "PATCH" && path === "/api/v1/occurrences/monitors/2"
+        ? held.then(() =>
+            json(
+              { error: 'A monitor named "Compradores" already exists.' },
+              409,
+            ),
+          )
+        : null;
+    renderPanel("/resources/occurrences?monitor=2");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const input = screen.getByLabelText("Monitor name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Compradores" } });
+    fireEvent.submit(nameForm());
+    await waitFor(() => expect(input.readOnly).toBe(true));
+    answer();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("already exists");
+    expect(input.value).toBe("Compradores");
+    expect(input.readOnly).toBe(false);
+  });
+
+  test("Escape, Cancel and an unchanged name leave the name as it was without a request", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=2");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Monitor name"), {
+      target: { value: "Outro" },
+    });
+    fireEvent.keyDown(screen.getByLabelText("Monitor name"), { key: "Escape" });
+    expect(screen.getByRole("heading", { name: "Produtores" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    expect(
+      (screen.getByLabelText("Monitor name") as HTMLInputElement).value,
+    ).toBe("Produtores");
+    fireEvent.change(screen.getByLabelText("Monitor name"), {
+      target: { value: "Outro" },
+    });
+    fireEvent.click(within(nameForm()).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("heading", { name: "Produtores" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Monitor name"), {
+      target: { value: "   " },
+    });
+    fireEvent.submit(nameForm());
+    await act(async () => {});
+    expect(screen.getByLabelText("Monitor name")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Monitor name"), {
+      target: { value: "Produtores" },
+    });
+    fireEvent.click(within(nameForm()).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Monitor name") === null).toBe(true),
+    );
+    expect(requests.some((r) => r.method === "PATCH")).toBe(false);
+  });
+
+  test("Duplicate in the monitor's view asks for the copy's name, says what it carries, and opens the copy", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText("Name") as HTMLInputElement;
+    expect(input.value).toBe("Copy of Compradores");
+    expect(dialog.textContent).toContain("configuration only");
+    expect(dialog.textContent).toContain("no inboxes");
+    expect(requests.some((r) => r.path.endsWith("/duplicate"))).toBe(false);
+    fireEvent.change(input, { target: { value: "Compradores 2" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    await screen.findByRole("heading", { name: "Compradores 2" });
+    const dup = requests.filter(
+      (r) =>
+        r.method === "POST" &&
+        r.path === "/api/v1/occurrences/monitors/1/duplicate",
+    );
+    expect(dup.length).toBe(1);
+    expect((dup[0]?.body as { name: string } | undefined)?.name).toBe(
+      "Compradores 2",
+    );
+    const copy = monitors.find((m) => m.name === "Compradores 2");
+    expect(location).toBe(`/resources/occurrences?monitor=${copy?.id}`);
+    expect(screen.queryByRole("dialog") === null).toBe(true);
+  });
+
+  test("a copy's suggested name never passes the longest a monitor can have", async () => {
+    monitors = [{ ...A, name: "x".repeat(80) }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText("Name") as HTMLInputElement;
+    expect(input.value.length).toBe(80);
+    expect(input.value.startsWith("Copy of x")).toBe(true);
+  });
+
+  test("a copy's suggested name never ends on half of a character", async () => {
+    // "Copy of " is 8 units: the emoji's two halves sit at 79 and 80, so the cap cuts between them.
+    monitors = [{ ...A, name: `${"x".repeat(71)}😀 fim` }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText("Name") as HTMLInputElement;
+    expect(input.value).toBe(`Copy of ${"x".repeat(71)}`);
+  });
+
+  test("the copy opens only after the name form's Back trap has let go, so its cleanup pop cannot undo it", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    // The trap's cleanup pop is held: the browser has not answered history.back() yet.
+    const pops: (() => void)[] = [];
+    back.mockImplementation(() => {
+      pops.push(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    await waitFor(() => expect(monitors.length).toBe(2));
+    await waitFor(() => expect(listAnswered).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(pops.length).toBeGreaterThan(0));
+    await act(async () => {});
+    expect(location).toBe("/resources/occurrences?monitor=1");
+    act(() => {
+      for (const pop of pops.splice(0)) pop();
+    });
+    const copy = monitors.find((m) => m.id !== "1");
+    await waitFor(() =>
+      expect(location).toBe(`/resources/occurrences?monitor=${copy?.id}`),
+    );
+  });
+
+  test("the copy opens from the server's answer even when the list read after it fails", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    let copied = false;
+    refuse = (method, path) =>
+      copied && method === "GET" && path === "/api/v1/occurrences/monitors"
+        ? json({ error: "down" }, 500)
+        : null;
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), {
+      target: { value: "Cópia nova" },
+    });
+    copied = true;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    await screen.findByRole("heading", { name: "Cópia nova" });
+    const copy = monitors.find((m) => m.name === "Cópia nova");
+    expect(location).toBe(`/resources/occurrences?monitor=${copy?.id}`);
+    expect(screen.getByRole("tab", { name: "Configuration" })).toBeTruthy();
+  });
+
+  test("a copy that lands after the operator opened another monitor leaves them there", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    // The name form's cleanup pop is held while the operator goes to another monitor.
+    const pops: (() => void)[] = [];
+    back.mockImplementation(() => {
+      pops.push(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    await waitFor(() => expect(monitors.length).toBe(3));
+    await waitFor(() => expect(pops.length).toBeGreaterThan(0));
+    act(() => navigateTo("/resources/occurrences?monitor=2"));
+    await screen.findByRole("heading", { name: "Produtores" });
+    act(() => {
+      for (const pop of pops.splice(0)) pop();
+    });
+    await act(async () => {});
+    expect(location).toBe("/resources/occurrences?monitor=2");
+  });
+
+  test("a delete that lands after the operator opened another monitor leaves them there", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    let answer = () => {};
+    const held = new Promise<void>((r) => {
+      answer = r;
+    });
+    refuse = (method, path) =>
+      method === "DELETE" && path === "/api/v1/occurrences/monitors/1"
+        ? held.then(() => {
+            monitors = monitors.filter((m) => m.id !== "1");
+            return json({
+              instance: {},
+              deleted: true,
+              openThemes: 4,
+              runs: 6,
+            });
+          })
+        : null;
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(requests.some((r) => r.method === "DELETE")).toBe(true),
+    );
+    act(() => navigateTo("/resources/occurrences?monitor=2"));
+    await screen.findByRole("heading", { name: "Produtores" });
+    answer();
+    await waitFor(() => expect(monitors.some((m) => m.id === "1")).toBe(false));
+    await act(async () => {});
+    expect(location).toBe("/resources/occurrences?monitor=2");
+  });
+
+  test("Cancel in the copy's name form creates nothing, and a refused copy says why in the form", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    let dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog") === null).toBe(true),
+    );
+    expect(requests.some((r) => r.path.endsWith("/duplicate"))).toBe(false);
+    expect(monitors.length).toBe(1);
+    refuse = (method, path) =>
+      method === "POST" && path.endsWith("/duplicate")
+        ? json({ error: "An account has at most 10 monitors." }, 422)
+        : null;
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    await waitFor(() =>
+      expect(dialog.textContent).toContain("at most 10 monitors"),
+    );
+    expect(location).toBe("/resources/occurrences?monitor=1");
+  });
+
+  test("a copy made with an unsaved edit asks before opening it, and Keep editing keeps the edit and lists the copy", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=1");
+    const ctx = await screen.findByLabelText("Business context");
+    fireEvent.change(ctx, { target: { value: "rascunho" } });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    const discard = await screen.findByRole("button", {
+      name: /Keep editing/,
+    });
+    expect(monitors.length).toBe(2);
+    fireEvent.click(discard);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog") === null).toBe(true),
+    );
+    expect(location).toBe("/resources/occurrences?monitor=1");
+    expect(
+      (screen.getByLabelText("Business context") as HTMLTextAreaElement).value,
+    ).toBe("rascunho");
+  });
+
+  test("a name typed and not saved is an unsaved edit: leaving asks first, Keep editing keeps it, and a saved or unchanged name does not ask", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=2");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.click(screen.getByRole("button", { name: /All monitors/ }));
+    await screen.findByText("Compradores");
+    fireEvent.click(within(rowOf("Produtores")).getByRole("button"));
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Monitor name"), {
+      target: { value: "Rascunho de nome" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /All monitors/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Keep editing" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Discard changes?") === null).toBe(true),
+    );
+    expect(
+      (screen.getByLabelText("Monitor name") as HTMLInputElement).value,
+    ).toBe("Rascunho de nome");
+    expect(location).toBe("/resources/occurrences?monitor=2");
+    fireEvent.submit(nameForm());
+    await screen.findByRole("heading", { name: "Rascunho de nome" });
+    fireEvent.click(screen.getByRole("button", { name: /All monitors/ }));
+    await screen.findByText("Compradores");
+    expect(screen.queryByText("Discard changes?") === null).toBe(true);
+  });
+
+  test("a copy that lands after the operator left the page does not bring them back", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    render(
+      <MemoryRouter initialEntries={["/resources/occurrences?monitor=1"]}>
+        <NavGuardProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/resources/occurrences"
+                element={<OccurrencesPanel />}
+              />
+              <Route path="/agents" element={<p>Agentes</p>} />
+            </Routes>
+            <LocationProbe />
+          </ToastProvider>
+        </NavGuardProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dialog = await screen.findByRole("dialog");
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const gates: (Promise<void> | null)[] = [held];
+    listGate = () => gates.shift() ?? null;
+    const pops: (() => void)[] = [];
+    back.mockImplementation(() => {
+      pops.push(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Duplicate" }));
+    await waitFor(() => expect(monitors.length).toBe(2));
+    await waitFor(() => expect(pops.length).toBeGreaterThan(0));
+    act(() => navigateTo("/agents"));
+    await screen.findByText("Agentes");
+    act(() => {
+      for (const pop of pops.splice(0)) pop();
+    });
+    release();
+    await waitFor(() => expect(listAnswered).toBeGreaterThanOrEqual(2));
+    await act(async () => {});
+    expect(location).toBe("/agents");
   });
 
   test("going back to the list with an unsaved edit asks first, and Keep editing keeps the edit", async () => {
@@ -701,6 +1099,38 @@ describe("occurrence monitors", () => {
     expect(location).toBe("/resources/occurrences?monitor=2&tab=config");
   });
 
+  test("with only a typed name unsaved the URL keeps the tab it had too, past the guard's wait for its sentinel", async () => {
+    monitors = [{ ...A }, { ...B }];
+    installFetchStub();
+    renderPanel("/resources/occurrences?monitor=2&tab=config");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Monitor name"), {
+      target: { value: "Rascunho de nome" },
+    });
+    await waitFor(() =>
+      expect(
+        (window.history.state as Record<string, unknown> | null)?.[
+          "__unsavedBackGuard"
+        ],
+      ).toBe(true),
+    );
+    jest.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("tab", { name: "Rounds" }));
+      jest.advanceTimersByTime(5_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await act(async () => {});
+    expect(location).toBe("/resources/occurrences?monitor=2&tab=config");
+    expect(
+      (window.history.state as Record<string, unknown> | null)?.[
+        "__unsavedBackGuard"
+      ],
+    ).toBe(true);
+  });
+
   test("a link to another tab of the open monitor opens it and the URL stays put", async () => {
     monitors = [{ ...A }, { ...B }];
     installFetchStub();
@@ -768,48 +1198,73 @@ describe("occurrence monitors", () => {
   test("a monitor with nothing yet says so in the delete confirmation instead of zero counts", async () => {
     monitors = [{ ...B }];
     installFetchStub();
-    renderPanel();
-    await screen.findByText("Produtores");
-    fireEvent.click(
-      within(rowOf("Produtores")).getByRole("button", { name: "Delete" }),
-    );
+    renderPanel("/resources/occurrences?monitor=2");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("no themes or rounds yet");
     expect(dialog.textContent?.includes("0 open themes")).toBe(false);
   });
 
-  test("Delete asks on the page with what goes with it; Cancel keeps the monitor, Delete removes it", async () => {
+  test("Delete in the monitor's view asks with the counts as they are now; Cancel keeps it, Delete lands on the list without it", async () => {
     monitors = [{ ...A }, { ...B }];
     installFetchStub();
-    renderPanel();
-    await screen.findByText("Compradores");
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    // A round ran after the list was read: the confirmation says what is there now.
+    const a = monitors.find((m) => m.id === "1") as Monitor;
+    a.openThemes = 5;
+    a.runs = 7;
     const del = () =>
-      fireEvent.click(
-        within(rowOf("Compradores")).getByRole("button", { name: "Delete" }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     del();
     let dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("4 open themes");
-    expect(dialog.textContent).toContain("6 rounds");
+    expect(dialog.textContent).toContain("5 open themes");
+    expect(dialog.textContent).toContain("7 rounds");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
       expect(screen.queryByRole("dialog") === null).toBe(true),
     );
     expect(requests.some((r) => r.method === "DELETE")).toBe(false);
-    expect(screen.getByText("Compradores")).toBeTruthy();
+    expect(location).toBe("/resources/occurrences?monitor=1");
     del();
     dialog = await screen.findByRole("dialog");
+    // The list read after the delete is held: the deleted monitor is gone from the list already.
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    listGate = () => held;
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() =>
-      expect(screen.queryByText("Compradores") === null).toBe(true),
-    );
-    expect(screen.getByText("Produtores")).toBeTruthy();
+    await screen.findByText("Produtores");
+    await waitFor(() => expect(location).toBe("/resources/occurrences"));
+    expect(screen.queryByText("Compradores") === null).toBe(true);
+    listGate = null;
+    release();
     expect(
       requests.some(
         (r) =>
           r.method === "DELETE" && r.path === "/api/v1/occurrences/monitors/1",
       ),
     ).toBe(true);
+  });
+
+  test("a refused delete keeps the confirmation open and the monitor in place", async () => {
+    monitors = [{ ...A }];
+    installFetchStub();
+    refuse = (method) =>
+      method === "DELETE" ? json({ error: "nope" }, 500) : null;
+    renderPanel("/resources/occurrences?monitor=1");
+    await screen.findByRole("tab", { name: "Configuration" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(requests.some((r) => r.method === "DELETE")).toBe(true),
+    );
+    await act(async () => {});
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(location).toBe("/resources/occurrences?monitor=1");
   });
 
   test("opening a monitor shows its tabs and reads its own configuration, and Back returns to the list", async () => {

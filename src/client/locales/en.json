@@ -3974,6 +3974,7 @@
     "modelTitle": "Model",
     "monitors": {
       "all": "All monitors",
+      "copyName": "Copy of {{name}}",
       "create": "Create",
       "deleted": "Deleted.",
       "deleteError": "Could not delete the monitor.",
@@ -3983,6 +3984,8 @@
       "duplicate": "Duplicate",
       "duplicated": "Copy created, off and with no inboxes.",
       "duplicateError": "Could not duplicate the monitor.",
+      "duplicateHint": "The copy takes this monitor's configuration only. It starts off and with no inboxes; the themes and rounds stay with this monitor.",
+      "duplicateTitle": "Duplicate monitor",
       "emptyDescription": "Create one, choose the inboxes it reads and switch it on.",
       "emptyTitle": "No monitor yet",
       "inboxById": "Inbox {{id}}",
@@ -3990,6 +3993,7 @@
       "intro": "Each monitor reads its own inboxes and groups the same reasons into its own themes. Up to {{max}} per account.",
       "lastFailed": "last round failed {{when}}",
       "lastRun": "last round {{when}}",
+      "monitorName": "Monitor name",
       "name": "Name",
       "neverRan": "no round yet",
       "new": "New monitor",
@@ -3998,7 +4002,6 @@
       "off": "off",
       "on": "on",
       "rename": "Rename",
-      "renameTitle": "Rename monitor",
       "running": "round running",
       "saveError": "Could not save the monitor."
     },

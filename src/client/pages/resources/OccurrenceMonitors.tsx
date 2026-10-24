@@ -1,12 +1,9 @@
-import { Activity, Copy, Pencil, Plus, Trash2 } from "lucide-react";
+import { Activity, Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Badge,
   Button,
-  Card,
-  ConfirmDialog,
-  type ConfirmPayload,
   DataBoundary,
   EmptyState,
   FormField,
@@ -16,7 +13,6 @@ import {
   type ModalController,
   useModalController,
   useOnModalOpen,
-  useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -29,17 +25,17 @@ type MonitorsData = NonNullable<
 >;
 export type MonitorView = MonitorsData["monitors"][number];
 
-type NamePayload = {
+export type NamePayload = {
   title: string;
   name: string;
   action: string;
-  // The monitor being renamed; absent for New.
-  renaming?: string;
+  // What the action does with the name, under the title.
+  description?: string;
 };
 
-// The name form, for New and Rename: the refusal (a name already taken, the account at its limit)
+// The name form, for New and Duplicate: the refusal (a name already taken, the account at its limit)
 // stays in the form, so the operator reads it where they typed.
-function NameModal({
+export function NameModal({
   modal,
   onSubmit,
 }: {
@@ -79,6 +75,7 @@ function NameModal({
       modal={modal}
       size="sm"
       title={payload?.title ?? ""}
+      description={payload?.description}
       busy={busy}
       footer={
         <div className="flex justify-end gap-2">
@@ -116,9 +113,8 @@ function NameModal({
 }
 
 // The account's occurrence monitors (docs/occurrences.md): each one reads its own inboxes into its
-// own themes. A row says whether it is on, what it reads and when it last ran, and opens it; New,
-// Rename, Duplicate (the configuration only, off and with no inboxes) and Delete (confirmed on the
-// page, with what goes with it) act on the list.
+// own themes. A row says whether it is on, what it reads and when it last ran, and opens it; New
+// takes a name. Renaming, duplicating and deleting a monitor happen in its own view.
 export function OccurrenceMonitors({
   monitors,
   max,
@@ -139,12 +135,7 @@ export function OccurrenceMonitors({
   onChanged: () => Promise<void> | void;
 }) {
   const { t, i18n } = useTranslation();
-  const { showToast } = useToast();
   const nameModal = useModalController<NamePayload>();
-  const confirm = useModalController<ConfirmPayload>();
-  // A refusal of an action taken from the list (Duplicate at the limit), kept on the page.
-  const [listError, setListError] = useState<string | null>(null);
-
   const inboxName = (id: string) => {
     if (inboxes === null)
       return t("occurrences.monitors.inboxById", "Inbox {{id}}", { id });
@@ -155,10 +146,7 @@ export function OccurrenceMonitors({
   };
 
   async function submitName(name: string): Promise<string | null> {
-    const renaming = nameModal.payload?.renaming;
-    const res = renaming
-      ? await api.api.v1.occurrences.monitors({ id: renaming }).patch({ name })
-      : await api.api.v1.occurrences.monitors.post({ name });
+    const res = await api.api.v1.occurrences.monitors.post({ name });
     if (res.error) {
       return (
         apiErrorMessage(res.error) ||
@@ -166,74 +154,8 @@ export function OccurrenceMonitors({
       );
     }
     nameModal.close();
-    setListError(null);
     await onChanged();
     return null;
-  }
-
-  async function duplicate(m: MonitorView) {
-    setListError(null);
-    const res = await api.api.v1.occurrences
-      .monitors({ id: m.id })
-      .duplicate.post({});
-    if (res.error) {
-      const message =
-        apiErrorMessage(res.error) ||
-        t(
-          "occurrences.monitors.duplicateError",
-          "Could not duplicate the monitor.",
-        );
-      setListError(message);
-      showToast(message, "error");
-      return;
-    }
-    showToast(
-      t(
-        "occurrences.monitors.duplicated",
-        "Copy created, off and with no inboxes.",
-      ),
-      "success",
-    );
-    await onChanged();
-  }
-
-  function askDelete(m: MonitorView) {
-    confirm.open({
-      title: t("occurrences.monitors.deleteTitle", "Delete monitor"),
-      message:
-        m.openThemes === 0 && m.runs === 0
-          ? t(
-              "occurrences.monitors.deleteMessageEmpty",
-              'Delete "{{name}}"? It has no themes or rounds yet. This cannot be undone.',
-              { name: m.name },
-            )
-          : t(
-              "occurrences.monitors.deleteMessage",
-              'Delete "{{name}}"? Its {{themes}} open themes and {{runs}} rounds go with it, and it stops running. This cannot be undone.',
-              { name: m.name, themes: m.openThemes, runs: m.runs },
-            ),
-      danger: true,
-      confirmLabel: t("common.delete", "Delete"),
-      onConfirm: async () => {
-        const res = await api.api.v1.occurrences
-          .monitors({ id: m.id })
-          .delete();
-        if (res.error) {
-          showToast(
-            apiErrorMessage(res.error) ||
-              t(
-                "occurrences.monitors.deleteError",
-                "Could not delete the monitor.",
-              ),
-            "error",
-          );
-          throw res.error;
-        }
-        showToast(t("occurrences.monitors.deleted", "Deleted."), "success");
-        setListError(null);
-        await onChanged();
-      },
-    });
   }
 
   const create = (
@@ -279,11 +201,6 @@ export function OccurrenceMonitors({
         </p>
         {create}
       </div>
-      {listError && (
-        <p role="alert" className="text-error text-sm">
-          {listError}
-        </p>
-      )}
       {inboxes === null && !loading && !failed && monitors.length > 0 && (
         <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
           <span className="text-error">
@@ -317,76 +234,34 @@ export function OccurrenceMonitors({
         <ul className="flex flex-col gap-3">
           {monitors.map((m) => (
             <li key={m.id}>
-              <Card className="flex flex-wrap items-center justify-between gap-4">
-                <button
-                  type="button"
-                  onClick={() => onOpen(m.id)}
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate font-medium text-text-primary hover:text-accent">
-                      {m.name}
-                    </span>
-                    <Badge variant={m.enabled ? "success" : "secondary"}>
-                      {m.enabled
-                        ? t("occurrences.monitors.on", "on")
-                        : t("occurrences.monitors.off", "off")}
-                    </Badge>
-                  </div>
-                  <p className="mt-0.5 text-text-muted text-xs">
-                    {m.inboxIds.length === 0
-                      ? t("occurrences.monitors.noInboxes", "no inboxes")
-                      : m.inboxIds.map(inboxName).join(", ")}
-                    {" · "}
-                    {lastRun(m)}
-                  </p>
-                </button>
-                <div className="flex shrink-0 gap-1">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      nameModal.open({
-                        title: t(
-                          "occurrences.monitors.renameTitle",
-                          "Rename monitor",
-                        ),
-                        name: m.name,
-                        action: t("occurrences.monitors.rename", "Rename"),
-                        renaming: m.id,
-                      })
-                    }
-                    aria-label={t("occurrences.monitors.rename", "Rename")}
-                  >
-                    <Pencil className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void duplicate(m)}
-                    aria-label={t(
-                      "occurrences.monitors.duplicate",
-                      "Duplicate",
-                    )}
-                  >
-                    <Copy className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => askDelete(m)}
-                    aria-label={t("common.delete", "Delete")}
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </Button>
+              <button
+                type="button"
+                onClick={() => onOpen(m.id)}
+                className="group w-full min-w-0 rounded-lg border border-border bg-bg-secondary p-5 text-left transition-colors hover:bg-bg-tertiary"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate font-medium text-text-primary group-hover:text-accent">
+                    {m.name}
+                  </span>
+                  <Badge variant={m.enabled ? "success" : "secondary"}>
+                    {m.enabled
+                      ? t("occurrences.monitors.on", "on")
+                      : t("occurrences.monitors.off", "off")}
+                  </Badge>
                 </div>
-              </Card>
+                <p className="mt-0.5 text-text-muted text-xs">
+                  {m.inboxIds.length === 0
+                    ? t("occurrences.monitors.noInboxes", "no inboxes")
+                    : m.inboxIds.map(inboxName).join(", ")}
+                  {" · "}
+                  {lastRun(m)}
+                </p>
+              </button>
             </li>
           ))}
         </ul>
       </DataBoundary>
       <NameModal modal={nameModal} onSubmit={submitName} />
-      <ConfirmDialog modal={confirm} />
     </div>
   );
 }

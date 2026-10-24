@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
+import { verdictAskMode } from "@/graph/model-config";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
 
 // The constrained verdict, against the adapters themselves. These build the vendor adapters directly
@@ -115,6 +116,9 @@ const openaiModel = new ChatOpenAI({
 // ── an Anthropic endpoint ───────────────────────────────────────────────────
 
 let anthropicContent: unknown[] = [];
+let anthropicWires: Wire[] = [];
+// What claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-1 answer to a forced tool call, verbatim.
+let refuseForcedTool = false;
 
 const anthropicServer = Bun.serve({
   hostname: "127.0.0.1",
@@ -122,7 +126,22 @@ const anthropicServer = Bun.serve({
   async fetch(req) {
     const pre = preflight(req);
     if (pre) return pre;
-    await req.json();
+    const wire = (await req.json()) as Wire;
+    anthropicWires.push(wire);
+    const choice = (wire.tool_choice as { type?: string } | undefined)?.type;
+    if (refuseForcedTool && (choice === "tool" || choice === "any")) {
+      return BunResponse.json(
+        {
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              'tool_choice: type "tool" and "any" are not supported for this model.',
+          },
+        },
+        { status: 400, headers: CORS },
+      );
+    }
     return BunResponse.json(
       {
         id: "msg_1",
@@ -235,42 +254,66 @@ describe("the verdict is asked for as a schema, not as prose", () => {
   });
 });
 
-describe("an adapter that answers around the schema", () => {
+describe("an Anthropic endpoint", () => {
   beforeEach(() => {
     anthropicContent = [];
+    anthropicWires = [];
+    refuseForcedTool = false;
   });
 
-  test("a forced tool call is read as the verdict", async () => {
-    anthropicContent = [
-      {
-        type: "tool_use",
-        id: "t1",
-        name: "guardrail_verdict",
-        input: VIOLATION,
-      },
-    ];
-    const v = await analyzeGuardrail(anthropicModel, BASE, "json-schema");
+  // A model that refuses the forced tool call costs a 400 and a prose retry on every screen, and its
+  // verdict is read out of text. Asked through the native output format it answers the first call.
+  test("a model that refuses forced tool calls is screened in one constrained call", async () => {
+    refuseForcedTool = true;
+    anthropicContent = [{ type: "text", text: JSON.stringify(VIOLATION) }];
+    const v = await analyzeGuardrail(
+      anthropicModel,
+      BASE,
+      verdictAskMode("anthropic"),
+    );
+    expect(anthropicWires).toHaveLength(1);
+    const [wire] = anthropicWires;
+    expect(wire?.tool_choice).toBeUndefined();
+    expect(
+      (wire?.output_config as { format?: { type?: string } } | undefined)
+        ?.format?.type,
+    ).toBe("json_schema");
     expect(v.violated).toBe(true);
     expect(v.categories).toEqual(["toxicity"]);
     expect(v.error).toBeUndefined();
   });
+});
 
-  // NOTE: Defence in depth, and it is reachable: on this adapter, a reply that answers in TEXT instead of
-  // calling the forced tool arrives with no parsed answer and the text intact. Reading it is what the
-  // prose path does, so the screen survives a model that ignored the tool instead of being reported as
-  // one that never ran.
+describe("an adapter that answers around the schema", () => {
+  beforeEach(() => {
+    anthropicContent = [];
+    anthropicWires = [];
+    refuseForcedTool = false;
+  });
+
+  // NOTE: Defence in depth: a reply whose text the adapter cannot parse as the schema (a verdict wrapped
+  // in prose, an answer cut short) arrives with no parsed answer and the text intact. Reading it is what
+  // the prose path does, so the screen survives instead of being reported as one that never ran.
   test("a text answer is still read, rather than reported as unscreened", async () => {
     anthropicContent = [
       { type: "text", text: `Analisei: ${JSON.stringify(VIOLATION)}` },
     ];
-    const v = await analyzeGuardrail(anthropicModel, BASE, "json-schema");
+    const v = await analyzeGuardrail(
+      anthropicModel,
+      BASE,
+      verdictAskMode("anthropic"),
+    );
     expect(v.violated).toBe(true);
     expect(v.error).toBeUndefined();
   });
 
   test("a text answer carrying no verdict is not clean either", async () => {
     anthropicContent = [{ type: "text", text: "não consegui analisar" }];
-    const v = await analyzeGuardrail(anthropicModel, BASE, "json-schema");
+    const v = await analyzeGuardrail(
+      anthropicModel,
+      BASE,
+      verdictAskMode("anthropic"),
+    );
     expect(v.violated).toBe(false);
     expect(v.error).toBe("no usable verdict in response");
   });

@@ -43,21 +43,27 @@ export const PROVIDERS_HONORING_BASE_URL = [
 ] as const;
 
 // How each provider is asked for a schema-constrained answer, if at all: a claim about the ENDPOINT,
-// never the model, read by the guardrail verdict (modules/guardrails/verdict.ts). openai and
-// anthropic take json-schema (a `strict` json_schema; a forced tool call); google takes the OpenAPI
+// never the model, read by the guardrail verdict (modules/guardrails/verdict.ts). openai takes
+// json-schema (a `strict` json_schema); anthropic takes the same schema as `output_config.format`
+// (output-format), because the claude-*-5-5 and fable models answer a forced tool call with a 400
+// that every model before them accepted, while all of them take the response format; google takes the OpenAPI
 // 3.0 subset (asked in json-schema it answers 400 and the analysis is redone in prose, two calls per
 // screen); deepseek implements only `json_object`; openrouter's support is per endpoint behind the
 // router and changes without notice; openai-compatible is arbitrary, and a server that ignores the
 // parameter makes the client retry for a minute. A row wrongly on "prose" costs nothing; one in the
 // wrong dialect pays a refusal on every screen.
-export type VerdictAskMode = "prose" | "json-schema" | "openapi";
+export type VerdictAskMode =
+  | "prose"
+  | "json-schema"
+  | "output-format"
+  | "openapi";
 
 const VERDICT_ASK_MODE: Record<
   (typeof MODEL_PROVIDERS)[number],
   VerdictAskMode
 > = {
   openai: "json-schema",
-  anthropic: "json-schema",
+  anthropic: "output-format",
   google: "openapi",
   deepseek: "prose",
   openrouter: "prose",

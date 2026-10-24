@@ -6,9 +6,10 @@
 // ambiguity collapsed into CLEAN is a message delivered unscreened. `error` keeps the two apart.
 
 // How a call asks for the verdict. Not a capability of the model: the same adapter serves an endpoint
-// we know and one we do not, so this is decided from the provider and travels with the call. The two
-// constrained values are one shape in two DIALECTS: Gemini refuses the json-schema dialect outright.
-export type VerdictMode = "prose" | "json-schema" | "openapi";
+// we know and one we do not, so this is decided from the provider and travels with the call. The
+// constrained values are one shape in two DIALECTS (Gemini refuses the json-schema dialect outright),
+// and `output-format` is the json-schema dialect sent as the response format instead of a forced tool.
+export type VerdictMode = "prose" | "json-schema" | "output-format" | "openapi";
 
 export interface GuardrailVerdict {
   violated: boolean;

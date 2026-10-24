@@ -75,6 +75,7 @@ import {
 } from "@/client/lib/fieldRefusal";
 import { importWarningMessage } from "@/client/lib/importWarningMessage";
 import { serverNowDate } from "@/client/lib/serverClock";
+import { afterTrapRelease } from "@/client/lib/unsavedGuard";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -855,9 +856,42 @@ function AgentEditor() {
   const { id = "", tab: tabParam } = useParams();
   // The active tab is the URL `:tab` segment; an unknown value falls back to
   // "general" (and is normalized in the effect below so the URL stays canonical).
-  const tab: TabKey = TAB_KEYS.includes(tabParam as TabKey)
+  const urlTab: TabKey = TAB_KEYS.includes(tabParam as TabKey)
     ? (tabParam as TabKey)
     : "general";
+  // A tab picked here that the URL does not say yet (agents#1647). A tab change is no history entry:
+  // the guard's Back trap copies the page's URL into its sentinel, so with an unsaved edit Back must
+  // always leave the agent. The URL follows the pick in place once nothing is unsaved (effect near
+  // useNavGuard). Any other navigation (a link, a deep link, even to the tab the URL already names)
+  // is the tab again, and drops a place asked for in the page (focusRequest, below).
+  const [picked, setPicked] = useState<TabKey | null>(null);
+  // A place in this editor asked for from inside it (goToEditorTarget), keyed per request so asking
+  // for the same section again highlights it again.
+  const [focusRequest, setFocusRequest] = useState<{
+    section: string;
+    key: string;
+  } | null>(null);
+  // The URL's tab, or the one a write below already asked for and the router has not drawn yet, so a
+  // pick made in between compares against where the URL is going.
+  const urlTabRef = useRef(urlTab);
+  urlTabRef.current = urlTab;
+  // Set by the URL write below, so the navigation it causes keeps the page's own pick and focus.
+  const ownUrlWrite = useRef(false);
+  const { key: locationKey } = useLocation();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on a navigation only.
+  useEffect(() => {
+    const own = ownUrlWrite.current;
+    ownUrlWrite.current = false;
+    if (own) {
+      // A pick made after the write was asked for and before the router drew it still stands (the
+      // follow effect then writes it); the pick the write satisfied goes.
+      setPicked((p) => (p === urlTabRef.current ? null : p));
+      return;
+    }
+    setPicked(null);
+    setFocusRequest(null);
+  }, [locationKey]);
+  const tab: TabKey = picked ?? urlTab;
   // The tab on screen now, for code that resumes after an await: the render that started it may be
   // gone, and the operator may have moved.
   const tabRef = useRef(tab);
@@ -3024,19 +3058,22 @@ function AgentEditor() {
     });
   }
 
-  // Switch to a tab (URL-driven) carrying the focus marker the effect above reads to scroll to the
-  // section and highlight it. One function, because a config-health warning and a refusal are the
-  // same act from here: both hold a place in this editor and have to take the operator to it.
+  // Switch to a tab carrying the focus marker the effect below reads to scroll to the section and
+  // highlight it. One function, because a config-health warning and a refusal are the same act from
+  // here: both hold a place in this editor and have to take the operator to it. Like a tab click it
+  // is no history entry (agents#1647), so the marker is page state, not router state.
   function goToEditorTarget(target: {
     tab: EditorTab;
     sectionId?: string;
   }): void {
-    navigate(
-      `/agents/${id}/${target.tab}${
-        backToConversation ? `?from=${backToConversation}` : ""
-      }`,
-      { state: { focusSection: target.sectionId } },
-    );
+    openTab(target.tab as TabKey);
+    if (target.sectionId) {
+      focusSeq.current += 1;
+      setFocusRequest({
+        section: target.sectionId,
+        key: `target:${focusSeq.current}`,
+      });
+    }
   }
 
   // The sentence for one warning, from the shared renderer (modules/agents/config-health-message.ts)
@@ -3175,12 +3212,7 @@ function AgentEditor() {
         case "agentField":
           // NOTE: Deep-link to the exact field that references the missing credential (model/stt/tts/vision),
           // scrolling + highlighting it — same mechanism config-health uses.
-          navigate(
-            `/agents/${id}/${target.tab}${
-              backToConversation ? `?from=${backToConversation}` : ""
-            }`,
-            { state: { focusSection: target.sectionId } },
-          );
+          goToEditorTarget(target);
           break;
         case "businessHours":
           void openBusinessHoursReview(target.name);
@@ -3239,15 +3271,18 @@ function AgentEditor() {
   }
 
   const focusedKey = useRef<string | null>(null);
+  const focusSeq = useRef(0);
   // `?focus=` is the same marker for a link from outside the console (a private note, an alert),
   // which cannot carry router state.
   const focusSection =
+    focusRequest?.section ??
     (location.state as { focusSection?: string } | null)?.focusSection ??
     searchParams.get("focus") ??
     undefined;
+  const focusKey = focusRequest?.key ?? location.key;
   useEffect(() => {
     // NOTE: Once per navigation: a later reload of the agent (a save) must not scroll back.
-    if (!focusSection || loading || focusedKey.current === location.key) return;
+    if (!focusSection || loading || focusedKey.current === focusKey) return;
     // Wait a frame so the freshly-switched tab's section is mounted before scrolling/highlighting.
     const raf = requestAnimationFrame(() => {
       const el = document.getElementById(focusSection);
@@ -3267,10 +3302,10 @@ function AgentEditor() {
       if (el.hasAttribute("data-focus-control")) {
         focusableIn(el)?.focus({ preventScroll: true });
       }
-      focusedKey.current = location.key;
+      focusedKey.current = focusKey;
     });
     return () => cancelAnimationFrame(raf);
-  }, [focusSection, location.key, loading]);
+  }, [focusSection, focusKey, loading]);
 
   // Playground readiness: the playground tests the LIVE draft (prompt/model/settings sent as a
   // non-persisted override), so the hard requirements are read from the CURRENT model form, not the
@@ -3320,6 +3355,29 @@ function AgentEditor() {
   // Back, refresh/close) when there are unsaved changes. Switching tabs keeps
   // the component mounted (state survives), so it is intentionally not guarded.
   useNavGuard(anyDirty);
+  // The URL takes the picked tab in place once nothing is unsaved, after the Back trap has popped its
+  // sentinel, and only while this editor is still mounted. The latest pick is read at run time.
+  const pickedRef = useRef(picked);
+  pickedRef.current = picked;
+  const anyDirtyRef = useRef(anyDirty);
+  anyDirtyRef.current = anyDirty;
+  useEffect(() => {
+    if (anyDirty || picked === null) return;
+    afterTrapRelease(() => {
+      const to = pickedRef.current;
+      if (!mountedRef.current || anyDirtyRef.current || to === null) return;
+      // Already where the URL is, or going there: a write would be a no-op entry.
+      if (to === urlTabRef.current) return;
+      urlTabRef.current = to;
+      ownUrlWrite.current = true;
+      navigate(
+        `/agents/${id}/${to}${
+          backToConversation ? `?from=${backToConversation}` : ""
+        }`,
+        { replace: true },
+      );
+    });
+  }, [anyDirty, picked, id, backToConversation, navigate]);
 
   // Per-tab discard: restore a single section from the last synced agent. No
   // syncSeq bump — only the reverted section returns to baseline, the other
@@ -4557,11 +4615,7 @@ function AgentEditor() {
 
   const openTab = (key: TabKey) => {
     if (!mountedRef.current) return;
-    navigate(
-      `/agents/${id}/${key}${
-        backToConversation ? `?from=${backToConversation}` : ""
-      }`,
-    );
+    setPicked(key === urlTabRef.current ? null : key);
   };
 
   // The order follows the work: set the agent up (General, then its kind's own settings), give it
@@ -4634,6 +4688,12 @@ function AgentEditor() {
     : watcher
       ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
       : tabs.filter((item) => item.key !== "decisions" && item.key !== "call");
+  // The header's last crumb is drawn from the URL, which keeps its tab while an edit is unsaved
+  // (agents#1647), so it names the tab on screen instead.
+  useBreadcrumbLabel(
+    id && picked ? `/agents/${id}/${urlTab}` : null,
+    picked ? (tabs.find((item) => item.key === picked)?.label ?? null) : null,
+  );
 
   // One value for the card at the top and the compact line in every tab's save bar, so the two can
   // only show together and offer the same actions.

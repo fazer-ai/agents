@@ -98,7 +98,9 @@ export async function runFlagsStep(
       ),
     );
     // A member counts at the customer message of the reading it was placed from (the reason reading
-    // first read when the member says), else at the read. Only members read by `now` count.
+    // first read when the member says), else at the read. Only members read by `now` count. A covered
+    // message precedes its read, so a member read before the horizon cannot count, and the read's
+    // bound keeps the recount on its index as the membership grows.
     const rows = await db.$queryRaw<
       Array<{ theme_id: bigint; at: Date; reference_id: bigint | null }>
     >`
@@ -118,6 +120,7 @@ export async function runFlagsStep(
                 AND s.field = ${cfg.referenceField ?? ""}
           LEFT JOIN occurrence_canonicals c ON c.id = s.canonical_id
          WHERE m.monitor_id = ${monitorId}
+           AND m.read_at >= ${horizon}
            AND m.read_at <= ${now}
       ) counted
        WHERE at >= ${horizon}`;

@@ -47,14 +47,14 @@ const AGENT = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
-function stubApi(): void {
+function stubApi(agent: typeof AGENT): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const routes: Record<string, unknown> = {
       "GET /api/auth/me": {
         user: { id: "1", email: "a@b.c", role: "ADMIN" },
       },
-      "GET /api/v1/agents/1": { agent: AGENT },
+      "GET /api/v1/agents/1": { agent },
       "GET /api/v1/agents/1/tool-selections": {
         grants: [],
         catalog: {
@@ -89,8 +89,8 @@ function Navigator() {
   return null;
 }
 
-function renderEditor(path: string) {
-  stubApi();
+function renderEditor(path: string, agent = AGENT) {
+  stubApi(agent);
   (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
     "http://localhost/agents",
   );
@@ -241,4 +241,42 @@ test("a warning's button opens its tab even when the URL already names it, with 
   expect(selected().includes("Behavior")).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Set up the model" }));
   await waitFor(() => expect(selected().includes("General")).toBe(true));
+});
+
+test("a link to the tab the URL already names opens it, with an edit pending and another tab picked here", async () => {
+  renderEditor("/agents/1/behavior");
+  await waitFor(() => signature());
+  fireEvent.click(signature());
+  await waitFor(() => expect(unsaved()).toBe(true));
+  fireEvent.click(screen.getByRole("tab", { name: /General/ }));
+  expect(selected().includes("General")).toBe(true);
+  expect(window.location.pathname).toBe("/agents/1/behavior");
+  act(() => navigateTo("/agents/1/behavior"));
+  await waitFor(() => expect(selected().includes("Behavior")).toBe(true));
+  expect(unsaved()).toBe(true);
+});
+
+test("a warning's jump does not hold back a later link's focus marker", async () => {
+  renderEditor("/agents/1/behavior", {
+    ...AGENT,
+    modelConfig: { provider: "not-a-provider", model: "x" },
+  });
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Set up the model" }),
+  );
+  await waitFor(() => expect(selected().includes("General")).toBe(true));
+  await waitFor(() =>
+    expect(
+      document
+        .getElementById("general-model")
+        ?.classList.contains("section-highlight"),
+    ).toBe(true),
+  );
+  act(() => navigateTo("/agents/1/behavior?focus=stt"));
+  await waitFor(() => expect(selected().includes("Behavior")).toBe(true));
+  await waitFor(() =>
+    expect(
+      document.getElementById("stt")?.classList.contains("section-highlight"),
+    ).toBe(true),
+  );
 });

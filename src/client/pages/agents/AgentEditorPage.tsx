@@ -862,17 +862,36 @@ function AgentEditor() {
   // A tab picked here that the URL does not say yet (agents#1647). A tab change is no history entry:
   // the guard's Back trap copies the page's URL into its sentinel, so with an unsaved edit Back must
   // always leave the agent. The URL follows the pick in place once nothing is unsaved (effect near
-  // useNavGuard); a URL change (a link, or that write) is the tab again, so the two never loop.
+  // useNavGuard). Any other navigation (a link, a deep link, even to the tab the URL already names)
+  // is the tab again, and drops a place asked for in the page (focusRequest, below).
   const [picked, setPicked] = useState<TabKey | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on a URL change only.
-  useEffect(() => {
-    setPicked(null);
-  }, [tabParam]);
-  const tab: TabKey = picked ?? urlTab;
+  // A place in this editor asked for from inside it (goToEditorTarget), keyed per request so asking
+  // for the same section again highlights it again.
+  const [focusRequest, setFocusRequest] = useState<{
+    section: string;
+    key: string;
+  } | null>(null);
   // The URL's tab, or the one a write below already asked for and the router has not drawn yet, so a
   // pick made in between compares against where the URL is going.
   const urlTabRef = useRef(urlTab);
   urlTabRef.current = urlTab;
+  // Set by the URL write below, so the navigation it causes keeps the page's own pick and focus.
+  const ownUrlWrite = useRef(false);
+  const { key: locationKey } = useLocation();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on a navigation only.
+  useEffect(() => {
+    const own = ownUrlWrite.current;
+    ownUrlWrite.current = false;
+    if (own) {
+      // A pick made after the write was asked for and before the router drew it still stands (the
+      // follow effect then writes it); the pick the write satisfied goes.
+      setPicked((p) => (p === urlTabRef.current ? null : p));
+      return;
+    }
+    setPicked(null);
+    setFocusRequest(null);
+  }, [locationKey]);
+  const tab: TabKey = picked ?? urlTab;
   // The tab on screen now, for code that resumes after an await: the render that started it may be
   // gone, and the operator may have moved.
   const tabRef = useRef(tab);
@@ -3252,12 +3271,6 @@ function AgentEditor() {
   }
 
   const focusedKey = useRef<string | null>(null);
-  // A place in this editor asked for from inside it (goToEditorTarget), keyed per request so asking
-  // for the same section again highlights it again.
-  const [focusRequest, setFocusRequest] = useState<{
-    section: string;
-    key: string;
-  } | null>(null);
   const focusSeq = useRef(0);
   // `?focus=` is the same marker for a link from outside the console (a private note, an alert),
   // which cannot carry router state.
@@ -3353,7 +3366,10 @@ function AgentEditor() {
     afterTrapRelease(() => {
       const to = pickedRef.current;
       if (!mountedRef.current || anyDirtyRef.current || to === null) return;
+      // Already where the URL is, or going there: a write would be a no-op entry.
+      if (to === urlTabRef.current) return;
       urlTabRef.current = to;
+      ownUrlWrite.current = true;
       navigate(
         `/agents/${id}/${to}${
           backToConversation ? `?from=${backToConversation}` : ""

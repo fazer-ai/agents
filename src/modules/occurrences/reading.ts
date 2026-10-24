@@ -683,6 +683,7 @@ export async function runReadingStep(
         now(),
         () => cut.aborted,
         c.resetAtMessageId,
+        mark.at,
       );
     } catch (err) {
       if (err instanceof ReadingsExpiredError) return "withdrawn";

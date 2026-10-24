@@ -3477,6 +3477,9 @@ model ConversationReading {
   agentId          BigInt?   @map("agent_id")
   firstReadAt      DateTime  @default(now()) @map("first_read_at")
   lastReadAt       DateTime  @default(now()) @map("last_read_at")
+  // The customer message the first reading covered, which the flags count the conversation at. Null on
+  // a reading stored before it was kept, or with no customer message, which counts at `firstReadAt`.
+  firstInboundAt   DateTime? @map("first_inbound_at")
   // The reference's canonical name, as the canonical step decided it for this value. Null on every
   // other field, on an empty reference (the no-reference bucket) and until the step has run.
   canonicalId      BigInt?   @map("canonical_id")

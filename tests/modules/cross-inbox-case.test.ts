@@ -1655,6 +1655,74 @@ describe("openCaseInInbox", () => {
       expect(f.convs.find((c) => c.id === 100)?.contactId).toBe(5);
     });
 
+    // SMTP refuses an accented mailbox name, so a case opened on one never reaches the customer.
+    test("an accent on a provider that forbids it is dropped, and the case note says what was written", async () => {
+      for (const typed of [
+        "jéssica.x@gmail.com",
+        "jéssica.x@gmail.com",
+        "jéssica.x@Yahoo.com.br",
+      ]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        const written = typed.replace(/^.*@/, "jessica.x@");
+        expect(r).toMatchObject({ kind: "opened", identity: "written" });
+        expect(f.contacts.get(5)?.email).toBe(written);
+        const notes = f.calls
+          .filter((c) => c.fn === "sendMessageAsAdmin" && c.args[0] === 100)
+          .map((c) => String(c.args[1]));
+        expect(
+          notes.some((n) => n.includes(typed) && n.includes(written)),
+        ).toBe(true);
+      }
+    });
+
+    test("an accent anywhere else is refused before anything is written", async () => {
+      for (const typed of [
+        "josé@empresa.com.br",
+        "jéssica.x@meugmail.com",
+        "jéssica.x@meuyahoo.com.br",
+        "josé@live.dev",
+        "josé@yahoo.co.de",
+        "太郎@gmail.com",
+      ]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        expect(r).toEqual({ kind: "rejected_email", why: "non_ascii" });
+        expect(writesOf(f.calls)).toEqual([]);
+      }
+    });
+
+    test("a domain outside ASCII is written in its punycode form", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        incoming: ["meu e-mail é maria@acentuação.com.br"],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "maria@acentuação.com.br" }),
+      );
+      expect(r).toMatchObject({ kind: "opened", identity: "written" });
+      expect(f.contacts.get(5)?.email).toBe("maria@xn--acentuao-xza3b.com.br");
+    });
+
+    test("a domain that is not a hostname is refused, not cut down or converted", async () => {
+      for (const typed of ["maria@empresa.com/ação", "maria@ação..com.br"]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        expect(r).toEqual({ kind: "rejected_email", why: "invalid" });
+        expect(writesOf(f.calls)).toEqual([]);
+      }
+    });
+
     test("held by another contact, merge off: the case opens on that contact, nothing is merged", async () => {
       const f = fakeChatwoot({
         contacts: { ...noEmail, 9: { email: "Ana@Exemplo.com" } },
@@ -2340,6 +2408,23 @@ describe("the tool", () => {
     expect(String(note?.args[1])).toEndWith(
       "Motivo informado: pediu {{ '{{' }}contact.phone_number}}",
     );
+  });
+
+  test("an accented address the provider cannot take asks the model to confirm it without the accent", async () => {
+    const f = fakeChatwoot({
+      contacts: { 5: { email: null, phone: "+5511999" } },
+      incoming: ["meu e-mail é josé@empresa.com.br"],
+    });
+    const { t } = toolFor(f);
+    const answer = String(
+      await t.invoke({
+        reason: "quer reembolso",
+        email: "josé@empresa.com.br",
+      }),
+    );
+    expect(answer).toContain("accent");
+    expect(answer).toContain("call this tool again");
+    expect(f.convs.some((c) => c.inboxId === 40)).toBe(false);
   });
 
   test("the schema has no destination: the operator picks it, never the model", () => {

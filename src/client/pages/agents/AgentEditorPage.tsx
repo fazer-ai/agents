@@ -75,6 +75,7 @@ import {
 } from "@/client/lib/fieldRefusal";
 import { importWarningMessage } from "@/client/lib/importWarningMessage";
 import { serverNowDate } from "@/client/lib/serverClock";
+import { afterTrapRelease } from "@/client/lib/unsavedGuard";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -855,9 +856,23 @@ function AgentEditor() {
   const { id = "", tab: tabParam } = useParams();
   // The active tab is the URL `:tab` segment; an unknown value falls back to
   // "general" (and is normalized in the effect below so the URL stays canonical).
-  const tab: TabKey = TAB_KEYS.includes(tabParam as TabKey)
+  const urlTab: TabKey = TAB_KEYS.includes(tabParam as TabKey)
     ? (tabParam as TabKey)
     : "general";
+  // A tab picked here that the URL does not say yet (agents#1647). A tab change is no history entry:
+  // the guard's Back trap copies the page's URL into its sentinel, so with an unsaved edit Back must
+  // always leave the agent. The URL follows the pick in place once nothing is unsaved (effect near
+  // useNavGuard); a URL change (a link, or that write) is the tab again, so the two never loop.
+  const [picked, setPicked] = useState<TabKey | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on a URL change only.
+  useEffect(() => {
+    setPicked(null);
+  }, [tabParam]);
+  const tab: TabKey = picked ?? urlTab;
+  // The URL's tab, or the one a write below already asked for and the router has not drawn yet, so a
+  // pick made in between compares against where the URL is going.
+  const urlTabRef = useRef(urlTab);
+  urlTabRef.current = urlTab;
   // The tab on screen now, for code that resumes after an await: the render that started it may be
   // gone, and the operator may have moved.
   const tabRef = useRef(tab);
@@ -3320,6 +3335,26 @@ function AgentEditor() {
   // Back, refresh/close) when there are unsaved changes. Switching tabs keeps
   // the component mounted (state survives), so it is intentionally not guarded.
   useNavGuard(anyDirty);
+  // The URL takes the picked tab in place once nothing is unsaved, after the Back trap has popped its
+  // sentinel, and only while this editor is still mounted. The latest pick is read at run time.
+  const pickedRef = useRef(picked);
+  pickedRef.current = picked;
+  const anyDirtyRef = useRef(anyDirty);
+  anyDirtyRef.current = anyDirty;
+  useEffect(() => {
+    if (anyDirty || picked === null) return;
+    afterTrapRelease(() => {
+      const to = pickedRef.current;
+      if (!mountedRef.current || anyDirtyRef.current || to === null) return;
+      urlTabRef.current = to;
+      navigate(
+        `/agents/${id}/${to}${
+          backToConversation ? `?from=${backToConversation}` : ""
+        }`,
+        { replace: true },
+      );
+    });
+  }, [anyDirty, picked, id, backToConversation, navigate]);
 
   // Per-tab discard: restore a single section from the last synced agent. No
   // syncSeq bump — only the reverted section returns to baseline, the other
@@ -4557,11 +4592,7 @@ function AgentEditor() {
 
   const openTab = (key: TabKey) => {
     if (!mountedRef.current) return;
-    navigate(
-      `/agents/${id}/${key}${
-        backToConversation ? `?from=${backToConversation}` : ""
-      }`,
-    );
+    setPicked(key === urlTabRef.current ? null : key);
   };
 
   // The order follows the work: set the agent up (General, then its kind's own settings), give it

@@ -184,15 +184,41 @@ export function normalizeEmail(raw: string): string | null {
 const ASCII_ONLY_DOMAINS = new Set([
   "gmail.com",
   "googlemail.com",
+  "yahoo.com",
+  "yahoo.com.br",
+  "yahoo.com.ar",
+  "yahoo.com.mx",
+  "yahoo.es",
+  "yahoo.fr",
+  "yahoo.co.uk",
+  "ymail.com",
+  "rocketmail.com",
+  "hotmail.com",
+  "hotmail.com.br",
+  "hotmail.com.ar",
+  "hotmail.es",
+  "hotmail.fr",
+  "hotmail.co.uk",
+  "outlook.com",
+  "outlook.com.br",
+  "outlook.es",
+  "outlook.fr",
+  "live.com",
+  "live.com.ar",
+  "live.com.mx",
+  "live.co.uk",
   "msn.com",
   "icloud.com",
   "me.com",
+  "mac.com",
   "uol.com.br",
   "bol.com.br",
   "terra.com.br",
 ]);
-const ASCII_ONLY_FAMILY_RE =
-  /^(yahoo|hotmail|outlook|live)(\.[a-z]{2,3}){1,2}$/;
+// `domainToASCII` parses URL host syntax and drops what follows a delimiter, so a domain carrying one
+// would be written as a host the customer never typed.
+const URL_DELIMITER_RE = /[/?#:\\[\]%@\s]/;
+const HOSTNAME_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const ASCII_RE = /^[\x21-\x7e]+$/;
 
 // The address mail can be sent to, from a well-formed one the customer typed: SMTP refuses a mailbox
@@ -205,14 +231,14 @@ export function deliverableEmail(
   const [local = "", typedDomain = ""] = typed.split("@");
   let domain = typedDomain;
   if (!ASCII_RE.test(domain)) {
+    if (URL_DELIMITER_RE.test(domain)) return { ok: false, why: "invalid" };
     domain = domainToASCII(domain);
-    if (!domain) return { ok: false, why: "invalid" };
+    if (!HOSTNAME_RE.test(domain)) return { ok: false, why: "invalid" };
   }
   if (ASCII_RE.test(local))
     return { ok: true, address: `${local}@${domain}`, adjusted: false };
   const lower = domain.toLowerCase();
-  if (!ASCII_ONLY_DOMAINS.has(lower) && !ASCII_ONLY_FAMILY_RE.test(lower))
-    return { ok: false, why: "non_ascii" };
+  if (!ASCII_ONLY_DOMAINS.has(lower)) return { ok: false, why: "non_ascii" };
   const plain = local.normalize("NFD").replace(/\p{M}/gu, "");
   if (!ASCII_RE.test(plain)) return { ok: false, why: "non_ascii" };
   return { ok: true, address: `${plain}@${domain}`, adjusted: true };

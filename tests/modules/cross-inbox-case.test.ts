@@ -1684,6 +1684,8 @@ describe("openCaseInInbox", () => {
         "josé@empresa.com.br",
         "jéssica.x@meugmail.com",
         "jéssica.x@meuyahoo.com.br",
+        "josé@live.dev",
+        "josé@yahoo.co.de",
         "太郎@gmail.com",
       ]) {
         const f = fakeChatwoot({
@@ -1707,6 +1709,18 @@ describe("openCaseInInbox", () => {
       );
       expect(r).toMatchObject({ kind: "opened", identity: "written" });
       expect(f.contacts.get(5)?.email).toBe("maria@xn--acentuao-xza3b.com.br");
+    });
+
+    test("a domain that is not a hostname is refused, not cut down or converted", async () => {
+      for (const typed of ["maria@empresa.com/ação", "maria@ação..com.br"]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        expect(r).toEqual({ kind: "rejected_email", why: "invalid" });
+        expect(writesOf(f.calls)).toEqual([]);
+      }
     });
 
     test("held by another contact, merge off: the case opens on that contact, nothing is merged", async () => {

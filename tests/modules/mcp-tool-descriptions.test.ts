@@ -224,8 +224,9 @@ describe("MCP tool descriptions", () => {
     // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client
     // channel SDK's app tools (74_540 on the Free tree before the SDK); 84_599 with the
     // dashboard_embed_link tools and the label settings; 87_056 with the occurrence tools; 88_026
-    // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools.
-    expect(schema).toBeLessThanOrEqual(88_100);
+    // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools; 88_157
+    // with the hold and how long a theme stays new on occurrences_set, two settings of the monitor.
+    expect(schema).toBeLessThanOrEqual(88_200);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

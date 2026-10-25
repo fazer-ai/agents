@@ -206,8 +206,10 @@ import {
   CONCENTRATION_SHARE_RANGE,
   CONSOLIDATION_MINUTES_RANGE,
   FIELDS_MAX,
+  FLAG_HOLD_MINUTES_RANGE,
   INBOXES_MAX,
   NEW_MIN_CONVERSATIONS_RANGE,
+  NEW_WITHIN_MINUTES_RANGE,
   type OccurrenceField,
   type OccurrenceModel,
   occurrenceFieldSchema,
@@ -3496,6 +3498,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           previousDays: ranged(PREVIOUS_DAYS_RANGE).optional(),
           aboveUsualRatio: ranged(ABOVE_USUAL_RATIO_RANGE).optional(),
           concentrationShare: ranged(CONCENTRATION_SHARE_RANGE).optional(),
+          flagHoldMinutes: ranged(FLAG_HOLD_MINUTES_RANGE).optional(),
+          newWithinMinutes: ranged(NEW_WITHIN_MINUTES_RANGE).optional(),
           model: occurrenceModelSchema.nullable().optional(),
           businessContext: z.string().max(BUSINESS_CONTEXT_MAX).optional(),
           recoverMedia: z.boolean().optional(),
@@ -3517,6 +3521,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           previousDays?: number;
           aboveUsualRatio?: number;
           concentrationShare?: number;
+          flagHoldMinutes?: number;
+          newWithinMinutes?: number;
           model?: OccurrenceModel | null;
           businessContext?: string;
           recoverMedia?: boolean;

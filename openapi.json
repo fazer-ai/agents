@@ -23024,6 +23024,42 @@
                     "description": "Share of the window's conversations with one canonical reference.",
                     "type": "number"
                   },
+                  "flagHoldMinutes": {
+                    "minimum": 0,
+                    "maximum": 1440,
+                    "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1440,
+                        "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newWithinMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes after its first conversation a theme can still be flagged new.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes after its first conversation a theme can still be flagged new.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
                   "model": {
                     "description": "The one model every step runs on; required to switch the monitor on.",
                     "type": [
@@ -23257,6 +23293,42 @@
                     "description": "Share of the window's conversations with one canonical reference.",
                     "type": "number"
                   },
+                  "flagHoldMinutes": {
+                    "minimum": 0,
+                    "maximum": 1440,
+                    "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1440,
+                        "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newWithinMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes after its first conversation a theme can still be flagged new.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes after its first conversation a theme can still be flagged new.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
                   "model": {
                     "description": "The one model every step runs on; required to switch the monitor on.",
                     "type": [
@@ -23489,6 +23561,42 @@
                     "maximum": 1,
                     "description": "Share of the window's conversations with one canonical reference.",
                     "type": "number"
+                  },
+                  "flagHoldMinutes": {
+                    "minimum": 0,
+                    "maximum": 1440,
+                    "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1440,
+                        "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newWithinMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes after its first conversation a theme can still be flagged new.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes after its first conversation a theme can still be flagged new.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "model": {
                     "description": "The one model every step runs on; required to switch the monitor on.",
@@ -25691,6 +25799,42 @@
                     "description": "Share of the window's conversations with one canonical reference.",
                     "type": "number"
                   },
+                  "flagHoldMinutes": {
+                    "minimum": 0,
+                    "maximum": 1440,
+                    "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1440,
+                        "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newWithinMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes after its first conversation a theme can still be flagged new.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes after its first conversation a theme can still be flagged new.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
                   "model": {
                     "description": "The one model every step runs on; required to switch the monitor on.",
                     "type": [
@@ -25924,6 +26068,42 @@
                     "description": "Share of the window's conversations with one canonical reference.",
                     "type": "number"
                   },
+                  "flagHoldMinutes": {
+                    "minimum": 0,
+                    "maximum": 1440,
+                    "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1440,
+                        "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newWithinMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes after its first conversation a theme can still be flagged new.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes after its first conversation a theme can still be flagged new.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
                   "model": {
                     "description": "The one model every step runs on; required to switch the monitor on.",
                     "type": [
@@ -26156,6 +26336,42 @@
                     "maximum": 1,
                     "description": "Share of the window's conversations with one canonical reference.",
                     "type": "number"
+                  },
+                  "flagHoldMinutes": {
+                    "minimum": 0,
+                    "maximum": 1440,
+                    "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1440,
+                        "description": "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "newWithinMinutes": {
+                    "minimum": 15,
+                    "maximum": 10080,
+                    "description": "Minutes after its first conversation a theme can still be flagged new.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 15,
+                        "maximum": 10080,
+                        "description": "Minutes after its first conversation a theme can still be flagged new.",
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "model": {
                     "description": "The one model every step runs on; required to switch the monitor on.",

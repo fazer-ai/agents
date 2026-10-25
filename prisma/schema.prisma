@@ -3605,6 +3605,8 @@ model OccurrenceRun {
 // split. A merged theme names its survivor in `mergedIntoId`, always the final one (never a chain).
 // `flags` is what the last round found (new, above_usual, concentrated), `flagReferenceId`
 // the canonical reference most of its window conversations share (the column keeps its first name).
+// `flagUnmetSince`: the first round a flagged theme met no rule; it keeps its flags until the monitor's
+// hold has passed since (a held theme), and is null while a rule is met.
 model OccurrenceTheme {
   id              BigInt    @id @default(autoincrement())
   tenantId        BigInt    @map("tenant_id")
@@ -3617,6 +3619,7 @@ model OccurrenceTheme {
   flags           String[]  @default([])
   flagReferenceId BigInt?   @map("flag_subject_id")
   flaggedAt       DateTime? @map("flagged_at")
+  flagUnmetSince  DateTime? @map("flag_unmet_since")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 

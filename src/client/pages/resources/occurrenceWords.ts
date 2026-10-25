@@ -11,6 +11,8 @@ export interface FlagValues {
   previousDays: number;
   aboveUsualRatio: number;
   concentrationShare: number;
+  newWithinMinutes: number;
+  flagHoldMinutes: number;
 }
 
 // "in the last hour", "in the last 90 minutes", "in the last 2 hours": the recent window as the flags
@@ -25,6 +27,60 @@ export function windowPhrase(t: TFunction, minutes: number): string {
     "in the last {{count}} minutes",
     { count: minutes },
   );
+}
+
+// "2 hours", "90 minutes", "1 day": a length of time the screen states in the unit it divides into.
+export function durationPhrase(t: TFunction, minutes: number): string {
+  if (minutes % 1440 === 0)
+    return t("occurrences.sentence.days", "{{count}} days", {
+      count: minutes / 1440,
+    });
+  if (minutes % 60 === 0)
+    return t("occurrences.sentence.hours", "{{count}} hours", {
+      count: minutes / 60,
+    });
+  return t("occurrences.sentence.minutes", "{{count}} minutes", {
+    count: minutes,
+  });
+}
+
+// What a held theme says beside its flags: which rule it no longer meets, and since when. One flag
+// names it; several say that none is met. The time alone on its day, with the date otherwise.
+export function heldPhrase(
+  t: TFunction,
+  language: string,
+  flags: string[],
+  heldSince: string,
+  now: Date = new Date(),
+): string {
+  const at = new Date(heldSince);
+  const sameDay = at.toDateString() === now.toDateString();
+  const time = at.toLocaleString(
+    language,
+    sameDay
+      ? { hour: "2-digit", minute: "2-digit" }
+      : { dateStyle: "short", timeStyle: "short" },
+  );
+  if (flags.length === 1)
+    switch (flags[0]) {
+      case "new":
+        return t("occurrences.heldNew", "No longer new since {{time}}", {
+          time,
+        });
+      case "above_usual":
+        return t(
+          "occurrences.heldAboveUsual",
+          "No longer above its usual since {{time}}",
+          { time },
+        );
+      case "concentrated":
+        return t(
+          "occurrences.heldConcentrated",
+          "No longer concentrated since {{time}}",
+          { time },
+        );
+    }
+  return t("occurrences.heldAny", "No rule met since {{time}}", { time });
 }
 
 // The sentence under the thresholds: what the flags step (src/modules/occurrences/flags.ts, `flagsOf`)
@@ -61,20 +117,34 @@ export function flagsSentence(
       "in the {{count}} days before",
       { count: f.previousDays },
     ),
+    newWithin: durationPhrase(t, f.newWithinMinutes),
+    hold: durationPhrase(t, f.flagHoldMinutes),
     ratio,
     share,
   };
-  return hasReference
+  const rules = hasReference
     ? t(
         "occurrences.sentence.full",
-        "Flags a theme as out of the usual when it has {{conversations}} {{window}} and, on top of that, is new (no conversation {{previous}}), or runs at {{ratio}} times its usual, or has {{share}} of those conversations with the same reference.",
+        "Flags a theme as out of the usual when it has {{conversations}} {{window}} and, on top of that, is new (its first conversation in the last {{newWithin}}, with none {{previous}}), or runs at {{ratio}} times its usual, or has {{share}} of those conversations with the same reference.",
         parts,
       )
     : t(
         "occurrences.sentence.noReference",
-        "Flags a theme as out of the usual when it has {{conversations}} {{window}} and, on top of that, is new (no conversation {{previous}}), or runs at {{ratio}} times its usual.",
+        "Flags a theme as out of the usual when it has {{conversations}} {{window}} and, on top of that, is new (its first conversation in the last {{newWithin}}, with none {{previous}}), or runs at {{ratio}} times its usual.",
         parts,
       );
+  const hold =
+    f.flagHoldMinutes === 0
+      ? t(
+          "occurrences.sentence.noHold",
+          "A flagged theme leaves the list the first round it meets none of this.",
+        )
+      : t(
+          "occurrences.sentence.hold",
+          "A flagged theme that meets none of this stays listed, muted, for {{hold}}.",
+          parts,
+        );
+  return `${rules} ${hold}`;
 }
 
 export function stepName(t: TFunction, step: OccurrenceStep | null): string {

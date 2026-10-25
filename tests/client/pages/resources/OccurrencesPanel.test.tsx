@@ -47,6 +47,8 @@ const DEFAULTS = {
   previousDays: 7,
   aboveUsualRatio: 3,
   concentrationShare: 0.6,
+  flagHoldMinutes: 120,
+  newWithinMinutes: 360,
   model: null as null | Record<string, unknown>,
   businessContext: "",
   recoverMedia: false,
@@ -1194,7 +1196,7 @@ describe("OccurrencesPanel", () => {
     const sentence = () =>
       screen.getByTestId("occurrences-flags-sentence").textContent;
     expect(sentence()).toBe(
-      "Flags a theme as out of the usual when it has at least 5 conversations in the last hour and, on top of that, is new (no conversation in the 7 days before), or runs at 3 times its usual, or has 60% of those conversations with the same reference.",
+      "Flags a theme as out of the usual when it has at least 5 conversations in the last hour and, on top of that, is new (its first conversation in the last 6 hours, with none in the 7 days before), or runs at 3 times its usual, or has 60% of those conversations with the same reference. A flagged theme that meets none of this stays listed, muted, for 2 hours.",
     );
     fireEvent.change(
       screen.getByLabelText("Least conversations in the window"),
@@ -1215,9 +1217,19 @@ describe("OccurrencesPanel", () => {
       screen.getByLabelText("Share with the same reference (0.6 is 60%)"),
       { target: { value: "0.75" } },
     );
+    fireEvent.change(screen.getByLabelText("Minutes a theme stays new"), {
+      target: { value: "90" },
+    });
+    fireEvent.change(screen.getByLabelText("Minutes a flag is held"), {
+      target: { value: "0" },
+    });
     expect(sentence()).toBe(
-      "Flags a theme as out of the usual when it has at least 1 conversation in the last 90 minutes and, on top of that, is new (no conversation in the day before), or runs at 2.5 times its usual, or has 75% of those conversations with the same reference.",
+      "Flags a theme as out of the usual when it has at least 1 conversation in the last 90 minutes and, on top of that, is new (its first conversation in the last 90 minutes, with none in the day before), or runs at 2.5 times its usual, or has 75% of those conversations with the same reference. A flagged theme leaves the list the first round it meets none of this.",
     );
+    fireEvent.change(screen.getByLabelText("Minutes a flag is held"), {
+      target: { value: "1440" },
+    });
+    expect(sentence()).toContain("stays listed, muted, for 1 day.");
     fireEvent.change(screen.getByLabelText("Recent window, in minutes"), {
       target: { value: "120" },
     });
@@ -1232,6 +1244,22 @@ describe("OccurrencesPanel", () => {
     expect(screen.getByText("Default: 5")).toBeTruthy();
     expect(screen.getByText("Default: 0.6")).toBeTruthy();
     absent(screen.queryByText("Default: 15"));
+  });
+
+  test("the hold and the lasting new each say, under the box from the start, what they do, their default and their range", async () => {
+    installFetchStub();
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    const line = (label: string) => {
+      const id = screen.getByLabelText(label).getAttribute("aria-describedby");
+      return id ? document.getElementById(id)?.textContent : null;
+    };
+    expect(line("Minutes a theme stays new")).toBe(
+      "How long a theme stays new from its first conversation. Default 360, from 15 to 10,080 minutes.",
+    );
+    expect(line("Minutes a flag is held")).toBe(
+      "How long a theme stays listed, muted, after it stops meeting the rules. Default 120, from 0 to 1,440 minutes.",
+    );
   });
 
   test("the caps of a round are stated where the inboxes are chosen", async () => {

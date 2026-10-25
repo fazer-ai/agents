@@ -29,6 +29,9 @@ export interface ThemeListItem {
   firstSeenAt: string | null;
   lastSeenAt: string | null;
   flaggedAt: string | null;
+  // Flagged but meeting no rule since this instant: held until the monitor's hold has passed, and drawn
+  // as cooling down. Null while a rule is met, or when the theme is not flagged.
+  heldSince: string | null;
 }
 
 export interface ThemeConversation {
@@ -286,6 +289,7 @@ export async function themeRowsOn(
     firstSeenAt: iso(spans.get(t.id)?.first ?? null),
     lastSeenAt: iso(spans.get(t.id)?.last ?? null),
     flaggedAt: iso(t.flaggedAt),
+    heldSince: t.flags.length > 0 ? iso(t.flagUnmetSince) : null,
     ...(opts.links ? { links: linksOf.get(t.id) ?? [] } : {}),
   }));
 }
@@ -438,6 +442,7 @@ export async function getTheme(
       firstSeenAt: iso(span._min.readAt),
       lastSeenAt: iso(span._max.readAt),
       flaggedAt: iso(t.flaggedAt),
+      heldSince: t.flags.length > 0 ? iso(t.flagUnmetSince) : null,
       conversationsShown: members.map((m) => {
         const s = referenceOf.get(m.conversationId);
         return {

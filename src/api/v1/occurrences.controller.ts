@@ -42,9 +42,11 @@ import {
   FIELD_DESCRIPTION_MAX,
   FIELD_NAME_MAX,
   FIELDS_MAX,
+  FLAG_HOLD_MINUTES_RANGE,
   INBOXES_MAX,
   MODEL_ID_MAX,
   NEW_MIN_CONVERSATIONS_RANGE,
+  NEW_WITHIN_MINUTES_RANGE,
   PREVIOUS_DAYS_RANGE,
   WINDOW_MINUTES_RANGE,
 } from "@/modules/occurrences/settings";
@@ -169,6 +171,18 @@ const patchBody = t.Object({
     tRanged(CONCENTRATION_SHARE_RANGE, {
       description:
         "Share of the window's conversations with one canonical reference.",
+    }),
+  ),
+  flagHoldMinutes: t.Optional(
+    tRanged(FLAG_HOLD_MINUTES_RANGE, {
+      description:
+        "Minutes a flagged theme that meets no rule keeps its flags (held) before they drop; 0 drops them at once.",
+    }),
+  ),
+  newWithinMinutes: t.Optional(
+    tRanged(NEW_WITHIN_MINUTES_RANGE, {
+      description:
+        "Minutes after its first conversation a theme can still be flagged new.",
     }),
   ),
   model: t.Optional(

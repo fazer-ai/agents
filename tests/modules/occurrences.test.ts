@@ -29,6 +29,7 @@ import {
   OCCURRENCES_DEFAULTS,
   type OccurrenceField,
   occurrencesSettingsSchema,
+  readMonitorConfig,
   readOccurrencesConfig,
 } from "@/modules/occurrences/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -444,6 +445,40 @@ describe.skipIf(!dbUp)("against the database", () => {
     expect((await getOccurrencesSettings(ctx(), appDb)).recoverMedia).toBe(
       true,
     );
+  });
+
+  test("the hold and how long a theme stays new save in their ranges, and a block saved before reads their defaults", async () => {
+    const before = await getOccurrencesSettings(ctx(), appDb);
+    expect(before.flagHoldMinutes).toBe(120);
+    expect(before.newWithinMinutes).toBe(360);
+    const saved = await updateOccurrencesSettings(
+      ctx(),
+      { flagHoldMinutes: 0, newWithinMinutes: 10_080 },
+      appDb,
+    );
+    expect(saved).toEqual({
+      ...before,
+      flagHoldMinutes: 0,
+      newWithinMinutes: 10_080,
+    });
+    for (const bad of [
+      { flagHoldMinutes: -1 },
+      { flagHoldMinutes: 1_441 },
+      { flagHoldMinutes: 1.5 },
+      { newWithinMinutes: 14 },
+      { newWithinMinutes: 10_081 },
+    ])
+      await expect(
+        updateOccurrencesSettings(ctx(), bad, appDb),
+      ).rejects.toMatchObject({ statusCode: 422 });
+    expect(await getOccurrencesSettings(ctx(), appDb)).toEqual(saved);
+    // A block stored without either reads them as their defaults.
+    expect(
+      readMonitorConfig({
+        ...OCCURRENCES_DEFAULTS,
+        flagHoldMinutes: undefined,
+      }),
+    ).toMatchObject({ flagHoldMinutes: 120, newWithinMinutes: 360 });
   });
 
   test("the business context is stored and returned exactly as sent, its cap on the raw length", async () => {

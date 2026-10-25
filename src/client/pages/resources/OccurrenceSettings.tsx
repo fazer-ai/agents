@@ -36,7 +36,9 @@ import {
   FIELD_KEY_PATTERN,
   FIELD_NAME_MAX,
   FIELDS_MAX,
+  FLAG_HOLD_MINUTES_RANGE,
   NEW_MIN_CONVERSATIONS_RANGE,
+  NEW_WITHIN_MINUTES_RANGE,
   OCCURRENCES_DEFAULTS,
   PREVIOUS_DAYS_RANGE,
   READING_MESSAGES,
@@ -86,6 +88,8 @@ const FLAG_KEYS = [
   "previousDays",
   "aboveUsualRatio",
   "concentrationShare",
+  "newWithinMinutes",
+  "flagHoldMinutes",
 ] as const;
 const NUM_KEYS = ["consolidationMinutes", ...FLAG_KEYS] as const;
 type NumKey = (typeof NUM_KEYS)[number];
@@ -96,6 +100,8 @@ const NUM_RANGES: Record<NumKey, NumberRange> = {
   previousDays: PREVIOUS_DAYS_RANGE,
   aboveUsualRatio: ABOVE_USUAL_RATIO_RANGE,
   concentrationShare: CONCENTRATION_SHARE_RANGE,
+  newWithinMinutes: NEW_WITHIN_MINUTES_RANGE,
+  flagHoldMinutes: FLAG_HOLD_MINUTES_RANGE,
 };
 const numTexts = (c: OccurrencesConfig | null) =>
   Object.fromEntries(NUM_KEYS.map((k) => [k, c ? String(c[k]) : ""])) as Record<
@@ -500,11 +506,27 @@ export function OccurrenceSettings({
         "occurrences.label.concentrationShare",
         "Share with the same reference (0.6 is 60%)",
       ),
+      newWithinMinutes: t(
+        "occurrences.label.newWithinMinutes",
+        "Minutes a theme stays new",
+      ),
+      flagHoldMinutes: t(
+        "occurrences.label.flagHoldMinutes",
+        "Minutes a flag is held",
+      ),
     })[k];
   const numHelp: Partial<Record<NumKey, string>> = {
     aboveUsualRatio: t(
       "occurrences.help.usual",
       "A theme's usual is how many conversations it had per hour over the days compared, counting only the time the monitor was reading.",
+    ),
+    newWithinMinutes: t(
+      "occurrences.help.newWithin",
+      "A theme is new from its first conversation for this long, while it has the least conversations in the window, so it does not stop being new when the window moves past that first one.",
+    ),
+    flagHoldMinutes: t(
+      "occurrences.help.flagHold",
+      "A flagged theme that stops meeting every rule stays listed, muted, for this long, with the time it stopped, so a subject cooling down is not lost at once. 0 takes it off the first round.",
     ),
     consolidationMinutes: t(
       "occurrences.help.consolidation",
@@ -518,6 +540,25 @@ export function OccurrenceSettings({
       : t("occurrences.default", "Default: {{value}}", {
           value: nf.format(OCCURRENCES_DEFAULTS[k]),
         });
+  // The hold and the lasting new say what they do, their default and their range under the box at all
+  // times: neither is read off the sentence the way the window or N are.
+  const rangeWords = (k: NumKey) => ({
+    value: nf.format(OCCURRENCES_DEFAULTS[k]),
+    min: nf.format(NUM_RANGES[k].min),
+    max: nf.format(NUM_RANGES[k].max),
+  });
+  const numLine: Partial<Record<NumKey, string>> = {
+    newWithinMinutes: t(
+      "occurrences.line.newWithin",
+      "How long a theme stays new from its first conversation. Default {{value}}, from {{min}} to {{max}} minutes.",
+      rangeWords("newWithinMinutes"),
+    ),
+    flagHoldMinutes: t(
+      "occurrences.line.flagHold",
+      "How long a theme stays listed, muted, after it stops meeting the rules. Default {{value}}, from {{min}} to {{max}} minutes.",
+      rangeWords("flagHoldMinutes"),
+    ),
+  };
   const sentence = flagsSentence(
     t,
     i18n.language,
@@ -527,6 +568,8 @@ export function OccurrenceSettings({
       previousDays: parsedNums.previousDays,
       aboveUsualRatio: parsedNums.aboveUsualRatio,
       concentrationShare: parsedNums.concentrationShare,
+      newWithinMinutes: parsedNums.newWithinMinutes,
+      flagHoldMinutes: parsedNums.flagHoldMinutes,
     },
     hasReference,
   );
@@ -570,7 +613,7 @@ export function OccurrenceSettings({
               "occurrences.concentrationNeedsReference",
               "Off: it needs a reference field.",
             )
-          : numDefault(k)
+          : (numLine[k] ?? numDefault(k))
       }
       help={numHelp[k]}
     >
@@ -850,7 +893,7 @@ export function OccurrenceSettings({
             title={t("occurrences.flagsTitle", "When a theme is flagged")}
             intro={t(
               "occurrences.flagsIntroGeneric",
-              "A flagged theme is out of the usual: new, above its usual volume, or concentrated on one reference. It is listed first and is what a dashboard shows as flagged.",
+              "A flagged theme is out of the usual: new, above its usual volume, or concentrated on one reference. It is listed first and is what a dashboard shows as flagged; one that stops being out of the usual stays a while, muted.",
             )}
             help={t(
               "occurrences.help.themeGeneric",

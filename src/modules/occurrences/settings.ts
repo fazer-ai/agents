@@ -43,6 +43,12 @@ export const PREVIOUS_DAYS_RANGE = intRange(1, 30);
 export const ABOVE_USUAL_RATIO_RANGE = numberRange(1.1, 100);
 // The share of a theme's window conversations with one reference.
 export const CONCENTRATION_SHARE_RANGE = numberRange(0.1, 1);
+// How long a flagged theme that met no rule keeps its flags (held) before they drop; 0 drops them the
+// first round, as alerting holds an alert a while after its condition clears. A day at most.
+export const FLAG_HOLD_MINUTES_RANGE = intRange(0, 1440);
+// How long after its first conversation a theme can still be new, so "new" does not end by itself when
+// the window moves past that conversation. A week at most.
+export const NEW_WITHIN_MINUTES_RANGE = intRange(15, 10_080);
 export const MODEL_ID_MAX = 200;
 export const BASE_URL_MAX = 500;
 export const CREDENTIAL_REF_MAX = 200;
@@ -101,6 +107,8 @@ export interface OccurrencesConfig {
   previousDays: number;
   aboveUsualRatio: number;
   concentrationShare: number;
+  flagHoldMinutes: number;
+  newWithinMinutes: number;
   model: OccurrenceModel | null;
   // Appended to every step's fixed prompt as context about the business; empty sends nothing.
   businessContext: string;
@@ -123,6 +131,8 @@ export const OCCURRENCES_DEFAULTS: OccurrencesConfig = {
   previousDays: 7,
   aboveUsualRatio: 3,
   concentrationShare: 0.6,
+  flagHoldMinutes: 120,
+  newWithinMinutes: 360,
   model: null,
   businessContext: "",
   recoverMedia: false,
@@ -256,6 +266,8 @@ export const occurrencesSettingsSchema = z
       previousDays: ranged(PREVIOUS_DAYS_RANGE),
       aboveUsualRatio: ranged(ABOVE_USUAL_RATIO_RANGE),
       concentrationShare: ranged(CONCENTRATION_SHARE_RANGE),
+      flagHoldMinutes: ranged(FLAG_HOLD_MINUTES_RANGE),
+      newWithinMinutes: ranged(NEW_WITHIN_MINUTES_RANGE),
       model: occurrenceModelSchema.nullable(),
       // Stored and returned exactly as sent: the cap counts the raw text, and only the prompt it is
       // appended to trims it.

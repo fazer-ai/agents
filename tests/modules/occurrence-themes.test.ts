@@ -25,7 +25,12 @@ import {
   rememberPosted,
   runCanonicalCopy,
 } from "@/modules/occurrences/canonicals";
-import { flagsOf, runFlagsStep } from "@/modules/occurrences/flags";
+import {
+  flagsOf,
+  flagWriteOf,
+  isFresh,
+  runFlagsStep,
+} from "@/modules/occurrences/flags";
 import { roundModels } from "@/modules/occurrences/model";
 import { updateOccurrencesSettings } from "@/modules/occurrences/monitors";
 import {
@@ -2198,6 +2203,7 @@ describe("flags, counted exactly", () => {
   ) => ({
     window,
     before,
+    fresh: before === 0,
     byReference: new Map(references.map((n, i) => [BigInt(i + 1), n])),
   });
 
@@ -2460,7 +2466,12 @@ describe.skipIf(!dbUp)(
       ).flags;
 
     test("a conversation read late leaves the window when its message does, not when its read does", async () => {
-      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const a = await account({
+        windowMinutes: 60,
+        newMinConversations: 5,
+        newWithinMinutes: 60,
+        flagHoldMinutes: 0,
+      });
       const t0 = Date.now();
       const theme = await a.theme("Ingresso nao chegou");
       // Written 50 minutes before the round that reads them: inside the window, so admitted.
@@ -2474,7 +2485,12 @@ describe.skipIf(!dbUp)(
     });
 
     test("a customer message the due list missed but the transcript holds is the one a first reading counts at", async () => {
-      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const a = await account({
+        windowMinutes: 60,
+        newMinConversations: 5,
+        newWithinMinutes: 60,
+        flagHoldMinutes: 0,
+      });
       const t0 = Date.now();
       const theme = await a.theme("Ingresso nao chegou");
       // The mirror knows the message of 50 minutes ago; the customer wrote again 5 minutes ago, and
@@ -2487,7 +2503,12 @@ describe.skipIf(!dbUp)(
     });
 
     test("a backlog read in one round leaves the window with its messages, not with the read", async () => {
-      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const a = await account({
+        windowMinutes: 60,
+        newMinConversations: 5,
+        newWithinMinutes: 60,
+        flagHoldMinutes: 0,
+      });
       const t0 = Date.now();
       const theme = await a.theme("Ingresso nao chegou");
       // One conversation an hour for the last day, counted when it was read, as before the change.
@@ -2515,6 +2536,8 @@ describe.skipIf(!dbUp)(
         windowMinutes: 60,
         newMinConversations: 5,
         aboveUsualRatio: 3,
+        newWithinMinutes: 60,
+        flagHoldMinutes: 0,
       });
       const t0 = Date.now();
       const theme = await a.theme("Ingresso nao chegou");
@@ -2531,7 +2554,12 @@ describe.skipIf(!dbUp)(
     });
 
     test("a member keeps the message it was placed with after the reason field changes", async () => {
-      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const a = await account({
+        windowMinutes: 60,
+        newMinConversations: 5,
+        newWithinMinutes: 60,
+        flagHoldMinutes: 0,
+      });
       const t0 = Date.now();
       const theme = await a.theme("Ingresso nao chegou");
       // Placed from readings that covered messages of 90 minutes ago, read 10 minutes ago.
@@ -2570,7 +2598,12 @@ describe.skipIf(!dbUp)(
     });
 
     test("a reading stored before the messages were kept counts when it was read, as before", async () => {
-      const a = await account({ windowMinutes: 60, newMinConversations: 5 });
+      const a = await account({
+        windowMinutes: 60,
+        newMinConversations: 5,
+        newWithinMinutes: 60,
+        flagHoldMinutes: 0,
+      });
       const t0 = Date.now();
       const theme = await a.theme("Ingresso nao chegou");
       for (let i = 0; i < 5; i += 1) {
@@ -5379,5 +5412,271 @@ describe.skipIf(!dbUp)("the monitored inboxes", () => {
       where: { id: t1.id },
     });
     expect(t.flags).toEqual([]);
+  });
+});
+
+// A flagged theme that meets no rule keeps its flags for the monitor's hold, and "new" lasts
+// `newWithinMinutes` from the theme's first conversation (docs/occurrences.md, "Flags").
+describe("the hold and a lasting new, unit", () => {
+  const now = new Date("2026-10-24T18:00:00Z");
+  const MIN = 60_000;
+  test("a theme that meets no rule is held inside the hold, then released", () => {
+    const none = { kinds: [] as never[], referenceId: null };
+    const flagged = { flags: ["new"], flagUnmetSince: null };
+    expect(flagWriteOf(none, flagged, now, 120 * MIN)).toEqual({
+      kind: "held",
+      start: true,
+    });
+    const held = {
+      flags: ["new"],
+      flagUnmetSince: new Date(now.getTime() - 119 * MIN),
+    };
+    expect(flagWriteOf(none, held, now, 120 * MIN)).toEqual({
+      kind: "held",
+      start: false,
+    });
+    const over = {
+      flags: ["new"],
+      flagUnmetSince: new Date(now.getTime() - 120 * MIN),
+    };
+    expect(flagWriteOf(none, over, now, 120 * MIN).kind).toBe("none");
+    expect(flagWriteOf(none, flagged, now, 0).kind).toBe("none");
+    expect(
+      flagWriteOf(none, { flags: [], flagUnmetSince: null }, now, 120 * MIN)
+        .kind,
+    ).toBe("none");
+  });
+
+  test("a rule met again keeps the instant first flagged", () => {
+    const met = { kinds: ["above_usual" as const], referenceId: 3n };
+    expect(
+      flagWriteOf(
+        met,
+        { flags: ["new"], flagUnmetSince: new Date(now.getTime() - 30 * MIN) },
+        now,
+        120 * MIN,
+      ),
+    ).toEqual({
+      kind: "met",
+      flags: ["above_usual"],
+      referenceId: 3n,
+      since: "keep",
+    });
+    expect(
+      flagWriteOf(met, { flags: [], flagUnmetSince: null }, now, 0),
+    ).toMatchObject({ kind: "met", since: "now" });
+  });
+
+  test("new: the first conversation since newWithin, with none in the days before it", () => {
+    const day = 86_400_000;
+    const from = new Date(now.getTime() - 360 * MIN);
+    const at = (minutesAgo: number) => now.getTime() - minutesAgo * MIN;
+    expect(isFresh([at(120), at(10), at(5)], from, 7 * day)).toBe(true);
+    // The theme began 7 hours ago: its first conversation of the last 6 hours has one before it.
+    expect(isFresh([at(420), at(10), at(5)], from, 7 * day)).toBe(false);
+    // A theme back after more than the days compared is new again.
+    expect(isFresh([at(8 * 24 * 60), at(10)], from, 7 * day)).toBe(true);
+    expect(isFresh([at(400)], from, 7 * day)).toBe(false);
+    expect(isFresh([], from, 7 * day)).toBe(false);
+  });
+});
+
+describe.skipIf(!dbUp)("the hold and a lasting new, on the database", () => {
+  const MIN = 60_000;
+  const flagState = async (id: bigint) =>
+    suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id },
+      select: { flags: true, flaggedAt: true, flagUnmetSince: true },
+    });
+  async function theme5(
+    a: Awaited<ReturnType<typeof account>>,
+    title: string,
+    at: Date,
+    n = 5,
+  ) {
+    const th = await a.theme(title);
+    for (let i = 0; i < n; i += 1)
+      await a.member(th.id, await a.conv(), `${title} ${i}`, at);
+    return th;
+  }
+
+  test("a flagged theme that misses every rule is held for the hold, then released", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      flagHoldMinutes: 120,
+    });
+    const t0 = Date.now();
+    const th = await theme5(a, "Ingresso nao chegou", new Date(t0 - 10 * MIN));
+    await a.round(nothing, new Date(t0));
+    const first = await flagState(th.id);
+    expect(first.flags).toEqual(["new"]);
+    expect(first.flagUnmetSince).toBeNull();
+    // An hour and a quarter later the window is empty: held, with the instant it stopped.
+    const t1 = new Date(t0 + 75 * MIN);
+    await a.round(nothing, t1);
+    const held = await flagState(th.id);
+    expect(held.flags).toEqual(["new"]);
+    expect(held.flaggedAt?.getTime()).toBe(first.flaggedAt?.getTime());
+    expect(held.flagUnmetSince?.getTime()).toBe(t1.getTime());
+    const listed = (
+      await listThemes(a.ctx, a.monitorId, { flaggedOnly: true }, appDb)
+    ).find((t) => t.id === String(th.id));
+    expect(listed?.heldSince).toBe(t1.toISOString());
+    // Still held just inside the hold, and the same round twice changes nothing.
+    await a.round(nothing, new Date(t1.getTime() + 119 * MIN));
+    await a.round(nothing, new Date(t1.getTime() + 119 * MIN));
+    expect((await flagState(th.id)).flagUnmetSince?.getTime()).toBe(
+      t1.getTime(),
+    );
+    expect((await flagState(th.id)).flags).toEqual(["new"]);
+    // Released at the first round past it.
+    await a.round(nothing, new Date(t1.getTime() + 121 * MIN));
+    const out = await flagState(th.id);
+    expect(out.flags).toEqual([]);
+    expect(out.flaggedAt).toBeNull();
+    expect(out.flagUnmetSince).toBeNull();
+  });
+
+  test("a held theme that meets a rule again is flagged again, since the same instant", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      newWithinMinutes: 360,
+      flagHoldMinutes: 120,
+    });
+    const t0 = Date.now();
+    const th = await theme5(a, "Pix nao confirma", new Date(t0 - 10 * MIN));
+    await a.round(nothing, new Date(t0));
+    const first = await flagState(th.id);
+    await a.round(nothing, new Date(t0 + 75 * MIN));
+    expect((await flagState(th.id)).flagUnmetSince).not.toBeNull();
+    // Five more in the window 90 minutes on: still new (first conversation 100 minutes ago).
+    for (let i = 0; i < 5; i += 1)
+      await a.member(
+        th.id,
+        await a.conv(),
+        `mais ${i}`,
+        new Date(t0 + 85 * MIN),
+      );
+    await a.round(nothing, new Date(t0 + 90 * MIN));
+    const again = await flagState(th.id);
+    expect(again.flags).toEqual(["new"]);
+    expect(again.flagUnmetSince).toBeNull();
+    expect(again.flaggedAt?.getTime()).toBe(first.flaggedAt?.getTime());
+  });
+
+  test("new lasts newWithin from the first conversation, not the window", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      newWithinMinutes: 360,
+      flagHoldMinutes: 0,
+    });
+    const t0 = Date.now();
+    const young = await a.theme("Comecou faz duas horas");
+    await a.member(
+      young.id,
+      await a.conv(),
+      "primeira",
+      new Date(t0 - 120 * MIN),
+    );
+    for (let i = 0; i < 5; i += 1)
+      await a.member(
+        young.id,
+        await a.conv(),
+        `agora ${i}`,
+        new Date(t0 - 5 * MIN),
+      );
+    const older = await a.theme("Comecou faz sete horas");
+    await a.member(
+      older.id,
+      await a.conv(),
+      "primeira",
+      new Date(t0 - 420 * MIN),
+    );
+    for (let i = 0; i < 5; i += 1)
+      await a.member(
+        older.id,
+        await a.conv(),
+        `agora ${i}`,
+        new Date(t0 - 5 * MIN),
+      );
+    await a.round(nothing, new Date(t0));
+    expect((await flagState(young.id)).flags).toContain("new");
+    expect((await flagState(older.id)).flags).not.toContain("new");
+  });
+
+  test("a young theme with one of it in the days before its first conversation is not new, even before the horizon", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      previousDays: 1,
+      newMinConversations: 5,
+      newWithinMinutes: 360,
+      flagHoldMinutes: 0,
+    });
+    const t0 = Date.now();
+    const DAY = 1440 * MIN;
+    const th = await a.theme("Voltou depois de um dia");
+    // Its first conversation since newWithin is 2 hours ago; one more 23h20 before that, which is
+    // inside previousDays of the first but older than the window's own horizon (25 hours ago).
+    await a.member(
+      th.id,
+      await a.conv(),
+      "antiga",
+      new Date(t0 - DAY - 100 * MIN),
+    );
+    await a.member(th.id, await a.conv(), "primeira", new Date(t0 - 120 * MIN));
+    for (let i = 0; i < 5; i += 1)
+      await a.member(
+        th.id,
+        await a.conv(),
+        `agora ${i}`,
+        new Date(t0 - 5 * MIN),
+      );
+    await a.round(nothing, new Date(t0));
+    expect((await flagState(th.id)).flags).not.toContain("new");
+  });
+
+  test("a save that changes which conversations count releases a held theme; a threshold moved keeps it", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      flagHoldMinutes: 120,
+    });
+    const t0 = Date.now();
+    const th = await theme5(a, "Cartao recusado", new Date(t0 - 75 * MIN));
+    await suDb.occurrenceTheme.update({
+      where: { id: th.id },
+      data: { flags: ["new"], flaggedAt: new Date(t0 - 80 * MIN) },
+    });
+    await a.round(nothing, new Date(t0));
+    expect((await flagState(th.id)).flagUnmetSince).not.toBeNull();
+    await updateOccurrencesSettings(a.ctx, { aboveUsualRatio: 4 }, appDb);
+    expect((await flagState(th.id)).flags).toEqual(["new"]);
+    await updateOccurrencesSettings(
+      a.ctx,
+      { inboxIds: [String(a.inbox.id), String(a.otherInbox.id)] },
+      appDb,
+    );
+    expect((await flagState(th.id)).flags).toEqual([]);
+  });
+
+  test("the hold set to 0 releases a held theme with the save", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      flagHoldMinutes: 120,
+    });
+    const t0 = Date.now();
+    const th = await theme5(a, "Troca de data", new Date(t0 - 75 * MIN));
+    await suDb.occurrenceTheme.update({
+      where: { id: th.id },
+      data: { flags: ["new"], flaggedAt: new Date(t0 - 80 * MIN) },
+    });
+    await a.round(nothing, new Date(t0));
+    expect((await flagState(th.id)).flags).toEqual(["new"]);
+    await updateOccurrencesSettings(a.ctx, { flagHoldMinutes: 0 }, appDb);
+    expect((await flagState(th.id)).flags).toEqual([]);
   });
 });

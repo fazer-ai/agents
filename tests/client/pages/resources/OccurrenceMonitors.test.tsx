@@ -63,6 +63,8 @@ const CONFIG = {
   previousDays: 7,
   aboveUsualRatio: 3,
   concentrationShare: 0.6,
+  flagHoldMinutes: 120,
+  newWithinMinutes: 360,
   model: {
     provider: "openai",
     model: "gpt-5-mini",

@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { formatRelativeTime } from "@/client/lib/utils";
+import { cn, formatRelativeTime } from "@/client/lib/utils";
 import { THEMES_LIMIT_RANGE } from "@/modules/occurrences/settings";
 import { OccurrencePager } from "./OccurrencePager";
+import { heldPhrase } from "./occurrenceWords";
 
 type Theme = NonNullable<
   Awaited<ReturnType<typeof api.api.v1.occurrences.themes.get>>["data"]
@@ -228,7 +229,11 @@ export function OccurrenceThemes({
           {themes
             .slice(page * THEMES_PAGE, (page + 1) * THEMES_PAGE)
             .map((th) => (
-              <li key={th.id} className="py-2">
+              <li
+                key={th.id}
+                className={cn("py-2", th.heldSince && "opacity-60")}
+                data-held={th.heldSince ? "true" : undefined}
+              >
                 <button
                   type="button"
                   className="flex w-full items-start gap-2 text-left"
@@ -283,10 +288,19 @@ export function OccurrenceThemes({
                         </time>
                       )}
                       {th.flags.map((f) => (
-                        <Badge key={f} variant="warning">
+                        <Badge
+                          key={f}
+                          variant={th.heldSince ? "secondary" : "warning"}
+                        >
                           {flagLabel(f)}
                         </Badge>
                       ))}
+                      {/* Held: flagged, but cooling down since then; drawn muted in its place. */}
+                      {th.heldSince && (
+                        <span data-held-since>
+                          {heldPhrase(t, i18n.language, th.flags, th.heldSince)}
+                        </span>
+                      )}
                     </span>
                   </span>
                 </button>

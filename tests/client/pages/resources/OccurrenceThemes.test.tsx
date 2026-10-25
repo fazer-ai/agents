@@ -28,7 +28,8 @@ const theme = (id: string, title: string) => ({
   conversations: 1,
   firstSeenAt: "2026-10-19T12:00:00.000Z",
   lastSeenAt: "2026-10-19T12:00:00.000Z",
-  flags: [],
+  flags: [] as string[],
+  heldSince: null as string | null,
 });
 
 const detail = (id: string, sentence: string) => ({
@@ -242,6 +243,53 @@ describe("OccurrenceThemes", () => {
     fireEvent.click(screen.getByRole("button", { name: /Pagamento com cart/ }));
     fireEvent.click(screen.getByRole("button", { name: /Cobrança duplicada/ }));
     expect(await screen.findByText(/^Seen from .+ to .+\.$/)).toBeTruthy();
+  });
+
+  test("a held theme is drawn muted in its place, with the rule it no longer meets and since when", async () => {
+    const heldAt = new Date();
+    heldAt.setHours(18, 15, 0, 0);
+    installFetchStub(
+      async () => json({}, 404),
+      () => ({
+        themes: [
+          { ...theme("1", "Ingresso nao chegou"), flags: ["new"] },
+          {
+            ...theme("2", "Pix nao confirma"),
+            flags: ["above_usual"],
+            heldSince: heldAt.toISOString(),
+          },
+          {
+            ...theme("3", "Troca de data"),
+            flags: ["new", "concentrated"],
+            heldSince: heldAt.toISOString(),
+          },
+        ],
+        total: 3,
+      }),
+    );
+    render(<OccurrenceThemes monitorId="7" />);
+    await screen.findByText("Ingresso nao chegou");
+    const rowOf = (title: string) =>
+      screen.getByText(title).closest("li") as HTMLElement;
+    expect(rowOf("Ingresso nao chegou").dataset.held).toBeUndefined();
+    expect(rowOf("Pix nao confirma").dataset.held).toBe("true");
+    // Drawn muted: the held row fades, the one flagged now does not.
+    expect(rowOf("Pix nao confirma").className).toContain("opacity-60");
+    expect(rowOf("Ingresso nao chegou").className).not.toContain("opacity-60");
+    const time = heldAt.toLocaleString("en", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    expect(rowOf("Pix nao confirma").textContent).toContain(
+      `No longer above its usual since ${time}`,
+    );
+    expect(rowOf("Troca de data").textContent).toContain(
+      `No rule met since ${time}`,
+    );
+    // Kept in its place: the held themes are still listed after the one flagged now.
+    expect(
+      screen.getAllByRole("listitem").map((li) => li.dataset.held ?? "no"),
+    ).toEqual(["no", "true", "true"]);
   });
 
   test("an opened theme's history says each decision, with the model's reason under it when there is one", async () => {

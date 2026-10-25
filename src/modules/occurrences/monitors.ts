@@ -685,10 +685,26 @@ const FLAG_INPUTS = [
   "previousDays",
   "aboveUsualRatio",
   "concentrationShare",
+  "flagHoldMinutes",
+  "newWithinMinutes",
 ] as const satisfies readonly (keyof OccurrencesConfig)[];
 
 function flagInputsChanged(a: OccurrencesConfig, b: OccurrencesConfig) {
   return FLAG_INPUTS.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+}
+
+// What decides which conversations a theme counts: a save that changes it drops the held flags at
+// once, since they were raised over other conversations; a threshold or the hold moved keeps them.
+const COUNTED_SCOPE = [
+  "inboxIds",
+  "reasonField",
+  "referenceField",
+] as const satisfies readonly (keyof OccurrencesConfig)[];
+
+function countedScopeChanged(a: OccurrencesConfig, b: OccurrencesConfig) {
+  return COUNTED_SCOPE.some(
+    (k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]),
+  );
 }
 
 // Updates a monitor's configuration (docs/occurrences.md). Validated on the way in, so a cadence of 0,
@@ -749,9 +765,12 @@ export async function updateMonitorConfig(
   // saved now: an inbox taken off the list leaves the counts at once (occurrences/views.ts filters by
   // the saved list), and a reference switched off or changed, or a threshold moved, changes which
   // flags hold. Any change to what the flags step reads counts them again now rather than at the next
-  // round. Best-effort: the next round recounts anyway.
+  // round, and one to which conversations count releases the held flags. Best-effort: the next round
+  // recounts anyway.
   if (flagInputsChanged(before, value))
-    await runFlagsStep(base, { tenantId, monitorId }, new Date()).catch((err) =>
+    await runFlagsStep(base, { tenantId, monitorId }, new Date(), {
+      releaseHeld: countedScopeChanged(before, value),
+    }).catch((err) =>
       logger.warn(
         { err, tenantId: String(tenantId), monitorId: String(monitorId) },
         "occurrences: the flags could not be recounted after the monitor changed",

@@ -101,7 +101,7 @@ function catalogHintOf(
     case "GENERIC":
       return t(
         "integrations.catalog.GENERIC.hint",
-        "Your own system sends events back into a conversation.",
+        "Your own system or a payment gateway (such as Mercado Pago) notifies a conversation.",
       );
     case "ASAAS":
       return t(
@@ -714,7 +714,7 @@ export function IntegrationEditModal({
       case "GENERIC":
         return t(
           "integrations.catalog.GENERIC.description",
-          "Your own system speaking back into a conversation. An HTTP tool hands it a reference to the conversation when the agent calls it; later your system sends an event with that reference to this webhook, and the agent passes it on to the customer (or leaves a private note when a person holds the conversation).",
+          "Speaks back into a conversation, for two kinds of sender. Your own system: an HTTP tool hands it a reference to the conversation when the agent calls it, and later your system sends an event with that reference to this webhook. Or a payment gateway that notifies with only the payment id, such as Mercado Pago: the webhook checks the notification's signature and looks the payment up with one of your HTTP tools, and an approved payment wakes the agent on the conversation that generated the link. The agent passes it on to the customer (or leaves a private note when a person holds the conversation).",
         );
       case "ASAAS":
         return t(

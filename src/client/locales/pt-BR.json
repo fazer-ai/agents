@@ -3157,8 +3157,8 @@
         "label": "Asaas"
       },
       "GENERIC": {
-        "description": "O seu próprio sistema falando de volta numa conversa. Uma ferramenta HTTP entrega a ele uma referência da conversa quando o agente a chama; depois o seu sistema envia um evento com essa referência para este webhook, e o agente o repassa ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
-        "hint": "O seu sistema devolve eventos para dentro de uma conversa.",
+        "description": "Fala de volta numa conversa, para dois tipos de remetente. O seu próprio sistema: uma ferramenta HTTP entrega a ele uma referência da conversa quando o agente a chama, e depois o seu sistema envia um evento com essa referência para este webhook. Ou um gateway de pagamento que avisa só com o número do pagamento, como o Mercado Pago: o webhook confere a assinatura do aviso e consulta o pagamento com uma ferramenta HTTP sua, e o pagamento aprovado acorda o agente na conversa que gerou o link. O agente repassa o evento ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
+        "hint": "O seu sistema ou um gateway de pagamento (como o Mercado Pago) avisa a conversa.",
         "label": "Webhook genérico"
       },
       "GOOGLE_CALENDAR": {

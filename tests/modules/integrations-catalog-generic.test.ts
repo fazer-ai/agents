@@ -3,10 +3,6 @@ import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 
-// `integration_catalog` is all a coding agent reads over MCP before deciding whether a service
-// fits the panel. When the GENERIC entry described only the operator's own system, an agent asked
-// about Mercado Pago in a clean tenant concluded the payment notice could not land and proposed a
-// relay in the middle (#1654). The entry has to name the gateway path and the keys that build it.
 describe("GENERIC catalog entry", () => {
   const description = getCatalogEntry("GENERIC")?.description ?? "";
 

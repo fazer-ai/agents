@@ -36,6 +36,9 @@ describe("GENERIC catalog entry", () => {
       const generic = locale.integrations.catalog.GENERIC;
       expect(generic.description).toContain("Mercado Pago");
       expect(generic.hint).toContain("Mercado Pago");
+      expect(locale.integrations.webhook.explainGeneric).toContain(
+        "Mercado Pago",
+      );
     }
   });
 });

@@ -2113,7 +2113,7 @@ export function IntegrationEditModal({
                   {isGeneric
                     ? t(
                         "integrations.webhook.explainGeneric",
-                        "After saving, give this URL and its secret to your system. An HTTP tool that sends {{ref}} hands your system a reference to the conversation; your system then POSTs events with that reference here, and the agent passes each one on to the customer (or leaves a private note when a person holds the conversation).",
+                        "After saving, give this URL and its secret to your system. An HTTP tool that sends {{ref}} hands your system a reference to the conversation; your system then POSTs events with that reference here, and the agent passes each one on to the customer (or leaves a private note when a person holds the conversation). A payment gateway that notifies with only the payment id, such as Mercado Pago, uses the same webhook: paste this URL into the gateway's dashboard, and set its signature and the payment lookup below.",
                         { ref: "{{conversation_ref}}" },
                       )
                     : t(

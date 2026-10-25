@@ -3371,7 +3371,7 @@
     "type": "Integração",
     "webhook": {
       "explain": "Depois de salvar, cole a URL no Asaas; quando a cobrança for paga, o agente retoma a conversa e decide se responde.",
-      "explainGeneric": "Depois de salvar, passe esta URL e o segredo para o seu sistema. Uma ferramenta HTTP que envia {{ref}} entrega ao seu sistema uma referência da conversa; o seu sistema então faz POST dos eventos aqui com essa referência, e o agente repassa cada um ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
+      "explainGeneric": "Depois de salvar, passe esta URL e o segredo para o seu sistema. Uma ferramenta HTTP que envia {{ref}} entrega ao seu sistema uma referência da conversa; o seu sistema então faz POST dos eventos aqui com essa referência, e o agente repassa cada um ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa). Com um gateway de pagamento que avisa só com o número do pagamento, como o Mercado Pago, é o mesmo webhook: você cola esta URL no painel do gateway, e a assinatura dele e a consulta do pagamento se configuram logo abaixo.",
       "rotate": "Gerar nova URL",
       "rotateConfirm": "Gerar",
       "rotateError": "Não foi possível gerar.",

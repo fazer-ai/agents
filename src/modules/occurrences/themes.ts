@@ -4,6 +4,7 @@ import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { sysCtx } from "./config";
+import { lockFlagEpisodes } from "./flags";
 import type { RoundModels } from "./model";
 import type { MonitorKey } from "./monitors";
 import type { OccurrencesConfig } from "./settings";
@@ -440,6 +441,9 @@ async function mergeTheme(
   runId: bigint | null,
   reason: string | null,
 ): Promise<void> {
+  // First in its transaction, before any row: a save's recount beside it waits, then reads this theme
+  // merged, or this waits for the recount (docs/occurrences.md, "Flag history").
+  await lockFlagEpisodes(db, monitorId);
   await db.occurrenceThemeMember.updateMany({
     where: { themeId: absorbed },
     data: { themeId: survivor },
@@ -447,6 +451,15 @@ async function mergeTheme(
   await db.occurrenceTheme.update({
     where: { id: absorbed },
     data: { status: "merged", mergedIntoId: survivor, flags: [] },
+  });
+  // Its episodes go with its conversations, each keeping the title it opened with; an open one ends
+  // the last round it was seen flagged, so the survivor never holds two open ones.
+  await db.$executeRaw`
+    UPDATE occurrence_flag_episodes SET ended_at = last_flagged_at
+     WHERE theme_id = ${absorbed} AND ended_at IS NULL`;
+  await db.occurrenceFlagEpisode.updateMany({
+    where: { themeId: absorbed },
+    data: { themeId: survivor },
   });
   await db.occurrenceTheme.updateMany({
     where: { monitorId, mergedIntoId: absorbed },

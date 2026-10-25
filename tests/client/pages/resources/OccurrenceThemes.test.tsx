@@ -81,6 +81,112 @@ afterAll(() => {
 });
 
 describe("OccurrenceThemes", () => {
+  test("a theme opened from the flag history before the list has it opens when a refresh brings it", async () => {
+    let list = [theme("1", "Pix")];
+    installFetchStub(
+      async (id) => json(detail(id, `frase de ${id}`)),
+      () => ({ themes: list, total: list.length }),
+    );
+    const { rerender } = render(<OccurrenceThemes monitorId="7" />);
+    await screen.findByText("Pix");
+    rerender(
+      <OccurrenceThemes
+        monitorId="7"
+        focus={{ id: "9", seq: 1, title: "Tema novo" }}
+      />,
+    );
+    list = [theme("1", "Pix"), theme("9", "Tema novo")];
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await screen.findByText("frase de 9");
+    expect(
+      screen
+        .getByText("Tema novo")
+        .closest("button")
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
+  test("a theme the list read after the request does not have is named, not silently ignored", async () => {
+    installFetchStub(
+      async (id) => json(detail(id, `frase de ${id}`)),
+      () => ({ themes: [theme("1", "Pix")], total: 1 }),
+    );
+    const { rerender } = render(<OccurrenceThemes monitorId="7" />);
+    await screen.findByText("Pix");
+    rerender(
+      <OccurrenceThemes
+        monitorId="7"
+        focus={{ id: "77", seq: 1, title: "Tema distante" }}
+      />,
+    );
+    // The list read before the request does not count: only the one after it says it is missing.
+    expect(screen.queryByText(/Tema distante/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(
+      (await screen.findByText(/“Tema distante” is not in this list now/))
+        .textContent,
+    ).toContain("past the themes listed");
+  });
+
+  test("a focus is placed by the list read after it, not the one cached before", async () => {
+    let list = [theme("1", "Pix"), theme("2", "Boleto")];
+    installFetchStub(
+      async (id) => json(detail(id, `frase de ${id}`)),
+      () => ({ themes: list, total: list.length }),
+    );
+    const { rerender } = render(<OccurrenceThemes monitorId="7" />);
+    await screen.findByText("Pix");
+    // A round moved theme 2 to the second page meanwhile.
+    list = [
+      ...Array.from({ length: 21 }, (_, i) =>
+        theme(String(i + 10), `Novo ${i}`),
+      ),
+      theme("2", "Boleto"),
+    ];
+    rerender(
+      <OccurrenceThemes
+        monitorId="7"
+        focus={{ id: "2", seq: 1, title: "Boleto" }}
+      />,
+    );
+    await screen.findByText("frase de 2");
+    expect(screen.queryByText("Novo 0")).toBeNull();
+    expect(
+      screen
+        .getByText("Boleto")
+        .closest("button")
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
+  test("a theme opened from the flag history is shown on its page and expanded", async () => {
+    installFetchStub(
+      async (id) => json(detail(id, `frase de ${id}`)),
+      () => ({
+        themes: Array.from({ length: 25 }, (_, i) =>
+          theme(String(i + 1), `Tema ${i + 1}`),
+        ),
+        total: 25,
+      }),
+    );
+    const { rerender } = render(<OccurrenceThemes monitorId="7" />);
+    await screen.findByText("Tema 1");
+    rerender(
+      <OccurrenceThemes
+        monitorId="7"
+        focus={{ id: "23", seq: 1, title: "Tema 23" }}
+      />,
+    );
+    await screen.findByText("frase de 23");
+    expect(screen.queryByText("Tema 1")).toBeNull();
+    expect(
+      screen
+        .getByText("Tema 23")
+        .closest("button")
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
   test("Refresh reads the expanded theme's conversations again with the list", async () => {
     installFetchStub(async (id, attempt) =>
       json(detail(id, attempt === 1 ? "pix antigo" : "pix depois da rodada")),

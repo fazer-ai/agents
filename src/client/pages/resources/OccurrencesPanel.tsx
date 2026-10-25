@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
-import { Tabs } from "@/client/components";
+import { SegmentedControl, Tabs } from "@/client/components";
 import {
   useConfirmLeave,
   useNavGuard,
 } from "@/client/contexts/NavGuardContext";
 import { api } from "@/client/lib/api";
 import { afterTrapRelease, sentinelOnTop } from "@/client/lib/unsavedGuard";
+import { OccurrenceFlagHistory } from "./OccurrenceFlagHistory";
 import type { InboxOption } from "./OccurrenceInboxes";
 import { OccurrenceMonitorHeader } from "./OccurrenceMonitorHeader";
 import { type MonitorView, OccurrenceMonitors } from "./OccurrenceMonitors";
@@ -59,6 +60,13 @@ function MonitorTabs({
   const [monitorOn, setMonitorOn] = useState(monitor.enabled);
   const [reloadKey, setReloadKey] = useState(0);
   const [dirty, setDirty] = useState(false);
+  // The Themes tab shows the open themes or the flag history; a history row opens its theme in the first.
+  const [themesView, setThemesView] = useState<"open" | "history">("open");
+  const [focus, setFocus] = useState<{
+    id: string;
+    seq: number;
+    title: string;
+  } | null>(null);
   // A name typed in the header and not saved: unsaved like the configuration, so it guards leaving
   // and holds the tab out of the URL the same way.
   const [nameDirty, setNameDirty] = useState(false);
@@ -143,7 +151,40 @@ function MonitorTabs({
         />
       </div>
       <div role="tabpanel" hidden={tab !== "themes"}>
-        <OccurrenceThemes monitorId={monitor.id} active={tab === "themes"} />
+        <div className="flex flex-col gap-3">
+          <SegmentedControl
+            aria-label={t("occurrences.themesView", "Which themes")}
+            value={themesView}
+            onChange={setThemesView}
+            options={[
+              {
+                value: "open",
+                label: t("occurrences.themesViewOpen", "Open now"),
+              },
+              {
+                value: "history",
+                label: t("occurrences.history.title", "Flagged in a period"),
+              },
+            ]}
+          />
+          <div hidden={themesView !== "open"}>
+            <OccurrenceThemes
+              monitorId={monitor.id}
+              active={tab === "themes" && themesView === "open"}
+              focus={focus}
+            />
+          </div>
+          <div hidden={themesView !== "history"}>
+            <OccurrenceFlagHistory
+              monitorId={monitor.id}
+              active={tab === "themes" && themesView === "history"}
+              onOpenTheme={(id, title) => {
+                setFocus((f) => ({ id, title, seq: (f?.seq ?? 0) + 1 }));
+                setThemesView("open");
+              }}
+            />
+          </div>
+        </div>
       </div>
       <div role="tabpanel" hidden={tab !== "rounds"}>
         <OccurrenceRounds

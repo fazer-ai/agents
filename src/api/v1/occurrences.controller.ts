@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { badQueryParam, parseQueryInstant } from "@/api/lib/query-filters";
 import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
@@ -51,8 +52,11 @@ import {
   WINDOW_MINUTES_RANGE,
 } from "@/modules/occurrences/settings";
 import {
+  countFlagEpisodes,
   countThemes,
+  FLAG_EPISODES_MAX,
   getTheme,
+  listFlagEpisodes,
   listThemes,
   THEMES_LIMIT_RANGE,
 } from "@/modules/occurrences/views";
@@ -291,6 +295,36 @@ const themesQuery = t.Object({
     }),
   ),
 });
+
+const INSTANT =
+  "ISO instant (2026-01-01T00:00:00Z); a value that is not one is refused with a 400 naming it.";
+
+const flagEpisodesQuery = t.Object({
+  since: t.String({
+    description: `Start of the period, inclusive. ${INSTANT}`,
+  }),
+  until: t.String({
+    description: `End of the period, exclusive, after \`since\`. ${INSTANT}`,
+  }),
+  limit: t.Optional(
+    t.Numeric({
+      minimum: 1,
+      maximum: FLAG_EPISODES_MAX,
+      description: `How many episodes, 1 to ${FLAG_EPISODES_MAX} (default 100), newest first.`,
+    }),
+  ),
+});
+
+// The period an episodes read asks for: two instants, the first before the second.
+function episodesWindow(query: { since: string; until: string }): {
+  since: Date;
+  until: Date;
+} {
+  const since = parseQueryInstant(query.since, "since") as Date;
+  const until = parseQueryInstant(query.until, "until") as Date;
+  if (until.getTime() <= since.getTime()) badQueryParam("until");
+  return { since, until };
+}
 
 const runsPage = (
   ctx: TenantContext,
@@ -696,6 +730,34 @@ export const occurrencesController = new Elysia({
         "One theme with its newest conversations, each with its own reason sentence verbatim and a link to Chatwoot, and what consolidation did to it. An absorbed theme answers as its survivor.",
       ),
       response: errors(400, 401, 403, 404),
+    },
+  )
+  .get(
+    "/monitors/:id/flag-episodes",
+    async ({ tenantContext, params, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const monitorId = requireDbId(params.id, "monitor id");
+      const window = episodesWindow(query);
+      const [episodes, total] = await Promise.all([
+        listFlagEpisodes(
+          ctx,
+          monitorId,
+          window,
+          query.limit === undefined ? {} : { limit: Number(query.limit) },
+        ),
+        countFlagEpisodes(ctx, monitorId, window),
+      ]);
+      return { instance: instanceIdentity, episodes, total };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      params: monitorParams,
+      query: flagEpisodesQuery,
+      detail: doc(
+        "List a monitor's flag episodes",
+        "Every stretch a theme stayed flagged (held included) that overlaps the period, newest first: the title it had then, the theme it belongs to now (the survivor, after a merge), its reference, every kind it was flagged for, when it started and ended (`endedAt` null while it is still flagged), its peak window count, and the theme's conversations from a window before it started until it ended. `total` counts every episode of the period, past the limit too.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(

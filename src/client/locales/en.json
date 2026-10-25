@@ -3909,6 +3909,8 @@
       "times_other": "({{count}} times)"
     },
     "enabled": "Monitor on",
+    "episodeOpen": "{{from}}, still flagged",
+    "episodeSpan": "{{from}} to {{to}}",
     "eventMerged": "“{{theme}}” joined into another theme",
     "eventMergedHere": "“{{theme}}” joined into this theme",
     "eventRenamed": "Renamed from “{{from}}” to “{{to}}”",
@@ -3938,6 +3940,7 @@
     "flagNew": "new",
     "flagsIntroGeneric": "A flagged theme is out of the usual: new, above its usual volume, or concentrated on one reference. It is listed first and is what a dashboard shows as flagged; one that stops being out of the usual stays a while, muted.",
     "flagsTitle": "When a theme is flagged",
+    "focusMissing": "“{{theme}}” is not in this list now: none of its conversations is in a monitored inbox, or it is past the themes listed.",
     "heldAboveUsual": "No longer above its usual since {{time}}",
     "heldAny": "No rule met since {{time}}",
     "heldConcentrated": "No longer concentrated since {{time}}",
@@ -3948,6 +3951,28 @@
       "newWithin": "A theme is new from its first conversation for this long, while it has the least conversations in the window, so it does not stop being new when the window moves past that first one.",
       "themeGeneric": "A theme is a group of conversations with the same reason, whatever words each customer used.",
       "usual": "A theme's usual is how many conversations it had per hour over the days compared, counting only the time the monitor was reading."
+    },
+    "history": {
+      "badRange": "The end has to come after the start.",
+      "capped": "The newest {{shown}} of {{total}} times a theme was flagged in this period. Pick a shorter period to see the others.",
+      "custom": "Custom",
+      "empty": "No theme was flagged during this period.",
+      "error": "Could not read the flagged themes.",
+      "from": "From",
+      "intro": "Every time a theme was flagged during the period, newest first, with the title it had then and from when to when.",
+      "nowCalled": "Now part of “{{theme}}”",
+      "openTheme": "Open the theme",
+      "peak": "peak of {{peak}} in the window",
+      "period": "Period",
+      "range": {
+        "24h": "Last 24 hours",
+        "30d": "Last 30 days",
+        "7d": "Last 7 days",
+        "today": "Today",
+        "yesterday": "Yesterday"
+      },
+      "title": "Flagged in a period",
+      "to": "To"
     },
     "inboxes": {
       "alsoReadBy": "also read by {{names}}",
@@ -4135,6 +4160,8 @@
     "themesPages": "Theme pages",
     "themesReadAt": "Read at {{time}}.",
     "themesTruncated": "Showing the first {{shown}} of {{total}} open themes.",
+    "themesView": "Which themes",
+    "themesViewOpen": "Open now",
     "title": "Occurrence monitor",
     "toDashboard": "Show on a dashboard",
     "toDashboardHint": "In a dashboard, add a panel with the Occurrences source and \"Flagged themes only\"."

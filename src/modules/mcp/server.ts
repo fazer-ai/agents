@@ -217,7 +217,10 @@ import {
   PREVIOUS_DAYS_RANGE,
   WINDOW_MINUTES_RANGE,
 } from "@/modules/occurrences/settings";
-import { THEMES_LIMIT_RANGE } from "@/modules/occurrences/views";
+import {
+  FLAG_EPISODES_MAX,
+  THEMES_LIMIT_RANGE,
+} from "@/modules/occurrences/views";
 import {
   PRICE_OVERRIDE_RATE_MAX,
   PRICE_OVERRIDES_MAX,
@@ -241,6 +244,7 @@ import {
   knowledgeUpdate,
 } from "./write-knowledge";
 import {
+  occurrenceFlagEpisodesList,
   occurrenceMonitorCreate,
   occurrenceMonitorDelete,
   occurrenceMonitorsList,
@@ -1303,6 +1307,30 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await occurrenceThemesList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_flag_episodes_list",
+      {
+        description: "List the flag episodes overlapping [since, until).",
+        inputSchema: {
+          monitor_id: monitorIdArg,
+          since: z.string(),
+          until: z.string(),
+          limit: z.number().int().min(1).max(FLAG_EPISODES_MAX).optional(),
+        },
+      },
+      async (
+        args: {
+          monitor_id?: string;
+          since: string;
+          until: string;
+          limit?: number;
+        },
+        eff,
+      ) => writeContent(await occurrenceFlagEpisodesList(eff, args)),
     );
 
     registerTenantTool(

@@ -4051,6 +4051,8 @@
       "times_other": "({{count}} vezes)"
     },
     "enabled": "Monitor ligado",
+    "episodeOpen": "{{from}}, ainda sinalizado",
+    "episodeSpan": "de {{from}} a {{to}}",
     "eventMerged": "“{{theme}}” foi juntado a outro tema",
     "eventMergedHere": "“{{theme}}” foi juntado a este tema",
     "eventRenamed": "Renomeado de “{{from}}” para “{{to}}”",
@@ -4080,6 +4082,7 @@
     "flagNew": "novo",
     "flagsIntroGeneric": "Um tema sinalizado está fora do habitual: é novo, está acima do volume habitual ou se concentra numa referência. Ele aparece primeiro na lista e é o que um dashboard mostra como sinalizado; um que deixa de estar fora do habitual fica mais um tempo, apagado.",
     "flagsTitle": "Quando um tema é sinalizado",
+    "focusMissing": "“{{theme}}” não está nesta lista agora: nenhuma conversa dele está numa caixa monitorada, ou ele passou do limite de temas listados.",
     "heldAboveUsual": "Deixou de estar acima do habitual às {{time}}",
     "heldAny": "Nenhuma regra cumprida desde {{time}}",
     "heldConcentrated": "Deixou de estar concentrado às {{time}}",
@@ -4090,6 +4093,28 @@
       "newWithin": "Um tema é novo por esse tempo a partir da primeira conversa, enquanto tiver o mínimo de conversas na janela, para não deixar de ser novo quando a janela passa dessa primeira conversa.",
       "themeGeneric": "Um tema é um grupo de conversas com o mesmo motivo, quaisquer que sejam as palavras de cada cliente.",
       "usual": "O habitual de um tema é quantas conversas ele teve por hora nos dias comparados, contando só o tempo em que o monitor estava lendo."
+    },
+    "history": {
+      "badRange": "O fim tem que vir depois do início.",
+      "capped": "As {{shown}} vezes mais recentes de {{total}} em que um tema foi sinalizado neste período. Escolha um período menor para ver as outras.",
+      "custom": "Personalizado",
+      "empty": "Nenhum tema foi sinalizado neste período.",
+      "error": "Não foi possível ler os temas sinalizados.",
+      "from": "De",
+      "intro": "Cada vez que um tema foi sinalizado no período, do mais recente ao mais antigo, com o título que ele tinha na época e de quando a quando.",
+      "nowCalled": "Hoje faz parte de “{{theme}}”",
+      "openTheme": "Abrir o tema",
+      "peak": "pico de {{peak}} na janela",
+      "period": "Período",
+      "range": {
+        "24h": "Últimas 24 horas",
+        "30d": "Últimos 30 dias",
+        "7d": "Últimos 7 dias",
+        "today": "Hoje",
+        "yesterday": "Ontem"
+      },
+      "title": "Sinalizados num período",
+      "to": "Até"
     },
     "inboxes": {
       "alsoReadBy": "também lida por {{names}}",
@@ -4295,6 +4320,8 @@
     "themesPages": "Páginas de temas",
     "themesReadAt": "Lidos às {{time}}.",
     "themesTruncated": "Mostrando os primeiros {{shown}} de {{total}} temas abertos.",
+    "themesView": "Quais temas",
+    "themesViewOpen": "Abertos agora",
     "title": "Monitor de ocorrências",
     "toDashboard": "Mostrar num dashboard",
     "toDashboardHint": "Num dashboard, adicione um painel com a fonte Ocorrências e \"Só temas sinalizados\"."

@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { parseIsoInstant } from "@/modules/flowlog/settings";
 import {
   assertAttributesFree,
   assertOccurrencesInboxes,
@@ -23,7 +24,13 @@ import {
   OCCURRENCES_DEFAULTS,
   type OccurrencesPatch,
 } from "@/modules/occurrences/settings";
-import { countThemes, getTheme, listThemes } from "@/modules/occurrences/views";
+import {
+  countFlagEpisodes,
+  countThemes,
+  getTheme,
+  listFlagEpisodes,
+  listThemes,
+} from "@/modules/occurrences/views";
 import type { VerifiedToken } from "./oauth/tokens";
 import { previewBase } from "./preview-base";
 import {
@@ -239,6 +246,39 @@ export async function occurrenceThemesList(
         base,
       ),
       total: await countThemes(ctx, m.id, flagged, base),
+    });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// The flag episodes overlapping [since, until), the same list the REST read returns.
+export async function occurrenceFlagEpisodesList(
+  principal: VerifiedToken,
+  args: { monitor_id?: string; since: string; until: string; limit?: number },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const since = parseIsoInstant(args.since);
+  const until = parseIsoInstant(args.until);
+  if (since === null) return err("since is not an ISO instant");
+  if (until === null) return err("until is not an ISO instant");
+  if (until.getTime() <= since.getTime())
+    return err("until must be after since");
+  try {
+    const m = await monitorOf(ctx, args.monitor_id, base);
+    if (!m) return ok({ episodes: [], total: 0 });
+    return ok({
+      episodes: await listFlagEpisodes(
+        ctx,
+        m.id,
+        { since, until },
+        args.limit === undefined ? {} : { limit: args.limit },
+        base,
+      ),
+      total: await countFlagEpisodes(ctx, m.id, { since, until }, base),
     });
   } catch (e) {
     return failOf(e);

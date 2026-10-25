@@ -63,9 +63,13 @@ function eventDetail(e: ThemeEvent): {
 export function OccurrenceThemes({
   monitorId,
   active = true,
+  focus = null,
 }: {
   monitorId: string;
   active?: boolean;
+  // A theme to open, from the flag history: its page is shown and it is expanded, once per `seq`.
+  // `title` names it when the list read after the request does not have it.
+  focus?: { id: string; seq: number; title: string } | null;
 }) {
   const { t, i18n } = useTranslation();
   const [themes, setThemes] = useState<Theme[] | null>(null);
@@ -131,16 +135,25 @@ export function OccurrenceThemes({
             )
           : f;
 
+  // Each list read is numbered, and only the latest one's answer is kept: two reads on the wire at once
+  // (opening the tab and a focus request) never let the older one replace the newer.
+  const loadSeq = useRef(0);
+  const reads = useRef(0);
+  const [listReads, setListReads] = useState(0);
   const load = useCallback(async () => {
+    const mine = ++loadSeq.current;
     setFailed(false);
     const res = await api.api.v1.occurrences
       .monitors({ id: monitorId })
       .themes.get({ query: { limit: THEMES_LIMIT_RANGE.max } });
+    if (mine !== loadSeq.current) return;
     if (res.error || !res.data) {
       setFailed(true);
       return;
     }
     const list = res.data.themes;
+    reads.current += 1;
+    setListReads(reads.current);
     setThemes(list);
     setTotal(res.data.total);
     setReadAt(new Date());
@@ -155,6 +168,36 @@ export function OccurrenceThemes({
   useEffect(() => {
     if (active) void refresh();
   }, [active]);
+
+  // A focus request reads the list again and is applied once, against a list read after it, never one
+  // cached from before: the theme is then on the page that list puts it on, or, when that list does not
+  // have it (past the 500 listed, or none of its conversations in a monitored inbox now), named as
+  // missing.
+  const appliedFocus = useRef(0);
+  const focusAsked = useRef<{ seq: number; at: number } | null>(null);
+  const [missing, setMissing] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new request (its seq) is the trigger.
+  useEffect(() => {
+    if (!focus) return;
+    focusAsked.current = { seq: focus.seq, at: reads.current };
+    void load();
+  }, [focus?.seq]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new focus or a new list is the trigger.
+  useEffect(() => {
+    if (!focus || themes === null || appliedFocus.current === focus.seq) return;
+    if (focusAsked.current?.seq !== focus.seq) return;
+    if (listReads <= focusAsked.current.at) return;
+    appliedFocus.current = focus.seq;
+    const i = themes.findIndex((th) => th.id === focus.id);
+    if (i < 0) {
+      setMissing(focus.title);
+      return;
+    }
+    setMissing(null);
+    setPage(Math.floor(i / THEMES_PAGE));
+    setOpen(focus.id);
+    void loadDetail(focus.id);
+  }, [focus?.seq, themes, listReads]);
 
   // Refresh reads the expanded theme's conversations too, so its evidence never lags its totals.
   async function refresh() {
@@ -210,6 +253,15 @@ export function OccurrenceThemes({
           {t("common.refresh", "Refresh")}
         </Button>
       </div>
+      {missing !== null && (
+        <p data-focus-missing className="text-sm text-text-muted">
+          {t(
+            "occurrences.focusMissing",
+            "“{{theme}}” is not in this list now: none of its conversations is in a monitored inbox, or it is past the themes listed.",
+            { theme: missing },
+          )}
+        </p>
+      )}
       {failed ? (
         <p className="text-sm text-text-muted">
           {t("occurrences.themesError", "Could not read the themes.")}

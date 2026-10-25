@@ -147,7 +147,7 @@ export async function runOccurrenceRound(
         // Only a pass that completed starts the next interval; a skipped one is tried next round.
         consolidated = themes.completed && canonicals.completed;
       }
-      detail.flags = await runFlagsStep(base, m, now());
+      detail.flags = await runFlagsStep(base, m, now(), { runId: run.id });
       // Last, so a slow Chatwoot spends only what the analytical steps left.
       canonical.copied = await runCanonicalCopy(
         base,

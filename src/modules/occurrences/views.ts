@@ -466,3 +466,198 @@ export async function getTheme(
     };
   });
 }
+
+// ── Flag history (docs/occurrences.md, "Flag history") ──
+
+// Episodes one read returns at most, newest first.
+export const FLAG_EPISODES_MAX = 200;
+
+export interface FlagEpisodeItem {
+  id: string;
+  // The theme it belongs to now (the survivor, after a merge), and that theme's title now.
+  themeId: string;
+  themeTitle: string;
+  // Its status now: open, or split (its parts are other themes).
+  themeStatus: string;
+  // The theme's title when the episode opened.
+  title: string;
+  // The canonical reference it had when it opened, by its survivor's name; null without one.
+  reference: string | null;
+  // Every kind it was flagged for while it lasted.
+  kinds: string[];
+  startedAt: string;
+  // The last round it was seen flagged, held included.
+  lastFlaggedAt: string;
+  // Null while it is still flagged.
+  endedAt: string | null;
+  // The most conversations its window held in a round while flagged.
+  peak: number;
+  // The theme's conversations of the monitored inboxes from a window before it opened until it ended
+  // (or now), counted at the customer message, as the flags count them.
+  conversations: number;
+  links: ThemeLink[];
+}
+
+const overlapping = (
+  monitorId: bigint,
+  window: { since: Date; until: Date },
+) => ({
+  monitorId,
+  startedAt: { lt: window.until },
+  OR: [{ endedAt: null }, { endedAt: { gt: window.since } }],
+});
+
+// How many episodes overlap the period in all, whatever the limit.
+export async function countFlagEpisodes(
+  ctx: TenantContext,
+  monitorId: bigint,
+  window: { since: Date; until: Date },
+  base: PrismaClient = basePrisma,
+): Promise<number> {
+  const tenantId = tenantOf(ctx);
+  return runScopedOn(base, ctx, async (db) => {
+    await monitorConfigOn(db, tenantId, monitorId);
+    return db.occurrenceFlagEpisode.count({
+      where: overlapping(monitorId, window),
+    });
+  });
+}
+
+// The monitor's episodes overlapping [since, until): started before `until` and not ended by `since`.
+export async function flagEpisodesOn(
+  db: ScopedDb,
+  tenantId: bigint,
+  monitorId: bigint,
+  window: { since: Date; until: Date },
+  opts: { limit?: number; links?: number; now?: Date } = {},
+): Promise<FlagEpisodeItem[]> {
+  const cfg = await monitorConfigOn(db, tenantId, monitorId);
+  const inboxIds = cfg.inboxIds.map(BigInt);
+  const limit = Math.min(
+    Math.max(1, Math.trunc(opts.limit ?? 100)),
+    FLAG_EPISODES_MAX,
+  );
+  const now = opts.now ?? new Date();
+  const episodes = await db.occurrenceFlagEpisode.findMany({
+    where: overlapping(monitorId, window),
+    orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+    take: limit,
+    include: { theme: { select: { title: true, status: true } } },
+  });
+  if (!episodes.length) return [];
+  const windowMs = cfg.windowMinutes * 60_000;
+  const spans = episodes.map((e) => ({
+    id: e.id,
+    themeId: e.themeId,
+    from: new Date(e.startedAt.getTime() - windowMs),
+    to: e.endedAt ?? now,
+  }));
+  // Each episode's conversations and its first few, in one query.
+  const rows = await db.$queryRaw<
+    { episode_id: bigint; n: bigint; firsts: bigint[] | null }[]
+  >`
+    SELECT s.id AS episode_id, count(m.conversation_id) AS n,
+           (array_agg(m.conversation_id ORDER BY COALESCE(m.inbound_at, m.read_at), m.id) FILTER (WHERE m.conversation_id IS NOT NULL))[1:${opts.links ?? 0}] AS firsts
+      FROM unnest(${spans.map((s) => String(s.id))}::bigint[],
+                  ${spans.map((s) => String(s.themeId))}::bigint[],
+                  ${spans.map((s) => s.from.toISOString())}::timestamptz[],
+                  ${spans.map((s) => s.to.toISOString())}::timestamptz[]) AS s(id, theme_id, f, t)
+      LEFT JOIN occurrence_theme_members m
+             ON m.monitor_id = ${monitorId} AND m.theme_id = s.theme_id
+            AND COALESCE(m.inbound_at, m.read_at) >= s.f AT TIME ZONE 'UTC'
+            AND COALESCE(m.inbound_at, m.read_at) <= s.t AT TIME ZONE 'UTC'
+            AND EXISTS (SELECT 1 FROM conversations cv WHERE cv.id = m.conversation_id
+                          AND cv.inbox_id = ANY(${inboxIds.map(String)}::bigint[]))
+     GROUP BY s.id`;
+  const statOf = new Map(rows.map((r) => [r.episode_id, r]));
+  const linkIds = rows.flatMap((r) => r.firsts ?? []);
+  const conversations = linkIds.length
+    ? await db.conversation.findMany({
+        where: { id: { in: linkIds } },
+        select: {
+          id: true,
+          chatwootConversationId: true,
+          instance: {
+            select: {
+              accountId: true,
+              deployment: { select: { baseUrl: true } },
+            },
+          },
+        },
+      })
+    : [];
+  const conversationOf = new Map(conversations.map((c) => [c.id, c]));
+  const referenceIds = episodes
+    .map((e) => e.referenceId)
+    .filter((id): id is bigint => id !== null);
+  const canonicals = referenceIds.length
+    ? await db.occurrenceCanonical.findMany({
+        where: { id: { in: referenceIds } },
+        select: { id: true, name: true, mergedIntoId: true },
+      })
+    : [];
+  const survivorIds = canonicals
+    .map((c) => c.mergedIntoId)
+    .filter((id): id is bigint => id !== null);
+  const survivors = new Map(
+    (survivorIds.length
+      ? await db.occurrenceCanonical.findMany({
+          where: { id: { in: survivorIds } },
+          select: { id: true, name: true },
+        })
+      : []
+    ).map((c) => [c.id, c.name]),
+  );
+  const nameOf = new Map(
+    canonicals.map((c) => [
+      c.id,
+      c.mergedIntoId === null
+        ? c.name
+        : (survivors.get(c.mergedIntoId) ?? c.name),
+    ]),
+  );
+  return episodes.map((e) => {
+    const stat = statOf.get(e.id);
+    return {
+      id: String(e.id),
+      themeId: String(e.themeId),
+      themeTitle: e.theme.title,
+      themeStatus: e.theme.status,
+      title: e.title,
+      reference:
+        e.referenceId === null ? null : (nameOf.get(e.referenceId) ?? null),
+      kinds: e.kinds,
+      startedAt: e.startedAt.toISOString(),
+      lastFlaggedAt: e.lastFlaggedAt.toISOString(),
+      endedAt: iso(e.endedAt),
+      peak: e.peak,
+      conversations: Number(stat?.n ?? 0),
+      links: (stat?.firsts ?? [])
+        .map((id) => conversationOf.get(id))
+        .filter((c): c is NonNullable<typeof c> => c !== undefined)
+        .map((c) => ({
+          chatwootConversationId: c.chatwootConversationId,
+          url: conversationUrl(c),
+        })),
+    };
+  });
+}
+
+export async function listFlagEpisodes(
+  ctx: TenantContext,
+  monitorId: bigint,
+  window: { since: Date; until: Date },
+  opts: { limit?: number } = {},
+  base: PrismaClient = basePrisma,
+): Promise<FlagEpisodeItem[]> {
+  const tenantId = tenantOf(ctx);
+  return runScopedOn(base, ctx, (db) =>
+    flagEpisodesOn(db, tenantId, monitorId, window, {
+      ...opts,
+      links: FLAG_EPISODE_LINKS,
+    }),
+  );
+}
+
+// Conversations linked with each episode, its first ones.
+export const FLAG_EPISODE_LINKS = 3;

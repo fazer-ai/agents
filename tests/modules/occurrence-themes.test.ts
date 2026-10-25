@@ -59,7 +59,11 @@ import {
   sweepInboxes,
 } from "@/modules/occurrences/sweep";
 import { THEME_IS } from "@/modules/occurrences/themes";
-import { getTheme, listThemes } from "@/modules/occurrences/views";
+import {
+  getTheme,
+  listFlagEpisodes,
+  listThemes,
+} from "@/modules/occurrences/views";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { until } from "@/tests/utils/poll";
@@ -5678,5 +5682,276 @@ describe.skipIf(!dbUp)("the hold and a lasting new, on the database", () => {
     expect((await flagState(th.id)).flags).toEqual(["new"]);
     await updateOccurrencesSettings(a.ctx, { flagHoldMinutes: 0 }, appDb);
     expect((await flagState(th.id)).flags).toEqual([]);
+  });
+});
+
+describe.skipIf(!dbUp)("flag history: episodes", () => {
+  const MIN = 60_000;
+  const flagCfg = {
+    windowMinutes: 60,
+    newMinConversations: 5,
+    flagHoldMinutes: 0,
+  };
+  async function five(
+    a: Awaited<ReturnType<typeof account>>,
+    themeId: bigint,
+    at: Date,
+    tag: string,
+  ) {
+    for (let i = 0; i < 5; i += 1)
+      await a.member(themeId, await a.conv(), `${tag} ${i}`, at);
+  }
+  const episodesOf = async (themeId: bigint) =>
+    suDb.occurrenceFlagEpisode.findMany({
+      where: { themeId },
+      orderBy: { startedAt: "asc" },
+    });
+  const listed = (
+    a: Awaited<ReturnType<typeof account>>,
+    since: Date,
+    until: Date,
+  ) => listFlagEpisodes(a.ctx, a.monitorId, { since, until }, {}, appDb);
+
+  test("a theme flagged from 17:00 to 18:30 has one episode with those times, listed only for periods overlapping it", async () => {
+    const a = await account(flagCfg);
+    const t17 = new Date(Date.now() - 6 * 60 * MIN);
+    const th = await a.theme("Ingresso nao chegou");
+    await five(a, th.id, new Date(t17.getTime() - 10 * MIN), "nao chegou");
+    await a.round(nothing, t17);
+    // Still flagged at 17:30, gone at 18:30 when the window has passed its conversations.
+    await a.round(nothing, new Date(t17.getTime() + 30 * MIN));
+    const t1830 = new Date(t17.getTime() + 90 * MIN);
+    await a.round(nothing, t1830);
+    const [e, ...rest] = await episodesOf(th.id);
+    expect(rest).toEqual([]);
+    expect(e?.startedAt.getTime()).toBe(t17.getTime());
+    expect(e?.endedAt?.getTime()).toBe(t1830.getTime());
+    expect(e?.lastFlaggedAt.getTime()).toBe(t17.getTime() + 30 * MIN);
+    expect(e?.kinds).toEqual(["new"]);
+    expect(e?.peak).toBe(5);
+    const at = (m: number) => new Date(t17.getTime() + m * MIN);
+    expect((await listed(a, at(-60), at(10))).map((x) => x.title)).toEqual([
+      "Ingresso nao chegou",
+    ]);
+    expect(await listed(a, at(80), at(200))).toHaveLength(1);
+    expect(await listed(a, at(-120), at(-1))).toEqual([]);
+    expect(await listed(a, at(91), at(300))).toEqual([]);
+    const [item] = await listed(a, at(0), at(90));
+    expect(item?.endedAt).toBe(t1830.toISOString());
+    expect(item?.conversations).toBe(5);
+    expect(item?.links).toHaveLength(3);
+  });
+
+  test("flagged, unflagged and flagged again is two episodes, and one still flagged is open", async () => {
+    const a = await account(flagCfg);
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const th = await a.theme("Pix nao confirma");
+    await five(a, th.id, new Date(t0.getTime() - 10 * MIN), "pix");
+    await a.round(nothing, t0);
+    await a.round(nothing, new Date(t0.getTime() + 90 * MIN));
+    // Five more three hours later: above its usual now (it is no longer new).
+    const t3 = new Date(t0.getTime() + 180 * MIN);
+    await five(a, th.id, new Date(t3.getTime() - 5 * MIN), "pix de novo");
+    await a.round(nothing, t3, { ...a.cfg, aboveUsualRatio: 1 });
+    const eps = await episodesOf(th.id);
+    expect(eps).toHaveLength(2);
+    expect(eps[0]?.endedAt).not.toBeNull();
+    expect(eps[1]?.startedAt.getTime()).toBe(t3.getTime());
+    expect(eps[1]?.endedAt).toBeNull();
+    const now = await listed(a, new Date(t3.getTime() - MIN), new Date());
+    expect(now).toHaveLength(1);
+    expect(now[0]?.endedAt).toBeNull();
+  });
+
+  test("a held theme's episode lasts until its hold releases it", async () => {
+    const a = await account({ ...flagCfg, flagHoldMinutes: 120 });
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const th = await a.theme("Cartao recusado");
+    await five(a, th.id, new Date(t0.getTime() - 10 * MIN), "cartao");
+    await a.round(nothing, t0);
+    const held = new Date(t0.getTime() + 75 * MIN);
+    await a.round(nothing, held);
+    expect((await episodesOf(th.id))[0]?.endedAt).toBeNull();
+    expect((await episodesOf(th.id))[0]?.lastFlaggedAt.getTime()).toBe(
+      held.getTime(),
+    );
+    const out = new Date(held.getTime() + 121 * MIN);
+    await a.round(nothing, out);
+    const eps = await episodesOf(th.id);
+    expect(eps).toHaveLength(1);
+    expect(eps[0]?.endedAt?.getTime()).toBe(out.getTime());
+  });
+
+  test("a theme already flagged when episodes started being kept opens one from its flaggedAt, held included, with its flags", async () => {
+    const a = await account({ ...flagCfg, flagHoldMinutes: 120 });
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const before = new Date(t0.getTime() - 40 * MIN);
+    // Flagged by a round before the episodes, its window empty now: held, with no episode yet.
+    const held = await a.theme("Sinalizado antes");
+    await a.member(held.id, await a.conv(), "antes", before);
+    await suDb.occurrenceTheme.update({
+      where: { id: held.id },
+      data: { flags: ["above_usual"], flaggedAt: before },
+    });
+    // And one flagged before that still meets a rule.
+    const met = await a.theme("Ainda cumpre");
+    await five(a, met.id, new Date(t0.getTime() - 10 * MIN), "cumpre");
+    await suDb.occurrenceTheme.update({
+      where: { id: met.id },
+      data: { flags: ["new"], flaggedAt: before },
+    });
+    await a.round(nothing, new Date(t0.getTime() + 60 * MIN));
+    const [h] = await episodesOf(held.id);
+    expect(h?.startedAt.getTime()).toBe(before.getTime());
+    expect(h?.kinds).toEqual(["above_usual"]);
+    expect(h?.endedAt).toBeNull();
+    const [m] = await episodesOf(met.id);
+    expect(m?.startedAt.getTime()).toBe(before.getTime());
+  });
+
+  test("every round while flagged adds the kinds seen, keeps the peak and the last round, and the opening round's id", async () => {
+    const a = await account(flagCfg);
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const th = await a.theme("Varios motivos");
+    await five(a, th.id, new Date(t0.getTime() - 10 * MIN), "varios");
+    await a.round(nothing, t0);
+    const opened = await suDb.occurrenceRun.findFirstOrThrow({
+      where: { monitorId: a.monitorId },
+      orderBy: { id: "desc" },
+    });
+    const [first] = await episodesOf(th.id);
+    expect(first?.runId).toBe(opened.id);
+    // As if an earlier round had seen it concentrated, at a bigger window.
+    await suDb.occurrenceFlagEpisode.update({
+      where: { id: first?.id },
+      data: { kinds: ["concentrated"], peak: 40 },
+    });
+    const t1 = new Date(t0.getTime() + 20 * MIN);
+    await a.round(nothing, t1);
+    const [e] = await episodesOf(th.id);
+    expect([...(e?.kinds ?? [])].sort()).toEqual(["concentrated", "new"]);
+    expect(e?.peak).toBe(40);
+    expect(e?.lastFlaggedAt.getTime()).toBe(t1.getTime());
+    expect(e?.runId).toBe(opened.id);
+  });
+
+  test("two recounts at once over a held theme with no episode leave one open episode at the later round", async () => {
+    const a = await account({ ...flagCfg, flagHoldMinutes: 120 });
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const th = await a.theme("Dois ao mesmo tempo");
+    await a.member(
+      th.id,
+      await a.conv(),
+      "antes",
+      new Date(t0.getTime() - 90 * MIN),
+    );
+    await suDb.occurrenceTheme.update({
+      where: { id: th.id },
+      data: { flags: ["new"], flaggedAt: new Date(t0.getTime() - 90 * MIN) },
+    });
+    const later = new Date(t0.getTime() + 5 * MIN);
+    await Promise.all([
+      runFlagsStep(appDb, a.key, later),
+      runFlagsStep(appDb, a.key, t0),
+      runFlagsStep(appDb, a.key, later),
+    ]);
+    const eps = await episodesOf(th.id);
+    expect(eps).toHaveLength(1);
+    expect(eps[0]?.endedAt).toBeNull();
+    expect(eps[0]?.lastFlaggedAt.getTime()).toBe(later.getTime());
+  });
+
+  test("an evaluation older than the last episode write changes nothing: it neither closes nor reopens", async () => {
+    const a = await account(flagCfg);
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const th = await a.theme("Fora de ordem");
+    await five(a, th.id, new Date(t0.getTime() - 10 * MIN), "ordem");
+    await runFlagsStep(appDb, a.key, t0);
+    // A recount evaluated before the episode's round, with nothing in its window: it would close it.
+    await runFlagsStep(appDb, a.key, new Date(t0.getTime() - 30 * MIN));
+    expect((await episodesOf(th.id))[0]?.endedAt).toBeNull();
+    // Closed by a later round; a recount evaluated in between would open it again.
+    const t2 = new Date(t0.getTime() + 120 * MIN);
+    await runFlagsStep(appDb, a.key, t2);
+    await runFlagsStep(appDb, a.key, new Date(t0.getTime() + 5 * MIN));
+    const eps = await episodesOf(th.id);
+    expect(eps).toHaveLength(1);
+    expect(eps[0]?.endedAt?.getTime()).toBe(t2.getTime());
+    // Nor does it bring the theme's own flag back.
+    const now = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id: th.id },
+    });
+    expect(now.flags).toEqual([]);
+    expect(now.flaggedAt).toBeNull();
+  });
+
+  test("a scope save's recount that arrives after a newer round still releases the held theme", async () => {
+    const a = await account({ ...flagCfg, flagHoldMinutes: 120 });
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const th = await a.theme("Escopo mudou");
+    await five(a, th.id, new Date(t0.getTime() - 10 * MIN), "escopo");
+    await runFlagsStep(appDb, a.key, t0);
+    // A round past the window holds it; the save's recount was evaluated before that round.
+    const t1 = new Date(t0.getTime() + 75 * MIN);
+    await runFlagsStep(appDb, a.key, t1);
+    expect((await episodesOf(th.id))[0]?.endedAt).toBeNull();
+    await runFlagsStep(appDb, a.key, new Date(t1.getTime() - MIN), {
+      releaseHeld: true,
+    });
+    const eps = await episodesOf(th.id);
+    expect(eps[0]?.endedAt?.getTime()).toBe(t1.getTime());
+    expect(
+      (await suDb.occurrenceTheme.findUniqueOrThrow({ where: { id: th.id } }))
+        .flags,
+    ).toEqual([]);
+  });
+
+  test("after a merge the absorbed theme's episodes are listed under the survivor with the title they had", async () => {
+    const a = await account({ ...flagCfg, consolidationMinutes: 60 });
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const A = await a.theme("Troca de data");
+    const B = await a.theme("Remarcar ingresso");
+    await five(a, A.id, new Date(t0.getTime() - 10 * MIN), "troca");
+    await a.round(nothing, t0);
+    await a.round(nothing, new Date(t0.getTime() + 90 * MIN));
+    expect(await episodesOf(A.id)).toHaveLength(1);
+    // Placed after the episode ended: the survivor's own conversation is not the episode's.
+    await a.member(
+      B.id,
+      await a.conv(),
+      "remarcar",
+      new Date(t0.getTime() + 150 * MIN),
+    );
+    const script: Script = (step, user) =>
+      step === "consolidation"
+        ? { merges: [{ absorbed: `T${A.id}`, into: `T${B.id}` }] }
+        : nothing(step, user);
+    await a.round(script, new Date(t0.getTime() + 200 * MIN));
+    expect(await episodesOf(A.id)).toEqual([]);
+    const [e] = await listed(a, new Date(t0.getTime() - 60 * MIN), new Date());
+    expect(e?.themeId).toBe(String(B.id));
+    expect(e?.themeTitle).toBe("Remarcar ingresso");
+    expect(e?.title).toBe("Troca de data");
+    expect(e?.conversations).toBe(5);
+  });
+
+  test("an open episode of a theme merged away ends the last round it was flagged, never leaving two open", async () => {
+    const a = await account({ ...flagCfg, consolidationMinutes: 15 });
+    const t0 = new Date(Date.now() - 8 * 60 * MIN);
+    const A = await a.theme("Estorno");
+    const B = await a.theme("Reembolso");
+    await five(a, A.id, new Date(t0.getTime() - 10 * MIN), "estorno");
+    await five(a, B.id, new Date(t0.getTime() - 10 * MIN), "reembolso");
+    await a.round(nothing, t0);
+    const script: Script = (step, user) =>
+      step === "consolidation"
+        ? { merges: [{ absorbed: `T${A.id}`, into: `T${B.id}` }] }
+        : nothing(step, user);
+    await a.round(script, new Date(t0.getTime() + 20 * MIN));
+    const eps = await episodesOf(B.id);
+    expect(eps).toHaveLength(2);
+    expect(eps.filter((e) => e.endedAt === null)).toHaveLength(1);
+    const absorbed = eps.find((e) => e.title === "Estorno");
+    expect(absorbed?.endedAt?.getTime()).toBe(t0.getTime());
   });
 });

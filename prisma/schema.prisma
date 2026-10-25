@@ -214,6 +214,7 @@ model Tenant {
   occurrenceCanonicals          OccurrenceCanonical[]
   occurrenceAlias               OccurrenceAlias[]
   occurrenceSweepCursors        OccurrenceSweepCursor[]
+  occurrenceFlagEpisodes        OccurrenceFlagEpisode[]
 
   @@map("tenants")
 }
@@ -3454,6 +3455,7 @@ model OccurrenceMonitor {
   conversationReads OccurrenceConversationRead[]
   sweepCursors      OccurrenceSweepCursor[]
   runs              OccurrenceRun[]
+  flagEpisodes      OccurrenceFlagEpisode[]
   themes            OccurrenceTheme[]
   members           OccurrenceThemeMember[]
   events            OccurrenceThemeEvent[]
@@ -3593,8 +3595,9 @@ model OccurrenceRun {
   // after the last round that did.
   consolidated  Boolean   @default(false)
 
-  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor       @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  flagEpisodes OccurrenceFlagEpisode[]
 
   @@index([tenantId, startedAt])
   @@index([monitorId, startedAt])
@@ -3623,14 +3626,46 @@ model OccurrenceTheme {
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  tenant  Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  monitor OccurrenceMonitor       @relation(fields: [monitorId], references: [id], onDelete: Cascade)
-  members OccurrenceThemeMember[]
-  events  OccurrenceThemeEvent[]
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor       @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  members      OccurrenceThemeMember[]
+  events       OccurrenceThemeEvent[]
+  flagEpisodes OccurrenceFlagEpisode[]
 
   @@index([tenantId, status])
   @@index([monitorId, status])
   @@map("occurrence_themes")
+}
+
+// One stretch a theme stayed flagged, held included (docs/occurrences.md, "Flag history"): opened by the
+// round that flagged it (`runId`; null for a save's recount), kept by every round while it stays flagged
+// (`kinds` seen, `peak` window count, `lastFlaggedAt`) and closed by the one that unflagged it
+// (`endedAt`). `title` and `referenceId` are what the theme had when it opened, so the history reads as
+// it was seen; a merge moves the absorbed theme's episodes to the survivor. At most one open episode
+// per theme (a partial unique index in the migration).
+model OccurrenceFlagEpisode {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      BigInt    @map("tenant_id")
+  monitorId     BigInt    @map("monitor_id")
+  themeId       BigInt    @map("theme_id")
+  title         String
+  kinds         String[]  @default([])
+  referenceId   BigInt?   @map("reference_id")
+  startedAt     DateTime  @map("started_at")
+  lastFlaggedAt DateTime  @map("last_flagged_at")
+  endedAt       DateTime? @map("ended_at")
+  peak          Int       @default(0)
+  runId         BigInt?   @map("run_id")
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  theme   OccurrenceTheme   @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  run     OccurrenceRun?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([monitorId, startedAt])
+  @@index([tenantId])
+  @@index([themeId])
+  @@map("occurrence_flag_episodes")
 }
 
 // A conversation in a theme, with its own reason sentence verbatim. One theme per conversation: a

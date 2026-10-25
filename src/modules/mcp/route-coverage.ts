@@ -310,6 +310,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/occurrences/monitors/:id/runs": { tool: "occurrence_runs_list" },
   "GET /v1/occurrences/monitors/:id/cost": { tool: "occurrence_runs_list" },
   "GET /v1/occurrences/monitors/:id/themes": { tool: "occurrence_themes_list" },
+  "GET /v1/occurrences/monitors/:id/flag-episodes": {
+    tool: "occurrence_flag_episodes_list",
+  },
   "GET /v1/occurrences/monitors/:id/themes/:themeId": {
     tool: "occurrence_themes_list",
   },

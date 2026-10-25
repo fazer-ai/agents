@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { runScopedOn } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
 import { sysCtx } from "./config";
 import type { MonitorKey } from "./monitors";
 import { type OccurrencesConfig, readMonitorConfig } from "./settings";
@@ -10,7 +10,7 @@ import { type OccurrencesConfig, readMonitorConfig } from "./settings";
 // flag needs at least N conversations in the window; concentrated needs a reference field. A theme is
 // new while its first conversation is within `newWithinMinutes` with none in the `previousDays` before
 // it. A flagged theme that meets no rule is held, its flags kept, until `flagHoldMinutes` have passed
-// since the first round it met none.
+// since the first round it met none. Each stretch flagged is an episode ("Flag history").
 
 export type FlagKind = "new" | "above_usual" | "concentrated";
 
@@ -104,11 +104,23 @@ export function flagWriteOf(
 export async function runFlagsStep(
   base: PrismaClient,
   { tenantId, monitorId }: MonitorKey,
-  now: Date,
+  asked: Date,
   // A save that changed which conversations count: a held theme's flags were raised over others.
-  opts: { releaseHeld?: boolean } = {},
+  // `runId`: the round that runs it, kept on the episodes it opens (null for a save's recount).
+  opts: { releaseHeld?: boolean; runId?: bigint | null } = {},
 ): Promise<FlagsSummary> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    // One writer of the monitor's flag episodes at a time (this step, a save's recount, a merge), taken
+    // before any row: each then reads the themes and episodes the other committed.
+    await lockFlagEpisodes(db, monitorId);
+    // The flags only move forward: an evaluation older than the monitor's latest episode write (a
+    // recount that took the lock after a newer round) is made at that write's instant instead, so it
+    // never undoes the newer one and a save's release of held themes still applies.
+    const [latest] = await db.$queryRaw<{ at: Date | null }[]>`
+      SELECT max(GREATEST(last_flagged_at, COALESCE(ended_at, last_flagged_at))) AS at
+        FROM occurrence_flag_episodes WHERE monitor_id = ${monitorId}`;
+    const now =
+      latest?.at && latest.at.getTime() > asked.getTime() ? latest.at : asked;
     // Counted over the block saved NOW, read under a share lock on the monitor's row: a save that
     // takes an inbox off the list (and recounts) waits for this, or this waits for it, so a round
     // that started with the old list never writes back flags from an inbox already taken off. A
@@ -201,7 +213,14 @@ export async function runFlagsStep(
     };
     const open = await db.occurrenceTheme.findMany({
       where: { monitorId, status: "open" },
-      select: { id: true, flags: true, flagUnmetSince: true },
+      select: {
+        id: true,
+        title: true,
+        flags: true,
+        flagReferenceId: true,
+        flaggedAt: true,
+        flagUnmetSince: true,
+      },
     });
     const holdMs = opts.releaseHeld ? 0 : cfg.flagHoldMinutes * 60_000;
     // Grouped by what each theme gets, one update per group: almost every theme gets "no flag", and a
@@ -209,13 +228,24 @@ export async function runFlagsStep(
     // already held writes nothing: its flags, reference and first instants stay as they are.
     let flagged = 0;
     const groups = new Map<string, { ids: bigint[]; data: object }>();
+    const stillFlagged: EpisodeTick[] = [];
     for (const t of open) {
       const c = counts.get(t.id);
       const counted = c
         ? flagsOf(c, input)
         : { kinds: [] as FlagKind[], referenceId: null };
       const w = flagWriteOf(counted, t, now, holdMs);
-      if (w.kind !== "none") flagged += 1;
+      if (w.kind !== "none") {
+        flagged += 1;
+        stillFlagged.push({
+          theme: t,
+          kinds: w.kind === "met" ? w.flags : t.flags,
+          referenceId: w.kind === "met" ? w.referenceId : t.flagReferenceId,
+          startedAt:
+            w.kind === "met" && w.since === "now" ? now : (t.flaggedAt ?? now),
+          window: c?.window ?? 0,
+        });
+      }
       if (w.kind === "held" && !w.start) continue;
       const data =
         w.kind === "met"
@@ -245,7 +275,85 @@ export async function runFlagsStep(
         where: { id: { in: g.ids } },
         data: g.data,
       });
+    await writeEpisodes(
+      db,
+      { tenantId, monitorId },
+      stillFlagged,
+      now,
+      opts.runId ?? null,
+    );
     return { flagged };
+  });
+}
+
+// Held to the end of the transaction. Every transaction that writes a monitor's episodes takes it
+// first, so none waits on a row another holds while that one waits on this.
+export async function lockFlagEpisodes(
+  db: ScopedDb,
+  monitorId: bigint,
+): Promise<void> {
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`occurrence-flag-episodes:${monitorId}`})::bigint)`;
+}
+
+interface EpisodeTick {
+  theme: { id: bigint; title: string };
+  kinds: string[];
+  referenceId: bigint | null;
+  // When the stretch began, for an episode this round opens: the theme's `flaggedAt` when it was
+  // already flagged (a theme flagged before episodes were kept), else now.
+  startedAt: Date;
+  window: number;
+}
+
+// The episodes after a round (docs/occurrences.md, "Flag history"): a theme flagged now, held included,
+// keeps its open episode (kinds seen, peak, last flagged) or opens one; every other open episode of the
+// monitor closes now, the unflagged theme's and that of a theme no longer open (split).
+async function writeEpisodes(
+  db: ScopedDb,
+  { tenantId, monitorId }: MonitorKey,
+  ticks: EpisodeTick[],
+  now: Date,
+  runId: bigint | null,
+): Promise<void> {
+  const flaggedIds = ticks.map((x) => x.theme.id);
+  await db.occurrenceFlagEpisode.updateMany({
+    where: {
+      monitorId,
+      endedAt: null,
+      ...(flaggedIds.length ? { themeId: { notIn: flaggedIds } } : {}),
+    },
+    data: { endedAt: now },
+  });
+  if (!ticks.length) return;
+  // One statement for every open episode of a theme flagged now, each row's maxima kept (a peak never
+  // drops, the last round never moves back). Kinds have no comma, so a list travels as one.
+  const at = now.toISOString();
+  await db.$executeRaw`
+    UPDATE occurrence_flag_episodes e
+       SET last_flagged_at = GREATEST(e.last_flagged_at, ${at}::timestamptz AT TIME ZONE 'UTC'),
+           peak = GREATEST(e.peak, v.peak),
+           kinds = ARRAY(SELECT DISTINCT k FROM unnest(e.kinds || string_to_array(v.kinds, ',')) AS k
+                          WHERE k <> '' ORDER BY k)
+      FROM unnest(${ticks.map((x) => String(x.theme.id))}::bigint[],
+                  ${ticks.map((x) => x.window)}::int[],
+                  ${ticks.map((x) => x.kinds.join(","))}::text[]) AS v(theme_id, peak, kinds)
+     WHERE e.monitor_id = ${monitorId} AND e.theme_id = v.theme_id AND e.ended_at IS NULL`;
+  // Then one for the themes with none: one already open, just updated, is skipped by the unique open
+  // episode per theme.
+  await db.occurrenceFlagEpisode.createMany({
+    data: ticks.map((x) => ({
+      tenantId,
+      monitorId,
+      themeId: x.theme.id,
+      title: x.theme.title,
+      kinds: x.kinds,
+      referenceId: x.referenceId,
+      startedAt: x.startedAt,
+      lastFlaggedAt: now,
+      peak: x.window,
+      runId,
+    })),
+    skipDuplicates: true,
   });
 }
 

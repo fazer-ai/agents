@@ -23,6 +23,7 @@ export function modelTelemetry(
   | "onModelFallbackFailed"
   | "onModelFallbackUnavailable"
   | "onDanglingToolCalls"
+  | "onUnansweredInputs"
   | "onContradictedHandoff"
   | "onHistoryTrim"
 > {
@@ -83,6 +84,18 @@ export function modelTelemetry(
         level: "info",
         status: "ok",
         detail: { reason: "repaired_dangling_tool_call", calls },
+      }),
+    // Info, like the repair above: the attempts that left the residue already failed where they ran.
+    onUnansweredInputs: ({ directives, duplicates }) =>
+      emitFlowEvent(flow, {
+        stage: "memory",
+        level: "info",
+        status: "ok",
+        detail: {
+          reason: "repaired_unanswered_inputs",
+          directives,
+          duplicates,
+        },
       }),
     // The model asked to close and to hand over in one step; the close ran and the handoff did not.
     // Info: the turn answers and closes as the model meant, and the line is what explains a handoff

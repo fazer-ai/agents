@@ -8292,4 +8292,81 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("stale");
     expect(s.order).toEqual([]);
   });
+
+  test("a follow-up retried after the provider refused sends the model its directive once", async () => {
+    await seedConv(16_624, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    class Refusing extends BaseChatModel {
+      seen: BaseMessage[][] = [];
+      constructor(private failures: number) {
+        super({});
+      }
+      _llmType() {
+        return "refusing";
+      }
+      override bindTools() {
+        return this as never;
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        this.seen.push(messages);
+        if (this.seen.length <= this.failures) {
+          const err = new Error(
+            "429 You have no credits remaining",
+          ) as Error & {
+            status: number;
+          };
+          err.status = 429;
+          throw err;
+        }
+        return {
+          generations: [
+            { text: "", message: new AIMessage("Ainda tem interesse?") },
+          ],
+        };
+      }
+    }
+    const model = new Refusing(5);
+    const run = () =>
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:16624`,
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      }).catch(() => "threw");
+    const outcomes: string[] = [];
+    for (let i = 0; i < 6; i++) outcomes.push(String(await run()));
+
+    expect(outcomes).toEqual([
+      "threw",
+      "threw",
+      "threw",
+      "threw",
+      "threw",
+      "messaged",
+    ]);
+    expect((model.seen.at(-1) ?? []).filter(isNudgeTurn)).toHaveLength(1);
+    expect(s.messages).toEqual([[16_624, "Ainda tem interesse?"]]);
+    await settleFlowEvents();
+    const repairs = (
+      await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: {
+          tenantId,
+          stage: "memory",
+          threadId: `${tenantId}:${instanceId}:16624`,
+        },
+        select: { detail: true },
+      })
+    )
+      .map((r) => r.detail as { reason?: string; directives?: number })
+      .filter((d) => d?.reason === "repaired_unanswered_inputs");
+    expect(repairs.reduce((n, d) => n + (d.directives ?? 0), 0)).toBe(5);
+  });
 });

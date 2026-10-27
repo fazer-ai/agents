@@ -1919,6 +1919,17 @@ async function runAgentNudgeBody(
         status: "ok",
         detail: { reason: "repaired_dangling_tool_call", calls },
       }),
+    onUnansweredInputs: ({ directives, duplicates }) =>
+      emitFlowEvent(flow, {
+        stage: "memory",
+        level: "info",
+        status: "ok",
+        detail: {
+          reason: "repaired_unanswered_inputs",
+          directives,
+          duplicates,
+        },
+      }),
     onContradictedHandoff: ({ calls }) =>
       emitFlowEvent(flow, {
         stage: "generate",

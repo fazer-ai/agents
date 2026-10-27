@@ -9,9 +9,9 @@ import {
 
 // The residue of failed attempts, taken out of the history before the model reads it. Only inputs
 // with no model output between them are compared, and only exact copies are removed: a nudge
-// directive repeated word for word (the last copy stays, so the event's facts are kept once), and a
-// turn's customer input with the same text and the same sent-at and burst-start stamps (the first
-// stays). An ingested message is never a copy: its id comes from the Chatwoot message, so a retry of
+// directive repeated word for word, and a turn's customer input with the same text and the same
+// sent-at and burst-start stamps. The last copy stays, so an event's facts are kept once and the
+// thread's newest message is never removed. An ingested message is never a copy: its id comes from the Chatwoot message, so a retry of
 // it replaces instead of appending, and two of them in one second are two messages. See docs/graph.md, "What a failed attempt leaves in the thread".
 
 function isHumanInput(m: BaseMessage): boolean {
@@ -66,8 +66,7 @@ function residueOfRun(
     if (
       isTurnInput(m) &&
       run.some(
-        (earlier, j) =>
-          j < i && isTurnInput(earlier) && sameTurnInput(earlier, m),
+        (later, j) => j > i && isTurnInput(later) && sameTurnInput(later, m),
       )
     ) {
       out.ids.push(m.id);

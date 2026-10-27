@@ -12,6 +12,7 @@ import {
   humanAgentMessage,
   nudgeMessage,
   sentAtStamp,
+  sourceStamp,
 } from "@/graph/markers";
 import { unansweredInputs } from "@/graph/unanswered-inputs";
 
@@ -35,6 +36,18 @@ function customer(
   });
 }
 
+function sourced(id: string, text: string, source: string, at = AT) {
+  return new HumanMessage({
+    id,
+    content: text,
+    additional_kwargs: {
+      ...conversationStamp(7),
+      ...sentAtStamp(at),
+      ...sourceStamp(source),
+    },
+  });
+}
+
 function undated(id: string, text: string) {
   return new HumanMessage({
     id,
@@ -54,8 +67,8 @@ function ingested(messageId: number, text: string) {
   )[0] as BaseMessage;
 }
 
-function directive(id: string, text = "Faça o follow-up.") {
-  const m = nudgeMessage(text, 7);
+function directive(id: string, text = "Faça o follow-up.", source?: string) {
+  const m = nudgeMessage(text, 7, source);
   m.id = id;
   return m;
 }
@@ -164,6 +177,53 @@ const CASES: Array<{
   {
     name: "a failed event nudge between two copies leaves the customer's input last",
     thread: [customer("h1", "oi"), directive("d1"), customer("h2", "oi")],
+    removed: ["h1"],
+    directives: 0,
+    duplicates: 1,
+  },
+  {
+    name: "two events that render the same words are two occasions",
+    thread: [
+      directive("d1", "Boleto vencido.", "occ:1"),
+      directive("d2", "Boleto vencido.", "occ:2"),
+    ],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "retries of one occasion keep the last, even re-rendered",
+    thread: [
+      directive("d1", "Boleto vencido.", "occ:1"),
+      directive("d2", "Boleto vencido, avise.", "occ:1"),
+    ],
+    removed: ["d1"],
+    directives: 1,
+    duplicates: 0,
+  },
+  {
+    name: "a sourced directive and an older unsourced one are not copies",
+    thread: [directive("d1"), directive("d2", "Faça o follow-up.", "occ:1")],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "two messages with the same words in the same second are two inputs",
+    thread: [
+      sourced("h1", "sim", "message:1"),
+      sourced("h2", "sim", "message:2"),
+    ],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "a retry of the turn answering one message keeps the last copy",
+    thread: [
+      sourced("h1", "sim", "message:1"),
+      sourced("h2", "sim", "message:1"),
+    ],
     removed: ["h1"],
     directives: 0,
     duplicates: 1,

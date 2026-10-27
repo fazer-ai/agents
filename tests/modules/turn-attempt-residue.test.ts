@@ -16,6 +16,7 @@ import {
   isNudgeTurn,
   nudgeMessage,
   sentAtStamp,
+  stampedSource,
 } from "@/graph/markers";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -315,9 +316,11 @@ describe.skipIf(!dbUp)(
       expect(sent).toEqual(["Resposta"]);
       const answered = model.seen.at(-1) ?? [];
       expect(contents(answered, "human")).toEqual(["qual o horário?"]);
-      expect(contents(await storedMessages(convId), "human")).toEqual([
-        "qual o horário?",
-      ]);
+      const stored = await storedMessages(convId);
+      expect(contents(stored, "human")).toEqual(["qual o horário?"]);
+      expect(
+        stored.filter((m) => m.getType() === "human").map(stampedSource),
+      ).toEqual(["message:1"]);
     });
 
     test("a tool that ran before the failure stays in the thread for the retry", async () => {

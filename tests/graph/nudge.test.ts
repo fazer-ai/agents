@@ -26,12 +26,14 @@ import {
   isConversationDivider,
   isNudgeTurn,
   stampedConversationId,
+  stampedSource,
   UNDELIVERED_PROACTIVE_NOTE_HEAD,
 } from "@/graph/markers";
 import {
   type ApprovedDocumentDelivery,
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
+  nudgeOccasionKey,
   OPERATOR_EVENT_NOTE_PREFIX,
   OUTSIDE_WINDOW_NOTE_PREFIX,
   parseThreadId,
@@ -8352,6 +8354,20 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       "messaged",
     ]);
     expect((model.seen.at(-1) ?? []).filter(isNudgeTurn)).toHaveLength(1);
+    const tuple = await saver.getTuple({
+      configurable: { thread_id: `${tenantId}:${instanceId}:16624` },
+    });
+    const kept = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    ).filter(isNudgeTurn);
+    expect(kept.map(stampedSource)).toEqual([
+      nudgeOccasionKey(instanceId, 16_624, {
+        source: "ASAAS",
+        status: "paid",
+        value: 100,
+        currency: "BRL",
+      }),
+    ]);
     expect(s.messages).toEqual([[16_624, "Ainda tem interesse?"]]);
     await settleFlowEvents();
     const repairs = (

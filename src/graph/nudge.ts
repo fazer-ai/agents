@@ -2522,6 +2522,7 @@ async function runAgentNudgeBody(
                 followupSilenceChannel(nudgeCfg, tools),
               ),
               conversationId,
+              nudgeOccasionKey(instanceId, conversationId, params.nudge),
             ),
           ],
         },

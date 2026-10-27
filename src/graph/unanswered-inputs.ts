@@ -5,43 +5,58 @@ import {
   stampedBurstStart,
   stampedConversationId,
   stampedSentAt,
+  stampedSource,
 } from "./markers";
 
 // The residue of failed attempts, taken out of the history before the model reads it. Only inputs
-// with no model output between them are compared, and only exact copies are removed: a nudge
-// directive repeated word for word, and a turn's customer input with the same text and the same
-// sent-at and burst-start stamps. The last copy stays, so an event's facts are kept once and the
-// thread's newest message is never removed. An ingested message is never a copy: its id comes from the Chatwoot message, so a retry of
-// it replaces instead of appending, and two of them in one second are two messages. See docs/graph.md, "What a failed attempt leaves in the thread".
+// with no model output between them are compared, and the last copy stays, so an event's facts are
+// kept once and the thread's newest message is never removed. A copy names the same source (the
+// occasion of a nudge, the message a reactive turn answers) as a later input; an input written before
+// inputs carried a source is matched by its text and stamps instead. An ingested message is never a
+// copy. See docs/graph.md, "What a failed attempt leaves in the thread".
 
 function isHumanInput(m: BaseMessage): boolean {
   return m.getType() === "human";
 }
 
+function sameSource(
+  a: BaseMessage,
+  b: BaseMessage,
+  unsourced: () => boolean,
+): boolean {
+  if (stampedConversationId(a) !== stampedConversationId(b)) return false;
+  const sa = stampedSource(a);
+  const sb = stampedSource(b);
+  if (sa !== null || sb !== null) return sa === sb;
+  return unsourced();
+}
+
 function sameDirective(a: BaseMessage, b: BaseMessage): boolean {
-  return (
-    typeof a.content === "string" &&
-    a.content === b.content &&
-    stampedConversationId(a) === stampedConversationId(b)
+  return sameSource(
+    a,
+    b,
+    () => typeof a.content === "string" && a.content === b.content,
   );
 }
 
-// A turn's customer input: dated, and not an ingested message.
+// A turn's customer input: named by its source or dated, and not an ingested message.
 function isTurnInput(m: BaseMessage): boolean {
   return (
     !isSystemMarker(m) &&
     !(typeof m.id === "string" && m.id.startsWith("ingest:")) &&
     typeof m.content === "string" &&
-    stampedSentAt(m) !== null
+    (stampedSource(m) !== null || stampedSentAt(m) !== null)
   );
 }
 
 function sameTurnInput(a: BaseMessage, b: BaseMessage): boolean {
-  return (
-    a.content === b.content &&
-    stampedSentAt(a)?.getTime() === stampedSentAt(b)?.getTime() &&
-    stampedBurstStart(a)?.getTime() === stampedBurstStart(b)?.getTime() &&
-    stampedConversationId(a) === stampedConversationId(b)
+  return sameSource(
+    a,
+    b,
+    () =>
+      a.content === b.content &&
+      stampedSentAt(a)?.getTime() === stampedSentAt(b)?.getTime() &&
+      stampedBurstStart(a)?.getTime() === stampedBurstStart(b)?.getTime(),
   );
 }
 

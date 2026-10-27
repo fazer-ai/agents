@@ -133,6 +133,7 @@ import {
   conversationStamp,
   humanHandbackMessage,
   sentAtStamp,
+  sourceStamp,
   turnWasCalledOff,
   undeliveredReplyNote,
 } from "./markers";
@@ -2200,6 +2201,11 @@ async function runTurnBody(
                   ...conversationStamp(conversationId),
                   ...sentAtStamp(loaded.promptOpts.messageAt),
                   ...burstStartStamp(loaded.burstStartedAt),
+                  ...sourceStamp(
+                    params.messageId === undefined
+                      ? null
+                      : `message:${params.messageId}`,
+                  ),
                 },
               }),
             ],

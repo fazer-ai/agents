@@ -1,4 +1,4 @@
-import type { AIMessage, BaseMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 import {
   isNudgeTurn,
   isSystemMarker,
@@ -7,35 +7,73 @@ import {
   stampedSentAt,
 } from "./markers";
 
-// The residue of failed attempts, taken out of the history before the model reads it: a nudge
-// directive no model output followed, and a customer input that is an exact copy (same text, same
-// stamps) of an earlier one with no finished answer between them, where the first stays. Recognised
-// by metadata, never by text a customer could type, and an unstamped input is never taken for a
-// copy. See docs/graph.md, "What a failed attempt leaves in the thread".
+// The residue of failed attempts, taken out of the history before the model reads it. Only inputs
+// with no model output between them are compared, and only exact copies are removed: a nudge
+// directive repeated word for word (the last copy stays, so the event's facts are kept once), and a
+// turn's customer input with the same text and the same sent-at and burst-start stamps (the first
+// stays). An ingested message is never a copy: its id comes from the Chatwoot message, so a retry of
+// it replaces instead of appending, and two of them in one second are two messages. See docs/graph.md, "What a failed attempt leaves in the thread".
 
-function isHumanInput(m: BaseMessage | undefined): boolean {
-  return m !== undefined && m.getType() === "human";
+function isHumanInput(m: BaseMessage): boolean {
+  return m.getType() === "human";
 }
 
-// An answer the model finished: a retry never resumes past one, so an input before it is not
-// something a later copy could repeat. A message that only calls tools is progress, not an answer.
-function isCompletedReply(m: BaseMessage): boolean {
+function sameDirective(a: BaseMessage, b: BaseMessage): boolean {
   return (
-    m.getType() === "ai" && ((m as AIMessage).tool_calls?.length ?? 0) === 0
-  );
-}
-
-function sameCustomerInput(a: BaseMessage, b: BaseMessage): boolean {
-  if (isSystemMarker(a) || isSystemMarker(b)) return false;
-  if (typeof a.content !== "string" || a.content !== b.content) return false;
-  const sentA = stampedSentAt(a)?.getTime() ?? null;
-  const burstA = stampedBurstStart(a)?.getTime() ?? null;
-  if (sentA === null && burstA === null) return false;
-  return (
-    sentA === (stampedSentAt(b)?.getTime() ?? null) &&
-    burstA === (stampedBurstStart(b)?.getTime() ?? null) &&
+    typeof a.content === "string" &&
+    a.content === b.content &&
     stampedConversationId(a) === stampedConversationId(b)
   );
+}
+
+// A turn's customer input: dated, and not an ingested message.
+function isTurnInput(m: BaseMessage): boolean {
+  return (
+    !isSystemMarker(m) &&
+    !(typeof m.id === "string" && m.id.startsWith("ingest:")) &&
+    typeof m.content === "string" &&
+    stampedSentAt(m) !== null
+  );
+}
+
+function sameTurnInput(a: BaseMessage, b: BaseMessage): boolean {
+  return (
+    a.content === b.content &&
+    stampedSentAt(a)?.getTime() === stampedSentAt(b)?.getTime() &&
+    stampedBurstStart(a)?.getTime() === stampedBurstStart(b)?.getTime() &&
+    stampedConversationId(a) === stampedConversationId(b)
+  );
+}
+
+function residueOfRun(
+  run: BaseMessage[],
+  out: { ids: string[]; directives: number; duplicates: number },
+) {
+  for (let i = 0; i < run.length; i++) {
+    const m = run[i] as BaseMessage;
+    if (typeof m.id !== "string") continue;
+    if (isNudgeTurn(m)) {
+      if (
+        run
+          .slice(i + 1)
+          .some((later) => isNudgeTurn(later) && sameDirective(m, later))
+      ) {
+        out.ids.push(m.id);
+        out.directives += 1;
+      }
+      continue;
+    }
+    if (
+      isTurnInput(m) &&
+      run.some(
+        (earlier, j) =>
+          j < i && isTurnInput(earlier) && sameTurnInput(earlier, m),
+      )
+    ) {
+      out.ids.push(m.id);
+      out.duplicates += 1;
+    }
+  }
 }
 
 export function unansweredInputs(messages: BaseMessage[]): {
@@ -43,28 +81,16 @@ export function unansweredInputs(messages: BaseMessage[]): {
   directives: number;
   duplicates: number;
 } {
-  const ids: string[] = [];
-  let directives = 0;
-  let duplicates = 0;
-  const inputs: BaseMessage[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i] as BaseMessage;
-    if (isCompletedReply(m)) inputs.length = 0;
-    if (!isHumanInput(m)) continue;
-    const hasId = typeof m.id === "string";
-    if (isNudgeTurn(m)) {
-      if (hasId && isHumanInput(messages[i + 1])) {
-        ids.push(m.id as string);
-        directives += 1;
-      }
+  const out = { ids: [] as string[], directives: 0, duplicates: 0 };
+  let run: BaseMessage[] = [];
+  for (const m of messages) {
+    if (isHumanInput(m)) {
+      run.push(m);
       continue;
     }
-    if (hasId && inputs.some((earlier) => sameCustomerInput(earlier, m))) {
-      ids.push(m.id as string);
-      duplicates += 1;
-      continue;
-    }
-    inputs.push(m);
+    residueOfRun(run, out);
+    run = [];
   }
-  return { ids, directives, duplicates };
+  residueOfRun(run, out);
+  return out;
 }

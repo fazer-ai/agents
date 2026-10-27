@@ -5,8 +5,9 @@ import {
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { ingestedMessages } from "@/graph/ingest";
 import {
-  conversationDividerMessage,
+  burstStartStamp,
   conversationStamp,
   humanAgentMessage,
   nudgeMessage,
@@ -16,16 +17,45 @@ import { unansweredInputs } from "@/graph/unanswered-inputs";
 
 const AT = new Date("2026-10-20T12:00:00Z");
 
-function customer(id: string, text: string, at: Date | null = AT, conv = 7) {
+function customer(
+  id: string,
+  text: string,
+  at: Date = AT,
+  conv = 7,
+  burst: Date | null = AT,
+) {
   return new HumanMessage({
     id,
     content: text,
-    additional_kwargs: { ...conversationStamp(conv), ...sentAtStamp(at) },
+    additional_kwargs: {
+      ...conversationStamp(conv),
+      ...sentAtStamp(at),
+      ...burstStartStamp(burst),
+    },
   });
 }
 
-function directive(id: string) {
-  const m = nudgeMessage("Faça o follow-up.", 7);
+function undated(id: string, text: string) {
+  return new HumanMessage({
+    id,
+    content: text,
+    additional_kwargs: conversationStamp(7),
+  });
+}
+
+function ingested(messageId: number, text: string) {
+  return ingestedMessages(
+    "customer",
+    text,
+    7,
+    false,
+    messageId,
+    AT,
+  )[0] as BaseMessage;
+}
+
+function directive(id: string, text = "Faça o follow-up.") {
+  const m = nudgeMessage(text, 7);
   m.id = id;
   return m;
 }
@@ -71,32 +101,51 @@ const CASES: Array<{
     duplicates: 0,
   },
   {
-    name: "directives no model output followed are removed, the last input never",
+    name: "repeated directives with no output between them keep the last copy",
     thread: [directive("d1"), directive("d2"), directive("d3")],
     removed: ["d1", "d2"],
     directives: 2,
     duplicates: 0,
   },
   {
-    name: "a failed directive before the customer's next message is removed",
+    name: "a failed directive followed by the customer stays: it may carry an event's facts",
     thread: [ai("a0"), directive("d1"), customer("h1", "voltei")],
-    removed: ["d1"],
-    directives: 1,
+    removed: [],
+    directives: 0,
     duplicates: 0,
   },
   {
-    name: "a failed directive before a divider is removed",
+    name: "copies of a failed directive before the customer's message keep one",
     thread: [
+      ai("a0"),
       directive("d1"),
-      conversationDividerMessage(8),
-      customer("h1", "oi", AT, 8),
+      directive("d2"),
+      customer("h1", "voltei"),
     ],
     removed: ["d1"],
     directives: 1,
     duplicates: 0,
   },
   {
-    name: "the same customer input sent twice by a retry keeps the last copy",
+    name: "two different events are not copies of each other",
+    thread: [
+      directive("d1"),
+      directive("d2", "Pagamento confirmado."),
+      ai("a1"),
+    ],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "the same directive answered each time is not residue",
+    thread: [directive("d1"), ai("a1"), directive("d2"), ai("a2")],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "the same customer input sent twice by a retry keeps the first copy",
     thread: [
       customer("h1", "qual o horário?"),
       customer("h2", "qual o horário?"),
@@ -123,8 +172,35 @@ const CASES: Array<{
     duplicates: 0,
   },
   {
-    name: "unstamped inputs are never taken for copies",
-    thread: [customer("h1", "oi", null), customer("h2", "oi", null)],
+    name: "a single-message burst's retry copies carry no burst stamp and are still copies",
+    thread: [
+      customer("h1", "oi", AT, 7, null),
+      customer("h2", "oi", AT, 7, null),
+    ],
+    removed: ["h2"],
+    directives: 0,
+    duplicates: 1,
+  },
+  {
+    name: "the same words with another burst start are not a copy",
+    thread: [
+      customer("h1", "oi", AT, 7, null),
+      customer("h2", "oi", AT, 7, AT),
+    ],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "undated inputs are never taken for copies",
+    thread: [undated("h1", "oi"), undated("h2", "oi")],
+    removed: [],
+    directives: 0,
+    duplicates: 0,
+  },
+  {
+    name: "ingested messages in the same second are two messages",
+    thread: [ingested(1, "sim"), ingested(2, "sim")],
     removed: [],
     directives: 0,
     duplicates: 0,
@@ -154,16 +230,16 @@ const CASES: Array<{
     duplicates: 0,
   },
   {
-    name: "a copy appended after the failed attempt's tool progress is removed, the progress stays",
+    name: "the same input after a tool step is left alone: a terminal tool ends a turn too",
     thread: [
       customer("h1", "que horas são?"),
       calling("a1"),
       new ToolMessage({ id: "t1", content: "12:00", tool_call_id: "c-a1" }),
       customer("h2", "que horas são?"),
     ],
-    removed: ["h2"],
+    removed: [],
     directives: 0,
-    duplicates: 1,
+    duplicates: 0,
   },
 ];
 

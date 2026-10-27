@@ -201,6 +201,23 @@ describe("MCP tool descriptions", () => {
     }
   });
 
+  // What a trim of integration_create must keep: the pointer that sends a caller looking for a
+  // payment gateway to the GENERIC catalog entry (which carries the config keys), and the rules that
+  // refuse or change the call.
+  test("integration_create keeps the GENERIC pointer and its rules through a trim", async () => {
+    const d = (await descriptions()).get("integration_create") as string;
+    for (const kept of [
+      "integration_catalog",
+      "GENERIC",
+      "payment gateways",
+      "vault entry NAMES",
+      "not returned",
+      "dry_run is false",
+    ]) {
+      expect([kept, d.includes(kept)]).toEqual([kept, true]);
+    }
+  });
+
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema
   // land anywhere else and pass, so the totals are ratcheted too, with headroom smaller than one

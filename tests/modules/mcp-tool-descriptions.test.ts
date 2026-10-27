@@ -201,6 +201,23 @@ describe("MCP tool descriptions", () => {
     }
   });
 
+  // What a trim of integration_create must keep: the pointer that sends a caller looking for a
+  // payment gateway to the GENERIC catalog entry (which carries the config keys), and the rules that
+  // refuse or change the call.
+  test("integration_create keeps the GENERIC pointer and its rules through a trim", async () => {
+    const d = (await descriptions()).get("integration_create") as string;
+    for (const kept of [
+      "integration_catalog",
+      "GENERIC",
+      "payment gateways",
+      "vault entry NAMES",
+      "not returned",
+      "dry_run is false",
+    ]) {
+      expect([kept, d.includes(kept)]).toEqual([kept, true]);
+    }
+  });
+
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema
   // land anywhere else and pass, so the totals are ratcheted too, with headroom smaller than one
@@ -218,7 +235,9 @@ describe("MCP tool descriptions", () => {
     // SDK); 35_532 with the dashboard_embed_link tools, whose job is a new secret-bearing link; 35_951
     // with the four occurrence tools, each cut to its job and the rules that refuse (the rest is
     // docs/occurrences.md); 36_447 with the four occurrence monitor tools (list, create, rename,
-    // delete), each a job no other tool does, with the bare sentence that says it.
+    // delete), each a job no other tool does, with the bare sentence that says it; 36_600 once
+    // integration_create spelled out what the GENERIC catalog entry already says about payment
+    // gateways, back to 36_494 with that pointer cut to one clause.
     expect(desc).toBeLessThanOrEqual(36_500);
     // Measured at 82_062 with the agent_settings_set additions (limits, follow-ups, other inboxes,
     // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client

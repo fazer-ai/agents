@@ -2774,7 +2774,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "integration_create",
       {
         description:
-          "Instantiate an integration from the catalog (see integration_catalog; its GENERIC entry says which config keys verify a payment gateway's signature and look the payment up). credential_ref/inbound_secret_ref are vault entry NAMES (resolved server-side). The inbound route token is a generated secret: it is NOT returned here — the response gives a console URL to reveal it. Previews and creates NOTHING unless dry_run is false.",
+          "Instantiate an integration from integration_catalog (its GENERIC entry also takes payment gateways). credential_ref/inbound_secret_ref are vault entry NAMES, resolved server-side. The inbound route token is not returned: the response gives a console URL to reveal it. Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           catalog_type: z.string(),
           name: z.string(),

@@ -220,7 +220,7 @@ describe("MCP tool descriptions", () => {
     // docs/occurrences.md); 36_447 with the four occurrence monitor tools (list, create, rename,
     // delete), each a job no other tool does, with the bare sentence that says it; 36_600 once
     // integration_create spelled out what the GENERIC catalog entry already says about payment
-    // gateways, back to 36_496 with that pointer cut to one clause.
+    // gateways, back to 36_494 with that pointer cut to one clause.
     expect(desc).toBeLessThanOrEqual(36_500);
     // Measured at 82_062 with the agent_settings_set additions (limits, follow-ups, other inboxes,
     // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client

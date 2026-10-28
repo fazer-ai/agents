@@ -56,6 +56,7 @@ import {
   withFenceReporter,
 } from "./tools/fence-report";
 import { isReadTool } from "./tools/reads";
+import { unansweredInputs } from "./unanswered-inputs";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
 // the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
@@ -133,6 +134,12 @@ export interface BuildAgentGraphParams {
   // `repairDanglingToolCalls`), with how many. Once per repair: the repaired message is written back
   // to the thread, so no later round or turn finds the same calls again.
   onDanglingToolCalls?: (info: { calls: number }) => void;
+  // Fired on the round that took the residue of failed attempts out of the history (see
+  // ./unanswered-inputs.ts), with how many of each kind. Once per repair, for the same reason.
+  onUnansweredInputs?: (info: {
+    directives: number;
+    duplicates: number;
+  }) => void;
   // Fired when a batch's handoff was answered without running because the same batch closes the
   // conversation (./contradicted-handoff.ts), with how many.
   onContradictedHandoff?: (info: { calls: number }) => void;
@@ -677,6 +684,7 @@ export function buildAgentGraph({
   historyDates,
   onHistoryTrim,
   onDanglingToolCalls,
+  onUnansweredInputs,
   onContradictedHandoff,
   stillWanted,
   noReplyChannel,
@@ -1043,14 +1051,33 @@ export function buildAgentGraph({
       // Before anything reads the history, so the budget, the window and the provider all see the
       // repaired one. The replacements go FIRST in the update: the body can replace the same message
       // again (`silenceNarration`), and the reducer applies them in order.
-      const repair = repairDanglingToolCalls(state.messages);
-      if (repair.replacements.length === 0) return await agentNodeBody(state);
+      const residue = unansweredInputs(state.messages);
+      const gone = new Set(residue.ids);
+      const repair = repairDanglingToolCalls(
+        gone.size === 0
+          ? state.messages
+          : state.messages.filter((m) => !gone.has(m.id as string)),
+      );
+      if (repair.replacements.length === 0 && gone.size === 0)
+        return await agentNodeBody(state);
       const update = await agentNodeBody({
         ...state,
         messages: repair.messages,
       });
-      onDanglingToolCalls?.({ calls: repair.calls });
-      return { messages: [...repair.replacements, ...update.messages] };
+      if (repair.replacements.length > 0)
+        onDanglingToolCalls?.({ calls: repair.calls });
+      if (gone.size > 0)
+        onUnansweredInputs?.({
+          directives: residue.directives,
+          duplicates: residue.duplicates,
+        });
+      return {
+        messages: [
+          ...residue.ids.map((id) => new RemoveMessage({ id })),
+          ...repair.replacements,
+          ...update.messages,
+        ],
+      };
     } catch (err) {
       if (jobSignal?.aborted && jobSignal.reason instanceof Error) {
         throw jobSignal.reason;

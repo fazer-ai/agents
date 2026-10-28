@@ -95,6 +95,25 @@ export function stampedBurstStart(message: BaseMessage): Date | null {
   return Number.isFinite(at.getTime()) ? at : null;
 }
 
+// What produced a turn's input: the Chatwoot message a reactive turn answers (the burst watermark on
+// a flush) or the occasion a nudge is for. A retry of the same job carries the same value and a
+// different input never does, so it is what tells a retry's copy from a second message with the same
+// words.
+const SOURCE_KWARG = "fazerSource";
+
+export function sourceStamp(
+  source: string | null | undefined,
+): Record<string, unknown> {
+  return typeof source === "string" && source.length > 0
+    ? { [SOURCE_KWARG]: source }
+    : {};
+}
+
+export function stampedSource(message: BaseMessage): string | null {
+  const raw = message.additional_kwargs?.[SOURCE_KWARG];
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
 // Which attendance the thread is on: the last stamped message's, not "any message stamped with X". A
 // conversation can be REOPENED after another ran on this thread (an operator picking an old one back
 // up, a human agent replying in it), so an earlier stamp says nothing about where the thread is now.
@@ -184,12 +203,14 @@ export function endedInHumanAttendance(message: BaseMessage): boolean {
 export function nudgeMessage(
   content: string,
   conversationId: number,
+  source?: string,
 ): HumanMessage {
   return new HumanMessage({
     content,
     additional_kwargs: {
       [MARKER_KWARG]: "nudge" satisfies SystemMarker,
       ...conversationStamp(conversationId),
+      ...sourceStamp(source),
     },
   });
 }

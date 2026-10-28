@@ -195,6 +195,7 @@ import {
   turnReachedTheCustomer,
 } from "./tools/native";
 import type { ReplyChoice } from "./tools/reply-as-text";
+import { turnInputId } from "./turn-input-id";
 import type { UsagePersist } from "./usage";
 
 // The agent runtime: resolve the inbox's agent config, build the model, run the LangGraph thread,
@@ -2130,22 +2131,23 @@ async function runTurnBody(
     // Re-derived right before the invoke: the invoke this deferred to may have appended the
     // note itself. This narrows the window without closing it; the leftover case is two identical
     // system notes that nothing consumes.
-    const carriedHandback =
-      handbackDeferred &&
-      owesHandbackNote(
-        (
-          (
-            await buildThreadStateGraph(
-              params.deps?.checkpointer ?? (await getCheckpointer()),
-            ).getState({ configurable: { thread_id: graphThreadId } })
-          ).values as { messages?: BaseMessage[] } | undefined
-        )?.messages ?? [],
-      );
-    // This invoke's own message, named, so the error path can ask whether these words reached
-    // the channel: a count cannot, since another turn on the shared thread can grow it. Needs no
-    // before-picture, so the ordinary turn pays nothing. No test separates it from a count; it is
-    // kept because matching the id is strictly narrower.
-    const inputMessageId = crypto.randomUUID();
+    const inputKey =
+      params.messageId === undefined ? null : `turn:${params.messageId}`;
+    const before =
+      handbackDeferred || inputKey !== null
+        ? ((
+            (
+              await buildThreadStateGraph(
+                params.deps?.checkpointer ?? (await getCheckpointer()),
+              ).getState({ configurable: { thread_id: graphThreadId } })
+            ).values as { messages?: BaseMessage[] } | undefined
+          )?.messages ?? [])
+        : [];
+    const carriedHandback = handbackDeferred && owesHandbackNote(before);
+    // This invoke's own message, named, so the error path can ask whether these words reached the
+    // channel: a count cannot, since another turn on the shared thread can grow it. A retry of the
+    // same message reuses the id, so the reducer replaces the copy a failed attempt left.
+    const inputMessageId = turnInputId(inputKey, before);
     // Reported the moment the message is in the thread, and awaited, so a later throw cannot
     // lose it (the rule `settleDelivery` follows in ../modules/chatwoot/webhook.ts).
     let reportedFoldedIn = false;

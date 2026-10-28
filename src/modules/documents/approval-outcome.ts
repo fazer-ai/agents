@@ -428,6 +428,7 @@ export async function runApprovalOutcome(
   // the line, the judge handed over), and that is not a delivery.
   let attached = false;
   const outcome: RunAgentNudgeOutcome = await runAgentNudge({
+    runKey: `approval:${requestId}`,
     tenantId,
     threadId: target.conv.threadId,
     signal: deps.signal,

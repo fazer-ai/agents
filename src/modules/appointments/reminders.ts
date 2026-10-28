@@ -758,6 +758,7 @@ export async function appointmentReminderHandler(
 
   const outcome = await runAgentNudge({
     signal: ctx?.signal,
+    runKey: `job:${job.id}`,
     tenantId,
     threadId,
     // NOTE: The agent resolving after the booking is the ordinary close ("anything else?" / "no"),

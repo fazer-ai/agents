@@ -8385,4 +8385,63 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       .filter((d) => d?.reason === "repaired_unanswered_inputs");
     expect(repairs.reduce((n, d) => n + (d.directives ?? 0), 0)).toBe(5);
   });
+
+  test("a follow-up that keeps failing stores its directive once after every attempt", async () => {
+    await seedConv(16_627, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    let calls = 0;
+    class Refusing extends BaseChatModel {
+      _llmType() {
+        return "refusing";
+      }
+      override bindTools() {
+        return this as never;
+      }
+      async _generate(): Promise<ChatResult> {
+        calls += 1;
+        if (calls <= 3) {
+          const err = new Error("429 quota") as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return {
+          generations: [{ text: "", message: new AIMessage("Oi de novo!") }],
+        };
+      }
+    }
+    const model = new Refusing({});
+    const thread = `${tenantId}:${instanceId}:16627`;
+    const stored: string[][] = [];
+    for (let i = 0; i < 4; i++) {
+      await runAgentNudge({
+        tenantId,
+        threadId: thread,
+        runKey: "job:77",
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      }).catch(() => "threw");
+      const tuple = await saver.getTuple({
+        configurable: { thread_id: thread },
+      });
+      stored.push(
+        ((tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[])
+          .filter(isNudgeTurn)
+          .map((m) => m.id as string),
+      );
+    }
+    expect(stored).toEqual([
+      ["nudge:job:77"],
+      ["nudge:job:77"],
+      ["nudge:job:77"],
+      ["nudge:job:77"],
+    ]);
+    expect(s.messages).toEqual([[16_627, "Oi de novo!"]]);
+  });
 });

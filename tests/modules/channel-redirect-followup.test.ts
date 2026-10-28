@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { isNudgeTurn } from "@/graph/markers";
 import {
   armRedirectChatFollowUp,
   chatFollowupNudge,
@@ -1815,6 +1817,24 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     // The stale run stays down: nothing sent, nothing resolved.
     expect(s.sent).toEqual([]);
     expect(s.resolved).toEqual([]);
+  });
+
+  test("the chat stage writes its directive under the job's id", async () => {
+    const job = await claimed("chat");
+    const s = stubClient();
+    const checkpointer = new MemorySaver();
+    await redirectFollowUpHandler(job, appDb, {
+      ...deps(),
+      checkpointer,
+      makeClient: s.makeClient,
+    });
+    const memory = await checkpointer.getTuple({
+      configurable: { thread_id: widgetThread },
+    });
+    const directives = (
+      (memory?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    ).filter(isNudgeTurn);
+    expect(directives.map((m) => m.id)).toEqual([`nudge:job:${job.id}`]);
   });
 
   // The last boundary the handler does not own: its RETURN. Whatever it decides, the worker is what

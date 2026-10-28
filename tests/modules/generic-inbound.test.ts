@@ -496,6 +496,7 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]?.threadId).toBe(THREAD());
       expect(calls[0]?.deliverToResolved).toBe(true);
+      expect(calls[0]?.runKey).toBe(`delivery:${r.deliveryId}`);
       expect(calls[0]?.nudge).toMatchObject({
         source: "GENERIC",
         kind: "agent_nudge",

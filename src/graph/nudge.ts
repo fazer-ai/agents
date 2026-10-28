@@ -141,6 +141,7 @@ import {
   skipHandoverKind,
 } from "./skip-handover";
 import { ToolFlowLogger } from "./tool-flowlog";
+import { turnInputId } from "./turn-input-id";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
 
@@ -332,6 +333,11 @@ export interface RunAgentNudgeParams {
   // The signal of the scheduler job this nudge runs for. Its deadline aborts the invoke, and every
   // write the nudge would make afterwards is refused through `stillWanted`.
   signal?: AbortSignal;
+  // The run every attempt of this nudge belongs to (the scheduler job, the inbound delivery), stable
+  // across its retries and never shared with another run. The directive is written under it, so a
+  // retry replaces the copy a failed attempt left instead of appending one. Absent, each attempt
+  // writes a fresh directive.
+  runKey?: string;
   tenantId: bigint;
   threadId: string;
   nudge: AgentNudge;
@@ -2494,17 +2500,19 @@ async function runAgentNudgeBody(
     // there, since the turn failed. The hand-back note is re-derived right before the invoke
     // (../graph/runtime.ts): the invoke this deferred to can append it meanwhile, and carrying ours
     // too would put two in the channel.
-    const carriedHandback =
-      handbackDeferred &&
-      owesHandbackNote(
-        (
-          (
-            await buildThreadStateGraph(checkpointer).getState({
-              configurable: { thread_id: graphThreadId },
-            })
-          ).values as { messages?: BaseMessage[] } | undefined
-        )?.messages ?? [],
-      );
+    const directiveKey =
+      params.runKey === undefined ? null : `nudge:${params.runKey}`;
+    const before =
+      handbackDeferred || directiveKey !== null
+        ? ((
+            (
+              await buildThreadStateGraph(checkpointer).getState({
+                configurable: { thread_id: graphThreadId },
+              })
+            ).values as { messages?: BaseMessage[] } | undefined
+          )?.messages ?? [])
+        : [];
+    const carriedHandback = handbackDeferred && owesHandbackNote(before);
     closing.generating = true;
     result = await graph
       .invoke(
@@ -2523,6 +2531,7 @@ async function runAgentNudgeBody(
               ),
               conversationId,
               nudgeOccasionKey(instanceId, conversationId, params.nudge),
+              turnInputId(directiveKey, before),
             ),
           ],
         },

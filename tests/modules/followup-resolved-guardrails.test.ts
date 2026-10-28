@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { isNudgeTurn } from "@/graph/markers";
 import { OUTSIDE_WINDOW_NOTE_PREFIX } from "@/graph/nudge";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAgent, updateAgent } from "@/modules/agents/service";
@@ -733,6 +735,35 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.notes).toEqual([]);
     // E o espelho sai consertado, que é como o countdown volta a ser verdade na tela.
     expect((await mirroredConv(CONV)).assigneeId).toBe(INBOX_A);
+  });
+
+  test("o follow-up grava a diretiva sob o id do job, para a nova tentativa substituir em vez de somar", async () => {
+    const CONV = 4316;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      assigneeType: "AgentBot",
+      assigneeId: INBOX_A,
+    });
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "pending",
+      meta: {
+        assignee_type: "AgentBot",
+        assignee: { id: INBOX_A, name: "Guard" },
+      },
+    }));
+    const deps = handlerDeps(s);
+    expect(await followUpHandler(jobFor(CONV), appDb, deps)).toEqual({
+      outcome: "done",
+    });
+    const tuple = await deps.checkpointer.getTuple({
+      configurable: { thread_id: threadOf(CONV) },
+    });
+    const directives = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    ).filter(isNudgeTurn);
+    expect(directives.map((m) => m.id)).toEqual([`nudge:job:${phantomJobId}`]);
   });
 
   test("(2i) o prazo do job (issue #811): um follow-up cujo sinal já abortou não envia", async () => {

@@ -43,7 +43,10 @@ import {
 // with a credential to go look at.
 function signingLabel(
   sub: { signingState: string; secretRef: string | null },
-  t: (k: string, d: string, o?: Record<string, unknown>) => string,
+  t: {
+    (k: string, d: string): string;
+    (k: string, d: string, o: Record<string, unknown>): string;
+  },
 ): string {
   switch (sub.signingState) {
     case "signed":

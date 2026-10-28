@@ -30,11 +30,12 @@ export type TokenUsage = {
 // conversation screen reads them from what the turn recorded, and an old turn recorded neither.
 export type TokenTiming = { turnMs: number | null; modelMs: number | null };
 
-type T = (
-  key: string,
-  fallback: string,
-  opts?: Record<string, unknown>,
-) => string;
+// Two signatures rather than an optional `opts`: i18next's `TFunction` declares the call with and
+// without options as separate overloads, and a single optional one matches neither.
+type T = {
+  (key: string, fallback: string): string;
+  (key: string, fallback: string, opts: Record<string, unknown>): string;
+};
 
 // The words for a ledger node. Static keys, so the extractor sees them; a node not listed here is
 // shown as it is stored rather than dropped, since the count beside it is still true.

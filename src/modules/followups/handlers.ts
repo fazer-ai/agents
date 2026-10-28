@@ -19,6 +19,8 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { conversationIsGone } from "@/modules/chatwoot/conversation-gone";
 import {
   agentBotChatwootId,
   loadChatwootClient,
@@ -501,9 +503,10 @@ async function reconcileFromChatwoot(
   instanceId: bigint,
   conversationId: number,
   deps?: RuntimeDeps,
-): Promise<"bot" | "handed" | "unread"> {
+): Promise<"bot" | "handed" | "gone" | "unread"> {
+  let client: ChatwootClient | null = null;
   try {
-    const client = await loadChatwootClient(tenantId, instanceId, {
+    client = await loadChatwootClient(tenantId, instanceId, {
       base,
       ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}),
     });
@@ -529,6 +532,8 @@ async function reconcileFromChatwoot(
     );
     return shouldBotHandle(done.state, { ourAgentBotId }) ? "bot" : "handed";
   } catch (e) {
+    if (client && (await conversationIsGone(client, conversationId, e)))
+      return "gone";
     logger.warn(
       "followUpHandler: could not reconcile the conversation before a hand-over retry (conv=%s): %s",
       String(conversationId),
@@ -620,6 +625,28 @@ export function inactivityNudge(params: {
   };
 }
 
+// Spends the conversation's follow-up episode: the sweep does not arm it again until a new event.
+async function endEpisode(
+  base: PrismaClient,
+  job: ClaimedJob,
+  instanceId: bigint,
+  conversationId: number,
+  run?: JobContext,
+): Promise<JobResult> {
+  const tenantId = job.tenantId;
+  const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.$executeRaw(Prisma.sql`
+      UPDATE conversations
+         SET last_follow_up_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND chatwoot_instance_id = ${instanceId}
+         AND chatwoot_conversation_id = ${conversationId}
+         AND ${jobNotRetiredSql(job)}`),
+  );
+  if (stamped > 0) run?.commit();
+  return { outcome: "done" };
+}
+
 export async function followUpHandler(
   job: ClaimedJob,
   base: PrismaClient,
@@ -673,19 +700,9 @@ export async function followUpHandler(
     }
     // NOTE: the earlier hand-over did land: its episode is spent here, before the gate ends the run
     // on the conversation no longer being the bot's.
-    if (now === "handed") {
-      const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.$executeRaw(Prisma.sql`
-          UPDATE conversations
-             SET last_follow_up_at = now()
-           WHERE tenant_id = ${tenantId}
-             AND chatwoot_instance_id = ${instanceId}
-             AND chatwoot_conversation_id = ${conversationId}
-             AND ${jobNotRetiredSql(job)}`),
-      );
-      if (stamped > 0) run?.commit();
-      return { outcome: "done" };
-    }
+    // NOTE: a conversation deleted in Chatwoot has no hand-over left to make, now or later.
+    if (now === "handed" || now === "gone")
+      return endEpisode(base, job, instanceId, conversationId, run);
   }
 
   const ctx = await runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -1012,6 +1029,13 @@ export async function followUpHandler(
       runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
       payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
+  }
+  if (delivery.state === "conversation_gone") {
+    logger.info(
+      "followUpHandler: the conversation no longer exists in Chatwoot; the follow-up ends (thread=%s)",
+      threadId,
+    );
+    return endEpisode(base, job, instanceId, conversationId, run);
   }
   // NOTE: a customer message Chatwoot has and the mirror has not reached yet: the turn it starts
   // ends this episode, and the next run reads that from the mirror.

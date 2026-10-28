@@ -12,7 +12,10 @@ import {
   hasLiveAppointment,
 } from "@/modules/appointments/reminders";
 import { mediaFallbackDedupeKey } from "@/modules/chatwoot/channel-failure";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import {
   ensureAllTenantSweeps,
   followUpHandler,
@@ -85,6 +88,10 @@ function stubClient(
     toggleFails?: { on: boolean };
     // The live conversation read fails while this is set.
     liveFails?: { on: boolean };
+    // What the live conversation read throws instead, when a test needs a specific failure.
+    liveThrows?: () => Error;
+    // What the account read throws, when a test needs the whole API unreachable.
+    accountThrows?: () => Error;
   } = {},
 ) {
   let reads = 0;
@@ -101,6 +108,7 @@ function stubClient(
     // with the mirrored assignee it seeded — the default `{}` reads as unassigned.
     getConversation: async (c: number) => {
       if (over.liveFails?.on) throw new Error("Chatwoot unreachable");
+      if (over.liveThrows) throw over.liveThrows();
       const first = liveReads++ === 0 ? over.firstLive : undefined;
       return {
         ...(over.liveVersion === undefined
@@ -111,6 +119,10 @@ function stubClient(
         status: first?.status ?? status,
         meta: first?.meta ?? over.liveMeta ?? {},
       };
+    },
+    getAccountName: async () => {
+      if (over.accountThrows) throw over.accountThrows();
+      return "Conta";
     },
     getMessages: async (
       _c: number,
@@ -1413,6 +1425,152 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       },
     );
     expect(out).toEqual({ outcome: "done" });
+  });
+
+  // A conversation deleted in Chatwoot answers 404 to every read, and no later read changes that:
+  // the follow-up ends and its episode with it, instead of asking again every 30 seconds.
+  test("a conversation deleted in Chatwoot ends the follow-up and its episode", async () => {
+    await seedConversation(1790, due());
+    const gone = () =>
+      new ChatwootApiError(404, "GET /conversations/1790/messages");
+    const s = stubClient({
+      onRead: () => {
+        throw gone();
+      },
+      liveThrows: () => new ChatwootApiError(404, "GET /conversations/1790"),
+    });
+    expect(await run(1790, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(await lastFollowUpOf(1790)).not.toBeNull();
+  });
+
+  // The 404 is the conversation's only when the conversation itself answers it: a proxy, or a route
+  // this Chatwoot lacks, answers 404 for a conversation that is still there.
+  test("a 404 on the messages of a conversation that still exists keeps the backoff", async () => {
+    await seedConversation(1791, due());
+    const s = stubClient({
+      onRead: () => {
+        throw new ChatwootApiError(404, "GET /conversations/1791/messages");
+      },
+    });
+    expect(await run(1791, s)).toMatchObject({
+      outcome: "reschedule",
+      payload: { deferredUnder: "backoff" },
+    });
+    expect(await lastFollowUpOf(1791)).toBeNull();
+  });
+
+  // Only a 404 on the read, confirmed by a 404 on the conversation, says it is gone: a refused token
+  // is not a deletion, and a confirmation that did not answer confirms nothing.
+  test("a 404 the conversation's read does not confirm keeps the backoff", async () => {
+    for (const [convId, first, confirm] of [
+      [
+        1796,
+        () => new ChatwootApiError(401, "GET /conversations/1796/messages"),
+        () => new ChatwootApiError(404, "GET /conversations/1796"),
+      ],
+      [
+        1797,
+        () => new ChatwootApiError(404, "GET /conversations/1797/messages"),
+        () => new ChatwootApiError(503, "GET /conversations/1797"),
+      ],
+    ] as const) {
+      await seedConversation(convId, due());
+      const s = stubClient({
+        onRead: () => {
+          throw first();
+        },
+        liveThrows: confirm,
+      });
+      expect(await run(convId, s)).toMatchObject({
+        outcome: "reschedule",
+        payload: { deferredUnder: "backoff" },
+      });
+      expect(await lastFollowUpOf(convId)).toBeNull();
+    }
+  });
+
+  // A proxy that lost its route to Chatwoot answers 404 for every path, the account included: that is
+  // an unreachable Chatwoot, not a deleted conversation.
+  test("a 404 from every route, the account included, keeps the backoff", async () => {
+    await seedConversation(1798, due());
+    const s = stubClient({
+      onRead: () => {
+        throw new ChatwootApiError(404, "GET /conversations/1798/messages");
+      },
+      liveThrows: () => new ChatwootApiError(404, "GET /conversations/1798"),
+      accountThrows: () => new ChatwootApiError(404, "GET "),
+    });
+    expect(await run(1798, s)).toMatchObject({
+      outcome: "reschedule",
+      payload: { deferredUnder: "backoff" },
+    });
+    expect(await lastFollowUpOf(1798)).toBeNull();
+  });
+
+  // A timeout or a 5xx is a read the next run may get past: the follow-up waits, episode intact.
+  test("a timeout or a 5xx on the read keeps the backoff", async () => {
+    for (const [convId, failure] of [
+      [
+        1792,
+        () => new ChatwootApiError(503, "GET /conversations/1792/messages"),
+      ],
+      [1793, () => new Error("The operation timed out.")],
+    ] as const) {
+      await seedConversation(convId, due());
+      const s = stubClient({
+        onRead: () => {
+          throw failure();
+        },
+        liveThrows: () =>
+          new ChatwootApiError(404, `GET /conversations/${convId}`),
+      });
+      const out = await run(convId, s);
+      expect(out).toMatchObject({
+        outcome: "reschedule",
+        payload: { deferredUnder: "backoff" },
+      });
+      if (out.outcome === "reschedule")
+        expect(out.runAt.getTime()).toBeLessThanOrEqual(Date.now() + 30_000);
+      expect(await lastFollowUpOf(convId)).toBeNull();
+    }
+  });
+
+  // The hand-over retry reads the conversation first: one deleted in Chatwoot has no hand-over left
+  // to make, while one that is only unreachable is waited for.
+  test("a hand-over retry for a conversation deleted in Chatwoot ends", async () => {
+    const retry = (convId: number, s: ReturnType<typeof stubClient>) =>
+      followUpHandler(
+        {
+          ...jobFor(convId),
+          payload: { ...jobFor(convId).payload, handoverRetry: true },
+        },
+        appDb,
+        {
+          makeModel: fakeModel,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      );
+    await seedConversation(1794, due());
+    const gone = stubClient({
+      liveThrows: () => new ChatwootApiError(404, "GET /conversations/1794"),
+    });
+    expect(await retry(1794, gone)).toEqual({ outcome: "done" });
+    expect(gone.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1794)).not.toBeNull();
+
+    await seedConversation(1795, due());
+    const down = stubClient({
+      liveThrows: () => new ChatwootApiError(503, "GET /conversations/1795"),
+    });
+    expect(await retry(1795, down)).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(await lastFollowUpOf(1795)).toBeNull();
   });
 
   // A refusal that never gets a resend (a wall, or a resend refused itself) is not waited for.

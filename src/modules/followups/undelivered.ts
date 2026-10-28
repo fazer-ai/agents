@@ -6,7 +6,9 @@ import {
   mediaFallbackDedupeKey,
   resendExpected,
 } from "@/modules/chatwoot/channel-failure";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { replyKeyOf } from "@/modules/chatwoot/constants";
+import { conversationIsGone } from "@/modules/chatwoot/conversation-gone";
 import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
@@ -31,6 +33,8 @@ export type LastReplyDelivery =
   // landed late is activity the inactivity delay counts from.
   | { state: "delivered"; repliedAt?: Date }
   | { state: "customer_spoke" }
+  // The conversation no longer exists in Chatwoot: there is no reply left to ask about, now or later.
+  | { state: "conversation_gone" }
   | { state: "resend_pending"; until: Date }
   | {
       state: "undelivered";
@@ -85,7 +89,7 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-export async function lastReplyDelivery(params: {
+type LastReplyDeliveryParams = {
   tenantId: bigint;
   instanceId: bigint;
   chatwootConversationId: number;
@@ -107,11 +111,28 @@ export async function lastReplyDelivery(params: {
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
-}): Promise<LastReplyDelivery> {
+};
+
+export async function lastReplyDelivery(
+  params: LastReplyDeliveryParams,
+): Promise<LastReplyDelivery> {
   const client = await loadChatwootClient(params.tenantId, params.instanceId, {
     ...params.deps,
     base: params.base,
   });
+  try {
+    return await readLastReplyDelivery(client, params);
+  } catch (err) {
+    if (await conversationIsGone(client, params.chatwootConversationId, err))
+      return { state: "conversation_gone" };
+    throw err;
+  }
+}
+
+async function readLastReplyDelivery(
+  client: ChatwootClient,
+  params: LastReplyDeliveryParams,
+): Promise<LastReplyDelivery> {
   const bots = new Set(params.agentBotIds);
   const ours = (m: Row) =>
     m.messageType === "outgoing" &&

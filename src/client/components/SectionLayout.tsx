@@ -31,8 +31,8 @@ export function SectionLayout({
   return (
     <PageContainer size="wide" className="flex flex-col gap-6">
       <header>
-        <h1 className="font-semibold text-2xl text-text-primary">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-text-muted">{subtitle}</p>}
+        <h1 className="text-text-primary text-2xl font-semibold">{title}</h1>
+        {subtitle && <p className="text-text-muted mt-1 text-sm">{subtitle}</p>}
       </header>
 
       <div className="flex flex-col gap-6 md:flex-row md:gap-10">
@@ -53,7 +53,7 @@ export function SectionLayout({
                   to={tab.to}
                   className={({ isActive }) =>
                     cn(
-                      "flex min-w-0 flex-auto flex-col items-center gap-1 rounded-md px-1 py-2 font-medium text-xs transition-colors md:flex-none md:flex-row md:gap-2 md:px-2.5 md:py-1.5 md:text-sm",
+                      "flex min-w-0 flex-auto flex-col items-center gap-1 rounded-md px-1 py-2 text-xs font-medium transition-colors md:flex-none md:flex-row md:gap-2 md:px-2.5 md:py-1.5 md:text-sm",
                       {
                         "bg-bg-hover text-text-primary": isActive,
                         "text-text-muted hover:bg-bg-tertiary hover:text-text-primary":

@@ -48,7 +48,7 @@ export function InboxRow({
   const inboxUrl = `${instanceBaseUrl.replace(/\/+$/, "")}/app/accounts/${instanceAccountId}/settings/inboxes/${chatwootInboxId}`;
 
   return (
-    <li className="flex items-center justify-between gap-4 border-border border-b px-4 py-3 last:border-b-0">
+    <li className="border-border flex items-center justify-between gap-4 border-b px-4 py-3 last:border-b-0">
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
         <span
           className={cn("h-2 w-2 shrink-0 rounded-full", {
@@ -60,7 +60,7 @@ export function InboxRow({
         />
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="truncate font-medium text-text-primary">
+            <span className="text-text-primary truncate font-medium">
               {name}
             </span>
             <Tooltip content={t("channels.inboxId", "Chatwoot inbox ID")}>
@@ -74,19 +74,19 @@ export function InboxRow({
                 target="_blank"
                 rel="noopener noreferrer"
                 aria-label={t("channels.openInChatwoot", "Open in Chatwoot")}
-                className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
               >
                 <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
               </a>
             </Tooltip>
           </div>
           {status === "missing" ? (
-            <p className="mt-0.5 text-warning text-xs">
+            <p className="text-warning mt-0.5 text-xs">
               {t("channels.botRemoved", "Bot removed on Chatwoot")}
             </p>
           ) : (
             channelType && (
-              <p className="mt-0.5 text-text-muted text-xs">{channelType}</p>
+              <p className="text-text-muted mt-0.5 text-xs">{channelType}</p>
             )
           )}
         </div>

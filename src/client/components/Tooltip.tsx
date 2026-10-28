@@ -57,7 +57,7 @@ export function Tooltip({
           sideOffset={sideOffset}
           collisionPadding={8}
           className={cn(
-            "data-[state=closed]:fade-out-0 data-[state=delayed-open]:fade-in-0 z-(--z-tooltip) whitespace-pre-wrap break-words rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-text-primary text-xs shadow-lg data-[state=closed]:animate-out data-[state=delayed-open]:animate-in",
+            "data-[state=closed]:fade-out-0 data-[state=delayed-open]:fade-in-0 border-border bg-bg-primary text-text-primary data-[state=closed]:animate-out data-[state=delayed-open]:animate-in z-(--z-tooltip) rounded-md border px-2.5 py-1.5 text-xs break-words whitespace-pre-wrap shadow-lg",
             contentClassName ?? "max-w-xs",
           )}
         >

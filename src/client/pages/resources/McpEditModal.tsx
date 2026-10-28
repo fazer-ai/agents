@@ -282,9 +282,9 @@ export function McpEditModal({
       ) : (
         <div className="flex flex-col gap-4">
           {sharedNotice && editId && (
-            <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+            <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
               <AlertTriangle
-                className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                className="text-warning mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
               <span>
@@ -328,9 +328,9 @@ export function McpEditModal({
           {isStdio ? (
             <>
               {!mcpStdioEnabled && (
-                <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+                <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
                   <AlertTriangle
-                    className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                    className="text-warning mt-0.5 h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
                   <span>

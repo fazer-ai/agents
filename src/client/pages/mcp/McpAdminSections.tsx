@@ -208,19 +208,19 @@ export function McpAdminSections() {
   ];
 
   return (
-    <section className="space-y-6 border-border border-t pt-8">
+    <section className="border-border space-y-6 border-t pt-8">
       <header className="flex items-center gap-3">
-        <Server className="h-6 w-6 text-accent" aria-hidden="true" />
+        <Server className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="font-semibold text-lg text-text-primary">
+            <h2 className="text-text-primary text-lg font-semibold">
               {t("mcp.admin.title", "MCP server")}
             </h2>
             <Badge variant="secondary">
               {t("mcp.admin.adminOnly", "Admin only")}
             </Badge>
           </div>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "mcp.admin.subtitle",
               "Manage OAuth clients and active sessions across the fleet.",
@@ -275,7 +275,7 @@ export function McpAdminSections() {
                   >
                     <div className="flex min-w-0 flex-col gap-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm text-text-primary">
+                        <span className="text-text-primary text-sm font-medium">
                           {client.name}
                         </span>
                         {client.firstParty && (
@@ -289,7 +289,7 @@ export function McpAdminSections() {
                           </Badge>
                         )}
                       </div>
-                      <code className="w-fit rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">
+                      <code className="bg-bg-tertiary text-text-secondary w-fit rounded px-1.5 py-0.5 font-mono text-xs">
                         {client.clientId}
                       </code>
                       <div className="mt-1 flex flex-wrap gap-1">
@@ -299,7 +299,7 @@ export function McpAdminSections() {
                           </Badge>
                         ))}
                       </div>
-                      <span className="mt-1 break-all text-text-muted text-xs">
+                      <span className="text-text-muted mt-1 text-xs break-all">
                         {client.redirectUris.join(", ")}
                       </span>
                     </div>
@@ -380,7 +380,7 @@ export function McpAdminSections() {
                     className="flex flex-wrap items-center justify-between gap-4"
                   >
                     <div className="flex min-w-0 flex-col gap-1">
-                      <span className="font-medium text-sm text-text-primary">
+                      <span className="text-text-primary text-sm font-medium">
                         {token.clientName ?? token.clientId}
                       </span>
                       <span className="text-text-secondary text-xs">
@@ -435,7 +435,7 @@ export function McpAdminSections() {
                     className="flex flex-wrap items-center justify-between gap-4"
                   >
                     <div className="flex min-w-0 flex-col gap-1">
-                      <span className="font-medium text-sm text-text-primary">
+                      <span className="text-text-primary text-sm font-medium">
                         {approval.clientName ?? approval.clientId}
                       </span>
                       <span className="text-text-secondary text-xs">

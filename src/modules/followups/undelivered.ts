@@ -200,7 +200,7 @@ async function readLastReplyDelivery(
         (m.id === head.id || (key !== null && replyKeyOf(m.sendId) === key)),
     );
   const start = replyOf(read, newest).reduce(
-    (a, m) => (m.id < a ? m.id : a),
+    (a, m) => Math.min(a, m.id),
     newest.id,
   );
   // NOTE: with the pages run out, a customer message already handled says enough: before the reply
@@ -290,7 +290,7 @@ async function readLastReplyDelivery(
   if (missing.length === 0) {
     const sent = reply
       .map((m) => m.createdAt?.getTime() ?? 0)
-      .reduce((a, t) => (t > a ? t : a), 0);
+      .reduce((a, t) => Math.max(a, t), 0);
     return sent > 0
       ? { state: "delivered", repliedAt: new Date(sent) }
       : { state: "delivered" };
@@ -313,7 +313,11 @@ async function readLastReplyDelivery(
     (j) => j.status === "PENDING" || j.status === "CLAIMED",
   );
   if (queued.length > 0) {
-    const latest = queued.reduce((a, j) => (j.runAt > a ? j.runAt : a), now);
+    const latest = queued.reduce(
+      // biome-ignore lint/complexity/useMathMinMax: a Date is kept, where Math.max would return a number
+      (a, j) => (j.runAt > a ? j.runAt : a),
+      now,
+    );
     return {
       state: "resend_pending",
       until: new Date(latest.getTime() + RESEND_SETTLE_MS),
@@ -345,7 +349,7 @@ async function readLastReplyDelivery(
   // Without one, the reply's start: a page behind the mirror says nothing about what came after.
   const assessed = read
     .filter((m) => m.messageType === "incoming" && !m.private)
-    .reduce<number>((a, m) => (m.id > a ? m.id : a), 0);
+    .reduce<number>((a, m) => Math.max(a, m.id), 0);
   return {
     state: "undelivered",
     messageId: lost.id,

@@ -233,7 +233,7 @@ function StateLegend({
     </svg>
   );
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-text-muted text-xs">
+    <ul className="text-text-muted flex flex-wrap gap-x-4 gap-y-1 text-xs">
       {loading > 0 && (
         <li className="inline-flex items-center gap-1.5">
           {swatch(ids.loading, p.loading)}

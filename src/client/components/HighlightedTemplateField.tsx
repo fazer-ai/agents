@@ -155,7 +155,7 @@ export const HighlightedTemplateField = forwardRef<
             data-field-backdrop=""
             className={cn(
               sharedText,
-              "pointer-events-none absolute inset-0 overflow-hidden border-transparent text-text-primary",
+              "text-text-primary pointer-events-none absolute inset-0 overflow-hidden border-transparent",
             )}
           >
             {renderHighlighted(value, patternSource, isKnownToken)}
@@ -174,7 +174,7 @@ export const HighlightedTemplateField = forwardRef<
               maxLength={maxLength}
               className={cn(
                 sharedText,
-                "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
+                "placeholder-text-placeholder caret-text-primary relative bg-transparent text-transparent",
                 fill ? "h-full resize-none" : "resize-y",
                 invalid ? "border-error" : "border-border-hover",
               )}
@@ -192,7 +192,7 @@ export const HighlightedTemplateField = forwardRef<
               maxLength={maxLength}
               className={cn(
                 sharedText,
-                "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
+                "placeholder-text-placeholder caret-text-primary relative bg-transparent text-transparent",
                 invalid ? "border-error" : "border-border-hover",
               )}
             />
@@ -209,7 +209,7 @@ export const HighlightedTemplateField = forwardRef<
           </span>
         )}
         {over && (
-          <span className="mt-1 block text-error text-xs">
+          <span className="text-error mt-1 block text-xs">
             {t(
               "common.charOverLimit",
               "{{over}} characters over the limit. The agent only receives the first {{max}}; shorten it to save a change to this field.",

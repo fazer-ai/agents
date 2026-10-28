@@ -108,13 +108,13 @@ export function HealthSection({
         {latency.loading && !latency.data ? (
           <Skeleton className="h-24 w-full" />
         ) : !latency.data || latency.data.length === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-text-muted text-xs">
+              <tr className="text-text-muted text-left text-xs">
                 {latencyTable.header.map((c, i) => (
                   <th
                     key={c}
@@ -133,7 +133,7 @@ export function HealthSection({
             <tbody>
               {latency.data.map((r) => (
                 <tr key={r.model} className="border-border border-t">
-                  <td className="truncate py-1.5 pr-3 text-text-secondary">
+                  <td className="text-text-secondary truncate py-1.5 pr-3">
                     {r.model}
                   </td>
                   <td className="py-1.5 pl-3 text-right tabular-nums">
@@ -170,7 +170,7 @@ export function HealthSection({
         {problems.loading && !problems.data ? (
           <Skeleton className="h-24 w-full" />
         ) : !problems.data || problems.data.length === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {hasNoData(problems.coverage)
               ? t(
                   "dashboard.health.noProblemsKept",
@@ -190,20 +190,20 @@ export function HealthSection({
               >
                 <Link
                   to={logsHref(filters, win, r)}
-                  className="truncate text-text-secondary hover:text-accent hover:underline"
+                  className="text-text-secondary hover:text-accent truncate hover:underline"
                 >
                   {r.tool ? `${r.stage} · ${r.tool}` : r.stage}
                   <span
                     className={
                       r.level === "error"
-                        ? "ml-2 text-error text-xs"
-                        : "ml-2 text-warning text-xs"
+                        ? "text-error ml-2 text-xs"
+                        : "text-warning ml-2 text-xs"
                     }
                   >
                     {levelLabel(r.level)}
                   </span>
                 </Link>
-                <span className="shrink-0 font-medium text-text-primary tabular-nums">
+                <span className="text-text-primary shrink-0 font-medium tabular-nums">
                   {nf.format(r.lines)}
                 </span>
               </li>
@@ -249,7 +249,7 @@ export function AutomationSection() {
       {rows.map(([label, v]) => (
         <div key={label} className="flex flex-col">
           <dt className="text-text-muted text-xs">{label}</dt>
-          <dd className="font-semibold text-lg text-text-primary tabular-nums">
+          <dd className="text-text-primary text-lg font-semibold tabular-nums">
             {v === undefined ? "\u2014" : nf.format(v)}
           </dd>
         </div>

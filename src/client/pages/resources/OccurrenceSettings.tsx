@@ -158,10 +158,10 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-3 border-border border-t pt-4 first:border-t-0 first:pt-0">
+    <section className="border-border flex flex-col gap-3 border-t pt-4 first:border-t-0 first:pt-0">
       <div>
         <div className="flex items-center gap-1">
-          <h3 className="font-medium text-sm text-text-primary">{title}</h3>
+          <h3 className="text-text-primary text-sm font-medium">{title}</h3>
           {help && <HelpPopover content={help} label={title} />}
         </div>
         <p className="text-text-muted text-xs">{intro}</p>
@@ -715,10 +715,10 @@ export function OccurrenceSettings({
       <RangeHolds>
         <Card className="flex flex-col gap-4">
           <div>
-            <h2 className="font-medium text-text-primary">
+            <h2 className="text-text-primary font-medium">
               {t("occurrences.title", "Occurrence monitor")}
             </h2>
-            <p className="mt-0.5 text-sm text-text-muted">
+            <p className="text-text-muted mt-0.5 text-sm">
               {t(
                 "occurrences.introGeneric",
                 "Every round, the monitor reads the recent conversations of the inboxes you choose, writes why each customer got in touch, and groups the same reasons into themes. A theme that runs out of the usual is flagged.",
@@ -770,11 +770,11 @@ export function OccurrenceSettings({
           >
             {reason && (
               <div
-                className="flex flex-col gap-2 rounded-lg border border-border p-3"
+                className="border-border flex flex-col gap-2 rounded-lg border p-3"
                 data-testid="occurrences-reason-field"
               >
                 <div>
-                  <h4 className="font-medium text-sm text-text-primary">
+                  <h4 className="text-text-primary text-sm font-medium">
                     {t("occurrences.reasonTitle", "Reason")}
                   </h4>
                   <p className="text-text-muted text-xs">
@@ -788,11 +788,11 @@ export function OccurrenceSettings({
               </div>
             )}
             <div
-              className="flex flex-col gap-2 rounded-lg border border-border p-3"
+              className="border-border flex flex-col gap-2 rounded-lg border p-3"
               data-testid="occurrences-reference-field"
             >
               <div>
-                <h4 className="font-medium text-sm text-text-primary">
+                <h4 className="text-text-primary text-sm font-medium">
                   {t("occurrences.referenceTitle", "Reference")}
                 </h4>
                 <p className="text-text-muted text-xs">
@@ -809,7 +809,7 @@ export function OccurrenceSettings({
                 label={t("occurrences.referenceOn", "Read the reference")}
               />
               {referenceBlocked && (
-                <p className="text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm">
                   {t(
                     "occurrences.referenceAtCap",
                     "The monitor reads up to {{max}} fields: remove an additional field to read the reference.",
@@ -820,7 +820,7 @@ export function OccurrenceSettings({
               {reference ? (
                 fieldEditor(reference, false)
               ) : (
-                <p className="text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm">
                   {t(
                     "occurrences.referenceOff",
                     "Without a reference the monitor works as usual; only the flag for themes concentrated on one reference is off.",
@@ -831,7 +831,7 @@ export function OccurrenceSettings({
             <div className="flex flex-col gap-2">
               <button
                 type="button"
-                className="flex items-center gap-1 self-start font-medium text-sm text-text-primary"
+                className="text-text-primary flex items-center gap-1 self-start text-sm font-medium"
                 aria-expanded={extrasOpen}
                 onClick={() => setExtrasOpen((o) => !o)}
               >
@@ -857,7 +857,7 @@ export function OccurrenceSettings({
                   {extras.map((row) => (
                     <div
                       key={row._id}
-                      className="flex flex-col gap-2 rounded-lg border border-border p-3"
+                      className="border-border flex flex-col gap-2 rounded-lg border p-3"
                     >
                       {fieldEditor(row, true)}
                     </div>
@@ -904,7 +904,7 @@ export function OccurrenceSettings({
               {FLAG_KEYS.map(numberInput)}
             </div>
             <p
-              className="rounded-lg bg-bg-secondary p-3 text-sm text-text-secondary"
+              className="bg-bg-secondary text-text-secondary rounded-lg p-3 text-sm"
               aria-live="polite"
               data-testid="occurrences-flags-sentence"
             >
@@ -916,7 +916,7 @@ export function OccurrenceSettings({
             </p>
             {/* No way to open the panel editor preset exists, so the link names the panel to add. */}
             <p className="text-text-muted text-xs">
-              <Link to="/dashboards" className="font-medium text-accent">
+              <Link to="/dashboards" className="text-accent font-medium">
                 {t("occurrences.toDashboard", "Show on a dashboard")}
               </Link>{" "}
               {t(
@@ -1029,7 +1029,7 @@ export function OccurrenceSettings({
           </Section>
 
           {overCap && (
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "occurrences.fieldsOverCap",
                 "The monitor reads up to {{max}} fields: remove one to save.",
@@ -1038,7 +1038,7 @@ export function OccurrenceSettings({
             </p>
           )}
           {missingToEnable.length > 0 && (
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t("occurrences.needs", "To switch it on, choose {{what}}.", {
                 what: missingToEnable.join(", "),
               })}

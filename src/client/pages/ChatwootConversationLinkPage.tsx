@@ -104,13 +104,13 @@ export function ChatwootConversationLinkPage() {
         )}
         {matches && matches.length > 1 && (
           <div className="flex flex-col gap-3">
-            <h1 className="font-semibold text-lg text-text-primary">
+            <h1 className="text-text-primary text-lg font-semibold">
               {t(
                 "chatwootLink.chooseTitle",
                 "More than one conversation matches",
               )}
             </h1>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "chatwootLink.choose",
                 "Two connected Chatwoot servers use account {{accountId}}. Open the one you meant:",

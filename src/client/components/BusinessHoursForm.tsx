@@ -284,10 +284,10 @@ export function BusinessHoursForm({
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="font-medium text-sm text-text-secondary">
+          <span className="text-text-secondary text-sm font-medium">
             {t("hours.windows", "Windows")}
             {refusal.at("windows", windows) && (
-              <span className="ml-2 font-normal text-error text-xs">
+              <span className="text-error ml-2 text-xs font-normal">
                 {refusal.at("windows", windows)}
               </span>
             )}
@@ -307,7 +307,7 @@ export function BusinessHoursForm({
           </Button>
         </div>
         {windows.length === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t("hours.alwaysOpen", "No windows = always open.")}
           </p>
         ) : (
@@ -376,10 +376,10 @@ export function BusinessHoursForm({
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="font-medium text-sm text-text-secondary">
+          <span className="text-text-secondary text-sm font-medium">
             {t("hours.exceptions", "Holidays and closures")}
             {refusal.at("exceptions", exceptions) && (
-              <span className="ml-2 font-normal text-error text-xs">
+              <span className="text-error ml-2 text-xs font-normal">
                 {refusal.at("exceptions", exceptions)}
               </span>
             )}
@@ -446,7 +446,7 @@ export function BusinessHoursForm({
                   aria-label={t("hours.exceptionLabel", "Name")}
                   className="min-w-32 flex-1"
                 />
-                <label className="flex items-center gap-1 text-text-secondary text-xs">
+                <label className="text-text-secondary flex items-center gap-1 text-xs">
                   <input
                     type="checkbox"
                     checked={e.recurring === true}
@@ -469,7 +469,7 @@ export function BusinessHoursForm({
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {e.ranges.length === 0 ? (
-                  <span className="text-sm text-text-muted">
+                  <span className="text-text-muted text-sm">
                     {t("hours.exceptionClosed", "Closed all day")}
                   </span>
                 ) : (

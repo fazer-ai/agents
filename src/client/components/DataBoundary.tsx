@@ -94,7 +94,7 @@ export function DataBoundary({
     return (
       <Card className="p-0">
         {empty ?? (
-          <p className="py-10 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-10 text-center text-sm">
             {t("common.nothingHere", "Nothing here yet.")}
           </p>
         )}

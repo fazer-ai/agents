@@ -116,14 +116,14 @@ export function CreateApiKeyModal({
     >
       {token ? (
         <div className="space-y-4">
-          <div className="rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+          <div className="border-warning bg-warning-soft text-text-primary rounded-lg border px-3 py-2 text-xs">
             {t(
               "apiKeys.tokenWarning",
               "Copy this key now. For security it is shown only once and cannot be retrieved again.",
             )}
           </div>
           <div className="flex items-center gap-2">
-            <code className="flex-1 truncate rounded-lg border border-border bg-bg-tertiary px-3 py-2 font-mono text-text-primary text-xs">
+            <code className="border-border bg-bg-tertiary text-text-primary flex-1 truncate rounded-lg border px-3 py-2 font-mono text-xs">
               {token}
             </code>
             <Button size="sm" variant="secondary" onClick={copyToken}>
@@ -156,7 +156,7 @@ export function CreateApiKeyModal({
           }}
         >
           {error && (
-            <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+            <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
               {error}
             </div>
           )}

@@ -28,14 +28,14 @@ export function EmptyState({
       )}
     >
       {Icon && (
-        <div className="rounded-full bg-bg-tertiary p-3">
-          <Icon className="h-6 w-6 text-text-muted" aria-hidden="true" />
+        <div className="bg-bg-tertiary rounded-full p-3">
+          <Icon className="text-text-muted h-6 w-6" aria-hidden="true" />
         </div>
       )}
       <div>
-        <p className="font-medium text-text-primary">{title}</p>
+        <p className="text-text-primary font-medium">{title}</p>
         {description && (
-          <p className="mt-1 text-sm text-text-muted">{description}</p>
+          <p className="text-text-muted mt-1 text-sm">{description}</p>
         )}
       </div>
       {action}

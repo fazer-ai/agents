@@ -465,10 +465,7 @@ export async function selectAnswerableBurst(
   // The agent answers the burst's MOST RECENT message, so {{message_id}} must be that exact id.
   // Take the max id over the burst (order-independent, and across every message type incl. an
   // audio-only last message) instead of trusting the array position.
-  const lastMessageId = pending.reduce(
-    (max, m) => (m.id > max ? m.id : max),
-    0,
-  );
+  const lastMessageId = pending.reduce((max, m) => Math.max(max, m.id), 0);
   // Resolve quoted/replied-to messages from the full page, then render each pending message for the
   // agent (markers for audio/image/file, quote context). Coalesce into one turn.
   const resolveQuoted = buildQuoteResolver(messages);
@@ -1360,7 +1357,7 @@ async function ingestObservedBurst(args: {
           break;
         }
         const oldest = rows.reduce(
-          (min, m) => (m.id < min ? m.id : min),
+          (min, m) => Math.min(min, m.id),
           Number.POSITIVE_INFINITY,
         );
         if (!Number.isFinite(oldest) || oldest <= (floor ?? 0)) {

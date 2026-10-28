@@ -22,11 +22,11 @@ export function McpServerInstructions({
   const { t } = useTranslation();
   if (!instructions) return null;
   return (
-    <div className="flex flex-col gap-1 rounded-lg border border-border bg-bg-tertiary p-3">
-      <span className="font-medium text-text-secondary text-xs">
+    <div className="border-border bg-bg-tertiary flex flex-col gap-1 rounded-lg border p-3">
+      <span className="text-text-secondary text-xs font-medium">
         {t("mcp.serverContext", "Server context (provided by the server)")}
       </span>
-      <p className="whitespace-pre-wrap text-text-muted text-xs">
+      <p className="text-text-muted text-xs whitespace-pre-wrap">
         {instructions}
       </p>
     </div>

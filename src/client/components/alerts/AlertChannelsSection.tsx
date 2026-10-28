@@ -276,7 +276,7 @@ function AlertChannelModal({
         }}
       >
         {error && (
-          <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+          <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
             {error}
           </div>
         )}
@@ -316,7 +316,7 @@ function AlertChannelModal({
             </option>
           </select>
           {refusal.at("type", type) && (
-            <p className="mt-1 text-error text-xs">
+            <p className="text-error mt-1 text-xs">
               {refusal.at("type", type)}
             </p>
           )}
@@ -352,7 +352,7 @@ function AlertChannelModal({
             }
           />
           {urlInvalid && (
-            <p className="mt-1 text-error text-xs">
+            <p className="text-error mt-1 text-xs">
               {t("common.invalidUrl", "Must be a valid http(s) URL.")}
             </p>
           )}
@@ -387,7 +387,7 @@ function AlertChannelModal({
               type="button"
               disabled={loading}
               onClick={toggleAllStages}
-              className="font-normal text-accent text-xs hover:underline"
+              className="text-accent text-xs font-normal hover:underline"
             >
               {allStagesChecked
                 ? t("alerts.clearAll", "Clear")
@@ -423,7 +423,7 @@ function AlertChannelModal({
           <legend className={labelCls}>
             {t("alerts.excludeAgents", "Agents that never alert here")}
           </legend>
-          <p className="mb-2 text-text-muted text-xs">
+          <p className="text-text-muted mb-2 text-xs">
             {t(
               "alerts.excludeAgentsHint",
               "Their warnings and errors still appear in Logs; only this channel skips them. Use it for test agents that share the instance with production.",
@@ -476,7 +476,7 @@ function AlertChannelModal({
                   disabled={loading}
                   aria-pressed={true}
                   onClick={() => toggleExcluded(id)}
-                  className="rounded-full border border-accent bg-accent-soft px-2.5 py-1 text-text-primary text-xs"
+                  className="border-accent bg-accent-soft text-text-primary rounded-full border px-2.5 py-1 text-xs"
                 >
                   {t("alerts.excludedDeletedAgent", "Deleted agent #{{id}}", {
                     id,
@@ -516,10 +516,10 @@ function AlertChannelModal({
           </FormField>
         )}
 
-        <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+        <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
           <label
             htmlFor={enabledId}
-            className="font-medium text-sm text-text-primary"
+            className="text-text-primary text-sm font-medium"
           >
             {t("common.enabled", "Enabled")}
           </label>
@@ -756,10 +756,10 @@ export function AlertChannelsSection() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold text-text-primary text-xl">
+          <h2 className="text-text-primary text-xl font-semibold">
             {t("alerts.title", "Alert channels")}
           </h2>
-          <p className="mt-1 text-sm text-text-secondary">
+          <p className="text-text-secondary mt-1 text-sm">
             {t(
               "alerts.subtitle",
               "Get notified on Discord or your own endpoint when an agent step warns or fails.",
@@ -805,7 +805,7 @@ export function AlertChannelsSection() {
             >
               <div className="flex min-w-0 flex-col gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {ch.name}
                   </span>
                   <Badge variant="secondary">{ch.type}</Badge>
@@ -815,7 +815,7 @@ export function AlertChannelsSection() {
                     </Badge>
                   )}
                 </div>
-                <span className="truncate font-mono text-text-muted text-xs">
+                <span className="text-text-muted truncate font-mono text-xs">
                   {ch.urlMasked}
                 </span>
                 <span className="text-text-muted text-xs">

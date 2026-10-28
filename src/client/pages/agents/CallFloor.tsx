@@ -111,7 +111,7 @@ export function SourceTokens({
   if (tools.length === 0) return null;
   const n = tools.reduce((sum, tl) => sum + tl.estimatedTokens, 0);
   return (
-    <span className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs">
+    <span className="text-text-muted shrink-0 font-mono text-xs whitespace-nowrap">
       {t("editor.callFloor.sourceTotal", "{{n}} tokens per call in total", {
         n: fmt(n, i18n.language),
       })}
@@ -148,7 +148,7 @@ export function InstructionsTokens({ draftPrompt }: { draftPrompt: string }) {
   if (floor?.engine !== "llm") return null;
   const n = fmt(estimateTokens(draftPrompt), i18n.language);
   return (
-    <p className="mt-1 text-text-muted text-xs">
+    <p className="text-text-muted mt-1 text-xs">
       {floor.instructionsAdded > 0
         ? t(
             "editor.callFloor.instructionsLineAdded",
@@ -179,7 +179,7 @@ export function KnowledgeTokens({ part }: { part: "search" | "suggest" }) {
     tool.estimatedTokens +
     (part === "search" ? floor.instructionsAddedBy.grounding : 0);
   return (
-    <span className="font-mono text-text-muted text-xs">
+    <span className="text-text-muted font-mono text-xs">
       {part === "search"
         ? t(
             "editor.callFloor.searchTokens",
@@ -213,7 +213,7 @@ export function groupTokens(
 export function TokensLabel({ n }: { n: number }) {
   const { t, i18n } = useTranslation();
   return (
-    <span className="shrink-0 whitespace-nowrap font-mono text-text-muted text-xs">
+    <span className="text-text-muted shrink-0 font-mono text-xs whitespace-nowrap">
       {t("editor.callFloor.tokens", "{{n}} tokens per call", {
         n: fmt(n, i18n.language),
       })}
@@ -289,7 +289,7 @@ export function FieldSize({
       vars,
     ),
   }[sentWith];
-  return <p className="mt-1 text-text-muted text-xs">{line}</p>;
+  return <p className="text-text-muted mt-1 text-xs">{line}</p>;
 }
 
 // The icon the tool's row carries on the Tools tab (or the Knowledge tab, for the two it grants), so a
@@ -318,7 +318,7 @@ export function CallFloorLine({
   if (!floor) return null;
   if (floor.engine === "decisions") {
     return (
-      <p className="mt-2 text-text-muted text-xs">
+      <p className="text-text-muted mt-2 text-xs">
         {t(
           "editor.callFloor.decisions",
           "Instructions and tools do not apply: this agent decides with questions and rules, and sends no instructions to a model.",
@@ -370,7 +370,7 @@ export function CallFloorLine({
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex min-w-0 items-start gap-1 text-left text-text-secondary hover:text-text-primary"
+          className="text-text-secondary hover:text-text-primary flex min-w-0 items-start gap-1 text-left"
         >
           <ChevronDown
             className={cn(
@@ -398,21 +398,21 @@ export function CallFloorLine({
       {open && (
         // Number first, in a column of its own, so the eye reads value and name together; a bar per
         // line shows its share of the call and uses the width a wide screen has.
-        <ul className="flex flex-col gap-1.5 rounded-md border border-border bg-bg-secondary p-2">
+        <ul className="border-border bg-bg-secondary flex flex-col gap-1.5 rounded-md border p-2">
           {rows.map((r) => (
             <li
               key={r.key}
               className="grid grid-cols-[3.25rem_minmax(0,1fr)_2.5rem] items-start gap-x-2 sm:grid-cols-[3.25rem_minmax(0,16rem)_minmax(0,1fr)_2.5rem]"
             >
-              <span className="text-right font-mono text-text-muted">
+              <span className="text-text-muted text-right font-mono">
                 {fmt(r.n, i18n.language)}
               </span>
               <span className="flex min-w-0 items-start gap-1.5">
                 <r.icon
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted"
+                  className="text-text-muted mt-0.5 h-3.5 w-3.5 shrink-0"
                   aria-hidden="true"
                 />
-                <span className="flex min-w-0 flex-col break-words text-text-secondary">
+                <span className="text-text-secondary flex min-w-0 flex-col break-words">
                   {r.label}
                   {r.note && <span className="text-text-muted">{r.note}</span>}
                 </span>
@@ -421,14 +421,14 @@ export function CallFloorLine({
                 className="hidden h-4 items-center sm:flex"
                 aria-hidden="true"
               >
-                <span className="h-1.5 w-full overflow-hidden rounded bg-bg-tertiary">
+                <span className="bg-bg-tertiary h-1.5 w-full overflow-hidden rounded">
                   <span
-                    className="block h-full bg-text-muted"
+                    className="bg-text-muted block h-full"
                     style={{ width: `${share(r.n)}%` }}
                   />
                 </span>
               </span>
-              <span className="text-right font-mono text-text-muted">
+              <span className="text-text-muted text-right font-mono">
                 {`${share(r.n)}%`}
               </span>
             </li>

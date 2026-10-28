@@ -91,7 +91,7 @@ export function AnnouncementBanner() {
             />
             <div className="min-w-0 flex-1 text-sm">
               {text?.title && (
-                <span className="mr-1 font-medium text-text-primary">
+                <span className="text-text-primary mr-1 font-medium">
                   {text.title}
                 </span>
               )}
@@ -101,7 +101,7 @@ export function AnnouncementBanner() {
                   href={ctaHref}
                   target="_blank"
                   rel="noreferrer"
-                  className="ml-2 font-medium text-accent hover:underline"
+                  className="text-accent ml-2 font-medium hover:underline"
                 >
                   {ctaLabel}
                 </a>
@@ -112,7 +112,7 @@ export function AnnouncementBanner() {
                 type="button"
                 onClick={() => dismiss(a.id)}
                 aria-label={t("common.dismiss", "Dismiss")}
-                className="-mt-0.5 shrink-0 rounded text-text-muted hover:text-text-primary"
+                className="text-text-muted hover:text-text-primary -mt-0.5 shrink-0 rounded"
               >
                 <X className="h-4 w-4" aria-hidden="true" />
               </button>

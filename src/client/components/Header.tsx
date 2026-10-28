@@ -14,7 +14,7 @@ export function Header() {
   const isHome = location.pathname === "/";
 
   return (
-    <header className="flex min-h-(--header-height) shrink-0 items-center gap-4 border-border border-b px-4 py-2 md:px-6">
+    <header className="border-border flex min-h-(--header-height) shrink-0 items-center gap-4 border-b px-4 py-2 md:px-6">
       {/* The brand lives in the desktop sidebar; on mobile the sidebar is a drawer, so the header
           keeps the menu button and the logo. */}
       <div className="flex shrink-0 items-center gap-2 md:hidden">
@@ -22,7 +22,7 @@ export function Header() {
           type="button"
           onClick={() => setMobileOpen(true)}
           aria-label={t("nav.openMenu", "Open menu")}
-          className="inline-flex items-center justify-center rounded-md border border-border bg-bg-tertiary p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary md:hidden"
+          className="border-border bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center justify-center rounded-md border p-2 transition-colors md:hidden"
         >
           <Menu className="h-4 w-4" />
         </button>

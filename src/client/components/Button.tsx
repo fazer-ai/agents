@@ -49,7 +49,7 @@ export function Button({
       type="button"
       disabled={disabled || loading || (holdOnRange && rangeHeld)}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors disabled:cursor-default disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
+        "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap transition-colors disabled:cursor-default disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
         variantStyles[variant],
         sizeStyles[size],
         className,

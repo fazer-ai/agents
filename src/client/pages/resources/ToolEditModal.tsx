@@ -867,7 +867,7 @@ export function PathPicker({
         <PopoverPrimitive.Trigger asChild>
           <button
             type="button"
-            className="self-start text-text-secondary text-xs underline underline-offset-2 hover:text-text-primary"
+            className="text-text-secondary hover:text-text-primary self-start text-xs underline underline-offset-2"
           >
             {open ? closeLabel : openLabel}
           </button>
@@ -892,7 +892,7 @@ export function PathPicker({
           // `--z-popover` (85), not a Tailwind `z-*`: `z-50` is `--z-drawer`, BELOW `--z-modal`
           // (80), so the offer would render invisible behind the dialog (happy-dom has no stacking
           // context, so only a browser shows it).
-          className="z-(--z-popover) w-[min(28rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-secondary shadow-lg"
+          className="border-border bg-bg-secondary z-(--z-popover) w-[min(28rem,calc(100vw-2rem))] rounded-md border shadow-lg"
           // Radix renders this as `role="dialog"`, and this screen opens three of them from three
           // fields that differ only in what they fill. The filter's own label names the input, never
           // the dialog around it, so an unnamed one is announced as a bare dialog.
@@ -918,22 +918,22 @@ export function PathPicker({
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("tools.pathPickerFilter", "Filter paths…")}
               aria-label={t("tools.pathPickerFilter", "Filter paths…")}
-              className="w-full rounded-md border border-border-hover bg-bg-tertiary px-2 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
+              className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft w-full rounded-md border px-2 py-1 text-sm transition-colors focus:ring-2 focus:outline-none"
             />
           </div>
           <ul className="max-h-48 overflow-y-auto">
             {heading && (
-              <li className="px-2 py-1 text-text-secondary text-xs">
+              <li className="text-text-secondary px-2 py-1 text-xs">
                 {heading}
               </li>
             )}
             {empty && (
-              <li className="px-2 py-1 text-text-secondary text-xs">
+              <li className="text-text-secondary px-2 py-1 text-xs">
                 {emptyLabel}
               </li>
             )}
             {!empty && shownLeaves.length === 0 && shownLists.length === 0 && (
-              <li className="px-2 py-1 text-text-secondary text-xs">
+              <li className="text-text-secondary px-2 py-1 text-xs">
                 {t("tools.pathPickerNoMatch", "No path matches that.")}
               </li>
             )}
@@ -945,19 +945,19 @@ export function PathPicker({
                     pickedRef.current = restoresFocus;
                     onPick(leaf.path);
                   }}
-                  className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+                  className="hover:bg-bg-hover flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs"
                 >
-                  <code className="shrink-0 text-text-primary">
+                  <code className="text-text-primary shrink-0">
                     {leaf.path}
                   </code>
-                  <span className="truncate text-text-secondary">
+                  <span className="text-text-secondary truncate">
                     {leaf.value}
                   </span>
                 </button>
               </li>
             ))}
             {shownLists.length > 0 && listsLabel && (
-              <li className="border-border border-t px-2 py-1 text-text-secondary text-xs">
+              <li className="border-border text-text-secondary border-t px-2 py-1 text-xs">
                 {listsLabel}
               </li>
             )}
@@ -969,12 +969,12 @@ export function PathPicker({
                     pickedRef.current = restoresFocus;
                     onPickList?.(list.path);
                   }}
-                  className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+                  className="hover:bg-bg-hover flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs"
                 >
-                  <code className="shrink-0 text-text-primary">
+                  <code className="text-text-primary shrink-0">
                     {list.path}
                   </code>
-                  <span className="truncate text-text-secondary">
+                  <span className="text-text-secondary truncate">
                     {listLength ? listLength(list.length) : list.length}
                   </span>
                 </button>
@@ -1252,9 +1252,9 @@ function PickerSectionLabel({
   return (
     <DropdownMenuPrimitive.Label
       className={cn(
-        "px-2 pb-1 font-semibold text-[10px] text-text-secondary uppercase tracking-wider",
+        "text-text-secondary px-2 pb-1 text-[10px] font-semibold tracking-wider uppercase",
         {
-          "mt-1 border-border border-t pt-2.5": divider,
+          "border-border mt-1 border-t pt-2.5": divider,
           "pt-1.5": !divider,
         },
       )}
@@ -1278,11 +1278,11 @@ function VarItem({
 }) {
   return (
     <DropdownMenuPrimitive.Item
-      className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+      className="text-text-secondary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-sm transition-colors outline-none"
       onSelect={() => onInsert(token)}
     >
       <span className="flex items-center gap-2">
-        <code className="font-mono text-accent text-xs">{token}</code>
+        <code className="text-accent font-mono text-xs">{token}</code>
         <span className="truncate">{label}</span>
       </span>
       {description && (
@@ -1324,14 +1324,14 @@ function VariablePicker({
           <button
             type="button"
             aria-label={t("tools.insertVariable", "Insert variable")}
-            className="shrink-0 rounded-lg border border-border bg-bg-tertiary p-1.5 text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+            className="border-border bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary shrink-0 rounded-lg border p-1.5"
           >
             <Braces className="h-4 w-4" aria-hidden="true" />
           </button>
         ) : (
           <button
             type="button"
-            className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-bg-tertiary px-2 py-1 text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
+            className="border-border bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary mt-1.5 inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs"
           >
             <Braces className="h-3.5 w-3.5" aria-hidden="true" />
             {t("tools.insertVariable", "Insert variable")}
@@ -1342,7 +1342,7 @@ function VariablePicker({
         <DropdownMenuPrimitive.Content
           align="end"
           sideOffset={4}
-          className="z-(--z-popover) max-h-72 w-72 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+          className="border-border bg-bg-secondary z-(--z-popover) max-h-72 w-72 overflow-y-auto rounded-lg border p-1 shadow-lg"
         >
           {paramList.length > 0 && (
             <>
@@ -1964,9 +1964,9 @@ export function ToolEditModal({
         ) : (
           <div className="flex flex-col gap-4">
             {sharedNotice && editId && (
-              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+              <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
                 <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  className="text-warning mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <span>
@@ -1997,9 +1997,9 @@ export function ToolEditModal({
                 placeholder={t("tools.namePlaceholder", "Look up order")}
               />
               {form.label.trim() && (
-                <p className="mt-1 flex flex-wrap items-center gap-1 text-text-muted text-xs">
+                <p className="text-text-muted mt-1 flex flex-wrap items-center gap-1 text-xs">
                   <span>{t("tools.identifierPreview", "Identifier:")}</span>
-                  <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                  <code className="bg-bg-tertiary rounded px-1 py-0.5 font-mono">
                     {normalizeToolName(form.label)}
                   </code>
                 </p>
@@ -2089,7 +2089,7 @@ export function ToolEditModal({
               >
                 {credBaseUrl && (
                   <Tooltip content={credBaseUrl} side="top">
-                    <p className="mb-1 truncate font-mono text-text-muted text-xs">
+                    <p className="text-text-muted mb-1 truncate font-mono text-xs">
                       {credBaseUrl}
                     </p>
                   </Tooltip>
@@ -2264,7 +2264,7 @@ export function ToolEditModal({
               description={
                 <button
                   type="button"
-                  className="font-normal text-accent text-xs hover:underline"
+                  className="text-accent text-xs font-normal hover:underline"
                   onClick={() =>
                     setForm({
                       ...form,
@@ -2329,7 +2329,7 @@ export function ToolEditModal({
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      className="font-normal text-accent text-xs hover:underline"
+                      className="text-accent text-xs font-normal hover:underline"
                       onClick={() =>
                         setForm({
                           ...form,
@@ -2344,7 +2344,7 @@ export function ToolEditModal({
                     {form.bodyMode === "raw" && (
                       <button
                         type="button"
-                        className="font-normal text-accent text-xs hover:underline"
+                        className="text-accent text-xs font-normal hover:underline"
                         onClick={formatBodyRaw}
                       >
                         {t("tools.formatJson", "Format")}
@@ -2422,8 +2422,8 @@ export function ToolEditModal({
               />
             </FormField>
 
-            <div className="flex flex-col gap-3 rounded-md border border-border p-3">
-              <p className="font-semibold text-text-primary text-xs uppercase tracking-wider">
+            <div className="border-border flex flex-col gap-3 rounded-md border p-3">
+              <p className="text-text-primary text-xs font-semibold tracking-wider uppercase">
                 {t("tools.responseSection", "The response")}
               </p>
               <FormField
@@ -2690,13 +2690,13 @@ export function ToolEditModal({
                     "Exactly what the agent would receive for the sample above.",
                   )}
                 >
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-tertiary p-2 text-text-primary text-xs">
+                  <pre className="border-border bg-bg-tertiary text-text-primary max-h-40 overflow-auto rounded-md border p-2 text-xs break-words whitespace-pre-wrap">
                     {templatePreview.text}
                   </pre>
                 </FormField>
               )}
               {form.outputSchemaProblem && (
-                <p className="-mt-2 text-warning text-xs">
+                <p className="text-warning -mt-2 text-xs">
                   {t(
                     "tools.outputTemplateDropped",
                     "This tool had a response template stored that could not be read, so it was not applied and is not shown: {{problem}}. Saving replaces it with whatever is in the box above.",
@@ -2705,7 +2705,7 @@ export function ToolEditModal({
                 </p>
               )}
               {templatePreview?.skipped === "not-2xx" && (
-                <p className="-mt-2 text-warning text-xs">
+                <p className="text-warning -mt-2 text-xs">
                   {t(
                     "tools.outputTemplateNotApplied",
                     "This sample came back as HTTP {{status}}, and the template only applies to a successful response. Outside 2xx the agent reads the body as it came, so it can read the error.",
@@ -2714,7 +2714,7 @@ export function ToolEditModal({
                 </p>
               )}
               {templatePreview?.skipped === "not-json" && (
-                <p className="-mt-2 text-warning text-xs">
+                <p className="text-warning -mt-2 text-xs">
                   {t(
                     "tools.outputTemplateNotJson",
                     "This sample is not JSON, so there is nothing for the fields to point at and the agent reads the body as it came. The call still succeeded — only the template does not apply to it.",
@@ -2722,7 +2722,7 @@ export function ToolEditModal({
                 </p>
               )}
               {templatePreview && templatePreview.missing.length > 0 && (
-                <p className="-mt-2 text-warning text-xs">
+                <p className="text-warning -mt-2 text-xs">
                   {t(
                     "tools.outputTemplateMissing",
                     "Not in the sample response: {{paths}}. The agent would see (not returned) there.",
@@ -2774,7 +2774,7 @@ export function ToolEditModal({
                   <label
                     htmlFor={silenceClipId}
                     data-clickable="true"
-                    className="text-sm text-text-primary"
+                    className="text-text-primary text-sm"
                   >
                     {t(
                       "tools.silenceTruncationAlert",
@@ -2802,7 +2802,7 @@ export function ToolEditModal({
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+            <div className="border-border flex flex-col gap-3 rounded-md border p-3">
               <FormField
                 label={t(
                   "tools.appointment",
@@ -3044,7 +3044,7 @@ export function ToolEditModal({
                           <label
                             htmlFor={apptAskConfirmId}
                             data-clickable="true"
-                            className="text-sm text-text-primary"
+                            className="text-text-primary text-sm"
                           >
                             {t(
                               "tools.appointmentAskConfirm",
@@ -3066,13 +3066,13 @@ export function ToolEditModal({
               )}
             </div>
 
-            <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+            <div className="border-border flex flex-col gap-3 rounded-md border p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-1.5">
                   <label
                     htmlFor={ackId}
                     data-clickable="true"
-                    className="font-medium text-sm text-text-primary"
+                    className="text-text-primary text-sm font-medium"
                   >
                     {t("tools.ack", "Send a holding message")}
                   </label>
@@ -3206,13 +3206,13 @@ function KvRowItem({
           type="button"
           onClick={onRemove}
           aria-label={t("common.remove", "Remove")}
-          className="shrink-0 rounded p-1.5 text-text-muted hover:text-error"
+          className="text-text-muted hover:text-error shrink-0 rounded p-1.5"
         >
           <Trash2 className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
       {aiField && (
-        <span className="pl-1 text-[10px] text-accent">
+        <span className="text-accent pl-1 text-[10px]">
           {t("tools.aiFilledType", "Filled by AI: {{type}}", {
             type: aiField.type,
           })}

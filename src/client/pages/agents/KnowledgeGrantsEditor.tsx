@@ -89,7 +89,7 @@ export function KnowledgeGrantsEditor({
 
   return (
     <div className="flex flex-col gap-4">
-      <section className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-4">
+      <section className="border-border bg-bg-secondary flex flex-col gap-3 rounded-lg border p-4">
         <SwitchField
           checked={enabled}
           onCheckedChange={setEnabled}
@@ -105,16 +105,16 @@ export function KnowledgeGrantsEditor({
       </section>
 
       {enabled && (
-        <section className="flex flex-col gap-2 rounded-lg border border-border bg-bg-secondary p-4">
+        <section className="border-border bg-bg-secondary flex flex-col gap-2 rounded-lg border p-4">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
-              <BookOpen className="h-4 w-4 text-accent" aria-hidden="true" />
+            <h3 className="text-text-primary flex items-center gap-2 text-sm font-medium">
+              <BookOpen className="text-accent h-4 w-4" aria-hidden="true" />
               {t("editor.knowledge.bases", "Knowledge bases")}
             </h3>
             <button
               type="button"
               onClick={() => km.openCreate()}
-              className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-accent text-xs hover:underline"
+              className="text-accent flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:underline"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               {t("editor.knowledge.createNew", "New")}
@@ -150,7 +150,7 @@ export function KnowledgeGrantsEditor({
                           km.openDocs({ id: kb.id, name: kb.name });
                         }}
                         aria-label={t("knowledge.documents", "Documents")}
-                        className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:text-text-primary"
+                        className="text-text-muted hover:text-text-primary flex h-5 w-5 items-center justify-center rounded"
                       >
                         <FileText className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
@@ -163,7 +163,7 @@ export function KnowledgeGrantsEditor({
                           void km.openEditById(kb.id);
                         }}
                         aria-label={t("common.edit", "Edit")}
-                        className="flex h-5 w-5 items-center justify-center rounded text-text-muted hover:text-text-primary"
+                        className="text-text-muted hover:text-text-primary flex h-5 w-5 items-center justify-center rounded"
                       >
                         <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
@@ -185,7 +185,7 @@ export function KnowledgeGrantsEditor({
       )}
 
       {enabled && suggestAvailable && (
-        <section className="flex flex-col gap-2 rounded-lg border border-border bg-bg-secondary p-4">
+        <section className="border-border bg-bg-secondary flex flex-col gap-2 rounded-lg border p-4">
           <SwitchField
             checked={suggestEnabled}
             onCheckedChange={setSuggest}

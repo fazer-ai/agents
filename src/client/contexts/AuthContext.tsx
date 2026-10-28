@@ -254,9 +254,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <div className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-bg-primary">
+      <div className="bg-bg-primary flex min-h-dvh flex-col items-center justify-center gap-6">
         <Logo className="h-10" />
-        <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
+        <Loader2 className="text-text-secondary h-6 w-6 animate-spin" />
       </div>
     );
   }

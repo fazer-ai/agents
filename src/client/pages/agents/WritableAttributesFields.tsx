@@ -163,7 +163,7 @@ export function WritableAttributesFields({
             key={scope}
             className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3"
           >
-            <span className="text-sm text-text-secondary sm:w-32 sm:shrink-0">
+            <span className="text-text-secondary text-sm sm:w-32 sm:shrink-0">
               {scopeLabel[scope]}
             </span>
             <div className="min-w-0 flex-1">
@@ -193,7 +193,7 @@ export function WritableAttributesFields({
         ))}
         {listed.length > 0 && (
           <ul
-            className="flex flex-col divide-y divide-border rounded-md border border-border"
+            className="divide-border border-border flex flex-col divide-y rounded-md border"
             aria-label={t(
               "editor.writableAttributes.rules",
               "What each attribute accepts",
@@ -205,10 +205,10 @@ export function WritableAttributesFields({
                 className="flex flex-col gap-0.5 px-3 py-2 text-sm"
               >
                 <span className="flex flex-wrap items-baseline gap-x-2">
-                  <span className="font-medium text-text-primary">
+                  <span className="text-text-primary font-medium">
                     {def?.displayName || key}
                   </span>
-                  <span className="font-mono text-text-muted text-xs">
+                  <span className="text-text-muted font-mono text-xs">
                     {scopeLabel[scope]} · {key}
                   </span>
                 </span>
@@ -239,7 +239,7 @@ export function WritableAttributesFields({
             href={settingsUrl}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 self-start text-accent text-xs hover:underline"
+            className="text-accent inline-flex items-center gap-1 self-start text-xs hover:underline"
           >
             {t(
               "editor.writableAttributes.editInChatwoot",

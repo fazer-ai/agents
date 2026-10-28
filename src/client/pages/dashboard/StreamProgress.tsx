@@ -16,7 +16,7 @@ export function StreamProgress() {
   if (stream.failed)
     return (
       <p
-        className="-mt-3 flex items-center gap-2 text-sm text-text-muted"
+        className="text-text-muted -mt-3 flex items-center gap-2 text-sm"
         role="status"
       >
         {metricsErrorMessage(t, stream.status, stream.field)}
@@ -55,11 +55,11 @@ export function StreamProgress() {
             })}
       </p>
       <div
-        className="h-1 w-full overflow-hidden rounded-full bg-bg-tertiary"
+        className="bg-bg-tertiary h-1 w-full overflow-hidden rounded-full"
         aria-hidden="true"
       >
         <div
-          className="h-full bg-accent-solid transition-[width]"
+          className="bg-accent-solid h-full transition-[width]"
           style={{ width: `${pct}%` }}
         />
       </div>

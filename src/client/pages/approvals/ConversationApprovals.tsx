@@ -126,10 +126,10 @@ export function ConversationApprovals({
           >
             <div className="flex min-w-0 items-center gap-2 text-sm">
               <FileClock
-                className="h-4 w-4 shrink-0 text-text-muted"
+                className="text-text-muted h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
-              <span className="truncate font-medium text-text-primary">
+              <span className="text-text-primary truncate font-medium">
                 {approvalDocumentTitle(r)}
               </span>
               <Badge variant={APPROVAL_STATUS_VARIANT[r.status] ?? "secondary"}>

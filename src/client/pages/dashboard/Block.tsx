@@ -125,8 +125,8 @@ export function Block({
   return (
     <Card id={id} className="flex scroll-mt-4 flex-col gap-4 lg:scroll-mt-32">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
-          <Icon className="h-4 w-4 text-accent" aria-hidden="true" />
+        <h3 className="text-text-primary flex items-center gap-2 text-sm font-medium">
+          <Icon className="text-accent h-4 w-4" aria-hidden="true" />
           {title}
           {help ? <HelpPopover content={help} label={title} /> : null}
           {!error && <CoverageChip coverage={coverage} />}
@@ -139,7 +139,7 @@ export function Block({
               onClick={() =>
                 downloadCsv(`${table.name}.csv`, table.header, table.rows)
               }
-              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-text-muted text-xs hover:bg-bg-hover hover:text-text-primary"
+              className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs"
               aria-label={t(
                 "dashboard.exportCsvOf",
                 "Export {{title}} as CSV",
@@ -156,7 +156,7 @@ export function Block({
       </div>
       {!error && <CoverageBar coverage={coverage} />}
       {error ? (
-        <p className="flex items-center gap-2 py-4 text-sm text-text-muted">
+        <p className="text-text-muted flex items-center gap-2 py-4 text-sm">
           {metricsErrorMessage(t, errorStatus, errorField)}
           {onRetry && (
             <button
@@ -270,8 +270,8 @@ export function SectionHeading({
   children: ReactNode;
 }) {
   return (
-    <h2 className="flex items-center gap-2.5 font-semibold text-base text-text-primary">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent">
+    <h2 className="text-text-primary flex items-center gap-2.5 text-base font-semibold">
+      <span className="bg-bg-tertiary text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
         <Icon className="h-4 w-4" aria-hidden="true" />
       </span>
       {children}

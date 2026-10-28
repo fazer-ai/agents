@@ -46,7 +46,7 @@ export function Dropdown({
           disabled={disabled}
           aria-label={ariaLabel}
           className={cn(
-            "flex min-h-8 w-full items-center justify-between gap-2 rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
+            "border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60",
             triggerClassName,
           )}
         >
@@ -54,7 +54,7 @@ export function Dropdown({
             {current ? current.label : (placeholder ?? "")}
           </span>
           <ChevronDown
-            className="h-4 w-4 shrink-0 text-text-muted"
+            className="text-text-muted h-4 w-4 shrink-0"
             aria-hidden="true"
           />
         </button>
@@ -63,7 +63,7 @@ export function Dropdown({
         <DropdownMenuPrimitive.Content
           align={align}
           sideOffset={4}
-          className="z-(--z-popover) max-h-72 w-(--radix-dropdown-menu-trigger-width) min-w-56 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+          className="border-border bg-bg-secondary z-(--z-popover) max-h-72 w-(--radix-dropdown-menu-trigger-width) min-w-56 overflow-y-auto rounded-lg border p-1 shadow-lg"
         >
           {items.map((item) =>
             item.disabled ? (
@@ -72,7 +72,7 @@ export function Dropdown({
                 aria-disabled="true"
                 className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-sm opacity-50"
               >
-                <span className="truncate text-text-secondary">
+                <span className="text-text-secondary truncate">
                   {item.label}
                 </span>
                 {item.disabledHint && (
@@ -84,26 +84,26 @@ export function Dropdown({
             ) : (
               <DropdownMenuPrimitive.Item
                 key={item.value}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                className="text-text-secondary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors outline-none"
                 onSelect={() => onChange(item.value)}
               >
                 {item.icon && (
                   <item.icon
-                    className="h-4 w-4 shrink-0 self-start text-text-muted"
+                    className="text-text-muted h-4 w-4 shrink-0 self-start"
                     aria-hidden="true"
                   />
                 )}
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate">{item.label}</span>
                   {item.description && (
-                    <span className="truncate text-text-muted text-xs">
+                    <span className="text-text-muted truncate text-xs">
                       {item.description}
                     </span>
                   )}
                 </div>
                 {value === item.value && (
                   <Check
-                    className="h-4 w-4 shrink-0 text-accent"
+                    className="text-accent h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
                 )}

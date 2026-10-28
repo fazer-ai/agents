@@ -131,7 +131,7 @@ export function TestReceptionPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-text-secondary">
+      <p className="text-text-secondary text-sm">
         {t(
           "integrations.test.hint",
           "Paste a notification as the provider sends it. The test uses the saved settings.",
@@ -200,29 +200,29 @@ export function TestReceptionPanel({
             <li
               // biome-ignore lint/suspicious/noArrayIndexKey: a stage can repeat (the lookup's mapping)
               key={i}
-              className="rounded-md border border-border p-2 text-sm"
+              className="border-border rounded-md border p-2 text-sm"
             >
               <div className="flex items-center gap-2 font-medium">
                 {s.ok ? (
                   <CircleCheck
-                    className="h-4 w-4 text-success"
+                    className="text-success h-4 w-4"
                     aria-label={t("integrations.test.passed", "passed")}
                   />
                 ) : (
                   <CircleX
-                    className="h-4 w-4 text-error"
+                    className="text-error h-4 w-4"
                     aria-label={t("integrations.test.stopped", "stopped here")}
                   />
                 )}
                 {stageLabel[s.stage] ?? s.stage}
                 {s.reason && (
-                  <span className="font-mono text-text-secondary text-xs">
+                  <span className="text-text-secondary font-mono text-xs">
                     {s.reason}
                   </span>
                 )}
               </div>
               {detailLines(s.detail).length > 0 && (
-                <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-text-secondary text-xs">
+                <pre className="text-text-secondary mt-1 font-mono text-xs break-all whitespace-pre-wrap">
                   {detailLines(s.detail).join("\n")}
                 </pre>
               )}

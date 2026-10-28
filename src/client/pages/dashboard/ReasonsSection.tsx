@@ -189,7 +189,7 @@ export function ReasonsSection({ win }: { win: Window }) {
                       <span className="text-text-secondary">
                         {causeLabel[x.cause] ?? x.cause}
                       </span>
-                      <span className="font-medium text-text-primary tabular-nums">
+                      <span className="text-text-primary font-medium tabular-nums">
                         {nf.format(x.conversations)}
                       </span>
                     </li>
@@ -201,7 +201,7 @@ export function ReasonsSection({ win }: { win: Window }) {
                   {t("dashboard.handoffs.targets", "Where the transfers went")}
                 </p>
                 {targetTotals.length === 0 ? (
-                  <p className="text-sm text-text-muted">{"\u2014"}</p>
+                  <p className="text-text-muted text-sm">{"\u2014"}</p>
                 ) : (
                   <ul className="flex flex-col gap-1">
                     {targetTotals.map((x) => (
@@ -212,7 +212,7 @@ export function ReasonsSection({ win }: { win: Window }) {
                         <span className="text-text-secondary">
                           {targetLabel[x.target] ?? x.target}
                         </span>
-                        <span className="font-medium text-text-primary tabular-nums">
+                        <span className="text-text-primary font-medium tabular-nums">
                           {nf.format(x.conversations)}
                         </span>
                       </li>
@@ -229,7 +229,7 @@ export function ReasonsSection({ win }: { win: Window }) {
         ) : series.length === 0 &&
           !isProvisional(handoffs.coverage) &&
           !hasNoData(handoffs.coverage) ? (
-          <p className="py-8 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.handoffs.none", "No handoffs in this period.")}
           </p>
         ) : (
@@ -272,7 +272,7 @@ export function ReasonsSection({ win }: { win: Window }) {
                   <span className="text-text-secondary">
                     {silenceLabel[s.reason] ?? s.reason}
                   </span>
-                  <span className="font-medium text-text-primary tabular-nums">
+                  <span className="text-text-primary font-medium tabular-nums">
                     {nf.format(s.turns)}
                   </span>
                 </li>
@@ -286,7 +286,7 @@ export function ReasonsSection({ win }: { win: Window }) {
         ) : silenceSeries.length === 0 &&
           !isProvisional(handoffs.coverage) &&
           !hasNoData(handoffs.coverage) ? (
-          <p className="py-8 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.silences.none", "No silences in this period.")}
           </p>
         ) : (
@@ -320,7 +320,7 @@ export function ReasonsSection({ win }: { win: Window }) {
         {labels.loading && !l ? (
           <Skeleton className="h-24 w-full" />
         ) : !l || l.labels.length === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "dashboard.labels.none",
               "No labelled conversations in this period.",
@@ -330,7 +330,7 @@ export function ReasonsSection({ win }: { win: Window }) {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-text-muted text-xs">
+                <tr className="text-text-muted text-left text-xs">
                   {labelTable.header.map((h, i) => (
                     <th
                       key={h}
@@ -349,7 +349,7 @@ export function ReasonsSection({ win }: { win: Window }) {
               <tbody>
                 {l.labels.map((r) => (
                   <tr key={r.label} className="border-border border-t">
-                    <td className="py-1.5 pr-3 text-text-secondary">
+                    <td className="text-text-secondary py-1.5 pr-3">
                       {r.label}
                     </td>
                     <td className="py-1.5 pl-3 text-right tabular-nums">
@@ -370,7 +370,7 @@ export function ReasonsSection({ win }: { win: Window }) {
                 ))}
               </tbody>
             </table>
-            <p className="mt-2 text-text-muted text-xs">
+            <p className="text-text-muted mt-2 text-xs">
               {t(
                 "dashboard.labels.unlabeled",
                 "{{n}} conversations with no label",

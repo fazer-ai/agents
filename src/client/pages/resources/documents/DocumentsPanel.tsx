@@ -264,7 +264,7 @@ export function DocumentsPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "documents.subtitle",
             "Quotes, proposals and receipts your agents can issue and attach to a reply.",
@@ -307,15 +307,15 @@ export function DocumentsPanel() {
             <Card className="flex items-center justify-between gap-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <Building2
-                  className="h-4 w-4 shrink-0 text-accent"
+                  className="text-accent h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <div className="min-w-0">
-                  <p className="truncate font-medium text-sm text-text-primary">
+                  <p className="text-text-primary truncate text-sm font-medium">
                     {company?.name?.trim() ||
                       t("documents.company.unset", "No letterhead yet")}
                   </p>
-                  <p className="truncate text-text-muted text-xs">
+                  <p className="text-text-muted truncate text-xs">
                     {companySummary(company, t)}
                   </p>
                 </div>
@@ -368,7 +368,7 @@ export function DocumentsPanel() {
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="truncate font-medium text-text-primary">
+                      <span className="text-text-primary truncate font-medium">
                         {tpl.name}
                       </span>
                       <Badge variant="secondary">{tpl.toolName}</Badge>
@@ -378,7 +378,7 @@ export function DocumentsPanel() {
                         </Badge>
                       )}
                     </div>
-                    <p className="mt-0.5 truncate text-text-muted text-xs">
+                    <p className="text-text-muted mt-0.5 truncate text-xs">
                       {tpl.description ??
                         t("documents.blockCount", "{{count}} blocks", {
                           count: tpl.blocks.length,
@@ -494,7 +494,7 @@ export function DocumentsPanel() {
         title={t("resources.usageTitle", "Where this is used")}
       >
         {refs === "error" ? (
-          <p className="text-sm text-warning">
+          <p className="text-warning text-sm">
             {t(
               "documents.refsError",
               "Could not check which agents use this template.",
@@ -538,24 +538,24 @@ export function DocumentsPanel() {
         }
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t("documents.deleteMessage", 'Delete "{{name}}"?', {
               name: deleteModal.payload?.name ?? "",
             })}
           </p>
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "documents.deleteNote",
               "Documents already issued from it keep their own copy and stay readable.",
             )}
           </p>
           {deleteRefs === null && (
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t("documents.deleteChecking", "Checking which agents use it…")}
             </p>
           )}
           {deleteRefs === "error" && (
-            <p className="text-sm text-warning">
+            <p className="text-warning text-sm">
               {t(
                 "documents.refsError",
                 "Could not check which agents use this template.",
@@ -563,7 +563,7 @@ export function DocumentsPanel() {
             </p>
           )}
           {Array.isArray(deleteRefs) && deleteRefs.length > 0 && (
-            <p className="text-sm text-warning">
+            <p className="text-warning text-sm">
               {t(
                 "resources.deleteRefsWarning",
                 "{{count}} agent uses this and will stop working if you delete it.",

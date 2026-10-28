@@ -120,7 +120,7 @@ function MessageAttachment({
         {att.transcribedText && (
           <p
             className={cn(
-              "whitespace-pre-wrap text-xs italic",
+              "text-xs whitespace-pre-wrap italic",
               outgoing ? "text-accent-foreground/70" : "text-text-muted",
             )}
           >
@@ -171,7 +171,7 @@ function FollowUpBadge({
   return (
     <span
       className={cn(
-        "mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-[10px]",
+        "mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
         outgoing
           ? "bg-accent-foreground/15 text-accent-foreground/90"
           : "bg-bg-secondary text-text-muted",
@@ -211,8 +211,8 @@ function MessageBubble({
 
   if (m.private) {
     return (
-      <div className="mx-auto w-full max-w-xl rounded-lg border border-warning/40 bg-warning-soft px-3 py-2">
-        <div className="mb-1 flex items-center gap-1.5 text-warning text-xs">
+      <div className="border-warning/40 bg-warning-soft mx-auto w-full max-w-xl rounded-lg border px-3 py-2">
+        <div className="text-warning mb-1 flex items-center gap-1.5 text-xs">
           <Lock className="h-3 w-3" aria-hidden="true" />
           {t("conversation.privateNote", "Private note")}
           {m.senderName ? ` · ${m.senderName}` : ""}
@@ -221,7 +221,7 @@ function MessageBubble({
             (docs/documents.md, Approval), so the console renders it the same way. */}
         <Markdown className="text-sm">{m.content ?? ""}</Markdown>
         {(when || turnUsage) && (
-          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-text-muted">
+          <div className="text-text-muted mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px]">
             {when && <span>{when}</span>}
             {when && turnUsage && <span aria-hidden="true">·</span>}
             {turnUsage && (
@@ -235,7 +235,7 @@ function MessageBubble({
 
   if (!incoming && !outgoing) {
     return (
-      <p className="text-center text-text-muted text-xs">
+      <p className="text-text-muted text-center text-xs">
         {m.content}
         {when ? ` · ${when}` : ""}
       </p>
@@ -255,7 +255,7 @@ function MessageBubble({
         {m.senderName && (
           <p
             className={cn(
-              "mb-0.5 font-medium text-xs",
+              "mb-0.5 text-xs font-medium",
               outgoing ? "text-accent-foreground/80" : "text-text-muted",
             )}
           >
@@ -285,7 +285,7 @@ function MessageBubble({
               {m.content}
             </Markdown>
           ) : (
-            <p className="whitespace-pre-wrap text-sm">{m.content}</p>
+            <p className="text-sm whitespace-pre-wrap">{m.content}</p>
           ))}
         {m.attachments?.length ? (
           <div className="mt-1 flex flex-col gap-1.5">
@@ -436,7 +436,7 @@ function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
       className="flex items-center justify-center gap-1.5"
       data-testid="turn-usage"
     >
-      <Gauge className="h-3 w-3 shrink-0 text-text-muted" aria-hidden="true" />
+      <Gauge className="text-text-muted h-3 w-3 shrink-0" aria-hidden="true" />
       <UsageFigure usage={turn.usage} timing={turn} />
     </div>
   );
@@ -531,7 +531,7 @@ function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
       (entry.errorMessage != null && entry.errorMessage !== ""));
 
   const line = (
-    <div className="flex items-center justify-center gap-1.5 text-text-muted text-xs">
+    <div className="text-text-muted flex items-center justify-center gap-1.5 text-xs">
       {hasDetails &&
         (expanded ? (
           <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -560,12 +560,12 @@ function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="rounded px-1 py-0.5 hover:bg-bg-tertiary"
+        className="hover:bg-bg-tertiary rounded px-1 py-0.5"
       >
         {line}
       </button>
       {failed && entry.errorMessage && !expanded && (
-        <span className="max-w-xs truncate text-error text-xs">
+        <span className="text-error max-w-xs truncate text-xs">
           {entry.errorMessage}
         </span>
       )}
@@ -634,13 +634,13 @@ function AgentActivityIndicator({ activity }: { activity: ActivityState }) {
   }
   return (
     <div className="flex justify-start" aria-live="polite">
-      <div className="flex max-w-[80%] items-center gap-2 rounded-2xl bg-bg-tertiary px-3 py-2 text-sm text-text-secondary">
-        <Bot className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+      <div className="bg-bg-tertiary text-text-secondary flex max-w-[80%] items-center gap-2 rounded-2xl px-3 py-2 text-sm">
+        <Bot className="text-accent h-4 w-4 shrink-0" aria-hidden="true" />
         <span>{label}</span>
         <span className="flex items-center gap-0.5" aria-hidden="true">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:150ms]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:300ms]" />
+          <span className="bg-text-muted h-1.5 w-1.5 animate-bounce rounded-full" />
+          <span className="bg-text-muted h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:150ms]" />
+          <span className="bg-text-muted h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:300ms]" />
         </span>
       </div>
     </div>
@@ -720,9 +720,9 @@ function formatHoursWindows(
 function FollowUpComplete() {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center justify-center gap-1.5 text-text-muted text-xs">
+    <div className="text-text-muted flex items-center justify-center gap-1.5 text-xs">
       <CheckCircle2
-        className="h-3 w-3 shrink-0 text-success"
+        className="text-success h-3 w-3 shrink-0"
         aria-hidden="true"
       />
       <span>
@@ -795,13 +795,13 @@ function FollowUpLine({
   const tooltipContent = (
     <div className="flex flex-col gap-2 text-left">
       {imminentHint && (
-        <div className="flex items-start gap-1.5 rounded bg-warning/15 px-2 py-1.5 text-warning">
+        <div className="bg-warning/15 text-warning flex items-start gap-1.5 rounded px-2 py-1.5">
           <Clock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{imminentHint}</span>
         </div>
       )}
       {paused && (
-        <div className="flex items-start gap-1.5 rounded bg-bg-tertiary px-2 py-1.5 text-text-secondary">
+        <div className="bg-bg-tertiary text-text-secondary flex items-start gap-1.5 rounded px-2 py-1.5">
           <CalendarClock
             className="mt-0.5 h-3 w-3 shrink-0"
             aria-hidden="true"
@@ -815,7 +815,7 @@ function FollowUpLine({
         </div>
       )}
       {!imminent && followUp.nextRunAtDeferred && (
-        <div className="flex items-start gap-1.5 rounded bg-bg-tertiary px-2 py-1.5 text-text-secondary">
+        <div className="bg-bg-tertiary text-text-secondary flex items-start gap-1.5 rounded px-2 py-1.5">
           <Clock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>
             {t(
@@ -826,7 +826,7 @@ function FollowUpLine({
         </div>
       )}
       <div className="flex flex-col gap-1.5">
-        <span className="font-semibold text-[10px] text-text-muted uppercase tracking-wider">
+        <span className="text-text-muted text-[10px] font-semibold tracking-wider uppercase">
           {t("conversation.followUp.sequenceTitle", "Follow-up sequence")}
         </span>
         <ul className="flex flex-col gap-1">
@@ -849,7 +849,7 @@ function FollowUpLine({
               <li key={i} className="flex flex-wrap items-center gap-1.5">
                 <span
                   className={cn(
-                    "flex h-4 w-4 shrink-0 items-center justify-center rounded-full font-semibold text-[10px]",
+                    "flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold",
                     isNext
                       ? "bg-accent-solid text-accent-foreground"
                       : "bg-bg-tertiary text-text-secondary",
@@ -867,14 +867,14 @@ function FollowUpLine({
                 {s.assignLabels.map((label) => (
                   <span
                     key={label}
-                    className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary"
+                    className="bg-bg-tertiary text-text-secondary inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
                   >
                     <Tag className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
                     {label}
                   </span>
                 ))}
                 {s.resolve && (
-                  <span className="inline-flex items-center gap-1 text-[10px] text-success">
+                  <span className="text-success inline-flex items-center gap-1 text-[10px]">
                     <CheckCircle2
                       className="h-2.5 w-2.5 shrink-0"
                       aria-hidden="true"
@@ -891,8 +891,8 @@ function FollowUpLine({
         </ul>
       </div>
       {followUp.hours && (
-        <div className="flex flex-col gap-0.5 border-border border-t pt-1.5">
-          <span className="flex items-center gap-1 font-semibold text-[10px] text-text-muted uppercase tracking-wider">
+        <div className="border-border flex flex-col gap-0.5 border-t pt-1.5">
+          <span className="text-text-muted flex items-center gap-1 text-[10px] font-semibold tracking-wider uppercase">
             <CalendarClock
               className="h-2.5 w-2.5 shrink-0"
               aria-hidden="true"
@@ -932,7 +932,7 @@ function FollowUpLine({
                   )}
             </span>
           )}
-          <span className="text-[10px] text-text-muted">
+          <span className="text-text-muted text-[10px]">
             {followUp.hours.timezone}
           </span>
         </div>
@@ -945,7 +945,7 @@ function FollowUpLine({
       <div
         className={cn(
           "flex items-center justify-center gap-1.5 text-xs",
-          imminent ? "font-medium text-accent" : "text-text-muted",
+          imminent ? "text-accent font-medium" : "text-text-muted",
         )}
       >
         <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -1005,7 +1005,7 @@ function RedirectFollowUpLine({
 
   const tooltipContent = (
     <div className="flex flex-col gap-1.5 text-left">
-      <span className="font-semibold text-[10px] text-text-muted uppercase tracking-wider">
+      <span className="text-text-muted text-[10px] font-semibold tracking-wider uppercase">
         {t("conversation.followUp.redirectTitle", "WhatsApp → chat redirect")}
       </span>
       <span className="text-text-secondary">
@@ -1022,7 +1022,7 @@ function RedirectFollowUpLine({
       <div
         className={cn(
           "flex items-center justify-center gap-1.5 text-xs",
-          imminent ? "font-medium text-accent" : "text-text-muted",
+          imminent ? "text-accent font-medium" : "text-text-muted",
         )}
       >
         <ArrowRightLeft className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -1090,7 +1090,7 @@ function AppointmentRemindersLine({
 
   return (
     <Tooltip content={tooltipContent}>
-      <div className="flex items-center justify-center gap-1.5 text-text-muted text-xs">
+      <div className="text-text-muted flex items-center justify-center gap-1.5 text-xs">
         <CalendarClock className="h-3 w-3 shrink-0" aria-hidden="true" />
         <span>{label}</span>
       </div>
@@ -1684,7 +1684,7 @@ export function ConversationDetailPage() {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <Link
           to="/conversations"
-          className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
+          className="text-text-muted hover:text-text-primary inline-flex w-fit items-center gap-1.5 text-sm"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           {t("conversation.back", "Back to conversations")}
@@ -1692,7 +1692,7 @@ export function ConversationDetailPage() {
         {backToApproval && (
           <Link
             to={backToApproval}
-            className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+            className="text-accent inline-flex w-fit items-center gap-1.5 text-sm hover:underline"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />
             {t("conversation.backToApproval", "Back to the approval")}
@@ -1711,7 +1711,7 @@ export function ConversationDetailPage() {
             <Card className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="truncate font-semibold text-lg text-text-primary">
+                  <h1 className="text-text-primary truncate text-lg font-semibold">
                     {conv.contact?.name ??
                       t("conversations.unknownContact", "Unknown contact")}
                   </h1>
@@ -1727,7 +1727,7 @@ export function ConversationDetailPage() {
                   {conv.agentMode === "monitoring" && <MonitoringBadge />}
                   {conv.outOfHours && <OutOfHoursBadge />}
                 </div>
-                <p className="mt-0.5 flex items-center gap-1.5 text-sm text-text-muted">
+                <p className="text-text-muted mt-0.5 flex items-center gap-1.5 text-sm">
                   {isHuman ? (
                     <>
                       <User className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1739,7 +1739,7 @@ export function ConversationDetailPage() {
                   ) : (
                     <>
                       <Bot
-                        className="h-3.5 w-3.5 text-accent"
+                        className="text-accent h-3.5 w-3.5"
                         aria-hidden="true"
                       />
                       {conv.agentName ?? t("conversations.assignee.ai", "AI")}
@@ -1747,7 +1747,7 @@ export function ConversationDetailPage() {
                   )}
                   {conv.inbox?.name ? ` · ${conv.inbox.name}` : ""}
                   {conv.observers.length > 0 ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-secondary">
+                    <span className="bg-bg-tertiary text-text-secondary inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]">
                       <Eye className="h-3 w-3" aria-hidden="true" />
                       {t("conversations.observedByLabel", "Observed by")}
                       {/* Each observer is a link to its own page: the badge is the only place the watcher
@@ -1766,7 +1766,7 @@ export function ConversationDetailPage() {
                     </span>
                   ) : null}
                   {!isHuman && conv.agentModel ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
+                    <span className="bg-bg-tertiary text-text-secondary inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px]">
                       {conv.agentModel}
                     </span>
                   ) : null}
@@ -1784,7 +1784,7 @@ export function ConversationDetailPage() {
                     {conv.contact.voiceReply === true ? (
                       <>
                         <Volume2
-                          className="h-3.5 w-3.5 text-success"
+                          className="text-success h-3.5 w-3.5"
                           aria-hidden="true"
                         />
                         <span className="text-text-secondary">
@@ -1797,7 +1797,7 @@ export function ConversationDetailPage() {
                     ) : conv.contact.voiceReply === false ? (
                       <>
                         <Type
-                          className="h-3.5 w-3.5 text-info"
+                          className="text-info h-3.5 w-3.5"
                           aria-hidden="true"
                         />
                         <span className="text-text-secondary">
@@ -1856,7 +1856,7 @@ export function ConversationDetailPage() {
                     </Button>
                   )}
                   {noResponder !== null && (
-                    <span className="inline-flex items-center gap-1 text-text-muted text-xs">
+                    <span className="text-text-muted inline-flex items-center gap-1 text-xs">
                       {noResponder.label}
                       <HelpPopover
                         content={noResponder.detail}
@@ -1936,7 +1936,7 @@ export function ConversationDetailPage() {
                 <div className="contents lg:flex lg:flex-row lg:flex-wrap lg:items-center lg:justify-end lg:gap-2">
                   <Link
                     to={`/logs?conversationId=${id}`}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                    className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm"
                   >
                     <ScrollText className="h-4 w-4" aria-hidden="true" />
                     {t("conversation.viewLogs", "View logs")}
@@ -1946,7 +1946,7 @@ export function ConversationDetailPage() {
                       href={chatwootUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                      className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm"
                     >
                       <ExternalLink className="h-4 w-4" aria-hidden="true" />
                       {t("conversation.openInChatwoot", "Open in Chatwoot")}
@@ -1961,7 +1961,7 @@ export function ConversationDetailPage() {
                   {conv.agentId && (
                     <Link
                       to={`/agents/${conv.agentId}/general?from=/conversations/${id}`}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                      className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm"
                     >
                       <Settings className="h-4 w-4" aria-hidden="true" />
                       {t("conversation.configureAgent", "Configure agent")}
@@ -1974,7 +1974,7 @@ export function ConversationDetailPage() {
                       <Link
                         key={o.id}
                         to={`/agents/${o.id}/general?from=/conversations/${id}`}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                        className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm"
                       >
                         <Settings className="h-4 w-4" aria-hidden="true" />
                         {t(
@@ -1996,20 +1996,20 @@ export function ConversationDetailPage() {
             />
 
             {conv.lastError && (
-              <Card className="flex flex-wrap items-center justify-between gap-3 border-warning/40 bg-warning-soft">
+              <Card className="border-warning/40 bg-warning-soft flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
                   <AlertTriangle
-                    className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                    className="text-warning mt-0.5 h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
                   <div className="min-w-0">
-                    <p className="font-medium text-sm text-text-primary">
+                    <p className="text-text-primary text-sm font-medium">
                       {t(
                         "conversation.reengage.failedTitle",
                         "The AI couldn't finish its last turn",
                       )}
                     </p>
-                    <p className="mt-0.5 break-words text-text-muted text-xs">
+                    <p className="text-text-muted mt-0.5 text-xs break-words">
                       {conv.lastError}
                     </p>
                   </div>
@@ -2034,7 +2034,7 @@ export function ConversationDetailPage() {
             <div
               ref={scrollRef}
               onScroll={onMessagesScroll}
-              className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-bg-secondary p-6"
+              className="border-border bg-bg-secondary flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-xl border p-6"
             >
               {messagesLoading ? (
                 <div className="flex flex-col gap-3" role="status">
@@ -2042,24 +2042,24 @@ export function ConversationDetailPage() {
                     {t("conversation.loadingMessages", "Loading messages…")}
                   </span>
                   <div className="flex justify-start">
-                    <div className="max-w-[80%] rounded-2xl bg-bg-tertiary/40 px-3 py-2">
+                    <div className="bg-bg-tertiary/40 max-w-[80%] rounded-2xl px-3 py-2">
                       <Skeleton className="h-3 w-20" />
                       <Skeleton className="mt-1.5 h-3.5 w-48" />
                     </div>
                   </div>
                   <div className="flex justify-end">
-                    <div className="max-w-[80%] rounded-2xl bg-accent-soft px-3 py-2">
+                    <div className="bg-accent-soft max-w-[80%] rounded-2xl px-3 py-2">
                       <Skeleton className="h-3.5 w-32" />
                     </div>
                   </div>
                   <div className="flex justify-start">
-                    <div className="max-w-[80%] rounded-2xl bg-bg-tertiary/40 px-3 py-2">
+                    <div className="bg-bg-tertiary/40 max-w-[80%] rounded-2xl px-3 py-2">
                       <Skeleton className="h-3.5 w-56" />
                       <Skeleton className="mt-1.5 h-3.5 w-40" />
                     </div>
                   </div>
                   <div className="flex justify-end">
-                    <div className="max-w-[80%] rounded-2xl bg-accent-soft px-3 py-2">
+                    <div className="bg-accent-soft max-w-[80%] rounded-2xl px-3 py-2">
                       <Skeleton className="h-3.5 w-44" />
                     </div>
                   </div>
@@ -2070,7 +2070,7 @@ export function ConversationDetailPage() {
                 // notice, instead of hiding the whole timeline.
                 <div className="flex flex-col gap-4">
                   <div className="flex flex-col items-center gap-3 py-6 text-center">
-                    <p className="text-sm text-text-muted">
+                    <p className="text-text-muted text-sm">
                       {t(
                         "conversation.messagesUnavailable",
                         "Couldn't load the messages from Chatwoot.",
@@ -2097,7 +2097,7 @@ export function ConversationDetailPage() {
                   )}
                 </div>
               ) : timeline.items.length === 0 ? (
-                <p className="py-8 text-center text-sm text-text-muted">
+                <p className="text-text-muted py-8 text-center text-sm">
                   {t("conversation.noMessages", "No messages yet.")}
                 </p>
               ) : (
@@ -2108,7 +2108,7 @@ export function ConversationDetailPage() {
                         type="button"
                         onClick={() => void loadOlder()}
                         disabled={loadingOlder}
-                        className="rounded-full border border-border px-3 py-1 text-text-muted text-xs hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-60"
+                        className="border-border text-text-muted hover:bg-bg-tertiary hover:text-text-primary rounded-full border px-3 py-1 text-xs disabled:opacity-60"
                       >
                         {loadingOlder
                           ? t(

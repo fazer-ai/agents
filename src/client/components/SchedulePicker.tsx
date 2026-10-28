@@ -91,13 +91,13 @@ export function SchedulePicker({
             type="button"
             disabled={disabled}
             aria-label={ariaLabel}
-            className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary py-1 pr-2.5 pl-2.5 text-left transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+            className="border-border-hover bg-bg-tertiary focus:border-border-focus focus:ring-accent-soft flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md border py-1 pr-2.5 pl-2.5 text-left transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
           >
             <div className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-sm text-text-primary">
+              <span className="text-text-primary truncate text-sm">
                 {selected ? selected.name : emptyLabel}
               </span>
-              <span className="truncate text-text-muted text-xs">
+              <span className="text-text-muted truncate text-xs">
                 {selected ? (
                   <ScheduleSummary
                     windows={selected.windows}
@@ -111,7 +111,7 @@ export function SchedulePicker({
             </div>
             <ChevronDown
               aria-hidden="true"
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
             />
           </button>
         </DropdownMenuPrimitive.Trigger>
@@ -124,7 +124,7 @@ export function SchedulePicker({
               zIndex: "calc(var(--z-modal) + 5)",
               minWidth: "var(--radix-dropdown-menu-trigger-width)",
             }}
-            className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in"
+            className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 border-border bg-bg-secondary data-[state=closed]:animate-out data-[state=open]:animate-in max-h-72 overflow-y-auto rounded-lg border p-1 shadow-lg"
           >
             {/* Empty / default option */}
             <DropdownMenuPrimitive.Item
@@ -134,7 +134,7 @@ export function SchedulePicker({
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-sm">{emptyLabel}</span>
                 {emptySummary && (
-                  <span className="truncate text-text-muted text-xs">
+                  <span className="text-text-muted truncate text-xs">
                     {emptySummary}
                   </span>
                 )}
@@ -155,7 +155,7 @@ export function SchedulePicker({
               >
                 <div className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-sm">{s.name}</span>
-                  <span className="truncate text-text-muted text-xs">
+                  <span className="text-text-muted truncate text-xs">
                     <ScheduleSummary
                       windows={s.windows}
                       exceptions={s.exceptions}
@@ -172,7 +172,7 @@ export function SchedulePicker({
               </DropdownMenuPrimitive.Item>
             ))}
 
-            <DropdownMenuPrimitive.Separator className="my-1 h-px bg-border" />
+            <DropdownMenuPrimitive.Separator className="bg-border my-1 h-px" />
             <DropdownMenuPrimitive.Item
               className={itemCls}
               onSelect={() => createModal.open()}

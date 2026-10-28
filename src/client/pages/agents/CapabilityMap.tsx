@@ -432,7 +432,7 @@ function GraphModalBody({
             <button
               type="button"
               onClick={() => downloadSvg(svg, `${fileNameBase}.svg`)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
+              className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs"
             >
               <Download className="h-3.5 w-3.5" aria-hidden="true" />
               {t("editor.capabilities.saveSvg", "Save SVG")}
@@ -449,7 +449,7 @@ function GraphModalBody({
                   () => {},
                 );
               }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
+              className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs"
             >
               <Download className="h-3.5 w-3.5" aria-hidden="true" />
               {t("editor.capabilities.savePng", "Save PNG")}
@@ -458,7 +458,7 @@ function GraphModalBody({
         )}
       </div>
       {state === "error" ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "editor.capabilities.graphError",
             "Couldn't render the graph here. Try reopening it.",
@@ -512,17 +512,17 @@ export function CapabilityMap({
         >
           {open ? (
             <ChevronDown
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           ) : (
             <ChevronRight
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           )}
-          <Network className="h-4 w-4 text-accent" aria-hidden="true" />
-          <span className="font-medium text-sm text-text-primary">
+          <Network className="text-accent h-4 w-4" aria-hidden="true" />
+          <span className="text-text-primary text-sm font-medium">
             {t("editor.capabilities.title", "Capability map")}
           </span>
           <span className="text-text-muted text-xs">
@@ -535,7 +535,7 @@ export function CapabilityMap({
           <button
             type="button"
             onClick={() => graphModal.open()}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
+            className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs"
           >
             <Network className="h-3.5 w-3.5" aria-hidden="true" />
             {t("editor.capabilities.viewGraph", "View graph")}
@@ -544,7 +544,7 @@ export function CapabilityMap({
       </div>
       {open &&
         (total === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "editor.capabilities.empty",
               "No tools granted yet — the agent can only chat.",
@@ -552,18 +552,18 @@ export function CapabilityMap({
           </p>
         ) : (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
-            <div className="flex shrink-0 items-center gap-2 self-center rounded-xl border border-accent/40 bg-accent-soft px-3 py-2 font-medium text-sm text-text-primary">
-              <Bot className="h-4 w-4 text-accent" aria-hidden="true" />
+            <div className="border-accent/40 bg-accent-soft text-text-primary flex shrink-0 items-center gap-2 self-center rounded-xl border px-3 py-2 text-sm font-medium">
+              <Bot className="text-accent h-4 w-4" aria-hidden="true" />
               {t("editor.capabilities.agent", "Agent")}
             </div>
             <div className="flex flex-1 flex-col gap-2">
               {groups.map((group) => (
                 <div
                   key={group.key}
-                  className="rounded-lg border border-border bg-bg-secondary p-2"
+                  className="border-border bg-bg-secondary rounded-lg border p-2"
                 >
                   <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2">
-                    <p className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+                    <p className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
                       {group.label}
                     </p>
                     <GroupTokens n={groupTotal(floor, group)} />
@@ -575,12 +575,12 @@ export function CapabilityMap({
                         <span
                           key={`${item.label}:${JSON.stringify(item.ref ?? item.source ?? null)}`}
                           className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary px-2 py-0.5 text-text-secondary text-xs",
+                            "border-border bg-bg-tertiary text-text-secondary inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs",
                           )}
                         >
                           {item.label}
                           {n !== null && (
-                            <span className="font-mono text-text-muted">
+                            <span className="text-text-muted font-mono">
                               {fmt(n, i18n.language)}
                             </span>
                           )}

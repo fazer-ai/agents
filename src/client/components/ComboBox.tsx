@@ -76,7 +76,7 @@ function ColorDot({ color }: { color?: string }) {
   if (!color) return null;
   return (
     <span
-      className="h-2.5 w-2.5 shrink-0 rounded-full border border-border"
+      className="border-border h-2.5 w-2.5 shrink-0 rounded-full border"
       style={{ backgroundColor: color }}
       aria-hidden="true"
     />
@@ -207,19 +207,19 @@ export function ComboBox(props: ComboBoxProps) {
             return (
               <span
                 key={v}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary py-0.5 pr-1 pl-2 text-text-primary text-xs"
+                className="border-border bg-bg-tertiary text-text-primary inline-flex items-center gap-1.5 rounded-full border py-0.5 pr-1 pl-2 text-xs"
               >
                 <ColorDot color={it?.color} />
                 <span className="truncate">{it?.label ?? v}</span>
                 {it?.note && (
-                  <span className="shrink-0 text-text-muted">{it.note}</span>
+                  <span className="text-text-muted shrink-0">{it.note}</span>
                 )}
                 <button
                   type="button"
                   disabled={disabled}
                   aria-label={t("common.remove", "Remove")}
                   onClick={() => pick(v)}
-                  className="rounded-full p-0.5 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+                  className="text-text-muted hover:bg-bg-hover hover:text-text-primary rounded-full p-0.5"
                 >
                   <X className="h-3 w-3" aria-hidden="true" />
                 </button>
@@ -244,7 +244,7 @@ export function ComboBox(props: ComboBoxProps) {
             type="button"
             disabled={disabled}
             aria-label={ariaLabel}
-            className="flex min-h-8 w-full items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+            className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 w-full items-center gap-2 rounded-md border px-2.5 py-1 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
           >
             <span
               className={cn(
@@ -266,7 +266,7 @@ export function ComboBox(props: ComboBoxProps) {
                     {singleSelected?.label ?? (single?.value || placeholder)}
                   </span>
                   {singleHint && (
-                    <span className="max-w-[45%] truncate text-text-muted text-xs">
+                    <span className="text-text-muted max-w-[45%] truncate text-xs">
                       {`(${singleHint})`}
                     </span>
                   )}
@@ -275,7 +275,7 @@ export function ComboBox(props: ComboBoxProps) {
             </span>
             <ChevronDown
               aria-hidden="true"
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
             />
           </button>
         </DropdownMenuPrimitive.Trigger>
@@ -291,11 +291,11 @@ export function ComboBox(props: ComboBoxProps) {
                 ? `min(max(var(--radix-dropdown-menu-trigger-width), ${menuMinWidth}), var(--radix-dropdown-menu-content-available-width))`
                 : "var(--radix-dropdown-menu-trigger-width)",
             }}
-            className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 rounded-lg border border-border bg-bg-secondary shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in"
+            className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 border-border bg-bg-secondary data-[state=closed]:animate-out data-[state=open]:animate-in rounded-lg border shadow-lg"
           >
-            <div className="flex items-center gap-1.5 border-border border-b px-2 py-1.5">
+            <div className="border-border flex items-center gap-1.5 border-b px-2 py-1.5">
               <Search
-                className="pointer-events-none h-4 w-4 shrink-0 text-text-muted"
+                className="text-text-muted pointer-events-none h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
               <input
@@ -313,14 +313,14 @@ export function ComboBox(props: ComboBoxProps) {
                 }}
                 placeholder={searchPlaceholder ?? t("common.search", "Search")}
                 aria-label={searchPlaceholder ?? t("common.search", "Search")}
-                className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                className="text-text-primary placeholder:text-text-muted flex-1 bg-transparent text-sm outline-none"
               />
             </div>
 
             <div className="max-h-72 overflow-y-auto p-1">
               {showCustom && (
                 <DropdownMenuPrimitive.Item
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                  className="text-text-secondary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors outline-none"
                   // Keep the menu open in multi mode so several can be added in a row.
                   onSelect={(e) => {
                     if (multiple) e.preventDefault();
@@ -336,7 +336,7 @@ export function ComboBox(props: ComboBoxProps) {
               )}
 
               {loadState.status === "loading" && (
-                <div className="flex items-center gap-2 px-2 py-1.5 text-sm text-text-muted">
+                <div className="text-text-muted flex items-center gap-2 px-2 py-1.5 text-sm">
                   <Loader2
                     aria-hidden="true"
                     className="h-3.5 w-3.5 shrink-0 animate-spin"
@@ -346,13 +346,13 @@ export function ComboBox(props: ComboBoxProps) {
               )}
 
               {loadState.status === "error" && (
-                <div className="px-2 py-1.5 text-error text-sm">
+                <div className="text-error px-2 py-1.5 text-sm">
                   {t("common.comboBoxLoadError", "Could not load the list.")}
                 </div>
               )}
 
               {loadState.status === "idle" && loader && needsCredential && (
-                <div className="px-2 py-1.5 text-sm text-text-muted">
+                <div className="text-text-muted px-2 py-1.5 text-sm">
                   {t(
                     "common.comboBoxNeedsCredential",
                     "Select a credential to list options.",
@@ -364,7 +364,7 @@ export function ComboBox(props: ComboBoxProps) {
                 !showCustom &&
                 loadState.status !== "loading" &&
                 loadState.status !== "error" && (
-                  <div className="px-2 py-1.5 text-sm text-text-muted">
+                  <div className="text-text-muted px-2 py-1.5 text-sm">
                     {t("common.comboBoxEmpty", "No options")}
                   </div>
                 )}
@@ -375,7 +375,7 @@ export function ComboBox(props: ComboBoxProps) {
                 const item = (
                   <DropdownMenuPrimitive.Item
                     key={m.id}
-                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                    className="text-text-secondary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors outline-none"
                     onSelect={(e) => {
                       if (multiple) e.preventDefault();
                       pick(m.id);
@@ -385,7 +385,7 @@ export function ComboBox(props: ComboBoxProps) {
                       <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                         {checked && (
                           <Check
-                            className="h-3.5 w-3.5 text-accent"
+                            className="text-accent h-3.5 w-3.5"
                             aria-hidden="true"
                           />
                         )}
@@ -394,7 +394,7 @@ export function ComboBox(props: ComboBoxProps) {
                     <ColorDot color={m.color} />
                     <span className="flex-1 truncate">{m.label ?? m.id}</span>
                     {(m.hint ?? (m.label ? m.id : "")) && (
-                      <span className="max-w-[45%] truncate text-text-muted text-xs">
+                      <span className="text-text-muted max-w-[45%] truncate text-xs">
                         {m.hint ?? m.id}
                       </span>
                     )}
@@ -412,7 +412,7 @@ export function ComboBox(props: ComboBoxProps) {
                           e.preventDefault();
                           action.onPress();
                         }}
-                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-accent"
+                        className="text-text-muted data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-accent inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors outline-none"
                       >
                         {action.icon}
                       </DropdownMenuPrimitive.CheckboxItem>

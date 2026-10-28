@@ -40,7 +40,7 @@ export function OccurrenceInboxesSection({
   const gone = value.filter((id) => !inboxes.some((i) => i.id === id));
   if (inboxes.length === 0 && gone.length === 0)
     return (
-      <p className="text-sm text-text-muted">
+      <p className="text-text-muted text-sm">
         {t(
           "occurrences.inboxes.none",
           "This account has no inboxes yet. Connect a Chatwoot account in Channels first.",

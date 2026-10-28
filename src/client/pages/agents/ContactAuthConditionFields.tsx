@@ -216,7 +216,7 @@ export function ContactAuthConditionList({
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: conditions are positional (no stable id); reorder is add/remove only
           key={index}
-          className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3"
+          className="border-border bg-bg-secondary flex flex-col gap-3 rounded-lg border p-3"
         >
           <div className="flex items-end gap-2">
             <FormField
@@ -246,7 +246,7 @@ export function ContactAuthConditionList({
                 "editor.contactAuthRuleRemoveCondition",
                 "Remove condition",
               )}
-              className="mb-0.5 flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error"
+              className="text-text-muted hover:text-error mb-0.5 flex h-7 w-7 items-center justify-center rounded transition-colors"
             >
               <Trash2 className="h-4 w-4" aria-hidden="true" />
             </button>

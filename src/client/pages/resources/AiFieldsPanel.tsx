@@ -170,7 +170,7 @@ function EnumValuesEditor({
         {values.map((v) => (
           <span
             key={v}
-            className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-0.5 text-text-secondary text-xs"
+            className="bg-bg-tertiary text-text-secondary inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs"
           >
             <code className="font-mono">{v}</code>
             <button
@@ -229,7 +229,7 @@ export function AiFieldsPanel({
       {value.map((row, i) => (
         <div
           key={row._id}
-          className="flex flex-col gap-2 rounded-md border border-border p-2"
+          className="border-border flex flex-col gap-2 rounded-md border p-2"
         >
           <div className="flex items-center gap-2">
             <Input
@@ -255,7 +255,7 @@ export function AiFieldsPanel({
               type="button"
               onClick={() => onChange(value.filter((_, idx) => idx !== i))}
               aria-label={t("common.remove", "Remove")}
-              className="shrink-0 rounded p-1.5 text-text-muted hover:text-error"
+              className="text-text-muted hover:text-error shrink-0 rounded p-1.5"
             >
               <Trash2 className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -267,7 +267,7 @@ export function AiFieldsPanel({
             />
           )}
           {row.type === "array" && (
-            <div className="flex items-center gap-2 text-text-secondary text-xs">
+            <div className="text-text-secondary flex items-center gap-2 text-xs">
               <span>{t("tools.arrayItemType", "Item type")}</span>
               <Select
                 aria-label={t("tools.arrayItemType", "Item type")}
@@ -293,7 +293,7 @@ export function AiFieldsPanel({
               "What the AI should put here, e.g. 'the order number the customer gave'",
             )}
           />
-          <label className="flex w-fit items-center gap-2 text-text-secondary text-xs">
+          <label className="text-text-secondary flex w-fit items-center gap-2 text-xs">
             <input
               type="checkbox"
               checked={row.required}

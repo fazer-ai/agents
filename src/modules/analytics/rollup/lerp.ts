@@ -48,6 +48,7 @@ export function fma(a: number, b: number, c: number): number {
   const [mb, eb] = parts(b);
   const [mc, ec] = parts(c);
   const ep = ea + eb;
+  // biome-ignore lint/complexity/useMathMinMax: exponents are bigints, which Math.min refuses
   const e = ep < ec ? ep : ec;
   return rounded(((ma * mb) << (ep - e)) + (mc << (ec - e)), e);
 }

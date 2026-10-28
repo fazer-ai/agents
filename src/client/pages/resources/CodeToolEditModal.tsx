@@ -420,9 +420,9 @@ export function CodeToolEditModal({
         ) : (
           <div className="flex flex-col gap-4">
             {sharedNotice && editId && (
-              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+              <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
                 <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  className="text-warning mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <span>
@@ -453,9 +453,9 @@ export function CodeToolEditModal({
                 placeholder={t("codeTools.namePlaceholder", "Look up CPF")}
               />
               {form.label.trim() && (
-                <p className="mt-1 flex flex-wrap items-center gap-1 text-text-muted text-xs">
+                <p className="text-text-muted mt-1 flex flex-wrap items-center gap-1 text-xs">
                   <span>{t("codeTools.identifierPreview", "Identifier:")}</span>
-                  <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                  <code className="bg-bg-tertiary rounded px-1 py-0.5 font-mono">
                     {normalizeToolName(form.label)}
                   </code>
                 </p>
@@ -540,7 +540,7 @@ export function CodeToolEditModal({
               />
             </FormField>
             {warningText && (
-              <p className="-mt-2 text-warning text-xs">{warningText}</p>
+              <p className="text-warning -mt-2 text-xs">{warningText}</p>
             )}
 
             <div className="-mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -560,12 +560,12 @@ export function CodeToolEditModal({
               </span>
             </div>
 
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+            <div className="border-border flex items-center justify-between gap-3 rounded-md border p-3">
               <div className="flex items-center gap-1.5">
                 <label
                   htmlFor={silenceClipId}
                   data-clickable="true"
-                  className="text-sm text-text-primary"
+                  className="text-text-primary text-sm"
                 >
                   {t(
                     "codeTools.silenceTruncationAlert",

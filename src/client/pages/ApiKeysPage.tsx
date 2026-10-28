@@ -164,11 +164,11 @@ function ApiKeySection({
         <div>
           <Heading
             id={`api-keys-${scope}-title`}
-            className="font-bold text-2xl text-text-primary"
+            className="text-text-primary text-2xl font-bold"
           >
             {title}
           </Heading>
-          <p className="mt-1 text-sm text-text-secondary">{subtitle}</p>
+          <p className="text-text-secondary mt-1 text-sm">{subtitle}</p>
         </div>
         <Button onClick={() => createModal.open()}>
           <Plus className="h-4 w-4" aria-hidden="true" />
@@ -206,7 +206,7 @@ function ApiKeySection({
             >
               <div className="flex min-w-0 flex-col gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {key.displayName}
                   </span>
                   {key.revokedAt && (
@@ -233,7 +233,7 @@ function ApiKeySection({
                     </Tooltip>
                   )}
                 </div>
-                <code className="w-fit rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">
+                <code className="bg-bg-tertiary text-text-secondary w-fit rounded px-1.5 py-0.5 font-mono text-xs">
                   {`${key.keyPrefix}…`}
                 </code>
                 <span className="text-text-muted text-xs">

@@ -16,7 +16,7 @@ export interface DisplayToolArg {
 // rather than a run-on string. With a description, the pill becomes a Tooltip trigger.
 function ArgPill({ arg }: { arg: DisplayToolArg }) {
   const pill = (
-    <span className="inline-flex items-center rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">
+    <span className="border-border bg-bg-tertiary text-text-secondary inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs">
       {arg.name}
       {arg.required && <span className="text-warning">*</span>}
       {arg.type && <span className="text-text-muted">{`: ${arg.type}`}</span>}

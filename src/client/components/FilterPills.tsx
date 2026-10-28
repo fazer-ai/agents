@@ -61,7 +61,7 @@ export function FilterPills({
             onClick={() => onChange(item.key)}
             onKeyDown={(e) => onKeyDown(e, index)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-medium text-sm transition-colors",
+              "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium transition-colors",
               active
                 ? "border-accent-solid bg-accent-solid text-accent-foreground"
                 : "border-border bg-bg-tertiary text-text-secondary hover:bg-bg-hover",
@@ -71,7 +71,7 @@ export function FilterPills({
             {item.count != null && item.count > 0 && (
               <span
                 className={cn(
-                  "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 font-medium text-[0.6875rem] leading-none",
+                  "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium",
                   active
                     ? "bg-accent-foreground/20 text-accent-foreground"
                     : "bg-bg-secondary text-text-muted",

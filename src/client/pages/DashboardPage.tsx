@@ -383,12 +383,12 @@ export function DashboardPage() {
   return (
     <PageContainer className="flex flex-col gap-6">
       <header className="flex items-center gap-3">
-        <Gauge className="h-6 w-6 text-accent" aria-hidden="true" />
+        <Gauge className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
-          <h1 className="font-semibold text-text-primary text-xl">
+          <h1 className="text-text-primary text-xl font-semibold">
             {t("dashboard.title", "Dashboard")}
           </h1>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "dashboard.subtitle2",
               "How the agents are doing, what they cost and where it goes.",
@@ -401,7 +401,7 @@ export function DashboardPage() {
           the top rather than a column beside it: at a laptop's width a column took a quarter of
           the room the blocks need. -mx-6/px-6 cover the scroll container's padding, so the blocks
           pass under the band and not beside it. */}
-      <div className="z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-border border-b bg-bg-secondary px-6 py-3 lg:sticky lg:-top-6">
+      <div className="border-border bg-bg-secondary z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-b px-6 py-3 lg:sticky lg:-top-6">
         <FilterBar
           filters={filters}
           onChange={setFilters}

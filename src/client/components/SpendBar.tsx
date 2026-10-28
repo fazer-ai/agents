@@ -37,7 +37,7 @@ export function SpendBar({
   return (
     <>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="font-medium text-sm text-text-secondary">{label}</span>
+        <span className="text-text-secondary text-sm font-medium">{label}</span>
         <span
           className={cn("text-sm tabular-nums", {
             "text-text-muted": state === "allowed",
@@ -59,7 +59,7 @@ export function SpendBar({
       </div>
       {enabled && (
         <div
-          className="h-1.5 w-full overflow-hidden rounded-full bg-bg-tertiary"
+          className="bg-bg-tertiary h-1.5 w-full overflow-hidden rounded-full"
           role="progressbar"
           aria-label={label}
           aria-valuenow={ceiling === null ? undefined : Math.round(pct)}
@@ -99,7 +99,7 @@ export function SpendHealthLines({
   const { t } = useTranslation();
   if (!entry) return null;
   return (
-    <div className="flex flex-col gap-0.5 text-text-muted text-xs">
+    <div className="text-text-muted flex flex-col gap-0.5 text-xs">
       {enabled && entry.polledAt && (
         <span className={cn({ "text-warning": entry.stale })}>
           {entry.stale

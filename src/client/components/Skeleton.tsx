@@ -13,7 +13,7 @@ export function Skeleton({
   return (
     <div
       aria-hidden="true"
-      className={cn("animate-pulse rounded-md bg-bg-tertiary", className)}
+      className={cn("bg-bg-tertiary animate-pulse rounded-md", className)}
       {...props}
     />
   );

@@ -130,14 +130,14 @@ export function InviteUserModal({
     >
       {link ? (
         <div className="space-y-4">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "invite.linkHint",
               "Send this one-time link to the invitee. It is shown only once.",
             )}
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 truncate rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-text-primary text-xs">
+            <code className="border-border bg-bg-tertiary text-text-primary flex-1 truncate rounded-lg border px-3 py-2 text-xs">
               {link}
             </code>
             <Button size="sm" variant="secondary" onClick={copyLink}>
@@ -162,7 +162,7 @@ export function InviteUserModal({
           }}
         >
           {error && (
-            <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+            <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
               {error}
             </div>
           )}
@@ -186,7 +186,7 @@ export function InviteUserModal({
                 ))}
               </select>
               {refusal.at("tenantId", current.tenantId) && (
-                <p className="mt-1 text-error text-xs">
+                <p className="text-error mt-1 text-xs">
                   {refusal.at("tenantId", current.tenantId)}
                 </p>
               )}
@@ -206,7 +206,7 @@ export function InviteUserModal({
               placeholder={t("auth.emailPlaceholder", "you@example.com")}
             />
             {refusal.at("email", current.email) && (
-              <p className="mt-1 text-error text-xs">
+              <p className="text-error mt-1 text-xs">
                 {refusal.at("email", current.email)}
               </p>
             )}
@@ -230,7 +230,7 @@ export function InviteUserModal({
               </option>
             </select>
             {refusal.at("role", current.role) && (
-              <p className="mt-1 text-error text-xs">
+              <p className="text-error mt-1 text-xs">
                 {refusal.at("role", current.role)}
               </p>
             )}

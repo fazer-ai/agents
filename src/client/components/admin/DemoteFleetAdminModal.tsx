@@ -101,13 +101,13 @@ export function DemoteFleetAdminModal({
         }}
       >
         {error && (
-          <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+          <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
             {error}
           </div>
         )}
         {needsTenant ? (
           <>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "admin.removeSuperAdminNoTenant",
                 "{{email}} stops administering the whole installation. They belong to no tenant yet, so choose where they stay and with which role.",
@@ -155,7 +155,7 @@ export function DemoteFleetAdminModal({
           </>
         ) : (
           <>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "admin.removeSuperAdminKeeps",
                 "{{email}} stops administering the whole installation and keeps the access they already have:",
@@ -166,7 +166,7 @@ export function DemoteFleetAdminModal({
               {memberships.map((m) => (
                 <li
                   key={m.tenantId}
-                  className="flex items-center justify-between gap-2 text-sm text-text-primary"
+                  className="text-text-primary flex items-center justify-between gap-2 text-sm"
                 >
                   <span>{tenantName.get(m.tenantId) ?? m.tenantId}</span>
                   <RoleBadge role={m.role} />

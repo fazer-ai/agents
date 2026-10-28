@@ -998,7 +998,7 @@ export function useKnowledgeManager(opts: {
   function docStatusBadge(doc: KnowledgeDoc) {
     if (doc.status === "READY") {
       return (
-        <span className="rounded-full bg-success/10 px-2 py-0.5 text-success text-xs">
+        <span className="bg-success/10 text-success rounded-full px-2 py-0.5 text-xs">
           {t("knowledge.docStatus.READY", "{{count}} chunks", {
             // NOTE: `?? 0` because the column is nullable and i18next resolves the plural from a NUMBER:
             // a null lands in the `other` form for every value.
@@ -1011,7 +1011,7 @@ export function useKnowledgeManager(opts: {
       const badge = (
         <span
           className={cn(
-            "rounded-full bg-error/10 px-2 py-0.5 text-error text-xs",
+            "bg-error/10 text-error rounded-full px-2 py-0.5 text-xs",
             {
               "cursor-help underline decoration-dotted underline-offset-2":
                 !!doc.error,
@@ -1033,7 +1033,7 @@ export function useKnowledgeManager(opts: {
       return (
         <span
           className={cn(
-            "rounded-full bg-bg-tertiary px-2 py-0.5 text-text-muted text-xs",
+            "bg-bg-tertiary text-text-muted rounded-full px-2 py-0.5 text-xs",
             { "animate-pulse": true },
           )}
         >
@@ -1051,7 +1051,7 @@ export function useKnowledgeManager(opts: {
       const badge = (
         <span
           className={cn(
-            "rounded-full bg-warning-soft px-2 py-0.5 text-warning text-xs",
+            "bg-warning-soft text-warning rounded-full px-2 py-0.5 text-xs",
             {
               "cursor-help underline decoration-dotted underline-offset-2":
                 !!blockText,
@@ -1072,7 +1072,7 @@ export function useKnowledgeManager(opts: {
       );
     }
     return (
-      <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-text-muted text-xs">
+      <span className="bg-bg-tertiary text-text-muted rounded-full px-2 py-0.5 text-xs">
         {t("knowledge.docStatus.PENDING", "Pending")}
       </span>
     );
@@ -1088,16 +1088,16 @@ export function useKnowledgeManager(opts: {
   function sourceIcon(doc: KnowledgeDoc) {
     if (doc.sourceType === "file")
       return (
-        <FileText className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />
+        <FileText className="text-text-muted h-3.5 w-3.5" aria-hidden="true" />
       );
     if (doc.sourceType === "approval")
       return (
         <ClipboardCheck
-          className="h-3.5 w-3.5 text-text-muted"
+          className="text-text-muted h-3.5 w-3.5"
           aria-hidden="true"
         />
       );
-    return <Type className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />;
+    return <Type className="text-text-muted h-3.5 w-3.5" aria-hidden="true" />;
   }
 
   const addContentValid =
@@ -1386,7 +1386,7 @@ export function useKnowledgeManager(opts: {
                     aria-hidden="true"
                   />
                   <span
-                    className={cn("font-medium text-sm", {
+                    className={cn("text-sm font-medium", {
                       "text-accent": dragOver,
                       "text-text-primary": !dragOver,
                     })}
@@ -1407,13 +1407,13 @@ export function useKnowledgeManager(opts: {
                   {picked.map((p) => (
                     <li
                       key={p.id}
-                      className="flex items-center gap-2 rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm"
+                      className="border-border bg-bg-tertiary flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"
                     >
                       <FileText
-                        className="h-4 w-4 shrink-0 text-text-muted"
+                        className="text-text-muted h-4 w-4 shrink-0"
                         aria-hidden="true"
                       />
-                      <span className="min-w-0 flex-1 truncate text-text-primary">
+                      <span className="text-text-primary min-w-0 flex-1 truncate">
                         {p.file.name}{" "}
                         <span className="text-text-muted text-xs">
                           {t("knowledge.fileSize", "({{kb}} KB)", {
@@ -1423,13 +1423,13 @@ export function useKnowledgeManager(opts: {
                       </span>
                       {p.status === "uploading" && (
                         <Loader2
-                          className="h-4 w-4 shrink-0 animate-spin text-text-muted"
+                          className="text-text-muted h-4 w-4 shrink-0 animate-spin"
                           aria-label={t("knowledge.uploading", "Uploading…")}
                         />
                       )}
                       {p.status === "done" && (
                         <Check
-                          className="h-4 w-4 shrink-0 text-success"
+                          className="text-success h-4 w-4 shrink-0"
                           aria-label={t("knowledge.uploadQueued", "Queued")}
                         />
                       )}
@@ -1441,7 +1441,7 @@ export function useKnowledgeManager(opts: {
                           )}
                           side="top"
                         >
-                          <span className="shrink-0 cursor-help rounded-full bg-error/10 px-2 py-0.5 text-error text-xs">
+                          <span className="bg-error/10 text-error shrink-0 cursor-help rounded-full px-2 py-0.5 text-xs">
                             {t("knowledge.uploadFailed", "Failed")}
                           </span>
                         </Tooltip>
@@ -1451,7 +1451,7 @@ export function useKnowledgeManager(opts: {
                           type="button"
                           aria-label={t("knowledge.clearFile", "Clear file")}
                           onClick={() => removeFile(p.id)}
-                          className="shrink-0 rounded p-0.5 text-text-muted transition-colors hover:text-text-primary"
+                          className="text-text-muted hover:text-text-primary shrink-0 rounded p-0.5 transition-colors"
                         >
                           <X className="h-4 w-4" aria-hidden="true" />
                         </button>
@@ -1543,13 +1543,13 @@ export function useKnowledgeManager(opts: {
               ))}
             </div>
           ) : docs.length === 0 ? (
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t("knowledge.noDocs", "No documents yet.")}
             </p>
           ) : (
             <div className="flex flex-col gap-2">
               {docs.some((d) => d.status === "UNINDEXED") && (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning bg-warning-soft px-3 py-2">
+                <div className="border-warning bg-warning-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-2">
                   <span className="text-text-secondary text-xs">
                     {embeddingBlockText() ??
                       t(
@@ -1578,20 +1578,20 @@ export function useKnowledgeManager(opts: {
                   return (
                     <li
                       key={d.id}
-                      className="rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm"
+                      className="border-border bg-bg-tertiary rounded-lg border px-3 py-2 text-sm"
                     >
                       <div className="flex items-start gap-2">
                         <div className="min-w-0 flex-1">
-                          <span className="block truncate font-medium text-text-primary">
+                          <span className="text-text-primary block truncate font-medium">
                             {d.title}
                           </span>
                           {d.fileName && (
-                            <span className="break-all text-text-muted text-xs">
+                            <span className="text-text-muted text-xs break-all">
                               {d.fileName}
                             </span>
                           )}
                           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                            <span className="flex shrink-0 items-center gap-1 text-text-muted text-xs">
+                            <span className="text-text-muted flex shrink-0 items-center gap-1 text-xs">
                               {sourceIcon(d)}
                             </span>
                             {d.contentChars != null && (
@@ -1610,7 +1610,7 @@ export function useKnowledgeManager(opts: {
                             )}
                           </div>
                           {synced && opts.allowDocumentEdits && (
-                            <p className="mt-0.5 text-text-muted text-xs">
+                            <p className="text-text-muted mt-0.5 text-xs">
                               {syncedRefusal}
                             </p>
                           )}
@@ -1706,7 +1706,7 @@ export function useKnowledgeManager(opts: {
         ) : (
           <>
             {docPreview != null && (
-              <p className="mb-2 text-text-muted text-xs">
+              <p className="text-text-muted mb-2 text-xs">
                 {t("knowledge.charCount", "{{n}} characters", {
                   count: docPreview.length,
                   n: new Intl.NumberFormat(i18n.language).format(
@@ -1715,7 +1715,7 @@ export function useKnowledgeManager(opts: {
                 })}
               </p>
             )}
-            <pre className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap text-sm text-text-secondary">
+            <pre className="text-text-secondary max-h-[60vh] overflow-y-auto text-sm whitespace-pre-wrap">
               {docPreview ?? ""}
             </pre>
           </>

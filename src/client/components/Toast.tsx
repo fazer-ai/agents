@@ -82,10 +82,10 @@ function ToastItemView({
         // NOTE: items-start so the icon stays on the first line of a multi-line message, and
         // whitespace-pre-line on the title so a "\n" in the message survives. The type is carried by
         // the icon alone: a colored border around the whole card read as an error even for a success.
-        "flex items-start gap-2.5 rounded-lg border border-border-hover bg-bg-secondary py-2.5 pr-2 pl-3 shadow-lg",
+        "border-border-hover bg-bg-secondary flex items-start gap-2.5 rounded-lg border py-2.5 pr-2 pl-3 shadow-lg",
         "data-[state=open]:slide-in-from-right-full data-[state=open]:animate-in",
         "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-full data-[state=closed]:animate-out",
-        "data-[swipe=end]:slide-out-to-right-full data-[swipe=cancel]:translate-x-0 data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=end]:animate-out data-[swipe=cancel]:transition-transform",
+        "data-[swipe=end]:slide-out-to-right-full data-[swipe=end]:animate-out data-[swipe=cancel]:translate-x-0 data-[swipe=cancel]:transition-transform data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)]",
       )}
     >
       {/* The icon and the close button each sit in a box exactly one line of the title tall (h-lh,
@@ -99,14 +99,14 @@ function ToastItemView({
       >
         {icons[toast.type]}
       </span>
-      <ToastPrimitive.Title className="flex-1 whitespace-pre-line text-sm text-text-primary leading-snug">
+      <ToastPrimitive.Title className="text-text-primary flex-1 text-sm leading-snug whitespace-pre-line">
         {toast.message}
       </ToastPrimitive.Title>
       <span className="flex h-lh shrink-0 items-center text-sm leading-snug">
         <ToastPrimitive.Close
           // t('common.dismiss', 'Dismiss')
           aria-label={t("common.dismiss", "Dismiss")}
-          className="shrink-0 rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+          className="text-text-muted hover:bg-bg-hover hover:text-text-primary shrink-0 rounded-md p-1 transition-colors"
         >
           <X className="h-4 w-4" aria-hidden="true" />
         </ToastPrimitive.Close>

@@ -153,7 +153,7 @@ export function AddSuperAdminModal({
   };
 
   const errorBox = error && (
-    <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+    <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
       {error}
     </div>
   );
@@ -174,7 +174,7 @@ export function AddSuperAdminModal({
             if (!loading && email.trim()) void handleContinue();
           }}
         >
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "superAdmin.hint",
               "A super admin administers the whole installation: every tenant, user and setting.",
@@ -182,7 +182,7 @@ export function AddSuperAdminModal({
           </p>
           {errorBox}
           {step.already && (
-            <p className="text-sm text-text-primary">
+            <p className="text-text-primary text-sm">
               {t(
                 "superAdmin.alreadySuperAdmin",
                 "{{email}} is already a super admin.",
@@ -225,7 +225,7 @@ export function AddSuperAdminModal({
             if (!loading && password) void handleConfirm(step.email);
           }}
         >
-          <p className="text-sm text-text-primary">
+          <p className="text-text-primary text-sm">
             {step.outcome === "promote"
               ? t(
                   "superAdmin.confirmExisting",
@@ -267,7 +267,7 @@ export function AddSuperAdminModal({
               )}
             />
             {refusal.at("password", current.password) && (
-              <p className="mt-1 text-error text-xs">
+              <p className="text-error mt-1 text-xs">
                 {refusal.at("password", current.password)}
               </p>
             )}
@@ -300,7 +300,7 @@ export function AddSuperAdminModal({
       {(step.kind === "promoted" || step.kind === "invited") && (
         <div className="space-y-4">
           {step.kind === "promoted" ? (
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "superAdmin.promoted",
                 "{{email}} is now a super admin and reaches every tenant. If they stop being one, they go back to the tenant access they already had.",
@@ -309,7 +309,7 @@ export function AddSuperAdminModal({
             </p>
           ) : (
             <>
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {t(
                   "superAdmin.invited",
                   "Send this link to {{email}}. It works once, for 24 hours, and whoever accepts it becomes a super admin. It is shown only once.",
@@ -317,7 +317,7 @@ export function AddSuperAdminModal({
                 )}
               </p>
               <div className="flex items-center gap-2">
-                <code className="flex-1 truncate rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-text-primary text-xs">
+                <code className="border-border bg-bg-tertiary text-text-primary flex-1 truncate rounded-lg border px-3 py-2 text-xs">
                   {step.link}
                 </code>
                 <Button size="sm" variant="secondary" onClick={copyLink}>

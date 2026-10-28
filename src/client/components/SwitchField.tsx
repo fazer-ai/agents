@@ -34,7 +34,7 @@ export function SwitchField({
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-2 text-sm text-text-secondary",
+        "text-text-secondary inline-flex items-center gap-2 text-sm",
         className,
       )}
     >

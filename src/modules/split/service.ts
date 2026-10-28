@@ -618,7 +618,7 @@ async function findLandedMessage(
       if (rows.length < CHATWOOT_MESSAGES_PAGE)
         return { known: true, id: null };
       const oldest = rows.reduce(
-        (min, m) => (m.id < min ? m.id : min),
+        (min, m) => Math.min(min, m.id),
         rows[0]?.id ?? 0,
       );
       // NOTE: Chatwoot answers with the newest ~20, so absence from one page is not absence. Reaching

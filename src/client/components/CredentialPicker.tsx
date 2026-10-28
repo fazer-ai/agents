@@ -270,18 +270,18 @@ export function CredentialPicker({
       >
         <ServiceLogo
           service={secretTypeService(e.kind)}
-          className="h-4 w-4 shrink-0 text-text-secondary"
+          className="text-text-secondary h-4 w-4 shrink-0"
         />
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="truncate font-mono text-xs">{e.name}</span>
           {e.baseUrl && (
-            <span className="truncate text-text-muted text-xs">
+            <span className="text-text-muted truncate text-xs">
               {e.baseUrl}
             </span>
           )}
         </div>
         {e.kind && e.kind !== "generic" && (
-          <span className="shrink-0 text-text-muted text-xs">
+          <span className="text-text-muted shrink-0 text-xs">
             {/* biome-ignore lint/plugin/no-dynamic-i18n-key: secret-type keys registered in CredentialForm/VaultPanel */}
             {t(`vault.secretType.${e.kind}`, e.kind)}
           </span>
@@ -310,27 +310,27 @@ export function CredentialPicker({
               type="button"
               disabled={disabled}
               aria-label={ariaLabel}
-              className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary py-1 pr-2.5 pl-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+              className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md border py-1 pr-2.5 pl-2.5 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
             >
               {selected ? (
                 <>
                   <ServiceLogo
                     service={secretTypeService(selected.kind)}
-                    className="h-4 w-4 shrink-0 text-text-secondary"
+                    className="text-text-secondary h-4 w-4 shrink-0"
                   />
                   <span className="flex-1 truncate text-left font-mono text-xs">
                     {selected.name}
                   </span>
                   {selectedIncompatible && (
                     <TriangleAlert
-                      className="h-3.5 w-3.5 shrink-0 text-warning"
+                      className="text-warning h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
                   )}
                 </>
               ) : pending ? (
                 <span
-                  className="flex-1 truncate text-left text-text-muted"
+                  className="text-text-muted flex-1 truncate text-left"
                   aria-busy={!loaded || undefined}
                   data-testid="credential-picker-pending"
                 >
@@ -342,11 +342,11 @@ export function CredentialPicker({
                     : t("credentialPicker.loading", "Loading…")}
                 </span>
               ) : unresolved ? (
-                <span className="flex-1 truncate text-left text-text-muted">
+                <span className="text-text-muted flex-1 truncate text-left">
                   {t("credentialPicker.unavailable", "Credential unavailable")}
                 </span>
               ) : (
-                <span className="flex-1 truncate text-left text-text-muted">
+                <span className="text-text-muted flex-1 truncate text-left">
                   {allowNone
                     ? t("credentialPicker.none", "None")
                     : t("credentialPicker.select", "Select a credential")}
@@ -354,7 +354,7 @@ export function CredentialPicker({
               )}
               <ChevronDown
                 aria-hidden="true"
-                className="h-4 w-4 shrink-0 text-text-muted"
+                className="text-text-muted h-4 w-4 shrink-0"
               />
             </button>
           </DropdownMenuPrimitive.Trigger>
@@ -369,12 +369,12 @@ export function CredentialPicker({
                 zIndex: "calc(var(--z-modal) + 5)",
                 minWidth: "var(--radix-dropdown-menu-trigger-width)",
               }}
-              className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in"
+              className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 border-border bg-bg-secondary data-[state=closed]:animate-out data-[state=open]:animate-in max-h-72 overflow-y-auto rounded-lg border p-1 shadow-lg"
             >
               {showSearchInput && (
-                <div className="mb-1 flex items-center gap-1.5 border-border border-b px-2 py-1.5">
+                <div className="border-border mb-1 flex items-center gap-1.5 border-b px-2 py-1.5">
                   <Search
-                    className="pointer-events-none h-4 w-4 shrink-0 text-text-muted"
+                    className="text-text-muted pointer-events-none h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
                   <input
@@ -401,7 +401,7 @@ export function CredentialPicker({
                       "vault.searchPlaceholder",
                       "Search by name or type…",
                     )}
-                    className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                    className="text-text-primary placeholder:text-text-muted flex-1 bg-transparent text-sm outline-none"
                   />
                 </div>
               )}
@@ -412,7 +412,7 @@ export function CredentialPicker({
                   onSelect={() => onChange("")}
                 >
                   <KeyRound
-                    className="h-4 w-4 shrink-0 text-text-muted"
+                    className="text-text-muted h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
                   <span className="flex-1">
@@ -428,14 +428,14 @@ export function CredentialPicker({
               )}
 
               {compatible.length === 0 && !allowNone && !search && (
-                <div className="px-2 py-1.5 text-text-muted text-xs">
+                <div className="text-text-muted px-2 py-1.5 text-xs">
                   {t("credentialPicker.empty", "No credentials yet")}
                 </div>
               )}
               {compatible.map(renderEntry)}
 
               {search && compatible.length === 0 && others.length === 0 && (
-                <div className="px-2 py-1.5 text-sm text-text-muted">
+                <div className="text-text-muted px-2 py-1.5 text-sm">
                   {t("vault.noSearchResults", "No secrets match your search.")}
                 </div>
               )}
@@ -462,7 +462,7 @@ export function CredentialPicker({
                 </>
               )}
 
-              <DropdownMenuPrimitive.Separator className="my-1 h-px bg-border" />
+              <DropdownMenuPrimitive.Separator className="bg-border my-1 h-px" />
               <DropdownMenuPrimitive.Item
                 className={itemCls}
                 onSelect={() => createModal.open()}
@@ -530,7 +530,7 @@ export function CredentialPicker({
 
       {unfilled && (
         <span
-          className="flex flex-wrap items-center gap-2 text-warning text-xs"
+          className="text-warning flex flex-wrap items-center gap-2 text-xs"
           role="status"
         >
           {t(

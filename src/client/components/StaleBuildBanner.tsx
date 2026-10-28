@@ -58,10 +58,10 @@ export function StaleBuildBanner() {
   return (
     <div
       role="status"
-      className="flex flex-wrap items-center gap-2 border-info border-b bg-info-soft px-4 py-2.5"
+      className="border-info bg-info-soft flex flex-wrap items-center gap-2 border-b px-4 py-2.5"
     >
-      <RefreshCw className="h-4 w-4 shrink-0 text-info" aria-hidden="true" />
-      <span className="min-w-0 flex-1 text-sm text-text-primary">
+      <RefreshCw className="text-info h-4 w-4 shrink-0" aria-hidden="true" />
+      <span className="text-text-primary min-w-0 flex-1 text-sm">
         {serverVersion
           ? t(
               "staleBuild.bannerVersion",

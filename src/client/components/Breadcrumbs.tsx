@@ -29,21 +29,21 @@ export function Breadcrumbs() {
             >
               {index > 0 && (
                 <ChevronRight
-                  className="h-3.5 w-3.5 shrink-0 text-text-muted"
+                  className="text-text-muted h-3.5 w-3.5 shrink-0"
                   aria-hidden="true"
                 />
               )}
               {crumb.to && !isLast ? (
                 <Link
                   to={crumb.to}
-                  className="truncate rounded px-1.5 py-0.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                  className="text-text-secondary hover:bg-bg-tertiary hover:text-text-primary truncate rounded px-1.5 py-0.5 transition-colors"
                 >
                   {label}
                 </Link>
               ) : (
                 <span
                   aria-current={isLast ? "page" : undefined}
-                  className="truncate px-1.5 py-0.5 font-medium text-text-primary"
+                  className="text-text-primary truncate px-1.5 py-0.5 font-medium"
                 >
                   {label}
                 </span>

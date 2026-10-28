@@ -181,11 +181,11 @@ export function VoiceChannelsTab({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <h2 className="flex items-center gap-2 font-medium text-text-primary">
-          <InboxIcon className="h-4 w-4 text-accent" aria-hidden="true" />
+        <h2 className="text-text-primary flex items-center gap-2 font-medium">
+          <InboxIcon className="text-accent h-4 w-4" aria-hidden="true" />
           {t("editor.voiceChannels.title", "Inboxes")}
         </h2>
-        <p className="mt-0.5 text-text-muted text-xs">
+        <p className="text-text-muted mt-0.5 text-xs">
           {t(
             "editor.voiceChannels.desc",
             "Choose the WhatsApp inboxes whose calls this agent answers. The agent answering their messages stays as it is. A change applies at once.",
@@ -195,8 +195,8 @@ export function VoiceChannelsTab({
       <p
         className={
           disabled || testMode
-            ? "rounded-md bg-warning/10 px-3 py-2 text-warning text-xs"
-            : "rounded-md bg-success/10 px-3 py-2 text-success text-xs"
+            ? "bg-warning/10 text-warning rounded-md px-3 py-2 text-xs"
+            : "bg-success/10 text-success rounded-md px-3 py-2 text-xs"
         }
       >
         {disabled
@@ -257,7 +257,7 @@ export function VoiceChannelsTab({
             return (
               <div key={inst.id} className="flex flex-col gap-1.5">
                 {showInstanceHeaders && (
-                  <div className="flex items-center gap-1.5 px-1 text-text-muted text-xs">
+                  <div className="text-text-muted flex items-center gap-1.5 px-1 text-xs">
                     <ServiceLogo
                       service="chatwoot"
                       className="h-3.5 w-3.5 shrink-0"
@@ -308,7 +308,7 @@ export function VoiceChannelsTab({
                             </span>
                           )}
                           {disconnected && !mine ? (
-                            <span className="shrink-0 text-text-muted text-xs">
+                            <span className="text-text-muted shrink-0 text-xs">
                               {t(
                                 "channels.accountDisconnectedOff",
                                 "Account disconnected",
@@ -316,7 +316,7 @@ export function VoiceChannelsTab({
                             </span>
                           ) : pending === ib.id ? (
                             <Loader2
-                              className="h-5 w-5 animate-spin text-text-muted"
+                              className="text-text-muted h-5 w-5 animate-spin"
                               aria-hidden="true"
                             />
                           ) : (

@@ -220,10 +220,10 @@ export function GoogleRedirectUriField() {
             type="button"
             onClick={copyRedirectUri}
             aria-label={t("common.copy", "Copy")}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-secondary text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className="border-border bg-bg-secondary text-text-muted hover:bg-bg-hover hover:text-text-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors"
           >
             {copied ? (
-              <Check className="h-4 w-4 text-success" aria-hidden="true" />
+              <Check className="text-success h-4 w-4" aria-hidden="true" />
             ) : (
               <Copy className="h-4 w-4" aria-hidden="true" />
             )}
@@ -235,7 +235,7 @@ export function GoogleRedirectUriField() {
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Google Cloud Console"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-secondary text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className="border-border bg-bg-secondary text-text-muted hover:bg-bg-hover hover:text-text-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors"
           >
             <ExternalLink className="h-4 w-4" aria-hidden="true" />
           </a>
@@ -461,15 +461,15 @@ export function GoogleOAuthSection({
   const isConnected = !!status?.connected;
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-border bg-bg-tertiary p-4">
-      <p className="font-medium text-sm text-text-primary">
+    <div className="border-border bg-bg-tertiary flex flex-col gap-4 rounded-lg border p-4">
+      <p className="text-text-primary text-sm font-medium">
         {t("vault.googleOAuth.sectionTitle", "Google connection")}
       </p>
 
       {/* Connection status + connect/disconnect actions */}
       {statusLoading ? (
         <div
-          className="flex items-center gap-2 text-sm text-text-muted"
+          className="text-text-muted flex items-center gap-2 text-sm"
           role="status"
         >
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -480,10 +480,10 @@ export function GoogleOAuthSection({
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <Check
-              className="h-4 w-4 shrink-0 text-success"
+              className="text-success h-4 w-4 shrink-0"
               aria-hidden="true"
             />
-            <span className="text-sm text-text-primary">
+            <span className="text-text-primary text-sm">
               {t("vault.googleOAuth.connected", "Connected as {{email}}", {
                 email: status?.email ?? "",
               })}
@@ -492,7 +492,7 @@ export function GoogleOAuthSection({
 
           {status?.scopes && status.scopes.length > 0 && (
             <div>
-              <p className="mb-1.5 text-text-muted text-xs">
+              <p className="text-text-muted mb-1.5 text-xs">
                 {t("vault.googleOAuth.grantedScopes", "Granted scopes")}
               </p>
               <div className="flex flex-wrap gap-1.5">
@@ -505,7 +505,7 @@ export function GoogleOAuthSection({
                   return (
                     <span
                       key={s}
-                      className="inline-flex items-center rounded-full bg-bg-hover px-2 py-0.5 text-text-secondary text-xs"
+                      className="bg-bg-hover text-text-secondary inline-flex items-center rounded-full px-2 py-0.5 text-xs"
                     >
                       {label}
                     </span>
@@ -539,13 +539,13 @@ export function GoogleOAuthSection({
                 return (
                   <label
                     key={item.key}
-                    className="flex items-center gap-2.5 text-sm text-text-secondary"
+                    className="text-text-secondary flex items-center gap-2.5 text-sm"
                   >
                     <input
                       type="checkbox"
                       checked={checked}
                       onChange={() => toggleScope(item.key)}
-                      className="h-4 w-4 rounded border-border accent-accent"
+                      className="border-border accent-accent h-4 w-4 rounded"
                     />
                     <span className="flex items-center gap-1.5">
                       {/* biome-ignore lint/plugin/no-dynamic-i18n-key: scope label keys registered via magic comments above */}
@@ -565,7 +565,7 @@ export function GoogleOAuthSection({
                               "vault.googleOAuth.enableApiHint",
                               "Enable this API in your Google Cloud project",
                             )}
-                            className="inline-flex h-4 w-4 items-center justify-center text-text-muted transition-colors hover:text-text-primary"
+                            className="text-text-muted hover:text-text-primary inline-flex h-4 w-4 items-center justify-center transition-colors"
                           >
                             <ExternalLink
                               className="h-3.5 w-3.5"
@@ -583,7 +583,7 @@ export function GoogleOAuthSection({
                         >
                           <button
                             type="button"
-                            className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-warning bg-transparent font-medium text-[10px] text-warning"
+                            className="border-warning text-warning inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border bg-transparent text-[10px] font-medium"
                             aria-label={t(
                               "vault.googleOAuth.scopeRestricted",
                               "Restricted scope — requires Google verification",
@@ -626,7 +626,7 @@ export function GoogleOAuthSection({
               onChange={(e) => setExtraScopes(e.target.value)}
               rows={2}
               placeholder="https://www.googleapis.com/auth/..."
-              className="w-full resize-none rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1.5 font-mono text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
+              className="border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft w-full resize-none rounded-md border px-2.5 py-1.5 font-mono text-sm transition-colors focus:ring-2 focus:outline-none"
               aria-label={t(
                 "vault.googleOAuth.extraScopes",
                 "Additional scopes",
@@ -651,7 +651,7 @@ export function GoogleOAuthSection({
               type="button"
               onClick={handleConnect}
               disabled={!canConnect || connecting}
-              className="inline-flex items-center justify-center gap-3 rounded-lg border border-[#dadce0] bg-white px-4 py-2.5 font-medium text-[#1f1f1f] text-sm shadow-sm transition-colors hover:bg-[#f8f9fa] disabled:opacity-60"
+              className="inline-flex items-center justify-center gap-3 rounded-lg border border-[#dadce0] bg-white px-4 py-2.5 text-sm font-medium text-[#1f1f1f] shadow-sm transition-colors hover:bg-[#f8f9fa] disabled:opacity-60"
             >
               {connecting ? (
                 <Loader2

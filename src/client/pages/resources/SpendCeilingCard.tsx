@@ -234,10 +234,10 @@ export function SpendCeilingCard({
     <RangeHolds>
       <Card className="flex flex-col gap-4">
         <div>
-          <h2 className="font-medium text-text-primary">
+          <h2 className="text-text-primary font-medium">
             {t("spendCeiling.title", "Spend ceiling")}
           </h2>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "spendCeiling.desc",
               "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Each source is counted apart, so testing can never silence the agent for customers.",
@@ -248,7 +248,7 @@ export function SpendCeilingCard({
         {legacy && (
           <div
             role="status"
-            className="rounded-lg border border-warning bg-warning-soft px-3 py-2 text-sm text-text-primary"
+            className="border-warning bg-warning-soft text-text-primary rounded-lg border px-3 py-2 text-sm"
           >
             {t(
               "spendCeiling.legacy",
@@ -261,16 +261,16 @@ export function SpendCeilingCard({
           </div>
         )}
 
-        <div className="flex flex-col gap-3 rounded-lg border border-border px-3 py-3">
+        <div className="border-border flex flex-col gap-3 rounded-lg border px-3 py-3">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="font-medium text-sm text-text-primary">
+            <span className="text-text-primary text-sm font-medium">
               {t("spendCeiling.usage.title", "Spent this month")}
             </span>
             <span className="text-text-muted text-xs">{period}</span>
           </div>
           {usageError ? (
             <div className="flex items-center justify-between gap-2">
-              <span className="text-sm text-text-muted">
+              <span className="text-text-muted text-sm">
                 {t("spendCeiling.usage.error", "Could not read the usage.")}
               </span>
               <Button size="sm" variant="secondary" onClick={loadUsage}>

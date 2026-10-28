@@ -10,10 +10,10 @@ export function DashboardsRoutes() {
   return (
     <PageContainer className="space-y-6">
       <header>
-        <h1 className="font-bold text-2xl text-text-primary">
+        <h1 className="text-text-primary text-2xl font-bold">
           {t("dashboards.title", "Dashboards")}
         </h1>
-        <p className="mt-1 text-sm text-text-secondary">
+        <p className="text-text-secondary mt-1 text-sm">
           {t(
             "dashboards.subtitle",
             "Panels you arrange yourself over your conversations and AI usage, each at its own address.",

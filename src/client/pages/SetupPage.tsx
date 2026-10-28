@@ -120,7 +120,7 @@ export function SetupPage() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center bg-bg-primary p-4">
+    <div className="bg-bg-primary flex min-h-dvh flex-col items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="mb-12 text-center">
           <Logo className="mx-auto h-10" />
@@ -128,13 +128,13 @@ export function SetupPage() {
 
         <form
           onSubmit={handleSubmit}
-          className="space-y-4 rounded-2xl border border-border bg-bg-secondary p-8"
+          className="border-border bg-bg-secondary space-y-4 rounded-2xl border p-8"
         >
           <div className="mb-2 text-center">
-            <h1 className="font-semibold text-2xl text-text-primary">
+            <h1 className="text-text-primary text-2xl font-semibold">
               {t("setup.title", "Create the admin account")}
             </h1>
-            <p className="mt-1 text-sm text-text-secondary">
+            <p className="text-text-secondary mt-1 text-sm">
               {t(
                 "setup.subtitle",
                 "This is the first run. Create the initial administrator account to finish setup.",
@@ -143,7 +143,7 @@ export function SetupPage() {
           </div>
 
           {error && (
-            <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+            <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
               {error}
             </div>
           )}
@@ -151,7 +151,7 @@ export function SetupPage() {
           <div>
             <label
               htmlFor="company"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("setup.companyLabel", "Company name")}
             </label>
@@ -176,7 +176,7 @@ export function SetupPage() {
           <div>
             <label
               htmlFor="email"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("auth.email", "Email")}
             </label>
@@ -196,7 +196,7 @@ export function SetupPage() {
           <div>
             <label
               htmlFor="name"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("common.name", "Name")}
             </label>
@@ -215,7 +215,7 @@ export function SetupPage() {
           <div>
             <label
               htmlFor="password"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("auth.password", "Password")}
             </label>
@@ -243,7 +243,7 @@ export function SetupPage() {
           <div>
             <label
               htmlFor="confirmPassword"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("auth.confirmPassword", "Confirm Password")}
             </label>
@@ -264,7 +264,7 @@ export function SetupPage() {
             <div>
               <label
                 htmlFor="token"
-                className="mb-1 block font-medium text-sm text-text-primary"
+                className="text-text-primary mb-1 block text-sm font-medium"
               >
                 {t("setup.tokenLabel", "Setup token")}
               </label>

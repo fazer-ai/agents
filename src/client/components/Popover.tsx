@@ -47,7 +47,7 @@ function renderContent(content: ReactNode): ReactNode {
     .map((p) => p.trim())
     .filter(Boolean);
   if (paragraphs.length <= 1) {
-    return <p className="whitespace-pre-wrap break-words">{content}</p>;
+    return <p className="break-words whitespace-pre-wrap">{content}</p>;
   }
   // The gap has to beat the LEADING, not merely exist: `leading-relaxed` already puts ~9px between
   // two lines of the same paragraph, so a smaller paragraph gap makes the break invisible and the
@@ -55,7 +55,7 @@ function renderContent(content: ReactNode): ReactNode {
   return (
     <div className="space-y-3">
       {paragraphs.map((p) => (
-        <p key={p} className="whitespace-pre-wrap break-words">
+        <p key={p} className="break-words whitespace-pre-wrap">
           {p}
         </p>
       ))}
@@ -190,7 +190,7 @@ export function Popover({
             // glanced at, and 24rem at 14px lands around 50 characters a line, inside the measure
             // prose wants. The colour is the primary one for the same reason: a muted tone is for
             // text competing with something else on the page, and nothing competes in here.
-            "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-(--z-tooltip) w-max max-w-[min(24rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-primary px-3.5 py-3 text-sm text-text-primary leading-relaxed shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in",
+            "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 border-border bg-bg-primary text-text-primary data-[state=closed]:animate-out data-[state=open]:animate-in z-(--z-tooltip) w-max max-w-[min(24rem,calc(100vw-2rem))] rounded-md border px-3.5 py-3 text-sm leading-relaxed shadow-lg",
             contentClassName,
           )}
         >

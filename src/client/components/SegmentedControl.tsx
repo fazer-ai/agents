@@ -37,7 +37,7 @@ export function SegmentedControl<T extends string>({
       // NOTE: `w-fit`, not just `inline-flex`: inside a flex column (FormField, a card's stack) the
       // item is stretched to the column's width whatever its display, and the pill then ran to the
       // form's edge with empty track after its options. tests/client/segmented-control.test.tsx.
-      className="inline-flex w-fit max-w-full flex-wrap gap-0.5 rounded-md border border-border bg-bg-tertiary p-0.5"
+      className="border-border bg-bg-tertiary inline-flex w-fit max-w-full flex-wrap gap-0.5 rounded-md border p-0.5"
     >
       {options.map((option) => {
         const selected = option.value === value;
@@ -47,9 +47,9 @@ export function SegmentedControl<T extends string>({
             key={option.value}
             data-clickable="true"
             className={cn(
-              "inline-flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-sm transition-colors focus-within:ring-2 focus-within:ring-border-focus",
+              "focus-within:ring-border-focus inline-flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-sm transition-colors focus-within:ring-2",
               {
-                "bg-bg-hover font-medium text-text-primary": selected,
+                "bg-bg-hover text-text-primary font-medium": selected,
                 "text-text-muted hover:text-text-primary": !selected,
                 "pointer-events-none opacity-50": disabled === true,
               },

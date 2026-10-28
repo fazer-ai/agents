@@ -157,7 +157,7 @@ export function DocumentStarterModal({
           {/* The name is asked for, not defaulted: it is what the agent's tool is called and what
               the model reads to choose between documents, so two templates cannot share one. The
               starter's name is the suggestion. */}
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "documents.nameHint",
               "This is what the agent's tool is called, so each template needs its own name.",
@@ -185,7 +185,7 @@ export function DocumentStarterModal({
               }}
             />
           </FormField>
-          {createError && <p className="text-sm text-warning">{createError}</p>}
+          {createError && <p className="text-warning text-sm">{createError}</p>}
           <div className="flex justify-end gap-2">
             <Button
               variant="secondary"
@@ -208,14 +208,14 @@ export function DocumentStarterModal({
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "documents.starterBuildHint",
               "Pick one to copy into your account, then edit its wording here. New fields and blocks are added by asking your AI assistant connected over MCP.",
             )}
           </p>
           {startersError && (
-            <p className="text-sm text-warning">
+            <p className="text-warning text-sm">
               {t(
                 "documents.startersError",
                 "Could not load the ready-made templates.",
@@ -228,7 +228,7 @@ export function DocumentStarterModal({
               className="flex items-center justify-between gap-4"
             >
               <div className="min-w-0">
-                <p className="font-medium text-sm text-text-primary">
+                <p className="text-text-primary text-sm font-medium">
                   {s.name}
                 </p>
                 <p className="text-text-muted text-xs">{s.summary}</p>

@@ -121,7 +121,7 @@ export function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center bg-bg-primary p-4">
+    <div className="bg-bg-primary flex min-h-dvh flex-col items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="mb-12 text-center">
           <Logo className="mx-auto h-10" />
@@ -129,14 +129,14 @@ export function LoginPage() {
 
         <form
           onSubmit={handleSubmit}
-          className="space-y-4 rounded-2xl border border-border bg-bg-secondary p-8"
+          className="border-border bg-bg-secondary space-y-4 rounded-2xl border p-8"
         >
-          <h1 className="mb-2 text-center font-semibold text-2xl text-text-primary">
+          <h1 className="text-text-primary mb-2 text-center text-2xl font-semibold">
             {t("auth.login", "Login")}
           </h1>
 
           {error && (
-            <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+            <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
               {error}
             </div>
           )}
@@ -159,11 +159,11 @@ export function LoginPage() {
                 />
               </div>
               <div className="flex items-center gap-3">
-                <div className="h-px flex-1 bg-border" />
+                <div className="bg-border h-px flex-1" />
                 <span className="text-text-secondary text-xs uppercase">
                   {t("auth.or", "or")}
                 </span>
-                <div className="h-px flex-1 bg-border" />
+                <div className="bg-border h-px flex-1" />
               </div>
             </>
           )}
@@ -171,7 +171,7 @@ export function LoginPage() {
           <div>
             <label
               htmlFor="email"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("auth.email", "Email")}
             </label>
@@ -191,7 +191,7 @@ export function LoginPage() {
           <div>
             <label
               htmlFor="password"
-              className="mb-1 block font-medium text-sm text-text-primary"
+              className="text-text-primary mb-1 block text-sm font-medium"
             >
               {t("auth.password", "Password")}
             </label>
@@ -223,12 +223,12 @@ export function LoginPage() {
         </form>
 
         {signupEnabled && (
-          <p className="mt-4 text-center text-text-secondary">
+          <p className="text-text-secondary mt-4 text-center">
             {t("auth.noAccount", "Don't have an account?")}{" "}
             <Link
               to="/signup"
               aria-label={t("auth.signup", "Sign Up")}
-              className="font-medium text-accent hover:underline"
+              className="text-accent font-medium hover:underline"
             >
               {t("auth.signup", "Sign Up")}
             </Link>

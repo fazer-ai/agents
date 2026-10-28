@@ -17,10 +17,10 @@ export function DocumentPreview({
   if (state.error) {
     return (
       <div
-        className={`flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-bg-secondary p-6 text-center ${className ?? ""}`}
+        className={`border-border bg-bg-secondary flex flex-col items-center justify-center gap-2 rounded-lg border p-6 text-center ${className ?? ""}`}
       >
-        <FileWarning className="h-5 w-5 text-warning" aria-hidden="true" />
-        <p className="font-medium text-sm text-text-primary">
+        <FileWarning className="text-warning h-5 w-5" aria-hidden="true" />
+        <p className="text-text-primary text-sm font-medium">
           {t("documents.preview.errorTitle", "This document does not render")}
         </p>
         <p className="text-text-muted text-xs">{state.error}</p>
@@ -31,7 +31,7 @@ export function DocumentPreview({
     return (
       <div
         role="status"
-        className={`rounded-lg border border-border bg-bg-secondary p-3 ${className ?? ""}`}
+        className={`border-border bg-bg-secondary rounded-lg border p-3 ${className ?? ""}`}
       >
         <span className="sr-only">{t("common.loading", "Loading…")}</span>
         <Skeleton className="h-full min-h-64 w-full" />
@@ -46,10 +46,10 @@ export function DocumentPreview({
         key={state.url}
         src={state.url}
         title={t("documents.preview.title", "Document preview")}
-        className="h-full min-h-64 w-full rounded-lg border border-border bg-white"
+        className="border-border h-full min-h-64 w-full rounded-lg border bg-white"
       />
       {state.loading && (
-        <div className="absolute inset-0 rounded-lg bg-bg-primary/40" />
+        <div className="bg-bg-primary/40 absolute inset-0 rounded-lg" />
       )}
     </div>
   );

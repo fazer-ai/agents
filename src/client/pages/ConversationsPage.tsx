@@ -59,11 +59,11 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
     <li>
       <Link
         to={`/conversations/${c.id}`}
-        className="flex items-center justify-between gap-4 rounded-lg px-3 py-2.5 transition-colors hover:bg-bg-hover"
+        className="hover:bg-bg-hover flex items-center justify-between gap-4 rounded-lg px-3 py-2.5 transition-colors"
       >
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="truncate font-medium text-text-primary">
+            <span className="text-text-primary truncate font-medium">
               {c.contact?.name ??
                 t("conversations.unknownContact", "Unknown contact")}
             </span>
@@ -99,19 +99,19 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
               </Badge>
             )}
           </div>
-          <p className="mt-0.5 truncate text-text-muted text-xs">
+          <p className="text-text-muted mt-0.5 truncate text-xs">
             {c.inbox?.name ?? t("conversations.noInbox", "No inbox")}
             {when ? ` · ${when}` : ""}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 text-text-secondary text-xs">
+        <div className="text-text-secondary flex shrink-0 items-center gap-1.5 text-xs">
           {active && (
             <span
-              className="flex items-center gap-1 text-accent"
+              className="text-accent flex items-center gap-1"
               aria-live="polite"
             >
               <span
-                className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-solid"
+                className="bg-accent-solid h-1.5 w-1.5 animate-pulse rounded-full"
                 aria-hidden="true"
               />
               {t("conversations.working", "Working…")}
@@ -127,12 +127,12 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
             </>
           ) : (
             <>
-              <Bot className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
+              <Bot className="text-accent h-3.5 w-3.5" aria-hidden="true" />
               {c.agentName ?? t("conversations.assignee.ai", "AI")}
             </>
           )}
           <ChevronRight
-            className="h-4 w-4 text-text-muted"
+            className="text-text-muted h-4 w-4"
             aria-hidden="true"
           />
         </div>
@@ -456,12 +456,12 @@ export function ConversationsPage() {
     <PageContainer className="flex flex-col gap-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <MessagesSquare className="h-6 w-6 text-accent" aria-hidden="true" />
+          <MessagesSquare className="text-accent h-6 w-6" aria-hidden="true" />
           <div>
-            <h1 className="font-semibold text-text-primary text-xl">
+            <h1 className="text-text-primary text-xl font-semibold">
               {t("conversations.title", "Conversations")}
             </h1>
-            <p className="mt-0.5 text-sm text-text-muted">
+            <p className="text-text-muted mt-0.5 text-sm">
               {t(
                 "conversations.subtitle",
                 "Live conversations with their assignment status (AI or a human).",
@@ -473,7 +473,7 @@ export function ConversationsPage() {
 
       <div className="relative min-w-0">
         <Search
-          className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
+          className="text-text-muted pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2"
           aria-hidden="true"
         />
         <input
@@ -488,7 +488,7 @@ export function ConversationsPage() {
             "conversations.search",
             "Search by contact or conversation #…",
           )}
-          className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
+          className="border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft h-8 w-full rounded-md border pr-2.5 pl-8 text-sm transition-colors focus:ring-2 focus:outline-none"
         />
       </div>
 
@@ -517,7 +517,7 @@ export function ConversationsPage() {
 
       {fromDashboard && (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary px-2.5 py-1 text-text-secondary text-xs">
+          <span className="border-border bg-bg-tertiary text-text-secondary inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs">
             {t("conversations.drill.label", "From the dashboard: {{outcome}}", {
               outcome: outcomeLabel[outcome || "all"] ?? outcome,
             })}
@@ -596,7 +596,7 @@ export function ConversationsPage() {
         errorLabel={t("conversations.error", "Could not load conversations.")}
         skeleton={<ConversationsSkeleton />}
         empty={
-          <p className="px-4 py-10 text-center text-sm text-text-muted">
+          <p className="text-text-muted px-4 py-10 text-center text-sm">
             {t("conversations.empty", "No conversations yet.")}
           </p>
         }

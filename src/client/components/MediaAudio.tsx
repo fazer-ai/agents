@@ -29,7 +29,7 @@ export function MediaAudio({
   if (!url) {
     return (
       <div
-        className="h-8 w-44 max-w-full animate-pulse rounded-full bg-bg-tertiary"
+        className="bg-bg-tertiary h-8 w-44 max-w-full animate-pulse rounded-full"
         role="status"
         aria-label={t("common.loading", "Loading…")}
       />

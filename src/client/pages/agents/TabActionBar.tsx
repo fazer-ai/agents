@@ -65,15 +65,15 @@ export function TabActionBar({
   const holds = held && (bar ? bar.sectionDirty : true);
   return (
     <div className="sticky bottom-0 z-10 mt-auto">
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-bg-secondary px-4 py-3 shadow-lg">
+      <div className="border-border bg-bg-secondary flex flex-col gap-3 rounded-xl border px-4 py-3 shadow-lg">
         {stale && (
           <div
             data-testid="stale-notice-strip"
-            className="flex flex-wrap items-center gap-x-3 gap-y-2 border-border border-b pb-3"
+            className="border-border flex flex-wrap items-center gap-x-3 gap-y-2 border-b pb-3"
           >
-            <span className="flex min-w-0 items-center gap-1.5 text-sm text-text-primary">
+            <span className="text-text-primary flex min-w-0 items-center gap-1.5 text-sm">
               <TriangleAlert
-                className="h-4 w-4 shrink-0 text-warning"
+                className="text-warning h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
               {t("editor.staleShort", "Changed elsewhere")}

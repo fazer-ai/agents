@@ -231,6 +231,7 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
       if (at >= 0) {
         expect(at).toBe(targets.length - 1);
         const ids = col(csv, "id").map(BigInt);
+        // biome-ignore lint/complexity/useMathMinMax: ids are bigints, which Math.max refuses
         expect(ids[at]).toBe(ids.reduce((a, b) => (a > b ? a : b)));
       }
     }

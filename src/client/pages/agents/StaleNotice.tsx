@@ -41,14 +41,14 @@ export function StaleNoticeCard({ notice }: { notice: StaleNotice | null }) {
   return (
     <div
       role="alert"
-      className="flex flex-col gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+      className="border-warning bg-warning-soft flex flex-col gap-2 rounded-lg border px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
     >
       <div className="flex items-start gap-2">
         <TriangleAlert
-          className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+          className="text-warning mt-0.5 h-4 w-4 shrink-0"
           aria-hidden="true"
         />
-        <p className="text-sm text-text-primary">
+        <p className="text-text-primary text-sm">
           {t(
             "editor.staleNotice",
             "This agent was changed elsewhere (another tab, the API, or the MCP server). Reload to get the latest version before saving.",
@@ -68,7 +68,7 @@ export function StaleNoticeCard({ notice }: { notice: StaleNotice | null }) {
           type="button"
           onClick={notice.dismiss}
           aria-label={t("common.dismiss", "Dismiss")}
-          className="flex h-7 w-7 items-center justify-center rounded text-text-muted hover:text-text-primary"
+          className="text-text-muted hover:text-text-primary flex h-7 w-7 items-center justify-center rounded"
         >
           <X className="h-4 w-4" aria-hidden="true" />
         </button>

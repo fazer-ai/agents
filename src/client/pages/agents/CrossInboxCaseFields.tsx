@@ -378,7 +378,7 @@ export function CrossInboxCaseFields({
             {CARRY_FILE_TYPES.map((type) => (
               <label
                 key={type}
-                className="flex items-center gap-1.5 text-text-secondary text-xs"
+                className="text-text-secondary flex items-center gap-1.5 text-xs"
               >
                 <input
                   type="checkbox"

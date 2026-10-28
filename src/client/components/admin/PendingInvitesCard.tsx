@@ -71,7 +71,7 @@ export function PendingInvitesCard({
 
   return (
     <Card>
-      <h2 className="mb-4 font-semibold text-lg text-text-primary">
+      <h2 className="text-text-primary mb-4 text-lg font-semibold">
         {t("invite.pendingTitle", "Pending invitations")}
       </h2>
       {loading ? (
@@ -80,7 +80,7 @@ export function PendingInvitesCard({
           {INVITE_SKELETON_KEYS.map((key) => (
             <div
               key={key}
-              className="flex items-center gap-4 border-border/50 border-b px-2 py-3"
+              className="border-border/50 flex items-center gap-4 border-b px-2 py-3"
             >
               <Skeleton className="h-4 w-48" />
               {showTenant && <Skeleton className="h-4 w-28" />}
@@ -96,24 +96,24 @@ export function PendingInvitesCard({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-border border-b text-left">
-                <th className="px-2 py-3 font-medium text-text-secondary">
+                <th className="text-text-secondary px-2 py-3 font-medium">
                   {t("admin.email", "Email")}
                 </th>
                 {showTenant && (
-                  <th className="px-2 py-3 font-medium text-text-secondary">
+                  <th className="text-text-secondary px-2 py-3 font-medium">
                     {t("admin.tenant", "Tenant")}
                   </th>
                 )}
-                <th className="px-2 py-3 font-medium text-text-secondary">
+                <th className="text-text-secondary px-2 py-3 font-medium">
                   {t("admin.role", "Role")}
                 </th>
-                <th className="px-2 py-3 font-medium text-text-secondary">
+                <th className="text-text-secondary px-2 py-3 font-medium">
                   {t("invite.status", "Status")}
                 </th>
-                <th className="px-2 py-3 font-medium text-text-secondary">
+                <th className="text-text-secondary px-2 py-3 font-medium">
                   {t("invite.expiresAt", "Expires")}
                 </th>
-                <th className="px-2 py-3 font-medium text-text-secondary">
+                <th className="text-text-secondary px-2 py-3 font-medium">
                   {t("admin.actions", "Actions")}
                 </th>
               </tr>
@@ -122,13 +122,13 @@ export function PendingInvitesCard({
               {invites.map((invite) => (
                 <tr
                   key={invite.id}
-                  className="border-border/50 border-b hover:bg-bg-tertiary/50"
+                  className="border-border/50 hover:bg-bg-tertiary/50 border-b"
                 >
-                  <td className="px-2 py-3 text-text-primary">
+                  <td className="text-text-primary px-2 py-3">
                     {invite.email}
                   </td>
                   {showTenant && (
-                    <td className="px-2 py-3 text-text-secondary">
+                    <td className="text-text-secondary px-2 py-3">
                       {invite.tenantId === null
                         ? t("invite.fleet", "Fleet")
                         : (tenantNameById.get(invite.tenantId) ??
@@ -149,7 +149,7 @@ export function PendingInvitesCard({
                         : t("invite.statusPending", "Pending")}
                     </Badge>
                   </td>
-                  <td className="px-2 py-3 text-text-secondary">
+                  <td className="text-text-secondary px-2 py-3">
                     {formatDate(invite.expiresAt)}
                   </td>
                   <td className="px-2 py-3">

@@ -46,14 +46,14 @@ export function VoicePlayground({
 
   return (
     <Card className="flex h-[72dvh] flex-col items-center justify-center gap-5 p-6 text-center">
-      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-success/15 text-success">
+      <div className="bg-success/15 text-success flex h-20 w-20 items-center justify-center rounded-full">
         <Phone className="h-8 w-8" aria-hidden="true" />
       </div>
       <div className="flex max-w-md flex-col gap-1.5">
-        <h3 className="font-semibold text-lg text-text-primary">
+        <h3 className="text-text-primary text-lg font-semibold">
           {t("playground.voice.title", "Call the agent")}
         </h3>
-        <p className="text-sm text-text-secondary">
+        <p className="text-text-secondary text-sm">
           {t(
             "playground.voice.desc",
             "Talk through your microphone, as a customer would on WhatsApp. No customer is called and nothing reaches Chatwoot: what the agent would do in the conversation is simulated.",
@@ -62,7 +62,7 @@ export function VoicePlayground({
       </div>
       {!hasKey ? (
         <div className="flex flex-col items-center gap-2">
-          <p className="flex items-center gap-1.5 text-sm text-warning">
+          <p className="text-warning flex items-center gap-1.5 text-sm">
             <TriangleAlert className="h-4 w-4" aria-hidden="true" />
             {t(
               "playground.voice.noKey",
@@ -99,7 +99,7 @@ export function VoicePlayground({
             : t("playground.call.start", "Call")}
         </Button>
       )}
-      <ul className="flex max-w-md flex-col gap-1 text-left text-text-muted text-xs">
+      <ul className="text-text-muted flex max-w-md flex-col gap-1 text-left text-xs">
         <li className="flex items-start gap-1.5">
           <Headphones
             className="mt-px h-3.5 w-3.5 shrink-0"
@@ -111,7 +111,7 @@ export function VoicePlayground({
           )}
         </li>
         {unsaved && (
-          <li className="flex items-start gap-1.5 text-warning">
+          <li className="text-warning flex items-start gap-1.5">
             <TriangleAlert
               className="mt-px h-3.5 w-3.5 shrink-0"
               aria-hidden="true"

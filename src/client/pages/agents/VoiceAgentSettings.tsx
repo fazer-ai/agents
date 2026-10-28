@@ -81,9 +81,9 @@ function CardHeader({
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 items-start gap-2">
-        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
+        <Icon className="text-text-muted mt-0.5 h-4 w-4 shrink-0" />
         <div className="min-w-0">
-          <h3 className="font-medium text-sm text-text-primary">{title}</h3>
+          <h3 className="text-text-primary text-sm font-medium">{title}</h3>
           <p className="text-text-muted text-xs">{hint}</p>
         </div>
       </div>
@@ -233,7 +233,7 @@ export function VoiceStatusLine({
     );
   if (status.state === "checking")
     return (
-      <span className="flex items-center gap-1.5 text-text-muted text-xs">
+      <span className="text-text-muted flex items-center gap-1.5 text-xs">
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
         {t("editor.voiceStatusChecking", "Checking with {{provider}}…", {
           provider: name,
@@ -246,7 +246,7 @@ export function VoiceStatusLine({
       : null;
     return (
       <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span className="flex items-center gap-1.5 text-success">
+        <span className="text-success flex items-center gap-1.5">
           <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
           {t(
             "editor.voiceStatusReady",
@@ -266,7 +266,7 @@ export function VoiceStatusLine({
               "Settings are changed here: the next save overwrites changes made on {{provider}}.",
               { provider: name },
             )}
-            className="flex items-center gap-1 text-text-muted underline-offset-2 hover:text-text-primary hover:underline"
+            className="text-text-muted hover:text-text-primary flex items-center gap-1 underline-offset-2 hover:underline"
           >
             {t(
               "editor.voiceProviderLink",
@@ -280,7 +280,7 @@ export function VoiceStatusLine({
     );
   }
   return (
-    <span className="flex items-start gap-1.5 text-error text-xs">
+    <span className="text-error flex items-start gap-1.5 text-xs">
       <TriangleAlert
         className="mt-px h-3.5 w-3.5 shrink-0"
         aria-hidden="true"
@@ -288,7 +288,7 @@ export function VoiceStatusLine({
       <span>
         {problemText(status.problem, provider)}
         {status.detail && !KEY_PROBLEMS.has(status.problem) && (
-          <span className="block text-text-muted">{status.detail}</span>
+          <span className="text-text-muted block">{status.detail}</span>
         )}
       </span>
     </span>
@@ -338,14 +338,14 @@ function SpeedSlider({
           value={shown}
           onChange={(e) => onChange(e.target.value.replace(".", ","))}
           aria-label={t("editor.voiceSpeed", "Speech speed")}
-          className="h-10 min-w-0 flex-1 accent-primary"
+          className="accent-primary h-10 min-w-0 flex-1"
         />
-        <span className="w-12 shrink-0 text-right text-sm text-text-primary tabular-nums">
+        <span className="text-text-primary w-12 shrink-0 text-right text-sm tabular-nums">
           {`${shown.toFixed(2).replace(".", ",")}×`}
         </span>
       </div>
       {/* "Normal" sits under 1 on the track, which is not its middle. */}
-      <div className="relative mr-15 h-4 text-text-muted text-xs">
+      <div className="text-text-muted relative mr-15 h-4 text-xs">
         <span className="absolute left-0">
           {t("editor.voiceSpeedSlower", "Slower")}
         </span>
@@ -479,7 +479,7 @@ export function VoiceCard({
             createLabel={t("editor.voiceAddKey", "Add key")}
           />
           {!calls.credentialRef && (
-            <p className="mt-1.5 text-text-muted text-xs">
+            <p className="text-text-muted mt-1.5 text-xs">
               {t(
                 "editor.voiceNoKey",
                 "The agent answers calls on your {{provider}} account. Create a key there with the {{permission}} permission, then add it with the button above.",
@@ -489,7 +489,7 @@ export function VoiceCard({
                 href={callProviderKeysUrl(calls.provider)}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+                className="text-primary inline-flex items-center gap-1 underline-offset-2 hover:underline"
               >
                 {t("editor.voiceCreateKey", "Create a key on {{provider}}", {
                   provider: name,
@@ -552,22 +552,22 @@ export function VoiceCard({
           />
         </FormField>
       </div>
-      <details className="group rounded-md border border-border-default">
+      <details className="group border-border-default rounded-md border">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-sm">
           <span className="min-w-0">
-            <span className="font-medium text-text-primary">
+            <span className="text-text-primary font-medium">
               {t("editor.voiceModels", "Models")}
             </span>
-            <span className="block text-text-muted text-xs">
+            <span className="text-text-muted block text-xs">
               {modelsSummary}
             </span>
           </span>
           <ChevronDown
-            className="h-4 w-4 shrink-0 text-text-muted transition-transform group-open:rotate-180"
+            className="text-text-muted h-4 w-4 shrink-0 transition-transform group-open:rotate-180"
             aria-hidden="true"
           />
         </summary>
-        <div className="grid gap-4 border-border-default border-t p-3 sm:grid-cols-3">
+        <div className="border-border-default grid gap-4 border-t p-3 sm:grid-cols-3">
           <FormField
             group
             label={t("editor.voiceModel", "Conversation model")}
@@ -721,7 +721,7 @@ function SoundPicker<T extends CallBackgroundSound | CallToolSound>({
           aria-label={playLabel(presetLabel(value), chosenOn)}
           onClick={() => player.toggle(chosenUrl)}
           className={cn(
-            "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
+            "border-border-hover text-text-muted hover:bg-bg-hover hover:text-text-primary focus-visible:ring-accent-soft inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2.5 text-sm transition-colors focus:outline-none focus-visible:ring-2",
             { "text-accent": chosenOn },
           )}
         >
@@ -862,7 +862,7 @@ export function CallSettings({
                 onChange={(e) => set({ silenceEndCallSecs: e.target.value })}
                 className="w-24"
               />
-              <span className="text-sm text-text-secondary">
+              <span className="text-text-secondary text-sm">
                 {t("editor.unitSeconds", "seconds")}
               </span>
             </div>
@@ -884,7 +884,7 @@ export function CallSettings({
                 onChange={(e) => set({ maxDurationMin: e.target.value })}
                 className="w-24"
               />
-              <span className="text-sm text-text-secondary">
+              <span className="text-text-secondary text-sm">
                 {t("editor.unitMinutes", "minutes")}
               </span>
             </div>
@@ -934,9 +934,9 @@ export function CallSettings({
                   "editor.callsBackgroundVolume",
                   "Background volume",
                 )}
-                className="h-10 min-w-0 flex-1 accent-primary disabled:opacity-50"
+                className="accent-primary h-10 min-w-0 flex-1 disabled:opacity-50"
               />
-              <span className="w-12 shrink-0 text-right text-sm text-text-primary tabular-nums">
+              <span className="text-text-primary w-12 shrink-0 text-right text-sm tabular-nums">
                 {`${calls.backgroundVolume}%`}
               </span>
             </div>

@@ -73,11 +73,11 @@ export function WebhookEventPicker({
         aria-label={t("webhooks.searchEvents", "Search events")}
       />
       {visible.length === 0 && (
-        <p className="px-1 text-text-muted text-xs">
+        <p className="text-text-muted px-1 text-xs">
           {t("webhooks.noEventsMatch", "No event matches the search.")}
         </p>
       )}
-      <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+      <div className="divide-border border-border flex flex-col divide-y rounded-lg border">
         {visible.map(({ group, key, familyLabel, events }) => {
           const state = groupSelection(group, selected);
           const expanded = searching || open.has(key);
@@ -106,16 +106,16 @@ export function WebhookEventPicker({
                 >
                   {expanded ? (
                     <ChevronDown
-                      className="h-3.5 w-3.5 shrink-0 text-text-muted"
+                      className="text-text-muted h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
                   ) : (
                     <ChevronRight
-                      className="h-3.5 w-3.5 shrink-0 text-text-muted"
+                      className="text-text-muted h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
                   )}
-                  <span className="font-medium text-sm text-text-primary">
+                  <span className="text-text-primary text-sm font-medium">
                     {familyLabel}
                   </span>
                   <span className="text-text-muted text-xs">
@@ -165,13 +165,13 @@ export function WebhookEventPicker({
                       <li key={ev}>
                         <label
                           className={cn(
-                            "flex items-start gap-3 py-1.5 pr-3 pl-8.5 transition-colors hover:bg-bg-hover",
+                            "hover:bg-bg-hover flex items-start gap-3 py-1.5 pr-3 pl-8.5 transition-colors",
                             { "text-text-primary": checked },
                           )}
                         >
                           <input
                             type="checkbox"
-                            className="mt-0.5 accent-accent"
+                            className="accent-accent mt-0.5"
                             checked={checked}
                             disabled={disabled}
                             onChange={() =>

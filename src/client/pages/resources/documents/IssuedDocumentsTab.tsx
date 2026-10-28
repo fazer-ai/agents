@@ -223,7 +223,7 @@ export function IssuedDocumentsTab({
     <div className="flex flex-col gap-3">
       <div className="relative min-w-0">
         <Search
-          className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
+          className="text-text-muted pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2"
           aria-hidden="true"
         />
         <input
@@ -235,7 +235,7 @@ export function IssuedDocumentsTab({
             "Search by number or title…",
           )}
           aria-label={t("documents.issuedSearch", "Search by number or title…")}
-          className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
+          className="border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft h-8 w-full rounded-md border pr-2.5 pl-8 text-sm transition-colors focus:ring-2 focus:outline-none"
         />
       </div>
 
@@ -275,7 +275,7 @@ export function IssuedDocumentsTab({
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {doc.number ? `${doc.title} ${doc.number}` : doc.title}
                   </span>
                   {doc.revoked && (
@@ -293,7 +293,7 @@ export function IssuedDocumentsTab({
                     different templates that happen to share a title are the same row twice. A
                     document OUTLIVES its template (the FK nulls the id on delete), so the miss is a
                     real state and says so. */}
-                <p className="mt-0.5 truncate text-text-muted text-xs">
+                <p className="text-text-muted mt-0.5 truncate text-xs">
                   {templateNames && (
                     <>
                       {doc.templateId

@@ -496,16 +496,16 @@ export function ToolTestModal({
           })
         )}
         {result && (
-          <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+          <div className="border-border flex flex-col gap-2 rounded-md border p-3">
             <div className="flex items-center gap-2 text-xs">
               {result.failed ? (
                 <AlertTriangle
-                  className="h-4 w-4 shrink-0 text-warning"
+                  className="text-warning h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
               ) : (
                 <Check
-                  className="h-4 w-4 shrink-0 text-success"
+                  className="text-success h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
               )}
@@ -549,7 +549,7 @@ export function ToolTestModal({
                 "The response after your template and the size limit are applied. The sample field was filled with the full response.",
               )}
             >
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-tertiary p-2 text-text-primary text-xs">
+              <pre className="border-border bg-bg-tertiary text-text-primary max-h-48 overflow-auto rounded-md border p-2 text-xs break-words whitespace-pre-wrap">
                 {result.modelText}
               </pre>
             </FormField>

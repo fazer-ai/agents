@@ -57,7 +57,7 @@ export function AdminTenantsPage() {
             {TENANT_SKELETON_KEYS.map((key) => (
               <div
                 key={key}
-                className="flex items-center gap-4 border-border/50 border-b px-2 py-3"
+                className="border-border/50 flex items-center gap-4 border-b px-2 py-3"
               >
                 <Skeleton className="h-4 w-40" />
                 <Skeleton className="h-3 w-24" />
@@ -68,7 +68,7 @@ export function AdminTenantsPage() {
             ))}
           </div>
         ) : tenants.length === 0 ? (
-          <p className="py-10 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-10 text-center text-sm">
             {t("tenant.none", "No tenants yet.")}
           </p>
         ) : (
@@ -76,19 +76,19 @@ export function AdminTenantsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-border border-b text-left">
-                  <th className="px-2 py-3 font-medium text-text-secondary">
+                  <th className="text-text-secondary px-2 py-3 font-medium">
                     {t("tenant.name", "Name")}
                   </th>
-                  <th className="px-2 py-3 font-medium text-text-secondary">
+                  <th className="text-text-secondary px-2 py-3 font-medium">
                     {t("tenant.slug", "Slug")}
                   </th>
-                  <th className="px-2 py-3 font-medium text-text-secondary">
+                  <th className="text-text-secondary px-2 py-3 font-medium">
                     {t("admin.users", "Users")}
                   </th>
-                  <th className="px-2 py-3 font-medium text-text-secondary">
+                  <th className="text-text-secondary px-2 py-3 font-medium">
                     {t("admin.createdAt", "Created")}
                   </th>
-                  <th className="px-2 py-3 font-medium text-text-secondary">
+                  <th className="text-text-secondary px-2 py-3 font-medium">
                     {t("admin.actions", "Actions")}
                   </th>
                 </tr>
@@ -97,9 +97,9 @@ export function AdminTenantsPage() {
                 {tenants.map((tenant) => (
                   <tr
                     key={tenant.id}
-                    className="border-border/50 border-b hover:bg-bg-tertiary/50"
+                    className="border-border/50 hover:bg-bg-tertiary/50 border-b"
                   >
-                    <td className="px-2 py-3 text-text-primary">
+                    <td className="text-text-primary px-2 py-3">
                       <span className="flex items-center gap-2">
                         {tenant.name}
                         {tenant.demoMode && (
@@ -109,20 +109,20 @@ export function AdminTenantsPage() {
                         )}
                       </span>
                     </td>
-                    <td className="px-2 py-3 font-mono text-text-secondary text-xs">
+                    <td className="text-text-secondary px-2 py-3 font-mono text-xs">
                       {tenant.slug}
                     </td>
-                    <td className="px-2 py-3 text-text-secondary">
+                    <td className="text-text-secondary px-2 py-3">
                       {tenant.userCount}
                     </td>
-                    <td className="px-2 py-3 text-text-secondary">
+                    <td className="text-text-secondary px-2 py-3">
                       {formatDate(tenant.createdAt)}
                     </td>
                     <td className="px-2 py-3">
                       <div className="flex items-center gap-1">
                         <Link
                           to={`/admin/users?tenant=${tenant.id}`}
-                          className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 font-medium text-text-secondary text-xs transition-colors hover:bg-bg-hover hover:text-text-primary"
+                          className="border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium transition-colors"
                         >
                           <Users className="h-3.5 w-3.5" aria-hidden="true" />
                           {t("admin.viewUsers", "View users")}

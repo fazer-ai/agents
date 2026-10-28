@@ -139,10 +139,10 @@ export function CoverageBar({
           "{{ready}} of {{total}} days in",
           { ready: shown.ready, total: shown.total },
         )}
-        className="mt-1 h-1 w-full overflow-hidden rounded-full bg-info-soft"
+        className="bg-info-soft mt-1 h-1 w-full overflow-hidden rounded-full"
       >
         <div
-          className="h-full rounded-full bg-info"
+          className="bg-info h-full rounded-full"
           style={{ width: `${pct}%` }}
         />
       </div>

@@ -69,7 +69,7 @@ function SidebarNav({
             // NOTE: never re-centered when collapsed. The icon keeps its left-aligned position (see
             // SIDEBAR_COLLAPSED_WIDTH), which is already the rail's center, so nothing jumps when
             // the label goes.
-            "flex items-center gap-3 rounded-md px-4 py-1.5 font-medium text-sm transition-colors",
+            "flex items-center gap-3 rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
             {
               "bg-bg-hover text-text-primary": isActive,
               "text-text-muted hover:bg-bg-tertiary hover:text-text-primary":
@@ -85,7 +85,7 @@ function SidebarNav({
             // still announced via the sr-only label below.
             <span
               aria-hidden="true"
-              className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-accent-solid ring-2 ring-bg-primary"
+              className="bg-accent-solid ring-bg-primary absolute -top-1 -right-1 h-2 w-2 rounded-full ring-2"
             />
           )}
         </span>
@@ -99,7 +99,7 @@ function SidebarNav({
           <>
             <span className="truncate">{label}</span>
             {badgeCount > 0 && (
-              <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-accent-solid px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
+              <span className="bg-accent-solid text-accent-foreground ml-auto inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium">
                 {badgeCount}
               </span>
             )}
@@ -142,7 +142,7 @@ function SidebarNav({
               (isCollapsed ? (
                 // NOTE: collapsed, a heading has no room; a hairline keeps the groups apart and the
                 // heading stays for screen readers.
-                <div className="mx-2 mb-2 h-px bg-border">
+                <div className="bg-border mx-2 mb-2 h-px">
                   <span id={headingId} className="sr-only">
                     {heading}
                   </span>
@@ -150,7 +150,7 @@ function SidebarNav({
               ) : (
                 <p
                   id={headingId}
-                  className="mb-1 truncate px-4 font-medium text-text-muted text-xs"
+                  className="text-text-muted mb-1 truncate px-4 text-xs font-medium"
                 >
                   {heading}
                 </p>
@@ -354,14 +354,14 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
   );
 
   const proBadge = isPro ? (
-    <span className="rounded-sm bg-accent-solid px-1 font-semibold text-[9px] text-accent-foreground uppercase leading-tight tracking-wide">
+    <span className="bg-accent-solid text-accent-foreground rounded-sm px-1 text-[9px] leading-tight font-semibold tracking-wide uppercase">
       {proLabel}
     </span>
   ) : null;
 
   return (
     <div
-      className={cn("shrink-0 pb-2 text-[10px] text-text-muted", {
+      className={cn("text-text-muted shrink-0 pb-2 text-[10px]", {
         "px-2 text-center": collapsed,
         "px-4": !collapsed,
       })}
@@ -397,11 +397,11 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
               target="_blank"
               rel="noreferrer"
               aria-label={versionTooltip}
-              className="relative block truncate text-accent hover:underline"
+              className="text-accent relative block truncate hover:underline"
             >
               {APP_VERSION}
               <span
-                className="absolute top-0 right-0 h-1.5 w-1.5 rounded-full bg-accent-solid"
+                className="bg-accent-solid absolute top-0 right-0 h-1.5 w-1.5 rounded-full"
                 aria-hidden="true"
               />
             </a>
@@ -431,11 +431,11 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
                 href={upgradeHref}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-accent hover:underline"
+                className="text-accent inline-flex items-center gap-1 hover:underline"
               >
                 {full}
                 <span
-                  className="h-1.5 w-1.5 rounded-full bg-accent-solid"
+                  className="bg-accent-solid h-1.5 w-1.5 rounded-full"
                   aria-hidden="true"
                 />
                 {t("updates.update", "update")}
@@ -473,7 +473,7 @@ function SidebarCollapseToggle({ collapsed }: { collapsed: boolean }) {
       aria-pressed={!collapsed}
       aria-controls="app-sidebar"
       aria-keyshortcuts="Meta+B Control+B"
-      className="flex w-full items-center gap-3 rounded-md px-4 py-1.5 text-sm text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+      className="text-text-muted hover:bg-bg-tertiary hover:text-text-primary flex w-full items-center gap-3 rounded-md px-4 py-1.5 text-sm transition-colors"
     >
       <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
       {collapsed ? (
@@ -483,7 +483,7 @@ function SidebarCollapseToggle({ collapsed }: { collapsed: boolean }) {
           <span className="flex-1 truncate text-left">{label}</span>
           {/* Only once the sidebar is wide enough for label and hint side by side; mid-transition
               the hint would otherwise sit on top of the label for a few frames. */}
-          <kbd className="@min-[11rem]:inline hidden shrink-0 font-sans text-text-muted text-xs">
+          <kbd className="text-text-muted hidden shrink-0 font-sans text-xs @min-[11rem]:inline">
             {COLLAPSE_SHORTCUT}
           </kbd>
         </>
@@ -569,12 +569,12 @@ function MobileSidebar({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-(--z-drawer-overlay) bg-overlay data-[state=closed]:animate-out data-[state=open]:animate-in md:hidden" />
+        <DialogPrimitive.Overlay className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 bg-overlay data-[state=closed]:animate-out data-[state=open]:animate-in fixed inset-0 z-(--z-drawer-overlay) md:hidden" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left fixed inset-y-0 left-0 z-(--z-drawer) flex w-72 max-w-[85vw] flex-col border-border border-r bg-bg-primary shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in md:hidden"
+          className="data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left border-border bg-bg-primary data-[state=closed]:animate-out data-[state=open]:animate-in fixed inset-y-0 left-0 z-(--z-drawer) flex w-72 max-w-[85vw] flex-col border-r shadow-lg md:hidden"
         >
-          <div className="flex shrink-0 items-center justify-between border-border border-b px-4 py-3">
+          <div className="border-border flex shrink-0 items-center justify-between border-b px-4 py-3">
             <DialogPrimitive.Title className="sr-only">
               {t("nav.mainNavigation", "Main navigation")}
             </DialogPrimitive.Title>
@@ -588,7 +588,7 @@ function MobileSidebar({
             </Link>
             <DialogPrimitive.Close
               aria-label={t("nav.closeMenu", "Close menu")}
-              className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              className="text-text-muted hover:bg-bg-tertiary hover:text-text-primary rounded-md p-1 transition-colors"
             >
               <X className="h-4 w-4" aria-hidden="true" />
             </DialogPrimitive.Close>
@@ -619,7 +619,7 @@ export function Sidebar() {
       <aside
         id="app-sidebar"
         style={{ width: effectiveWidth }}
-        className="group/sidebar @container relative hidden shrink-0 flex-col bg-bg-primary transition-[width] duration-200 ease-out md:flex"
+        className="group/sidebar bg-bg-primary @container relative hidden shrink-0 flex-col transition-[width] duration-200 ease-out md:flex"
       >
         <SidebarBrand collapsed={collapsed} />
         <SidebarNav

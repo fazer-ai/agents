@@ -179,7 +179,7 @@ export function FetchBackFields({
   const idFields = idFieldsOf(tool);
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+    <div className="border-border flex flex-col gap-3 rounded-lg border p-3">
       <SwitchField
         checked={f !== null}
         onCheckedChange={(on) =>
@@ -329,7 +329,7 @@ export function FetchBackFields({
                 <div
                   // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity of their own
                   key={i}
-                  className="flex flex-col gap-2 rounded-md border border-border p-2 sm:flex-row sm:items-start"
+                  className="border-border flex flex-col gap-2 rounded-md border p-2 sm:flex-row sm:items-start"
                 >
                   <FormField
                     label={t("integrations.fetchBack.status", "Status")}

@@ -552,7 +552,7 @@ export function DocumentTemplateModal({
             />
           </FormField>
           {nextUnread && (
-            <p className="-mt-2 text-text-muted text-xs">
+            <p className="text-text-muted -mt-2 text-xs">
               {t(
                 "documents.nextNumberUnread",
                 "Could not read where the new prefix continues; saving still computes it.",
@@ -607,7 +607,7 @@ export function DocumentTemplateModal({
                     onChange={(e) =>
                       setStyle({ ...style, accentColor: e.target.value })
                     }
-                    className="h-9 w-12 rounded border border-border bg-bg-secondary"
+                    className="border-border bg-bg-secondary h-9 w-12 rounded border"
                   />
                   <Input
                     value={style.accentColor}
@@ -710,7 +710,7 @@ export function DocumentTemplateModal({
           </div>
 
           <div className="flex flex-col gap-2">
-            <p className="font-medium text-sm text-text-primary">
+            <p className="text-text-primary text-sm font-medium">
               {t("documents.textBlocks", "Text")}
             </p>
             {/* One pointer to the MCP settings at a time: the empty-state box below carries it for
@@ -729,8 +729,8 @@ export function DocumentTemplateModal({
             {fields.length === 0 && (
               // The blank starter lands here with nothing to edit, so the screen says how a template
               // gets its content instead of showing an empty list.
-              <div className="flex flex-col gap-1 rounded-lg border border-accent/40 bg-accent-soft p-3">
-                <p className="font-medium text-sm text-text-primary">
+              <div className="border-accent/40 bg-accent-soft flex flex-col gap-1 rounded-lg border p-3">
+                <p className="text-text-primary text-sm font-medium">
                   {t(
                     "documents.buildWithAiTitle",
                     "Build this template with AI",
@@ -753,7 +753,7 @@ export function DocumentTemplateModal({
               </div>
             )}
             {textBlocks.length === 0 ? (
-              <p className="text-sm text-text-muted">
+              <p className="text-text-muted text-sm">
                 {t(
                   "documents.noTextBlocks",
                   "This template has no text block.",
@@ -780,11 +780,11 @@ export function DocumentTemplateModal({
           </div>
 
           <div className="flex flex-col gap-1">
-            <p className="font-medium text-sm text-text-primary">
+            <p className="text-text-primary text-sm font-medium">
               {t("documents.fields", "Fields the agent fills")}
             </p>
             {fields.length === 0 ? (
-              <p className="text-sm text-text-muted">
+              <p className="text-text-muted text-sm">
                 {t("documents.noFields", "No fields yet.")}
               </p>
             ) : (
@@ -792,7 +792,7 @@ export function DocumentTemplateModal({
                 {fields.map((f) => (
                   <span
                     key={f.name}
-                    className="rounded border border-border bg-bg-secondary px-2 py-0.5 text-text-secondary text-xs"
+                    className="border-border bg-bg-secondary text-text-secondary rounded border px-2 py-0.5 text-xs"
                   >
                     {f.label}
                     <span className="text-text-muted">

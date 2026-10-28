@@ -366,11 +366,11 @@ export function ChannelsTab({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <h2 className="flex items-center gap-2 font-medium text-text-primary">
-          <InboxIcon className="h-4 w-4 text-accent" aria-hidden="true" />
+        <h2 className="text-text-primary flex items-center gap-2 font-medium">
+          <InboxIcon className="text-accent h-4 w-4" aria-hidden="true" />
           {t("editor.channels.title", "Inboxes")}
         </h2>
-        <p className="mt-0.5 text-text-muted text-xs">
+        <p className="text-text-muted mt-0.5 text-xs">
           {watcher
             ? t(
                 "editor.channels.observeDesc",
@@ -417,7 +417,7 @@ export function ChannelsTab({
             return (
               <div key={inst.id} className="flex flex-col gap-1.5">
                 {showInstanceHeaders && (
-                  <div className="flex items-center gap-1.5 px-1 text-text-muted text-xs">
+                  <div className="text-text-muted flex items-center gap-1.5 px-1 text-xs">
                     <ServiceLogo
                       service="chatwoot"
                       className="h-3.5 w-3.5 shrink-0"
@@ -494,7 +494,7 @@ export function ChannelsTab({
                             // adding needs the account.
                             pending === ib.id ? (
                               <Loader2
-                                className="h-5 w-5 animate-spin text-text-muted"
+                                className="text-text-muted h-5 w-5 animate-spin"
                                 aria-hidden="true"
                               />
                             ) : (
@@ -511,7 +511,7 @@ export function ChannelsTab({
                               />
                             )
                           ) : disconnected ? (
-                            <span className="shrink-0 text-text-muted text-xs">
+                            <span className="text-text-muted shrink-0 text-xs">
                               {t(
                                 "channels.accountDisconnectedOff",
                                 "Account disconnected",
@@ -530,7 +530,7 @@ export function ChannelsTab({
                               )}
                               {pending === ib.id ? (
                                 <Loader2
-                                  className="h-5 w-5 animate-spin text-text-muted"
+                                  className="text-text-muted h-5 w-5 animate-spin"
                                   aria-hidden="true"
                                 />
                               ) : (

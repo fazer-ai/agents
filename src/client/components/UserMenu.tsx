@@ -205,7 +205,7 @@ export function UserMenu() {
           // `aria-label` and exposes the visible name (or email) instead.
           aria-label={t("nav.userMenu", "User menu")}
           aria-labelledby={email ? triggerLabelId : undefined}
-          className="group inline-flex items-center gap-2 rounded-md py-1 pr-1.5 pl-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover data-[state=open]:text-text-primary"
+          className="group text-text-secondary hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover data-[state=open]:text-text-primary inline-flex items-center gap-2 rounded-md py-1 pr-1.5 pl-1 text-sm transition-colors"
         >
           {email && <Avatar name={user?.name} email={email} size="sm" />}
           {email && (
@@ -218,7 +218,7 @@ export function UserMenu() {
           )}
           <ChevronDown
             aria-hidden="true"
-            className="h-3.5 w-3.5 text-text-muted transition-transform group-data-[state=open]:rotate-180"
+            className="text-text-muted h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180"
           />
         </button>
       </DropdownMenuPrimitive.Trigger>
@@ -237,11 +237,11 @@ export function UserMenu() {
               <div className="flex items-center gap-2.5 px-2 pt-1.5 pb-2">
                 <Avatar name={user?.name} email={email} size="md" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium text-sm text-text-primary">
+                  <p className="text-text-primary truncate text-sm font-medium">
                     {displayName}
                   </p>
                   {user?.name?.trim() && (
-                    <p className="truncate text-text-muted text-xs">{email}</p>
+                    <p className="text-text-muted truncate text-xs">{email}</p>
                   )}
                 </div>
                 {user && isAdminRole(user.role) && (
@@ -256,7 +256,7 @@ export function UserMenu() {
               with its own accessible name, and the row's label spells out the
               current choice, so the icons never carry meaning alone. */}
           <div className="flex items-center justify-between gap-2 py-0.5 pr-0.5 pl-2">
-            <span id={themeLabelId} className="text-sm text-text-secondary">
+            <span id={themeLabelId} className="text-text-secondary text-sm">
               {t("theme.label", "Theme")}
               <span className="text-text-muted">
                 {" · "}
@@ -268,7 +268,7 @@ export function UserMenu() {
               value={theme}
               onValueChange={(value) => setTheme(value as typeof theme)}
               aria-labelledby={themeLabelId}
-              className="flex gap-0.5 rounded-md border border-border bg-bg-tertiary p-0.5"
+              className="border-border bg-bg-tertiary flex gap-0.5 rounded-md border p-0.5"
             >
               {THEME_OPTIONS.map(({ value, icon: Icon, labelKey }) => (
                 <DropdownMenuPrimitive.RadioItem
@@ -276,7 +276,7 @@ export function UserMenu() {
                   value={value}
                   // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments above THEME_OPTIONS
                   aria-label={t(labelKey)}
-                  className="grid h-6 w-7 place-items-center rounded-sm text-text-muted outline-none transition-colors data-[highlighted]:bg-bg-hover data-[state=checked]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-text-primary"
+                  className="text-text-muted data-[highlighted]:bg-bg-hover data-[state=checked]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-text-primary grid h-6 w-7 place-items-center rounded-sm transition-colors outline-none"
                 >
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" />
                 </DropdownMenuPrimitive.RadioItem>
@@ -295,7 +295,7 @@ export function UserMenu() {
                 {currentLanguage?.name}
               </span>
               <ChevronRight
-                className="h-3.5 w-3.5 shrink-0 text-text-muted"
+                className="text-text-muted h-3.5 w-3.5 shrink-0"
                 aria-hidden="true"
               />
             </DropdownMenuPrimitive.SubTrigger>

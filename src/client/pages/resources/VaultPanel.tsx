@@ -210,7 +210,7 @@ export function VaultPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "vault.subtitle",
             "API keys and tokens your agents and integrations use.",
@@ -219,7 +219,7 @@ export function VaultPanel() {
         {entries.length > 0 && (
           <div className="relative w-64 max-w-xs">
             <Search
-              className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
+              className="text-text-muted pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2"
               aria-hidden="true"
             />
             <input
@@ -234,7 +234,7 @@ export function VaultPanel() {
                 "Search by name or type…",
               )}
               className={cn(
-                "h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft",
+                "border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft h-8 w-full rounded-md border pl-8 text-sm transition-colors focus:ring-2 focus:outline-none",
                 { "pr-8": !!query, "pr-4": !query },
               )}
             />
@@ -242,7 +242,7 @@ export function VaultPanel() {
               <button
                 type="button"
                 onClick={() => setQuery("")}
-                className="absolute top-1/2 right-3 -translate-y-1/2 text-text-muted hover:text-text-primary"
+                className="text-text-muted hover:text-text-primary absolute top-1/2 right-3 -translate-y-1/2"
                 aria-label={t("common.clearSearch", "Clear search")}
               >
                 <X className="h-4 w-4" aria-hidden="true" />
@@ -297,7 +297,7 @@ export function VaultPanel() {
 
             if (q && filtered.length === 0) {
               return (
-                <p className="px-4 py-3 text-sm text-text-muted">
+                <p className="text-text-muted px-4 py-3 text-sm">
                   {t("vault.noSearchResults", "No secrets match your search.")}
                 </p>
               );
@@ -308,19 +308,19 @@ export function VaultPanel() {
                 {filtered.map((e) => (
                   <li
                     key={e.id}
-                    className="flex items-center justify-between gap-3 border-border border-b px-4 py-3 last:border-b-0"
+                    className="border-border flex items-center justify-between gap-3 border-b px-4 py-3 last:border-b-0"
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <ServiceLogo
                         service={secretTypeService(e.kind)}
-                        className="h-4 w-4 shrink-0 text-text-muted"
+                        className="text-text-muted h-4 w-4 shrink-0"
                       />
                       <div className="min-w-0">
-                        <span className="truncate font-mono text-sm text-text-primary">
+                        <span className="text-text-primary truncate font-mono text-sm">
                           {e.name}
                         </span>
                         {e.baseUrl && (
-                          <p className="truncate text-text-muted text-xs">
+                          <p className="text-text-muted truncate text-xs">
                             {e.baseUrl}
                           </p>
                         )}
@@ -427,7 +427,7 @@ export function VaultPanel() {
         }
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "vault.deleteMessage",
               'Delete "{{name}}"? Anything using it will stop working.',
@@ -446,7 +446,7 @@ function RefList({ refs }: { refs: References | null }) {
   const { t } = useTranslation();
   if (!refs) {
     return (
-      <p className="text-sm text-text-muted">
+      <p className="text-text-muted text-sm">
         {t("common.loading", "Loading…")}
       </p>
     );
@@ -556,7 +556,7 @@ function RefGroup({ label, items }: { label: string; items: RefItem[] }) {
   if (items.length === 0) return null;
   return (
     <div>
-      <p className="mb-1 font-medium text-text-secondary text-xs uppercase">
+      <p className="text-text-secondary mb-1 text-xs font-medium uppercase">
         {label}
       </p>
       <div className="flex flex-wrap gap-1.5">
@@ -565,7 +565,7 @@ function RefGroup({ label, items }: { label: string; items: RefItem[] }) {
             <Link key={i.key} to={i.to}>
               <Badge
                 variant="secondary"
-                className="transition-colors hover:bg-bg-hover"
+                className="hover:bg-bg-hover transition-colors"
               >
                 {i.label}
               </Badge>

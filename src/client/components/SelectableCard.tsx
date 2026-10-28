@@ -72,10 +72,10 @@ export function SelectableCard({
         className="flex min-w-0 flex-1 flex-col gap-0.5"
       >
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="min-w-0 break-words font-medium text-sm text-text-primary">
+          <span className="text-text-primary min-w-0 text-sm font-medium break-words">
             {title}
           </span>
-          {badge && <span className="min-w-0 max-w-full">{badge}</span>}
+          {badge && <span className="max-w-full min-w-0">{badge}</span>}
           {meta}
         </span>
         {description && (
@@ -87,7 +87,7 @@ export function SelectableCard({
           "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
           selected
             ? "border-accent-solid bg-accent-solid text-accent-foreground"
-            : "border-border text-transparent group-hover:border-text-muted",
+            : "border-border group-hover:border-text-muted text-transparent",
         )}
         aria-hidden="true"
       >

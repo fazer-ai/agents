@@ -51,7 +51,7 @@ export function Tabs({
       // compute to `auto` too (CSS spec), and the tabs' `-mb-px` (1px over the border) then triggers
       // a spurious vertical scrollbar. Pinning y to hidden keeps only the horizontal scroll.
       className={cn(
-        "flex gap-1 overflow-x-auto overflow-y-hidden border-border border-b",
+        "border-border flex gap-1 overflow-x-auto overflow-y-hidden border-b",
         className,
       )}
     >
@@ -71,22 +71,22 @@ export function Tabs({
             onClick={() => onChange(item.key)}
             onKeyDown={(e) => onKeyDown(e, index)}
             className={cn(
-              "-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2 font-medium text-sm transition-colors",
+              "-mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors",
               active
                 ? "border-accent text-text-primary"
-                : "border-transparent text-text-muted hover:text-text-secondary",
+                : "text-text-muted hover:text-text-secondary border-transparent",
             )}
           >
             {Icon && <Icon className="h-4 w-4" aria-hidden="true" />}
             {item.label}
             {item.badge != null && item.badge > 0 && (
-              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent-solid px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
+              <span className="bg-accent-solid text-accent-foreground inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium">
                 {item.badge}
               </span>
             )}
             {item.dirty && (
               <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
+                className="bg-warning h-1.5 w-1.5 shrink-0 rounded-full"
                 aria-hidden="true"
               />
             )}

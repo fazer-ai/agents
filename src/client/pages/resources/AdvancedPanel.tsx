@@ -224,32 +224,32 @@ export function AdvancedPanel() {
           )}
           <Card id="embedding" className="flex scroll-mt-4 flex-col gap-4">
             <div>
-              <h2 className="font-medium text-text-primary">
+              <h2 className="text-text-primary font-medium">
                 {t("advanced.embedding.title", "Embedding")}
               </h2>
-              <p className="mt-0.5 text-sm text-text-muted">
+              <p className="text-text-muted mt-0.5 text-sm">
                 {t(
                   "advanced.embedding.desc",
                   "Provider and credential used to vectorize and search your knowledge bases.",
                 )}
               </p>
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+            <div className="border-border flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
               <div className="flex min-w-0 items-center gap-2.5">
                 <ServiceLogo
                   service="openai"
-                  className="h-5 w-5 shrink-0 text-text-secondary"
+                  className="text-text-secondary h-5 w-5 shrink-0"
                 />
                 <div className="min-w-0">
-                  <p className="font-medium text-sm text-text-primary">
+                  <p className="text-text-primary text-sm font-medium">
                     {t("vault.secretType.openai", "OpenAI")}
                   </p>
-                  <p className="truncate text-text-muted text-xs">
+                  <p className="text-text-muted truncate text-xs">
                     {EMBEDDING_MODEL}
                   </p>
                 </div>
               </div>
-              <span className="shrink-0 rounded-full bg-bg-tertiary px-2 py-0.5 text-text-muted text-xs">
+              <span className="bg-bg-tertiary text-text-muted shrink-0 rounded-full px-2 py-0.5 text-xs">
                 {t(
                   "advanced.embedding.comingSoon",
                   "More embedding providers and models coming soon.",
@@ -257,7 +257,7 @@ export function AdvancedPanel() {
               </span>
             </div>
             <div className="flex flex-col gap-1.5">
-              <span className="font-medium text-sm text-text-secondary">
+              <span className="text-text-secondary text-sm font-medium">
                 {t("advanced.embedding.credential", "Credential")}
               </span>
               <div className="flex items-start gap-2">
@@ -272,7 +272,7 @@ export function AdvancedPanel() {
                     "embedding.credentialRef",
                     embCredential || null,
                   ) && (
-                    <p className="mt-1 text-error text-xs">
+                    <p className="text-error mt-1 text-xs">
                       {embRefusal.at(
                         "embedding.credentialRef",
                         embCredential || null,
@@ -289,21 +289,21 @@ export function AdvancedPanel() {
 
           <Card id="observability" className="flex scroll-mt-4 flex-col gap-4">
             <div>
-              <h2 className="font-medium text-text-primary">
+              <h2 className="text-text-primary font-medium">
                 {t("advanced.observability.title", "Observability (Langfuse)")}
               </h2>
-              <p className="mt-0.5 text-sm text-text-muted">
+              <p className="text-text-muted mt-0.5 text-sm">
                 {t(
                   "advanced.observability.desc",
                   "Send agent traces to Langfuse. Content is redacted unless you opt in.",
                 )}
               </p>
             </div>
-            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+            <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
               <label
                 htmlFor={tracingId}
                 data-clickable="true"
-                className="font-medium text-sm text-text-primary"
+                className="text-text-primary text-sm font-medium"
               >
                 {t("advanced.observability.enabled", "Enable tracing")}
               </label>
@@ -336,12 +336,12 @@ export function AdvancedPanel() {
                 )}
               />
             </FormField>
-            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+            <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
               <div className="flex items-center gap-1.5 pr-4">
                 <label
                   htmlFor={sendContentId}
                   data-clickable="true"
-                  className="text-sm text-text-secondary"
+                  className="text-text-secondary text-sm"
                 >
                   {t(
                     "advanced.observability.sendContent",
@@ -365,12 +365,12 @@ export function AdvancedPanel() {
                 onCheckedChange={setLfSendContent}
               />
             </div>
-            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+            <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
               <div className="flex items-center gap-1.5 pr-4">
                 <label
                   htmlFor={debugId}
                   data-clickable="true"
-                  className="text-sm text-text-secondary"
+                  className="text-text-secondary text-sm"
                 >
                   {t(
                     "advanced.observability.debug",

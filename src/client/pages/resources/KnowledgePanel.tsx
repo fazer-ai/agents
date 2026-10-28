@@ -45,7 +45,7 @@ export function KnowledgePanel() {
       <KnowledgeApprovals onCountChange={setApprovalsCount} />
 
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "knowledge.subtitle",
             "Knowledge bases your agents can search to answer questions.",
@@ -80,10 +80,10 @@ export function KnowledgePanel() {
               className="flex items-center justify-between gap-4"
             >
               <div className="min-w-0">
-                <span className="truncate font-medium text-text-primary">
+                <span className="text-text-primary truncate font-medium">
                   {b.name}
                 </span>
-                <p className="mt-0.5 truncate text-text-muted text-xs">
+                <p className="text-text-muted mt-0.5 truncate text-xs">
                   {b.description ? `${b.description} · ` : ""}
                   {b.embeddingModel}
                   {` · `}

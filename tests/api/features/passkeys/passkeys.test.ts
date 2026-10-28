@@ -617,6 +617,31 @@ describe.skipIf(!dbUp)("passkeys", () => {
     expect(await passkeysOf(ana, bia)).toBe(0);
   });
 
+  test("an expired registration challenge is refused, and nothing is stored", async () => {
+    await fresh();
+    const o = await call(
+      ana.cookie,
+      "POST",
+      "/auth/passkeys/register/options",
+      {
+        password: PASSWORD,
+      },
+    );
+    const { challengeId, options } = o.json as unknown as Options;
+    // NOTE: past its expiry but not yet swept, which only happens on the next insert.
+    await suDb.webauthnChallenge.updateMany({
+      where: { userId: ana.id },
+      data: { expiresAt: new Date(Date.now() - 60 * 1000) },
+    });
+    const key = await authenticator();
+    const r = await call(ana.cookie, "POST", "/auth/passkeys/register", {
+      challengeId,
+      response: await key.register(options.challenge, options.user?.id),
+    });
+    expect(r.status).toBe(400);
+    expect(await passkeysOf(ana)).toBe(0);
+  });
+
   test("a sign-in challenge does not serve a registration", async () => {
     await fresh();
     const { challengeId, options } = await loginOptions();

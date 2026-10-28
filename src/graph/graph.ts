@@ -36,7 +36,11 @@ import {
   USAGE_MODEL_METADATA_KEY,
   USAGE_PROVIDER_METADATA_KEY,
 } from "@/graph/usage";
-import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
+import {
+  clearAccountFailure,
+  markReportedElsewhere,
+  providerFailure,
+} from "@/lib/provider-failure";
 import type { PermitClass } from "@/lib/semaphore";
 import {
   clientToolsNode,
@@ -726,6 +730,10 @@ export function buildAgentGraph({
   // the turn and invoked once, so the variable IS "this invocation", while graph state would persist
   // through the checkpointer and demote the primary for every later turn on the conversation.
   let fallbackHasTheTurn = false;
+  // Whether the failure that handed the fallback the turn would repeat: when it would not, a later
+  // round's fallback failing for its own account does not end the job, since the next attempt asks the
+  // primary again.
+  let primaryFailsUntilAccountFixed = false;
 
   // Once per turn, by the same closure argument. The cap is one EVENT whose handlers write an
   // operator line and can page, but it can be reached twice: a parallel batch with `skip_reply` is not
@@ -947,6 +955,7 @@ export function buildAgentGraph({
             });
             markReportedElsewhere(err, failure);
           }
+          if (!primaryFailsUntilAccountFixed) clearAccountFailure(err);
           throw err;
         }
       }
@@ -980,9 +989,14 @@ export function buildAgentGraph({
                 deadlineMs: second.deadlineMs,
                 // NOTE: after the job's deadline no fallback starts (see `second.run`), so there is no
                 // failover to report and no failed provider: the primary failed on the job's deadline.
-                onFallback: ({ reason, failure }) => {
+                onFallback: ({
+                  reason,
+                  failure,
+                  primaryFailsUntilAccountFixed: repeats,
+                }) => {
                   if (jobSignal?.aborted) return;
                   fallbackHasTheTurn = true;
+                  primaryFailsUntilAccountFixed = repeats;
                   onModelFallback?.({ ...second.labels, reason, failure });
                 },
                 onFallbackFailed: ({

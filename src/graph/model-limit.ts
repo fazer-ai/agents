@@ -2,6 +2,8 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import {
   asProviderFailure,
+  clearAccountFailure,
+  failsUntilAccountFixedAt,
   markReportedElsewhere,
   providerFailure,
 } from "@/lib/provider-failure";
@@ -119,7 +121,13 @@ export interface ModelFallback<T> {
   // outcome is known, or a fallback that fails a moment later reads as having taken the turn.
   // `reason` is the primary's, already the redacted word: the request carried the whole conversation,
   // so the provider's own sentence may be the customer's coming back.
-  onFallback?: (info: { reason: string; failure: string }) => void;
+  onFallback?: (info: {
+    reason: string;
+    failure: string;
+    // Whether the primary's failure is one it will repeat until its account is fixed: a caller that
+    // keeps the fallback for later rounds asks it before ending the job on the fallback's account.
+    primaryFailsUntilAccountFixed: boolean;
+  }) => void;
   // Fired when the fallback ALSO failed, which is the turn's real ending, with both failures: the
   // fallback's (`reason`, `failure`) and the primary's that handed it the turn, so the primary's
   // failure still reaches a line of its own.
@@ -304,6 +312,9 @@ export async function runModelCall<T>(
             // The fallback is the last thing there is, so what it failed with is what the turn
             // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
             const out = describeProviderFault(fallbackErr);
+            // NOTE: the job ends on the fallback's account only when the primary's failure would
+            // repeat too; otherwise the next attempt goes to the primary, which may answer.
+            if (!failsUntilAccountFixedAt(err)) clearAccountFailure(out);
             if (fallback.onFallbackFailed) {
               const failure = providerFailure(fallbackErr);
               fallback.onFallbackFailed({
@@ -316,7 +327,11 @@ export async function runModelCall<T>(
             }
             throw out;
           }
-          fallback.onFallback?.({ reason, failure: primaryFailure });
+          fallback.onFallback?.({
+            reason,
+            failure: primaryFailure,
+            primaryFailsUntilAccountFixed: failsUntilAccountFixedAt(err),
+          });
           return answered;
         };
         try {

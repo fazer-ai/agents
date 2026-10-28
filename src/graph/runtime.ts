@@ -11,6 +11,7 @@ import {
 } from "@/graph/close-intent";
 import { modelTelemetry } from "@/graph/model-telemetry";
 import { withKeyedQueue } from "@/lib/locks";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { agentStillSpeaks } from "@/modules/agents/speaks";
 import {
@@ -2182,9 +2183,13 @@ async function runTurnBody(
         labelsOf: () => answeredBy,
         ...(params.afterThrow
           ? {
-              failureOf: () => ({
+              failureOf: (err: unknown) => ({
                 level: "info" as const,
-                detail: { willRetry: params.afterThrow === "retry" },
+                detail: {
+                  willRetry:
+                    params.afterThrow === "retry" &&
+                    !failsUntilAccountFixed(err),
+                },
               }),
             }
           : {}),

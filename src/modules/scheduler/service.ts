@@ -1471,7 +1471,8 @@ export async function rescheduleJob(
   return { applied: count > 0 };
 }
 
-// Failure: attempts++, retry with backoff until the cap, then DEAD. The error goes through
+// Failure: attempts++, retry with backoff until the cap, then DEAD (at once when `final`: a failure
+// no retry can change, see `failsUntilAccountFixed`). The error goes through
 // `sanitizeErrorMessage`: a character Postgres refuses would fail the whole transition and leave the
 // row CLAIMED, and it keeps credential-shaped text out of the column. `deadLettered` says whether THIS
 // call dead-lettered the job; a row re-armed mid-run fails the CAS and survives with another run queued.
@@ -1484,9 +1485,10 @@ export async function failJob(
   error: string,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
+  final = false,
 ): Promise<{ deadLettered: boolean; applied: boolean }> {
   const next = attempts + 1;
-  const dead = next >= MAX_ATTEMPTS;
+  const dead = final || next >= MAX_ATTEMPTS;
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },

@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { currentPoolClass, type PoolClass } from "@/lib/pool-class";
+import { asProviderFailure } from "@/lib/provider-failure";
 import { runScopedOn } from "@/lib/tenancy";
+import { ChatwootApiError } from "@/modules/chatwoot/client";
 import {
   type ClaimedJob,
   claimDueCompactionJobs,
@@ -20,7 +22,13 @@ import {
   type SchedulerJobKind,
   upsertJobRows,
 } from "@/modules/scheduler/service";
-import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
+import {
+  getDeadLetterHandler,
+  registerDeadLetterHandler,
+  registerJobHandler,
+  runClaimed,
+  unregisterDeadLetterHandler,
+} from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { blockedByChain } from "@/tests/utils/pg-waits";
 import { until } from "@/tests/utils/poll";
@@ -1163,6 +1171,70 @@ describe.skipIf(!dbUp)("scheduler", () => {
     await runClaimed(claimed as NonNullable<typeof claimed>, appDb);
     expect(seen).toBe(true);
     expect((await statusOf(id)).status).toBe("DONE");
+  });
+
+  // A provider that will refuse every retry until the account is fixed (no credit, a dead key) sends
+  // the job to its dead-letter on the first failure; any other failure, a Chatwoot 401 included,
+  // keeps the retries.
+  test("a failure the provider repeats until the account is fixed dead-letters at once", async () => {
+    const quota = Object.assign(new Error("You exceeded your current quota"), {
+      status: 429,
+      code: "insufficient_quota",
+    });
+    const cases: Array<[string, () => Error, "DEAD" | "PENDING"]> = [
+      ["no credit", () => asProviderFailure(quota), "DEAD"],
+      [
+        "a dead key",
+        () =>
+          asProviderFailure(
+            Object.assign(new Error("bad key"), { status: 401 }),
+          ),
+        "DEAD",
+      ],
+      [
+        "a rate limit",
+        () =>
+          asProviderFailure(
+            Object.assign(new Error("slow down"), { status: 429 }),
+          ),
+        "PENDING",
+      ],
+      [
+        "Chatwoot refusing the token",
+        () => new ChatwootApiError(401, "GET /conversations/1"),
+        "PENDING",
+      ],
+    ];
+    const previous = getDeadLetterHandler("WEBHOOK_RETRY");
+    const dead: string[] = [];
+    registerDeadLetterHandler("WEBHOOK_RETRY", async (_job, error) => {
+      dead.push(error);
+    });
+    try {
+      for (const [name, failure, status] of cases) {
+        registerJobHandler("WEBHOOK_RETRY", async () => {
+          throw failure();
+        });
+        const id = await enqueueJob({
+          rearm: "same-work",
+          tenantId,
+          kind: "WEBHOOK_RETRY",
+          dedupeKey: `dk-1658-${name}`,
+          runAt: past(),
+          base: appDb,
+        });
+        const claimed = (
+          await claimDueJobs(10, appDb, new Date(), tenantId)
+        ).find((j) => j.id === id);
+        expect(claimed?.attempts).toBe(0);
+        await runClaimed(claimed as NonNullable<typeof claimed>, appDb);
+        expect([name, (await statusOf(id)).status]).toEqual([name, status]);
+      }
+      expect(dead).toEqual(["HTTP 429", "HTTP 401"]);
+    } finally {
+      if (previous) registerDeadLetterHandler("WEBHOOK_RETRY", previous);
+      else unregisterDeadLetterHandler("WEBHOOK_RETRY");
+    }
   });
 
   // NOTE: the backoff through the worker, which is what hands `failJob` the kind: the tests above

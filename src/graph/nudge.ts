@@ -104,6 +104,7 @@ import { drainPendingIngest } from "./ingest-drain";
 import {
   conversationDividerMessage,
   humanHandbackMessage,
+  isNudgeTurn,
   nudgeMessage,
   turnWasCalledOff,
   type UndeliveredProactiveReason,
@@ -2533,7 +2534,7 @@ async function runAgentNudgeBody(
               ),
               conversationId,
               nudgeOccasionKey(instanceId, conversationId, params.nudge),
-              turnInputId(directiveKey, before),
+              turnInputId(directiveKey, before, isNudgeTurn),
             ),
           ],
         },

@@ -13,7 +13,9 @@ import { encryptJson } from "@/api/lib/crypto";
 import { getCheckpointer } from "@/graph/checkpointer";
 import {
   conversationStamp,
+  isMemoryHead,
   isNudgeTurn,
+  memoryHeadMessage,
   nudgeMessage,
   sentAtStamp,
   stampedSource,
@@ -367,6 +369,24 @@ describe.skipIf(!dbUp)(
       const stored = await storedMessages(convId);
       expect(contents(stored, "human")).toEqual(["cadê meu pedido?"]);
       expect(stored.filter((m) => m.getType() === "tool")).toHaveLength(1);
+    });
+
+    test("a memory head that inherited the turn's id is not replaced by its retry", async () => {
+      const convId = 16_627;
+      await seedConversation(convId);
+      await buildThreadStateGraph(await getCheckpointer()).updateState(
+        { configurable: { thread_id: threadOf(convId) } },
+        { messages: [memoryHeadMessage("Resumo do atendimento", "turn:1")] },
+        THREAD_STATE_NODE,
+      );
+      const model = new ScriptedProvider(["text"]);
+      const sent: string[] = [];
+      expect(
+        await attempt(convId, 0, model, [{ id: 1, content: "voltei" }], sent),
+      ).toBe("done");
+      const stored = await storedMessages(convId);
+      expect(stored.filter(isMemoryHead).map((m) => m.id)).toEqual(["turn:1"]);
+      expect(contents(stored, "human")).toContain("voltei");
     });
 
     test("a thread carrying the residue of failed follow-ups is healed by the next turn", async () => {

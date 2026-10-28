@@ -5,9 +5,14 @@ import {
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { isSystemMarker, memoryHeadMessage } from "@/graph/markers";
 import { turnInputId } from "@/graph/turn-input-id";
 
 const KEY = "turn:42";
+
+function isCustomerInput(m: BaseMessage) {
+  return m.getType() === "human" && !isSystemMarker(m);
+}
 
 function input(id = KEY) {
   return new HumanMessage({ id, content: "oi" });
@@ -45,6 +50,11 @@ const CASES: Array<{ name: string; thread: BaseMessage[]; reused: boolean }> = [
     reused: false,
   },
   {
+    name: "a memory head that took the key over is never replaced",
+    thread: [memoryHeadMessage("Resumo do atendimento", KEY)],
+    reused: false,
+  },
+  {
     name: "a customer message after the input is another turn",
     thread: [input(), new HumanMessage({ id: "h9", content: "e aí?" })],
     reused: false,
@@ -78,15 +88,15 @@ const CASES: Array<{ name: string; thread: BaseMessage[]; reused: boolean }> = [
 describe("turnInputId", () => {
   for (const c of CASES) {
     test(c.name, () => {
-      const id = turnInputId(KEY, c.thread);
+      const id = turnInputId(KEY, c.thread, isCustomerInput);
       if (c.reused) expect(id).toBe(KEY);
       else expect(id).not.toBe(KEY);
     });
   }
 
   test("without a key every attempt gets a fresh id", () => {
-    const a = turnInputId(null, []);
-    const b = turnInputId(null, []);
+    const a = turnInputId(null, [], isCustomerInput);
+    const b = turnInputId(null, [], isCustomerInput);
     expect(a).not.toBe(b);
   });
 });

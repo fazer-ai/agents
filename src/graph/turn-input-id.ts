@@ -10,10 +10,14 @@ import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 export function turnInputId(
   key: string | null,
   thread: readonly BaseMessage[],
+  // Whether the message holding the key is still the kind of input this run writes. Compaction hands
+  // a consumed input's id to the memory head, and replacing that would erase the summary.
+  isSameInput: (m: BaseMessage) => boolean,
 ): string {
   if (key === null) return crypto.randomUUID();
   const at = thread.findIndex((m) => m.id === key);
   if (at === -1) return key;
+  if (!isSameInput(thread[at] as BaseMessage)) return crypto.randomUUID();
   const onlyProgress = thread.every(
     (m, i) =>
       i <= at ||

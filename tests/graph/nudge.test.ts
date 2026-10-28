@@ -24,7 +24,9 @@ import {
   conversationStamp,
   HUMAN_HANDBACK_NOTE,
   isConversationDivider,
+  isMemoryHead,
   isNudgeTurn,
+  memoryHeadMessage,
   nudgeMessage,
   stampedConversationId,
   stampedSource,
@@ -8505,6 +8507,46 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
           : m.getType(),
     );
     expect(kinds).toEqual(["customer", "directive", "ai"]);
+  });
+
+  test("a memory head that inherited a directive's id is not replaced by the retry", async () => {
+    await seedConv(16_630, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    const thread = `${tenantId}:${instanceId}:16630`;
+    const nudge = {
+      source: "ASAAS" as const,
+      status: "paid",
+      value: 100,
+      currency: "BRL",
+    };
+    const key = `nudge:job:80:${nudgeOccasionKey(instanceId, 16_630, nudge)}`;
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: thread } },
+      { messages: [memoryHeadMessage("Resumo do atendimento anterior", key)] },
+      THREAD_STATE_NODE,
+    );
+    await runAgentNudge({
+      tenantId,
+      threadId: thread,
+      runKey: "job:80",
+      nudge,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: ["Pagamento confirmado!"],
+          }) as never,
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const tuple = await saver.getTuple({ configurable: { thread_id: thread } });
+    const messages = (tuple?.checkpoint.channel_values.messages ??
+      []) as BaseMessage[];
+    expect(messages.filter(isMemoryHead).map((m) => m.id)).toEqual([key]);
+    expect(messages.filter(isNudgeTurn)).toHaveLength(1);
   });
 
   test("the next step of a ladder on the same job does not overwrite the step a tool ended", async () => {

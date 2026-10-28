@@ -132,6 +132,7 @@ import {
   conversationDividerMessage,
   conversationStamp,
   humanHandbackMessage,
+  isSystemMarker,
   sentAtStamp,
   sourceStamp,
   turnWasCalledOff,
@@ -2147,7 +2148,11 @@ async function runTurnBody(
     // This invoke's own message, named, so the error path can ask whether these words reached the
     // channel: a count cannot, since another turn on the shared thread can grow it. A retry of the
     // same message reuses the id, so the reducer replaces the copy a failed attempt left.
-    const inputMessageId = turnInputId(inputKey, before);
+    const inputMessageId = turnInputId(
+      inputKey,
+      before,
+      (m) => m.getType() === "human" && !isSystemMarker(m),
+    );
     // Reported the moment the message is in the thread, and awaited, so a later throw cannot
     // lose it (the rule `settleDelivery` follows in ../modules/chatwoot/webhook.ts).
     let reportedFoldedIn = false;

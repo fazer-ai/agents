@@ -591,6 +591,59 @@ describe("the fallback keeps the turn once it has it", () => {
   });
 });
 
+// A fallback that keeps the turn and then fails for its own account on a later round ends the job only
+// when the failure that demoted the primary would repeat too.
+describe("a later round's fallback account failure and the job's retries", () => {
+  const peek = () =>
+    new DynamicStructuredTool({
+      name: "peek",
+      description: "look something up",
+      schema: z.object({}),
+      func: async () => "ok",
+    });
+  for (const [name, primaryFields, ends] of [
+    ["after a passing primary failure", { status: 503 }, false],
+    [
+      "after a primary out of credit",
+      { status: 429, code: "insufficient_quota" },
+      true,
+    ],
+  ] as const) {
+    test(name, async () => {
+      const primary = new SlowFailingModel(
+        Object.assign(new Error("refused"), primaryFields),
+        0,
+      );
+      let round = 0;
+      const fallback = new ToolLoopModel("peek", 1);
+      const original = fallback._generate.bind(fallback);
+      fallback._generate = async () => {
+        round += 1;
+        if (round === 2)
+          throw Object.assign(new Error("no credit"), { status: 402 });
+        return original();
+      };
+      const graph = buildAgentGraph({
+        model: primary,
+        systemPrompt: "s",
+        tools: [peek()],
+        primary: PRIMARY,
+        fallback: {
+          model: fallback,
+          provider: "anthropic",
+          modelId: "claude-haiku-4-5",
+        },
+      });
+      const err = await graph
+        .invoke({ messages: [new HumanMessage("oi")] })
+        .catch((e) => e);
+      expect(round).toBe(2);
+      expect(primary.calls).toBe(1);
+      expect(failsUntilAccountFixed(err)).toBe(ends);
+    });
+  }
+});
+
 // THE WRITE BOUNDARY: A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING.
 //
 // A half-named bag (`{provider: "openai", model: null}`) reads back as "No fallback", so the

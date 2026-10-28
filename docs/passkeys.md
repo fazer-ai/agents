@@ -1,6 +1,6 @@
 # Passkeys (WebAuthn)
 
-Passkeys are a full way into a console account, next to the password and Google: registered and managed from Settings → Security, used from the email field's autofill on `/login` or from the "Sign in with a passkey" button. **Off by default**: `PASSKEYS_ENABLED=true` turns them on. The server is `src/api/features/passkeys/` (on `@simplewebauthn/server`), the browser side is `src/client/lib/passkey.ts` (on `@simplewebauthn/browser`), the screen is `src/client/pages/settings/SecurityPasskeysSection.tsx`, and `tests/api/features/passkeys/` drives the real library with a software authenticator (`tests/utils/fake-authenticator.ts`).
+Passkeys are a full way into a console account, next to the password and Google: registered and managed from Settings → Security, used from the email field's autofill on `/login` or from the "Sign in with a passkey" button. **Off by default**: `PASSKEYS_ENABLED=true` turns them on (the three production compose stacks forward it, defaulting to `false`). The server is `src/api/features/passkeys/` (on `@simplewebauthn/server`), the browser side is `src/client/lib/passkey.ts` (on `@simplewebauthn/browser`), the screen is `src/client/pages/settings/SecurityPasskeysSection.tsx`, and `tests/api/features/passkeys/` drives the real library with a software authenticator (`tests/utils/fake-authenticator.ts`).
 
 ## The switch
 

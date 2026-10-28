@@ -31,8 +31,15 @@ const mockOptions = mock(async () => {
   };
 });
 let loginGate: Promise<void> = Promise.resolve();
+let loginFail = false;
 const mockLogin = mock(async (_body: { challengeId: string }) => {
   await loginGate;
+  if (loginFail) {
+    return {
+      data: null,
+      error: { status: 400, value: { error: "Passkey sign-in failed" } },
+    };
+  }
   return {
     data: { user: { id: "u1", email: "a@example.com" } },
     error: null,
@@ -87,6 +94,7 @@ const credential = () => ({
 
 beforeEach(() => {
   calls = [];
+  loginFail = false;
   optionsCalls = 0;
   optionsGate = Promise.resolve();
   optionsFail = false;
@@ -180,8 +188,9 @@ describe("passkeyAutofill", () => {
   });
 
   // NOTE: the person picked a passkey and then followed a link off /login
-  // while the verify was on its way; the late success must not pull them back.
-  test("stopped while the verify is on its way, a late success is dropped", async () => {
+  // while the verify was on its way. The server opened a session, so its user
+  // still comes back for the page to record; not navigating is the page's call.
+  test("stopped while the verify is on its way, a late success still returns its user", async () => {
     let release: () => void = () => {};
     loginGate = new Promise((r) => {
       release = r;
@@ -192,6 +201,22 @@ describe("passkeyAutofill", () => {
     calls[0]?.resolve(credential());
     await flush();
     expect(mockLogin).toHaveBeenCalled();
+    autofill.stop();
+    release();
+    expect((await run).email).toBe("a@example.com");
+  });
+
+  test("stopped while the verify is on its way, a late failure stays silent", async () => {
+    let release: () => void = () => {};
+    loginGate = new Promise((r) => {
+      release = r;
+    });
+    loginFail = true;
+    const autofill = passkeyAutofill();
+    const run = autofill.run(() => true);
+    await flush();
+    calls[0]?.resolve(credential());
+    await flush();
     autofill.stop();
     release();
     await expect(run).rejects.toBeInstanceOf(PasskeyCancelled);

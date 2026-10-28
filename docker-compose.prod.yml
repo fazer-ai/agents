@@ -104,6 +104,8 @@ services:
       - CLIENT_CHANNEL_SDK_USER_PER_MIN=${CLIENT_CHANNEL_SDK_USER_PER_MIN:-}
       - CLIENT_CHANNEL_SDK_APP_PER_MIN=${CLIENT_CHANNEL_SDK_APP_PER_MIN:-}
       - CLIENT_TURN_SUSPEND_TIMEOUT_MS=${CLIENT_TURN_SUSPEND_TIMEOUT_MS:-}
+      # Passkey sign-in (docs/passkeys.md), off unless set. The RP ID is the hostname of PUBLIC_URL.
+      - PASSKEYS_ENABLED=${PASSKEYS_ENABLED:-false}
       # NOTE: corrupted-audio check for audio replies (docs/tts.md "Checking the audio"). Empty URL = off;
       # a URL alone = shadow (records a verdict, never changes a send). enforce regenerates up to twice
       # and then replies with text.

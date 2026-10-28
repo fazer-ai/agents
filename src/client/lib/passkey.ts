@@ -253,9 +253,11 @@ export function passkeyAutofill({
       response: toAuthenticationJSON(picked.credential),
     });
     // NOTE: stopped while the answer was on its way (the person followed a
-    // link off the page): a late success must not navigate them back.
-    if (stopped) throw new PasskeyCancelled();
+    // link off the page): a late failure stays silent, but a late success has
+    // opened a session on the server and still comes back, so the page can
+    // record it; not navigating is the page's call.
     if (r.error || !r.data) {
+      if (stopped) throw new PasskeyCancelled();
       throw new PasskeyFailed(
         (r.error?.value as ApiErrorPayload | null) ?? null,
         r.error?.status,

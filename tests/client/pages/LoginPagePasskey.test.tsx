@@ -46,6 +46,7 @@ stubExports(ThemeModule, {
 
 let autofillStarts = 0;
 let autofillStops = 0;
+let autofillResult: Promise<unknown> | null = null;
 let buttonSignIns = 0;
 let buttonSignal: AbortSignal | undefined;
 let buttonResult: Promise<unknown> | null = null;
@@ -55,7 +56,13 @@ stubExports(PasskeyModule, {
   passkeyAutofill: () => {
     autofillStarts += 1;
     return {
-      run: () => new Promise<never>(() => {}),
+      run: (onPicked: () => boolean) =>
+        autofillResult
+          ? autofillResult.then((u) => {
+              onPicked();
+              return u;
+            })
+          : new Promise<never>(() => {}),
       stop: () => {
         autofillStops += 1;
       },
@@ -124,6 +131,7 @@ beforeEach(() => {
   buttonSignal = undefined;
   buttonResult = null;
   signupEnabled = false;
+  autofillResult = null;
 });
 afterEach(() => cleanup());
 afterAll(() => {
@@ -196,6 +204,30 @@ test("leaving /login closes a pending passkey sign-in, and a late session does n
   fireEvent.click(screen.getByRole("link", { name: /sign up/i }));
   await waitFor(() => expect(screen.queryByText("signup") !== null).toBe(true));
   expect(buttonSignal?.aborted).toBe(true);
+  settle({
+    id: "1",
+    email: "p@x.test",
+    name: null,
+    role: "AGENT",
+    tenantId: "1",
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(loggedIn.join()).toBe("p@x.test");
+  expect(screen.queryByText("signup") !== null).toBe(true);
+  expect(screen.queryByText("home") !== null).toBe(false);
+});
+
+test("an autofill sign-in that settles after leaving /login records the session and stays put", async () => {
+  passkeysEnabled = true;
+  signupEnabled = true;
+  let settle: (u: unknown) => void = () => {};
+  autofillResult = new Promise((r) => {
+    settle = r;
+  });
+  renderLogin();
+  await waitFor(() => expect(autofillStarts).toBe(1));
+  fireEvent.click(screen.getByRole("link", { name: /sign up/i }));
+  await waitFor(() => expect(screen.queryByText("signup") !== null).toBe(true));
   settle({
     id: "1",
     email: "p@x.test",

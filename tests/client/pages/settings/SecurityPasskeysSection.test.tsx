@@ -206,9 +206,10 @@ afterEach(() => {
   });
 });
 
-test("lists each passkey by its name, or by provider and date when it has none, and reports the count", async () => {
+test("lists each passkey by its name and provider, or by provider and date when it has no name, and reports the count", async () => {
   renderSection();
   await waitFor(() => expect(screen.getByText("Work laptop")).toBeDefined());
+  expect(screen.getByText("Chrome · macOS") !== null).toBe(true);
   expect(screen.getByText(/^iCloud Keychain, /)).toBeDefined();
   expect(screen.getByText(/never used/)).toBeDefined();
   expect(onCountChange).toHaveBeenLastCalledWith(2);

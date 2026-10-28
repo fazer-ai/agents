@@ -510,6 +510,10 @@ export function SecurityPasskeysSection({
                 label={label}
                 description={
                   <>
+                    {/* An unnamed passkey already shows its provider in the label. */}
+                    {p.name && p.provider && (
+                      <span className="block">{p.provider}</span>
+                    )}
                     {p.lastUsedAt
                       ? t(
                           "settings.passkeyMetaUsed",

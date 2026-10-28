@@ -919,6 +919,47 @@ describe.skipIf(!dbUp)("passkeys", () => {
     expect(row.passkeyPromptDismissCount).toBe(0);
   });
 
+  // NOTE: the Google side is the injected verifier, so these pin what the account accepts as its
+  // own Google sign-in without minting a real ID token.
+  test("an account with no password proves itself with a fresh sign-in of its own Google identity only", async () => {
+    const gina = await createUser("gina", { password: false, google: true });
+    const owner = { id: gina.id } as Parameters<
+      typeof service.proveAccountOwner
+    >[0];
+    const ownSub = async () => ({ sub: `google-${gina.email}` });
+    const otherSub = async () => ({ sub: "google-someone-else" });
+    const refused = async () => {
+      throw new Error("invalid token");
+    };
+    const original = config.googleOAuthEnabled;
+    config.googleOAuthEnabled = true;
+    try {
+      const prove = service.proveAccountOwner;
+      expect(await prove(owner, { googleCredential: "t" }, ownSub)).toBe(true);
+      expect(await prove(owner, { googleCredential: "t" }, otherSub)).toBe(
+        false,
+      );
+      expect(await prove(owner, { googleCredential: "t" }, refused)).toBe(
+        false,
+      );
+      expect(await prove(owner, {}, ownSub)).toBe(false);
+      expect(await prove(owner, { password: PASSWORD }, ownSub)).toBe(false);
+      config.googleOAuthEnabled = false;
+      expect(await prove(owner, { googleCredential: "t" }, ownSub)).toBe(false);
+    } finally {
+      config.googleOAuthEnabled = original;
+    }
+    // Over HTTP, the session alone asking for options is refused.
+    const r = await call(
+      gina.cookie,
+      "POST",
+      "/auth/passkeys/register/options",
+      {},
+    );
+    expect(r.status >= 400 && r.status < 500).toBe(true);
+    expect(await passkeysOf(gina)).toBe(0);
+  });
+
   test("an account with a password, or with Google sign-in on, can remove its only passkey", async () => {
     await fresh();
     const dora = await createUser("dora", { password: false, google: true });

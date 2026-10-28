@@ -23,13 +23,14 @@ import { stubExports } from "@/tests/utils/module-stub";
 // serializes a cyclic happy-dom tree and stalls the runner.
 
 let passkeysEnabled = false;
+let signupEnabled = false;
 const loggedIn: string[] = [];
 stubExports(AuthModule, {
   useAuth: () => ({
     user: null,
     login: (u: { email: string }) => loggedIn.push(u.email),
     providers: {},
-    signupEnabled: false,
+    signupEnabled,
     passkeysEnabled,
   }),
 });
@@ -46,6 +47,8 @@ stubExports(ThemeModule, {
 let autofillStarts = 0;
 let autofillStops = 0;
 let buttonSignIns = 0;
+let buttonSignal: AbortSignal | undefined;
+let buttonResult: Promise<unknown> | null = null;
 stubExports(PasskeyModule, {
   passkeysSupported: () => true,
   passkeyAutofillSupported: async () => true,
@@ -58,8 +61,10 @@ stubExports(PasskeyModule, {
       },
     };
   },
-  signInWithPasskey: async () => {
+  signInWithPasskey: async (signal?: AbortSignal) => {
     buttonSignIns += 1;
+    buttonSignal = signal;
+    if (buttonResult) return buttonResult;
     return {
       id: "1",
       email: "p@x.test",
@@ -96,6 +101,7 @@ function renderLogin() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/" element={<p>home</p>} />
+            <Route path="/signup" element={<p>signup</p>} />
           </Routes>
         </MemoryRouter>
       </ToastProvider>,
@@ -115,6 +121,9 @@ beforeEach(() => {
   autofillStarts = 0;
   autofillStops = 0;
   buttonSignIns = 0;
+  buttonSignal = undefined;
+  buttonResult = null;
+  signupEnabled = false;
 });
 afterEach(() => cleanup());
 afterAll(() => {
@@ -168,4 +177,34 @@ test("a password attempt stops the background request and starts it again when i
   await waitFor(() => expect(autofillStarts).toBe(2));
   expect(autofillStops).toBe(1);
   expect(loggedIn.length).toBe(0);
+});
+
+test("leaving /login closes a pending passkey sign-in, and a late session does not navigate", async () => {
+  passkeysEnabled = true;
+  signupEnabled = true;
+  let settle: (u: unknown) => void = () => {};
+  buttonResult = new Promise((r) => {
+    settle = r;
+  });
+  renderLogin();
+  await waitFor(() => expect(autofillStarts).toBe(1));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Sign in with a passkey" }),
+  );
+  await waitFor(() => expect(buttonSignIns).toBe(1));
+  expect(buttonSignal?.aborted).toBe(false);
+  fireEvent.click(screen.getByRole("link", { name: /sign up/i }));
+  await waitFor(() => expect(screen.queryByText("signup") !== null).toBe(true));
+  expect(buttonSignal?.aborted).toBe(true);
+  settle({
+    id: "1",
+    email: "p@x.test",
+    name: null,
+    role: "AGENT",
+    tenantId: "1",
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(loggedIn.join()).toBe("p@x.test");
+  expect(screen.queryByText("signup") !== null).toBe(true);
+  expect(screen.queryByText("home") !== null).toBe(false);
 });

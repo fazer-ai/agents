@@ -56,7 +56,20 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const mountedRef = useRef(true);
+  // The button's sign-in, closed with the page: its dialog and its answer belong to /login.
+  const passkeyAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      passkeyAbortRef.current?.abort();
+    };
+  }, []);
   const goToRedirect = () => {
+    // NOTE: a sign-in that settles after the person left /login keeps its session but does not take
+    // them away from the page they went to.
+    if (!mountedRef.current) return;
     if (isServerNavigation(redirectTo)) window.location.assign(redirectTo);
     else navigate(redirectTo, { replace: true });
   };
@@ -71,13 +84,7 @@ export function LoginPage() {
   // Synchronous cross-method lock so a Google credential callback, a passkey and a form submit cannot
   // pass their guards together before React commits the pending state update.
   const authInFlightRef = useRef(false);
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+
   // The passkey offered in the email field's autofill: a request that waits in the background while
   // the form is on screen. A page holds one WebAuthn request at a time, so every other way in stops it
   // first and starts it again when that attempt fails. Read through refs so the effect and the
@@ -148,8 +155,10 @@ export function LoginPage() {
     setPasskeyPending(true);
     stopAutofill();
     let succeeded = false;
+    const controller = new AbortController();
+    passkeyAbortRef.current = controller;
     try {
-      const next = await signInWithPasskey();
+      const next = await signInWithPasskey(controller.signal);
       succeeded = true;
       passkeySignedIn(next);
     } catch (e) {
@@ -157,6 +166,8 @@ export function LoginPage() {
       if (e instanceof PasskeyCancelled) return;
       setError(passkeyError(e));
     } finally {
+      if (passkeyAbortRef.current === controller)
+        passkeyAbortRef.current = null;
       authInFlightRef.current = false;
       if (mountedRef.current) setPasskeyPending(false);
       if (!succeeded) startAutofillRef.current();

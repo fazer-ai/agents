@@ -93,11 +93,23 @@ async function inBrowser<T>(fn: () => Promise<T>) {
   }
 }
 
-export function signInWithPasskey() {
-  return asForeground(signInWithPasskeyNow);
+// `signal` is the page that asked going away: before the browser's dialog it
+// stops the request, during it closes the dialog, and after it keeps the
+// answer from being submitted. A verify already sent has opened a session,
+// so its user still comes back.
+export function signInWithPasskey(signal?: AbortSignal) {
+  return asForeground((ensureCurrent) =>
+    signInWithPasskeyNow(() => {
+      if (signal?.aborted) throw new PasskeyCancelled();
+      ensureCurrent();
+    }, signal),
+  );
 }
 
-async function signInWithPasskeyNow(ensureCurrent: () => void) {
+async function signInWithPasskeyNow(
+  ensureCurrent: () => void,
+  signal?: AbortSignal,
+) {
   const o = await api.api.auth.passkeys.login.options.post();
   if (o.error || !o.data) {
     throw new PasskeyFailed(
@@ -107,10 +119,14 @@ async function signInWithPasskeyNow(ensureCurrent: () => void) {
   }
   const { challengeId, options } = o.data;
   ensureCurrent();
-  const response = await inBrowser(() => {
-    claimSlot();
-    return startAuthentication({ optionsJSON: options });
-  });
+  const mine = claimSlot();
+  const closeDialog = () => {
+    if (ceremonies === mine) WebAuthnAbortService.cancelCeremony();
+  };
+  signal?.addEventListener("abort", closeDialog, { once: true });
+  const response = await inBrowser(() =>
+    startAuthentication({ optionsJSON: options }),
+  ).finally(() => signal?.removeEventListener("abort", closeDialog));
   ensureCurrent();
   const r = await api.api.auth.passkeys.login.post({ challengeId, response });
   if (r.error || !r.data) {

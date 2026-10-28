@@ -902,7 +902,9 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         []) as BaseMessage[])
         if (isNudgeTurn(m)) directives.add(m.id as string);
     }
-    expect([...directives]).toEqual([`nudge:job:${job.id}`]);
+    expect([...directives]).toEqual([
+      expect.stringMatching(new RegExp(`^nudge:job:${job.id}:`)),
+    ]);
   });
 
   // The agent resolving right after the booking is the ordinary close, so a reminder has to reach a

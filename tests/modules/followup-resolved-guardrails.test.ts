@@ -763,7 +763,9 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     const directives = (
       (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
     ).filter(isNudgeTurn);
-    expect(directives.map((m) => m.id)).toEqual([`nudge:job:${phantomJobId}`]);
+    expect(directives.map((m) => m.id)).toEqual([
+      expect.stringMatching(new RegExp(`^nudge:job:${phantomJobId}:`)),
+    ]);
   });
 
   test("(2i) o prazo do job (issue #811): um follow-up cujo sinal já abortou não envia", async () => {

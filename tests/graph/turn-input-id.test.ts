@@ -45,6 +45,21 @@ const CASES: Array<{ name: string; thread: BaseMessage[]; reused: boolean }> = [
     reused: false,
   },
   {
+    name: "a customer message after the input is another turn",
+    thread: [input(), new HumanMessage({ id: "h9", content: "e aí?" })],
+    reused: false,
+  },
+  {
+    name: "a customer message after the failed attempt's tool step is another turn",
+    thread: [
+      input(),
+      calling("a1"),
+      new ToolMessage({ id: "t1", content: "ok", tool_call_id: "c-a1" }),
+      new HumanMessage({ id: "h9", content: "e aí?" }),
+    ],
+    reused: false,
+  },
+  {
     name: "an answer before the input does not count",
     thread: [new AIMessage({ id: "a0", content: "antes" }), input()],
     reused: true,

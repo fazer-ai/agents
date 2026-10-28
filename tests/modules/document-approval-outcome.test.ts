@@ -462,7 +462,9 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         []) as BaseMessage[])
         if (isNudgeTurn(m)) directives.add(m.id as string);
     }
-    expect([...directives]).toEqual([`nudge:approval:${requestId}`]);
+    expect([...directives]).toEqual([
+      expect.stringMatching(new RegExp(`^nudge:approval:${requestId}:`)),
+    ]);
     const files = named(rec.calls, "sendFileAttachment");
     expect(files).toHaveLength(1);
     const [, conv, bytes, fileName, mime, opts] = files[0] as [

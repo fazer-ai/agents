@@ -334,9 +334,9 @@ export interface RunAgentNudgeParams {
   // write the nudge would make afterwards is refused through `stillWanted`.
   signal?: AbortSignal;
   // The run every attempt of this nudge belongs to (the scheduler job, the inbound delivery), stable
-  // across its retries and never shared with another run. The directive is written under it, so a
-  // retry replaces the copy a failed attempt left instead of appending one. Absent, each attempt
-  // writes a fresh directive.
+  // across its retries. The directive is written under it plus the occasion key, which tells the
+  // steps of a ladder that reuses one job row apart, so a retry replaces the copy a failed attempt
+  // left instead of appending one. Absent, each attempt writes a fresh directive.
   runKey?: string;
   tenantId: bigint;
   threadId: string;
@@ -2501,7 +2501,9 @@ async function runAgentNudgeBody(
     // (../graph/runtime.ts): the invoke this deferred to can append it meanwhile, and carrying ours
     // too would put two in the channel.
     const directiveKey =
-      params.runKey === undefined ? null : `nudge:${params.runKey}`;
+      params.runKey === undefined
+        ? null
+        : `nudge:${params.runKey}:${nudgeOccasionKey(instanceId, conversationId, params.nudge)}`;
     const before =
       handbackDeferred || directiveKey !== null
         ? ((

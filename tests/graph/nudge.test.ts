@@ -25,6 +25,7 @@ import {
   HUMAN_HANDBACK_NOTE,
   isConversationDivider,
   isNudgeTurn,
+  nudgeMessage,
   stampedConversationId,
   stampedSource,
   UNDELIVERED_PROACTIVE_NOTE_HEAD,
@@ -55,6 +56,7 @@ import { keyedQueueTail, withKeyedQueue } from "@/lib/locks";
 import * as tenancy from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { inactivityNudge } from "@/modules/followups/handlers";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { parseTemplateDefinition } from "@/modules/service-window/service";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -8437,11 +8439,135 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       );
     }
     expect(stored).toEqual([
-      ["nudge:job:77"],
-      ["nudge:job:77"],
-      ["nudge:job:77"],
-      ["nudge:job:77"],
+      [expect.stringMatching(/^nudge:job:77:/)],
+      [expect.stringMatching(/^nudge:job:77:/)],
+      [expect.stringMatching(/^nudge:job:77:/)],
+      [expect.stringMatching(/^nudge:job:77:/)],
     ]);
     expect(s.messages).toEqual([[16_627, "Oi de novo!"]]);
+  });
+
+  test("a customer message between two attempts keeps the retried directive after it", async () => {
+    await seedConv(16_628, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    let calls = 0;
+    class FailOnce extends BaseChatModel {
+      _llmType() {
+        return "fail-once";
+      }
+      override bindTools() {
+        return this as never;
+      }
+      async _generate(): Promise<ChatResult> {
+        calls += 1;
+        if (calls === 1) {
+          const err = new Error("429 quota") as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return {
+          generations: [{ text: "", message: new AIMessage("Tudo certo?") }],
+        };
+      }
+    }
+    const model = new FailOnce({});
+    const thread = `${tenantId}:${instanceId}:16628`;
+    const run = () =>
+      runAgentNudge({
+        tenantId,
+        threadId: thread,
+        runKey: "job:78",
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      }).catch(() => "threw");
+    expect(await run()).toBe("threw");
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: thread } },
+      { messages: [new HumanMessage({ id: "h-between", content: "oi?" })] },
+      THREAD_STATE_NODE,
+    );
+    expect(await run()).toBe("messaged");
+    const tuple = await saver.getTuple({ configurable: { thread_id: thread } });
+    const kinds = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    ).map((m) =>
+      isNudgeTurn(m)
+        ? "directive"
+        : m.id === "h-between"
+          ? "customer"
+          : m.getType(),
+    );
+    expect(kinds).toEqual(["customer", "directive", "ai"]);
+  });
+
+  test("the next step of a ladder on the same job does not overwrite the step a tool ended", async () => {
+    await seedConv(16_629, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    const thread = `${tenantId}:${instanceId}:16629`;
+    const step1 = inactivityNudge({
+      idleMin: 60,
+      instructions: "Passo 1",
+      step: 1,
+      episodeStartedAt: null,
+    });
+    const step2 = inactivityNudge({
+      idleMin: 120,
+      instructions: "Passo 2",
+      step: 2,
+      episodeStartedAt: null,
+    });
+    const key1 = `nudge:job:79:${nudgeOccasionKey(instanceId, 16_629, step1)}`;
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: thread } },
+      {
+        messages: [
+          new HumanMessage({
+            id: key1,
+            content: "Passo 1",
+            additional_kwargs: nudgeMessage("", 16_629).additional_kwargs,
+          }),
+          new AIMessage({
+            id: "a-tool",
+            content: "",
+            tool_calls: [
+              { id: "c1", name: "skip_reply", args: {}, type: "tool_call" },
+            ],
+          }),
+          new ToolMessage({ id: "t-1", content: "ok", tool_call_id: "c1" }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    await runAgentNudge({
+      tenantId,
+      threadId: thread,
+      runKey: "job:79",
+      nudge: step2,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Ainda por aí?"] }) as never,
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const tuple = await saver.getTuple({ configurable: { thread_id: thread } });
+    const ids = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    )
+      .filter(isNudgeTurn)
+      .map((m) => m.id as string);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(key1);
+    expect(ids[1]).not.toBe(key1);
   });
 });

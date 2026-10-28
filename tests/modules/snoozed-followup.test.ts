@@ -2143,7 +2143,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
       ).toBe(false);
       expect(messages.filter(isNudgeTurn).map((m) => m.id)).toEqual([
-        `nudge:job:${jobFor(conv).id}`,
+        expect.stringMatching(new RegExp(`^nudge:job:${jobFor(conv).id}:`)),
       ]);
     });
   }

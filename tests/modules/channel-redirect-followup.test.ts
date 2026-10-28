@@ -1834,7 +1834,9 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     const directives = (
       (memory?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
     ).filter(isNudgeTurn);
-    expect(directives.map((m) => m.id)).toEqual([`nudge:job:${job.id}`]);
+    expect(directives.map((m) => m.id)).toEqual([
+      expect.stringMatching(new RegExp(`^nudge:job:${job.id}:`)),
+    ]);
   });
 
   // The last boundary the handler does not own: its RETURN. Whatever it decides, the worker is what

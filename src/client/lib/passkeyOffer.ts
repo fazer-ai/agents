@@ -1,3 +1,5 @@
+import { serverNow } from "@/client/lib/serverClock";
+
 // The passkey offer is decided once per sign-in: a reload or a
 // navigation inside the same session does not bring it back. Per tab, which is
 // what a session looks like from here, and reset by every new sign-in.
@@ -104,4 +106,11 @@ export async function decidePasskeyOffer(deps: {
   }
   if (!deps.isCurrent()) return NONE;
   return { kind: "card", expiresAt };
+}
+
+// How long the card stays up. `expiresAt` is the end of the server's recent sign-in window, so it is
+// measured against the server's clock: a browser clock ahead would hide a valid offer at once, one
+// behind would leave the card up after "Create passkey" started needing the password again.
+export function passkeyOfferRemainingMs(expiresAt: Date, now = serverNow()) {
+  return Math.max(0, expiresAt.getTime() - now);
 }

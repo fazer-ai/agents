@@ -20,6 +20,7 @@ import {
   isCurrentPasskeyChange,
   markPasskeyOfferSeen,
   PASSKEYS_CHANGED_EVENT,
+  passkeyOfferRemainingMs,
   passkeyOfferSeen,
 } from "@/client/lib/passkeyOffer";
 
@@ -94,7 +95,7 @@ export function PasskeyOffer() {
     if (!expiresAt) return;
     const timer = setTimeout(
       () => setExpiresAt(null),
-      Math.max(0, expiresAt.getTime() - Date.now()),
+      passkeyOfferRemainingMs(expiresAt),
     );
     return () => clearTimeout(timer);
   }, [expiresAt]);

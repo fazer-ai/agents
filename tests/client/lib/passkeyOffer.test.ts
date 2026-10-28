@@ -6,9 +6,11 @@ import {
   isCurrentPasskeyChange,
   markPasskeyOfferSeen,
   PASSKEYS_CHANGED_EVENT,
+  passkeyOfferRemainingMs,
   passkeyOfferSeen,
   resetPasskeyOffer,
 } from "@/client/lib/passkeyOffer";
+import { noteServerDate, resetServerClock } from "@/client/lib/serverClock";
 
 const UNTIL = new Date("2026-10-14T12:05:00Z");
 
@@ -150,4 +152,35 @@ test("a passkey announced by an earlier sign-in does not speak for the current o
     window.removeEventListener(PASSKEYS_CHANGED_EVENT, listen);
   }
   expect(seen).toEqual([true, false, true]);
+});
+
+describe("passkeyOfferRemainingMs", () => {
+  const atOffset = (ms: number) =>
+    noteServerDate(
+      new Response(null, {
+        headers: { date: new Date(Date.now() + ms).toUTCString() },
+      }),
+    );
+
+  // NOTE: the deadline is the server's; the card follows its clock, not the browser's.
+  test("a browser clock ten minutes ahead does not hide an offer that has a minute left", () => {
+    atOffset(-10 * 60_000);
+    try {
+      const expiresAt = new Date(Date.now() - 10 * 60_000 + 60_000);
+      const left = passkeyOfferRemainingMs(expiresAt);
+      expect(left > 55_000 && left <= 61_000).toBe(true);
+    } finally {
+      resetServerClock();
+    }
+  });
+
+  test("a browser clock ten minutes behind does not keep a closed offer up", () => {
+    atOffset(10 * 60_000);
+    try {
+      const expiresAt = new Date(Date.now() + 10 * 60_000 - 60_000);
+      expect(passkeyOfferRemainingMs(expiresAt)).toBe(0);
+    } finally {
+      resetServerClock();
+    }
+  });
 });

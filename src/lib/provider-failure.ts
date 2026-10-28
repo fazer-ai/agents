@@ -137,6 +137,12 @@ const wrappers = new WeakSet<Error>();
 // downstream by `failsUntilAccountFixed`, where the provider's error is only the wrapper's `cause`.
 const accountFailures = new WeakSet<Error>();
 
+// Withdraws the mark from a wrapper whose call another path could still answer: a fallback that failed
+// for its account while the primary failed for a passing reason, which the next attempt may get past.
+export function clearAccountFailure(err: unknown): void {
+  if (err instanceof Error) accountFailures.delete(err);
+}
+
 // Whether this failure, wherever it surfaced, is one the provider will repeat until the account is
 // fixed: a wrapper from `asProviderFailure` that recognised it, found on the error or its causes. Only
 // a model call's failure can answer yes, so a Chatwoot 401 keeps its retries.

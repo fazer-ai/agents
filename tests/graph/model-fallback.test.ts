@@ -17,6 +17,7 @@ import {
   PRIMARY_TIMEOUT_MS,
 } from "@/graph/model-fallback";
 import { runModelCall } from "@/graph/model-limit";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import {
   assertSettingsModelFallback,
   type SettingsWriteMode,
@@ -779,4 +780,45 @@ describe("assertSettingsModelFallback", () => {
       refuses(bag({ provider: " openai ", model: "  " }), legacy),
     ).toBeNull();
   });
+});
+
+// A fallback that fails for its own account ends the job only when the primary's failure would repeat
+// too: a primary that failed for a passing reason may answer the next attempt.
+describe("a fallback's account failure and the job's retries", () => {
+  const failing = (fields: Record<string, unknown>) => () =>
+    Promise.reject(Object.assign(new Error("refused"), fields));
+  const deadKey = { status: 401 };
+  const noCredit = { status: 429, code: "insufficient_quota" };
+  for (const [name, primary, fallback, ends] of [
+    [
+      "a passing primary failure and a dead fallback key",
+      { status: 503 },
+      deadKey,
+      false,
+    ],
+    [
+      "a primary out of credit and a dead fallback key",
+      noCredit,
+      deadKey,
+      true,
+    ],
+    [
+      "a primary out of credit and a passing fallback failure",
+      noCredit,
+      { status: 503 },
+      false,
+    ],
+  ] as const) {
+    test(name, async () => {
+      const err = await runModelCall(failing(primary), {
+        primary: PRIMARY,
+        fallback: {
+          labels: FALLBACK_LABELS,
+          deadlineMs: 5_000,
+          run: failing(fallback) as () => Promise<never>,
+        },
+      }).catch((e) => e);
+      expect(failsUntilAccountFixed(err)).toBe(ends);
+    });
+  }
 });

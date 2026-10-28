@@ -2,6 +2,8 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import {
   asProviderFailure,
+  clearAccountFailure,
+  failsUntilAccountFixedAt,
   markReportedElsewhere,
   providerFailure,
 } from "@/lib/provider-failure";
@@ -304,6 +306,9 @@ export async function runModelCall<T>(
             // The fallback is the last thing there is, so what it failed with is what the turn
             // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
             const out = describeProviderFault(fallbackErr);
+            // NOTE: the job ends on the fallback's account only when the primary's failure would
+            // repeat too; otherwise the next attempt goes to the primary, which may answer.
+            if (!failsUntilAccountFixedAt(err)) clearAccountFailure(out);
             if (fallback.onFallbackFailed) {
               const failure = providerFailure(fallbackErr);
               fallback.onFallbackFailed({

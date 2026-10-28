@@ -1094,6 +1094,7 @@ export async function processInboundDelivery(
       tenantId: params.tenantId,
       threadId: plan.threadId,
       nudge: plan.nudge,
+      runKey: plan.nudge.occasionId,
       deliverToResolved: plan.deliverToResolved,
       base,
       deps: params.deps?.runtime,

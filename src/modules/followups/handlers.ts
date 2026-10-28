@@ -1133,6 +1133,7 @@ export async function followUpHandler(
     : stepDelayMinutes(step);
   const nudgeOutcome = await runAgentNudge({
     signal: run?.signal,
+    runKey: `job:${job.id}`,
     tenantId,
     threadId,
     nudge: inactivityNudge({

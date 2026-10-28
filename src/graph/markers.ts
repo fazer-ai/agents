@@ -204,8 +204,10 @@ export function nudgeMessage(
   content: string,
   conversationId: number,
   source?: string,
+  id?: string,
 ): HumanMessage {
   return new HumanMessage({
+    ...(id === undefined ? {} : { id }),
     content,
     additional_kwargs: {
       [MARKER_KWARG]: "nudge" satisfies SystemMarker,

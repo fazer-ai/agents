@@ -759,6 +759,7 @@ export async function redirectFollowUpHandler(
     if (cfg.chatFollowupEnabled) {
       const outcome = await runAgentNudge({
         signal: ctx?.signal,
+        runKey: `job:${job.id}`,
         tenantId,
         threadId: payload.widgetThreadId,
         nudge: chatFollowupNudge(

@@ -20,7 +20,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { HUMAN_HANDBACK_NOTE } from "@/graph/markers";
+import { HUMAN_HANDBACK_NOTE, isNudgeTurn } from "@/graph/markers";
 import {
   DATA_FENCE,
   NUDGE_CONVERSATION_MAX_CHARS,
@@ -2142,6 +2142,9 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       expect(
         messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
       ).toBe(false);
+      expect(messages.filter(isNudgeTurn).map((m) => m.id)).toEqual([
+        expect.stringMatching(new RegExp(`^nudge:job:${jobFor(conv).id}:`)),
+      ]);
     });
   }
   test("a reminder the closed WhatsApp window kept from the customer ends the ladder, unresolved", async () => {

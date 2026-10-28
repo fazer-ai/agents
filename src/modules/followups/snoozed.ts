@@ -702,6 +702,7 @@ export async function snoozedFollowUpHandler(
   };
   const outcome = await runAgentNudge({
     signal: run?.signal,
+    runKey: `job:${job.id}`,
     // The agent whose cadence, hours and fence were read: a rebinding since then is not its to send.
     expectAgentId: ctx.agentId,
     tenantId,

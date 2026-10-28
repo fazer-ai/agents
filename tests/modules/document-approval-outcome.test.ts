@@ -6,6 +6,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { isNudgeTurn } from "@/graph/markers";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import { ChatwootStatusConflictError } from "@/modules/chatwoot/client";
@@ -444,16 +445,26 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const model = new ScriptedCaptureModel([
       { reply: "Seu orçamento foi aprovado e segue em anexo." },
     ]);
+    const saver = new MemorySaver();
     const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
       makeClient: rec.makeClient,
       storageDir: DIR,
       nudgeDeps: {
         makeModel: () => model as unknown as BaseChatModel,
-        checkpointer: new MemorySaver(),
+        checkpointer: saver,
         persistUsage: async () => {},
       },
     });
     expect(outcome).toBe("delivered");
+    const directives = new Set<string>();
+    for await (const t of saver.list({})) {
+      for (const m of (t.checkpoint.channel_values.messages ??
+        []) as BaseMessage[])
+        if (isNudgeTurn(m)) directives.add(m.id as string);
+    }
+    expect([...directives]).toEqual([
+      expect.stringMatching(new RegExp(`^nudge:approval:${requestId}:`)),
+    ]);
     const files = named(rec.calls, "sendFileAttachment");
     expect(files).toHaveLength(1);
     const [, conv, bytes, fileName, mime, opts] = files[0] as [

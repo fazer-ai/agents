@@ -13,6 +13,7 @@ import {
 } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { afterLogout } from "@/client/lib/logout";
+import { SecurityPasskeysSection } from "./SecurityPasskeysSection";
 import { SettingsRow, SettingsSection } from "./SettingsSection";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -178,7 +179,7 @@ function PasswordForm({ refusal }: { refusal: FieldRefusal }) {
 
 export function SettingsSecurityPage() {
   const { t } = useTranslation();
-  const { user, providers, logout } = useAuth();
+  const { user, providers, passkeysEnabled, logout } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
   // Signing out right next to a half-filled password form asks first.
@@ -188,6 +189,8 @@ export function SettingsSecurityPage() {
   // account with a clear sentence).
   const hasPassword = user?.hasPassword !== false;
   const refusal = useFieldRefusal(hasPassword ? PASSWORD_FIELDS : []);
+  // The passkeys the section below has loaded, or null while it has not answered.
+  const [passkeyCount, setPasskeyCount] = useState<number | null>(null);
 
   if (!user) return null;
   const googleAvailable = !!providers.google || !!user.googleLinked;
@@ -233,6 +236,25 @@ export function SettingsSecurityPage() {
               : t("settings.methodNotSet", "Not set")}
           </Badge>
         </SettingsRow>
+        {passkeysEnabled && (
+          <SettingsRow
+            label={t("settings.methodPasskeys", "Passkeys")}
+            description={t(
+              "settings.methodPasskeysHint",
+              "Your fingerprint, face or device PIN, from the devices you added below.",
+            )}
+          >
+            {passkeyCount !== null && (
+              <Badge variant={passkeyCount > 0 ? "success" : "secondary"}>
+                {passkeyCount > 0
+                  ? t("settings.methodPasskeyCount", "{{count}} passkey", {
+                      count: passkeyCount,
+                    })
+                  : t("settings.methodNotSet", "Not set")}
+              </Badge>
+            )}
+          </SettingsRow>
+        )}
         {googleAvailable && (
           <SettingsRow
             label="Google"
@@ -249,6 +271,17 @@ export function SettingsSecurityPage() {
           </SettingsRow>
         )}
       </SettingsSection>
+
+      {passkeysEnabled && (
+        <SecurityPasskeysSection
+          hasPassword={hasPassword}
+          googleClientId={providers.google?.clientId ?? null}
+          otherWayIn={
+            hasPassword || (!!user.googleLinked && !!providers.google)
+          }
+          onCountChange={setPasskeyCount}
+        />
+      )}
 
       <SettingsSection title={t("settings.session", "Session")}>
         <SettingsRow

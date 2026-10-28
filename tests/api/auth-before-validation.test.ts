@@ -96,10 +96,13 @@ describe("a request without a session", () => {
 
   test("answers 401 on every gated route, with no input and with a malformed one", async () => {
     const wrong: string[] = [];
-    // The client channel's routes do not exist while the channel is off (`clientChannelGate`), so
-    // the sweep runs with it on, where they answer like every other gated route.
+    // The client channel's routes do not exist while the channel is off (`clientChannelGate`), nor
+    // the passkey routes while PASSKEYS_ENABLED is, so the sweep runs with both on, where they answer
+    // like every other gated route.
     const channelWas = config.clientChannel.enabled;
+    const passkeysWas = config.passkeysEnabled;
     config.clientChannel.enabled = true;
+    (config as { passkeysEnabled: boolean }).passkeysEnabled = true;
     try {
       for (const route of gated) {
         for (const [kind, request] of [
@@ -117,6 +120,7 @@ describe("a request without a session", () => {
       }
     } finally {
       config.clientChannel.enabled = channelWas;
+      (config as { passkeysEnabled: boolean }).passkeysEnabled = passkeysWas;
     }
     expect(wrong).toEqual([]);
   });

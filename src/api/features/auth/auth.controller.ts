@@ -118,7 +118,7 @@ const baseAuthController = new Elysia({
       }
 
       completeSetup();
-      await setAuthCookie(user, passwordHash);
+      await setAuthCookie(user, passwordHash, { method: "password" });
       // NOTE: Log non-PII identifiers only. `userId` is stable and audit-
       // useful, `role` confirms this was the bootstrap-ADMIN path. The email
       // is recoverable from the DB by joining on userId if needed.
@@ -239,7 +239,7 @@ const baseAuthController = new Elysia({
       const passwordHash = await hashPassword(password);
       const user = await createUser(email, passwordHash, tenantId);
 
-      await setAuthCookie(user, passwordHash);
+      await setAuthCookie(user, passwordHash, { method: "password" });
 
       return {
         user: {
@@ -302,7 +302,7 @@ const baseAuthController = new Elysia({
         };
       }
 
-      await setAuthCookie(user, row.passwordHash);
+      await setAuthCookie(user, row.passwordHash, { method: "password" });
       void updateLastLogin(user.id).catch((error) => {
         logger.warn(
           { error, userId: user.id.toString() },
@@ -400,6 +400,8 @@ const baseAuthController = new Elysia({
         setupRequired: isSetupRequired(),
         setupTokenRequired: isSetupTokenRequired(),
         signupEnabled: config.signupEnabled,
+        // Whether passkey sign-in is on (PASSKEYS_ENABLED). Off, the console shows no passkey anywhere.
+        passkeysEnabled: config.passkeysEnabled,
         // Whether stdio MCP transport is enabled server-side (config.mcpStdioEnabled). Surfaced so the
         // MCP connection form can clearly flag a stdio server as inert when the operator has it off.
         mcpStdioEnabled: config.mcpStdioEnabled,
@@ -521,7 +523,8 @@ const baseAuthController = new Elysia({
         throw error;
       }
       // NOTE: the new hash revoked every session of this account, this one included. The caller's own
-      // cookie is re-signed so whoever made the change stays in.
+      // cookie is re-signed so whoever made the change stays in. A change is not a sign-in, so the
+      // new cookie carries no method and does not stand in for adding a passkey.
       await setAuthCookie(user, passwordHash);
       closeUserSockets(user.id, WS_CLOSE.CREDENTIALS_CHANGED);
       return { success: true };
@@ -754,7 +757,9 @@ const googleAuthController = baseAuthController.post(
       const user = await upsertGoogleUser(profile);
       // NOTE: the proof here is the Google credential, so the session is signed under whatever
       // password the account holds now.
-      await setAuthCookie(user, await getPasswordHash(user.id));
+      await setAuthCookie(user, await getPasswordHash(user.id), {
+        method: "google",
+      });
       void updateLastLogin(user.id).catch((error) => {
         logger.warn(
           { error, userId: user.id.toString() },

@@ -118,6 +118,15 @@ const CREDENTIAL_ROUTES = new Set([
   "GET /api/auth/invite",
 ]);
 
+// Passkey routes on the same budget, only while PASSKEYS_ENABLED is on: off, they answer as routes that
+// do not exist. The sign-in writes the spent challenge, and the registration options take the current
+// password. The sign-in options stay out: they take no secret, write nothing, and /login asks for them
+// on every view, so a few reloads would lock an office out.
+const PASSKEY_CREDENTIAL_ROUTES = new Set([
+  "POST /api/auth/passkeys/login",
+  "POST /api/auth/passkeys/register/options",
+]);
+
 // HEAD folds into GET because Elysia dispatches HEAD to the GET handler, so `HEAD /auth/invite`
 // leaks the same status. Every GET in the set covers its HEAD alias; `HEAD /auth/login` still maps
 // to a GET that is not in it.
@@ -131,7 +140,9 @@ export const isCredentialRequest = (request: Request): boolean => {
   const method = request.method === "HEAD" ? "GET" : request.method;
   const key = `${method} ${canonicalPath(request)}`;
   return (
-    CREDENTIAL_ROUTES.has(key) || CREDENTIAL_PATTERNS.some((r) => r.test(key))
+    CREDENTIAL_ROUTES.has(key) ||
+    (config.passkeysEnabled && PASSKEY_CREDENTIAL_ROUTES.has(key)) ||
+    CREDENTIAL_PATTERNS.some((r) => r.test(key))
   );
 };
 

@@ -40,7 +40,7 @@ export function getSignupRoleForEmail(
 }
 
 // A person and the tenants they belong to: one user per email, a membership per tenant.
-const AUTH_USER_SELECT = {
+export const AUTH_USER_SELECT = {
   id: true,
   email: true,
   name: true,
@@ -51,7 +51,7 @@ const AUTH_USER_SELECT = {
   },
 } as const;
 
-type PersonRow = {
+export type PersonRow = {
   id: bigint;
   email: string;
   name: string | null;

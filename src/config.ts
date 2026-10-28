@@ -20,6 +20,7 @@ const {
   ALLOWED_SIGNUP_DOMAINS,
   ADMIN_SIGNUP_DOMAINS,
   SIGNUP_ENABLED,
+  PASSKEYS_ENABLED,
   SETUP_TOKEN_REQUIRED,
   WEBHOOK_WORKER_ENABLED,
   WEBHOOK_WORKER_INTERVAL_MS,
@@ -564,6 +565,10 @@ const config = {
   // password signup and first-time Google sign-in are refused; existing users
   // keep logging in. The first admin is always created through /setup.
   signupEnabled: SIGNUP_ENABLED === "true",
+  // NOTE: Passkey (WebAuthn) sign-in is opt-in. Off, its routes answer 404 and the console shows no
+  // passkey anywhere; passkeys stored while it was on wait in the database. The relying party is
+  // PUBLIC_URL's hostname, so it must be the address people open (docs/passkeys.md).
+  passkeysEnabled: PASSKEYS_ENABLED === "true",
   // NOTE: When true (the default), the first-run /setup flow requires the token
   // printed in the server log. Disable only on trusted networks.
   setupTokenRequired: SETUP_TOKEN_REQUIRED !== "false",

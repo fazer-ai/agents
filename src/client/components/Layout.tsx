@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AnnouncementBanner } from "@/client/components/AnnouncementBanner";
 import { Header } from "@/client/components/Header";
+import { PasskeyOffer } from "@/client/components/PasskeyOffer";
 import { ProactiveBreakerBanner } from "@/client/components/ProactiveBreakerBanner";
 import { Sidebar } from "@/client/components/Sidebar";
 import { StaleBuildBanner } from "@/client/components/StaleBuildBanner";
@@ -55,6 +56,7 @@ export function Layout({ children }: LayoutProps) {
             {children}
           </main>
         </div>
+        <PasskeyOffer />
       </div>
     </ProactiveBreakerProvider>
   );

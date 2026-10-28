@@ -18,6 +18,7 @@ import {
 } from "@/modules/business-hours/hours";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import { resetAckSendId } from "@/modules/chatwoot/constants";
+import { conversationIsGone } from "@/modules/chatwoot/conversation-gone";
 import {
   instanceAgentBotChatwootIds,
   loadChatwootClient,
@@ -528,6 +529,14 @@ export async function snoozedFollowUpHandler(
       }
     }
   } catch (err) {
+    // NOTE: a conversation deleted in Chatwoot has no snooze left to chase, and no read will bring it.
+    if (await conversationIsGone(client, conversationId, err)) {
+      logger.info(
+        { conversationId: String(conversationId) },
+        "snoozedFollowUp: the conversation no longer exists in Chatwoot; the ladder ends",
+      );
+      return { outcome: "done" };
+    }
     logger.warn(
       { err, conversationId: String(conversationId) },
       "snoozedFollowUp: live read failed; trying again later",

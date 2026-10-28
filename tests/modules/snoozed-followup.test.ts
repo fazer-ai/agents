@@ -28,7 +28,10 @@ import {
 } from "@/graph/nudge";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import {
   CHATWOOT_SEND_ID_KEY,
   resetAckSendId,
@@ -2303,6 +2306,46 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const r2 = await snoozedFollowUpHandler(jobFor(2034), appDb, noEnd.deps);
     expect(r2.outcome).toBe("reschedule");
     expect([...garbled.sent, ...noEnd.sent]).toEqual([]);
+  });
+
+  // A conversation deleted in Chatwoot answers 404, and no later read changes that: the ladder ends
+  // instead of asking again every minute, while a 5xx or a timeout is still tried again.
+  test("a conversation deleted in Chatwoot ends the ladder; a 5xx or a timeout is tried again", async () => {
+    await setSettings(LADDER);
+    const failing = async (convId: number, failure: () => Error) => {
+      await seed(convId);
+      const s = stub({ messages: [personAsked(290, 3)] });
+      const client = await s.deps.makeClient();
+      (
+        client as unknown as { getConversation: () => Promise<unknown> }
+      ).getConversation = async () => {
+        throw failure();
+      };
+      const r = await snoozedFollowUpHandler(jobFor(convId), appDb, {
+        ...s.deps,
+        makeClient: async () => client,
+      });
+      expect(s.sent).toEqual([]);
+      return r;
+    };
+    expect(
+      await failing(
+        2095,
+        () => new ChatwootApiError(404, "GET /conversations/2095"),
+      ),
+    ).toEqual({ outcome: "done" });
+    expect(
+      (
+        await failing(
+          2096,
+          () => new ChatwootApiError(503, "GET /conversations/2096"),
+        )
+      ).outcome,
+    ).toBe("reschedule");
+    expect(
+      (await failing(2097, () => new Error("The operation timed out.")))
+        .outcome,
+    ).toBe("reschedule");
   });
 
   test("the end date going missing between the handler's read and the send is tried again", async () => {

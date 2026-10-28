@@ -90,6 +90,8 @@ function stubClient(
     liveFails?: { on: boolean };
     // What the live conversation read throws instead, when a test needs a specific failure.
     liveThrows?: () => Error;
+    // What the account read throws, when a test needs the whole API unreachable.
+    accountThrows?: () => Error;
   } = {},
 ) {
   let reads = 0;
@@ -117,6 +119,10 @@ function stubClient(
         status: first?.status ?? status,
         meta: first?.meta ?? over.liveMeta ?? {},
       };
+    },
+    getAccountName: async () => {
+      if (over.accountThrows) throw over.accountThrows();
+      return "Conta";
     },
     getMessages: async (
       _c: number,
@@ -1483,6 +1489,24 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       });
       expect(await lastFollowUpOf(convId)).toBeNull();
     }
+  });
+
+  // A proxy that lost its route to Chatwoot answers 404 for every path, the account included: that is
+  // an unreachable Chatwoot, not a deleted conversation.
+  test("a 404 from every route, the account included, keeps the backoff", async () => {
+    await seedConversation(1798, due());
+    const s = stubClient({
+      onRead: () => {
+        throw new ChatwootApiError(404, "GET /conversations/1798/messages");
+      },
+      liveThrows: () => new ChatwootApiError(404, "GET /conversations/1798"),
+      accountThrows: () => new ChatwootApiError(404, "GET "),
+    });
+    expect(await run(1798, s)).toMatchObject({
+      outcome: "reschedule",
+      payload: { deferredUnder: "backoff" },
+    });
+    expect(await lastFollowUpOf(1798)).toBeNull();
   });
 
   // A timeout or a 5xx is a read the next run may get past: the follow-up waits, episode intact.

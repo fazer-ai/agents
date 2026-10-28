@@ -683,6 +683,7 @@ function stub(over: {
       notes.push(t);
       return {};
     },
+    getAccountName: async () => "Conta",
     getConversationLabels: async () => {
       if (over.unsnoozeOnLabelRead) unsnoozed = true;
       return currentLabels;
@@ -2345,7 +2346,25 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(
       (await failing(2097, () => new Error("The operation timed out.")))
         .outcome,
-    ).toBe("reschedule");
+    ).toBe("reschedule"); // Every route answering 404, the account included, is an unreachable Chatwoot.
+    await seed(2098);
+    const s = stub({ messages: [personAsked(290, 3)] });
+    const client = await s.deps.makeClient();
+    const c = client as unknown as {
+      getConversation: () => Promise<unknown>;
+      getAccountName: () => Promise<unknown>;
+    };
+    c.getConversation = async () => {
+      throw new ChatwootApiError(404, "GET /conversations/2098");
+    };
+    c.getAccountName = async () => {
+      throw new ChatwootApiError(404, "GET ");
+    };
+    const r = await snoozedFollowUpHandler(jobFor(2098), appDb, {
+      ...s.deps,
+      makeClient: async () => client,
+    });
+    expect(r.outcome).toBe("reschedule");
   });
 
   test("the end date going missing between the handler's read and the send is tried again", async () => {

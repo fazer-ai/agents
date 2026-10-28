@@ -16,6 +16,7 @@ import {
 import { api } from "@/client/lib/api";
 import { applyUserUpdate } from "@/client/lib/applyUserUpdate";
 import { performLogout } from "@/client/lib/logout";
+import { resetPasskeyOffer } from "@/client/lib/passkeyOffer";
 import { noteOperator } from "@/client/lib/toolSample";
 import type { TtsCheckMode } from "@/modules/tts/settings-shared";
 
@@ -60,6 +61,8 @@ interface AuthContextType {
   setupRequired: boolean;
   setupTokenRequired: boolean;
   signupEnabled: boolean;
+  // Whether passkey sign-in is on (PASSKEYS_ENABLED); off, no screen shows a passkey.
+  passkeysEnabled: boolean;
   mcpStdioEnabled: boolean;
   // Whether this install runs the client channel; off, no screen shows a client source.
   clientChannelEnabled: boolean;
@@ -83,6 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [setupRequired, setSetupRequired] = useState(false);
   const [setupTokenRequired, setSetupTokenRequired] = useState(false);
   const [signupEnabled, setSignupEnabled] = useState(false);
+  const [passkeysEnabled, setPasskeysEnabled] = useState(false);
   const [mcpStdioEnabled, setMcpStdioEnabled] = useState(false);
   const [clientChannelEnabled, setClientChannelEnabled] = useState(false);
   const [ttsCheck, setTtsCheck] = useState<{
@@ -120,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearUser = useCallback(() => {
     sessionGen.current += 1;
+    resetPasskeyOffer();
     applyUser(null);
   }, [applyUser]);
 
@@ -158,6 +163,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSetupTokenRequired(data.setupTokenRequired);
         if (typeof data.signupEnabled === "boolean")
           setSignupEnabled(data.signupEnabled);
+        if (typeof data.passkeysEnabled === "boolean")
+          setPasskeysEnabled(data.passkeysEnabled);
         if (typeof data.mcpStdioEnabled === "boolean")
           setMcpStdioEnabled(data.mcpStdioEnabled);
         // NOTE: the Free edition's session answer has no such field, and the channel stays off there.
@@ -233,6 +240,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const awaitsTenantSeed =
       loggedInUser.role === "SUPER_ADMIN" && getActiveTenantId() === null;
     sessionGen.current += 1;
+    // NOTE: a new sign-in may be offered a passkey again, and work the last one started must not act
+    // for this one.
+    resetPasskeyOffer();
     applyUser(loggedInUser);
     // NOTE: A successful auth means at least one account exists, so first-run
     // setup is necessarily done. Clear the (boot-time) flag so SetupGate stops
@@ -270,6 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setupRequired,
         setupTokenRequired,
         signupEnabled,
+        passkeysEnabled,
         mcpStdioEnabled,
         clientChannelEnabled,
         ttsCheck,

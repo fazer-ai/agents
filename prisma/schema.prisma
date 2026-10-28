@@ -254,24 +254,86 @@ model AppBranding {
 // one password. Which tenants the person works in, and with what role, lives in `TenantUser`; the
 // only role on the person is SUPER_ADMIN, which needs no membership and sees every tenant. Issue #756.
 model User {
-  id           BigInt    @id @default(autoincrement())
-  email        String
-  passwordHash String?   @map("password_hash")
-  googleId     String?   @unique @map("google_id")
-  name         String?
-  isSuperAdmin Boolean   @default(false) @map("is_super_admin")
-  lastLoginAt  DateTime? @map("last_login_at")
+  id                        BigInt    @id @default(autoincrement())
+  email                     String
+  passwordHash              String?   @map("password_hash")
+  googleId                  String?   @unique @map("google_id")
+  name                      String?
+  isSuperAdmin              Boolean   @default(false) @map("is_super_admin")
+  lastLoginAt               DateTime? @map("last_login_at")
+  // The account's WebAuthn user handle: 32 random bytes, set on its first passkey. Never the account
+  // id: two apps on one RP ID would hand out the same small integers, and an authenticator replaces
+  // a discoverable credential that shares RP ID and user handle.
+  webauthnUserHandle        String?   @unique @map("webauthn_user_handle")
+  // "Not now" on the passkey offer after a password sign-in: when, and how many times. On the
+  // account so another browser does not reset it. The numbers are in passkeys/offer.ts.
+  passkeyPromptDismissedAt  DateTime? @map("passkey_prompt_dismissed_at")
+  passkeyPromptDismissCount Int       @default(0) @map("passkey_prompt_dismiss_count")
   // The pre-#756 shape, frozen by its migration and kept one release so the previous image can still
   // serve during the deploy. Ignored by this client; the next release drops both columns.
-  tenantId     BigInt?   @map("tenant_id") @ignore
-  role         UserRole  @default(AGENT) @ignore
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  tenantId                  BigInt?   @map("tenant_id") @ignore
+  role                      UserRole  @default(AGENT) @ignore
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
 
-  memberships   TenantUser[]
-  endedSessions EndedSession[]
+  memberships        TenantUser[]
+  endedSessions      EndedSession[]
+  passkeys           Passkey[]
+  webauthnChallenges WebauthnChallenge[]
 
   @@map("users")
+}
+
+model Passkey {
+  id         String    @id
+  userId     BigInt    @map("user_id")
+  publicKey  Bytes     @map("public_key")
+  // The signature counter, moved only by a compare-and-swap on sign-in.
+  counter    BigInt    @default(0)
+  transports String[]
+  deviceType String    @map("device_type")
+  backedUp   Boolean   @map("backed_up")
+  name       String?
+  // Who keeps it (iCloud Keychain, Google Password Manager...), from the AAGUID, or the browser and
+  // OS it was created from.
+  provider   String?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("passkeys")
+}
+
+enum WebauthnChallengeType {
+  REGISTRATION
+  // A registration asked for as a conditional create, the browser's silent upgrade after a password
+  // sign-in, which reports neither user presence nor verification. Only this type may skip them.
+  CONDITIONAL_REGISTRATION
+}
+
+// A registration challenge, single use. A sign-in challenge is not stored: it travels signed, and
+// only its spent mark is (`webauthn_consumed_challenges`).
+model WebauthnChallenge {
+  id        String                @id @default(uuid())
+  type      WebauthnChallengeType
+  challenge String
+  userId    BigInt                @map("user_id")
+  expiresAt DateTime              @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("webauthn_challenges")
+}
+
+model WebauthnConsumedChallenge {
+  challengeHash String   @id @map("challenge_hash")
+  expiresAt     DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("webauthn_consumed_challenges")
 }
 
 // A session that logged out, named by its token's `jti` and kept until that token would have expired

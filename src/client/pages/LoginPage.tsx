@@ -1,3 +1,4 @@
+import { KeyRound } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
@@ -8,10 +9,18 @@ import {
   Input,
   Logo,
 } from "@/client/components";
-import { useAuth } from "@/client/contexts/AuthContext";
+import { type User, useAuth } from "@/client/contexts/AuthContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useGoogleSignIn } from "@/client/hooks/useGoogleSignIn";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
+import {
+  PasskeyCancelled,
+  passkeyAutofill,
+  passkeyAutofillSupported,
+  passkeysSupported,
+  signInWithPasskey,
+} from "@/client/lib/passkey";
 import { resolveSafeRedirect } from "@/client/lib/safeRedirect";
 import { cn } from "@/client/lib/utils";
 
@@ -41,13 +50,26 @@ export function LoginPage() {
   const redirectTo =
     resolveSafeRedirect(searchParams.get("redirect"), window.location.origin) ??
     "/";
-  const { user, login, providers, signupEnabled } = useAuth();
+  const { user, login, providers, signupEnabled, passkeysEnabled } = useAuth();
   const refusal = useFieldRefusal(LOGIN_FIELDS);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const mountedRef = useRef(true);
+  // The button's sign-in, closed with the page: its dialog and its answer belong to /login.
+  const passkeyAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      passkeyAbortRef.current?.abort();
+    };
+  }, []);
   const goToRedirect = () => {
+    // NOTE: a sign-in that settles after the person left /login keeps its session but does not take
+    // them away from the page they went to.
+    if (!mountedRef.current) return;
     if (isServerNavigation(redirectTo)) window.location.assign(redirectTo);
     else navigate(redirectTo, { replace: true });
   };
@@ -55,11 +77,39 @@ export function LoginPage() {
     onError: setError,
     onSignedIn: goToRedirect,
   });
-  const authPending = loading || googlePending;
-  // Synchronous cross-method lock so a Google credential callback and a
-  // form submit cannot both pass their guards before React commits the pending
-  // state update.
+  const [passkeyPending, setPasskeyPending] = useState(false);
+  const [browserHasPasskeys] = useState(passkeysSupported);
+  const showPasskey = passkeysEnabled && browserHasPasskeys;
+  const authPending = loading || googlePending || passkeyPending;
+  // Synchronous cross-method lock so a Google credential callback, a passkey and a form submit cannot
+  // pass their guards together before React commits the pending state update.
   const authInFlightRef = useRef(false);
+
+  // The passkey offered in the email field's autofill: a request that waits in the background while
+  // the form is on screen. A page holds one WebAuthn request at a time, so every other way in stops it
+  // first and starts it again when that attempt fails. Read through refs so the effect and the
+  // handlers always start the current render's version.
+  const autofillRef = useRef<ReturnType<typeof passkeyAutofill> | null>(null);
+  const stopAutofill = () => {
+    autofillRef.current?.stop();
+    autofillRef.current = null;
+  };
+  const startAutofillRef = useRef<() => void>(() => {});
+  // Set once the browser says it has conditional mediation; until then nothing starts the request.
+  const autofillSupportedRef = useRef(false);
+  useEffect(() => {
+    if (!showPasskey) return;
+    let cancelled = false;
+    void passkeyAutofillSupported().then((supported) => {
+      autofillSupportedRef.current = supported;
+      if (supported && !cancelled) startAutofillRef.current();
+    });
+    return () => {
+      cancelled = true;
+      autofillRef.current?.stop();
+      autofillRef.current = null;
+    };
+  }, [showPasskey]);
   // What the inputs hold right now, readable from inside a request that started before it. Above the
   // early returns below, because a hook after a conditional return is not called on every render.
   const sentRef = useRef({ email, password });
@@ -77,9 +127,95 @@ export function LoginPage() {
     if (authInFlightRef.current) return;
     authInFlightRef.current = true;
     setError("");
+    stopAutofill();
     void signInWithGoogle(credential).finally(() => {
       authInFlightRef.current = false;
+      // NOTE: a Google sign-in that failed gives the email field its passkey suggestions back; after
+      // a success the page is gone and this does nothing.
+      startAutofillRef.current();
     });
+  };
+
+  const passkeySignedIn = (next: User) => {
+    login(next);
+    goToRedirect();
+  };
+
+  const passkeyError = (e: unknown) =>
+    apiErrorMessage(e) ||
+    t(
+      "auth.passkeySignInFailed",
+      "Could not sign in with a passkey. Try again or use another way in.",
+    );
+
+  const handlePasskey = async () => {
+    if (authInFlightRef.current) return;
+    authInFlightRef.current = true;
+    setError("");
+    setPasskeyPending(true);
+    stopAutofill();
+    let succeeded = false;
+    const controller = new AbortController();
+    passkeyAbortRef.current = controller;
+    try {
+      const next = await signInWithPasskey(controller.signal);
+      succeeded = true;
+      passkeySignedIn(next);
+    } catch (e) {
+      // NOTE: closing the browser's dialog is not an error.
+      if (e instanceof PasskeyCancelled) return;
+      setError(passkeyError(e));
+    } finally {
+      if (passkeyAbortRef.current === controller)
+        passkeyAbortRef.current = null;
+      authInFlightRef.current = false;
+      if (mountedRef.current) setPasskeyPending(false);
+      if (!succeeded) startAutofillRef.current();
+    }
+  };
+
+  startAutofillRef.current = () => {
+    // NOTE: never while another way in is running (its request is the page's one WebAuthn request
+    // then); whoever holds the lock starts it again when that attempt settles.
+    if (
+      !mountedRef.current ||
+      !autofillSupportedRef.current ||
+      authInFlightRef.current ||
+      autofillRef.current
+    ) {
+      return;
+    }
+    const autofill = passkeyAutofill();
+    autofillRef.current = autofill;
+    let picked = false;
+    let succeeded = false;
+    void autofill
+      .run(() => {
+        if (authInFlightRef.current) return false;
+        picked = true;
+        authInFlightRef.current = true;
+        setError("");
+        setPasskeyPending(true);
+        return true;
+      })
+      .then((next) => {
+        succeeded = true;
+        passkeySignedIn(next);
+      })
+      .catch((e) => {
+        // NOTE: stopped by another way in, or the browser declined: silent.
+        if (e instanceof PasskeyCancelled || !mountedRef.current) return;
+        setError(passkeyError(e));
+      })
+      .finally(() => {
+        if (autofillRef.current === autofill) autofillRef.current = null;
+        if (!picked) return;
+        authInFlightRef.current = false;
+        if (mountedRef.current) setPasskeyPending(false);
+        // NOTE: a passkey the server refused leaves the suggestions armed for the next try. Only
+        // after a pick: a request the browser ended on its own is not restarted, or it could loop.
+        if (!succeeded) startAutofillRef.current();
+      });
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -88,6 +224,8 @@ export function LoginPage() {
     setError("");
     authInFlightRef.current = true;
     setLoading(true);
+    stopAutofill();
+    let signedIn = false;
 
     try {
       const sent = { email, password };
@@ -107,6 +245,7 @@ export function LoginPage() {
 
       refusal.clear();
       if (data?.user) {
+        signedIn = true;
         login(data.user);
         goToRedirect();
       }
@@ -117,6 +256,7 @@ export function LoginPage() {
     } finally {
       authInFlightRef.current = false;
       setLoading(false);
+      if (!signedIn) startAutofillRef.current();
     }
   };
 
@@ -142,30 +282,45 @@ export function LoginPage() {
           )}
 
           {providers.google && (
-            <>
-              <div
-                className={cn({ "opacity-50": authPending })}
-                aria-busy={authPending}
-              >
-                <GoogleSignInButton
-                  clientId={providers.google.clientId}
-                  onCredential={handleGoogleCredential}
-                  disabled={googlePending}
-                  onError={() =>
-                    setError(
-                      t("auth.googleSignInFailed", "Google sign-in failed"),
-                    )
-                  }
-                />
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="bg-border h-px flex-1" />
-                <span className="text-text-secondary text-xs uppercase">
-                  {t("auth.or", "or")}
-                </span>
-                <div className="bg-border h-px flex-1" />
-              </div>
-            </>
+            <div
+              className={cn({ "opacity-50": authPending })}
+              aria-busy={authPending}
+            >
+              <GoogleSignInButton
+                clientId={providers.google.clientId}
+                onCredential={handleGoogleCredential}
+                disabled={googlePending}
+                onError={() =>
+                  setError(
+                    t("auth.googleSignInFailed", "Google sign-in failed"),
+                  )
+                }
+              />
+            </div>
+          )}
+
+          {showPasskey && (
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-full"
+              loading={passkeyPending}
+              disabled={authPending}
+              onClick={() => void handlePasskey()}
+            >
+              {!passkeyPending && <KeyRound className="size-4" aria-hidden />}
+              {t("auth.signInWithPasskey", "Sign in with a passkey")}
+            </Button>
+          )}
+
+          {(providers.google || showPasskey) && (
+            <div className="flex items-center gap-3">
+              <div className="bg-border h-px flex-1" />
+              <span className="text-text-secondary text-xs uppercase">
+                {t("auth.or", "or")}
+              </span>
+              <div className="bg-border h-px flex-1" />
+            </div>
           )}
 
           <div>
@@ -178,6 +333,9 @@ export function LoginPage() {
             <Input
               id="email"
               type="email"
+              // NOTE: `webauthn` lets the browser offer this site's passkeys among the suggestions, next
+              // to the saved password; with passkeys off it stays a plain username field.
+              autoComplete={showPasskey ? "username webauthn" : undefined}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required

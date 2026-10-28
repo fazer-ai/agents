@@ -568,6 +568,10 @@ const WAIVED: Record<string, string> = {
     "A lost race reported INSIDE a 200 (`not-discarded`): someone moved the item first. Same class as `approvals.editGone`.",
   "components/GoogleOAuthSection.tsx :: vault.googleOAuth.popupBlocked":
     "The browser refused to open the popup. Nothing was sent, so there is no answer to quote.",
+  "components/PasskeyOffer.tsx :: settings.passkeyAlreadyRegistered":
+    "The browser refused to create a second passkey on this authenticator (InvalidStateError). The server answered the options with a 200; the refusal is the browser's, so there is no sentence of the server's to quote. Same class as `popupBlocked`.",
+  "pages/settings/SecurityPasskeysSection.tsx :: settings.passkeyAlreadyRegistered":
+    "The same browser refusal from Settings → Security. Same class as `popupBlocked`.",
   "components/GoogleOAuthSection.tsx :: vault.googleOAuth.authFailed":
     "The popup's own outcome (closed, denied), which never reached our API. `outcome` is the window's, not a response.",
   "components/McpOAuthSection.tsx :: vault.mcpOAuth.popupBlocked":
@@ -1042,7 +1046,7 @@ describe("an error toast shows what the server said", () => {
   // like the `popupBlocked`/`authFailed`/`googleSignInFailed` pairs). Extracting the two pages'
   // shared handler would only relocate the `t(...)` sentences to the call sites.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 15);
+    expectWaiverLedger("WAIVED", WAIVED, 17);
   });
 
   test("every toast the scanner cannot ask about is named", () => {

@@ -99,6 +99,9 @@
   --z-page-sticky: 5;
   --z-sidebar: 10;
   --z-sidebar-toggle: 20;
+  /* A floating card that is not a toast (the passkey offer after sign-in): over the page and the
+     sidebar, under drawers, modals and toasts. */
+  --z-floating-card: 30;
   --z-drawer-overlay: 40;
   --z-drawer: 50;
   --z-dropdown: 60;

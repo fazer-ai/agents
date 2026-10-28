@@ -43,7 +43,36 @@ export interface JWTPayload {
   pwd?: string;
   // NOTE: names the session so a logout can end it (`ended_sessions`); absent on older tokens.
   jti?: string;
+  // NOTE: how and when the person proved who they are for this session. Absent on a token minted
+  // without a method, which never counts as a recent sign-in.
+  auth_method?: SignInMethod;
+  auth_time?: number;
   exp?: number;
+}
+
+export type SignInMethod = "password" | "google" | "passkey";
+
+// What opened a session and when, or null when the token does not say.
+export type SessionSignIn = { method: SignInMethod; at: Date } | null;
+
+const SIGN_IN_METHODS: readonly SignInMethod[] = [
+  "password",
+  "google",
+  "passkey",
+];
+
+function sessionSignIn(payload: JWTPayload): SessionSignIn {
+  if (
+    !payload.auth_method ||
+    !SIGN_IN_METHODS.includes(payload.auth_method) ||
+    typeof payload.auth_time !== "number"
+  ) {
+    return null;
+  }
+  return {
+    method: payload.auth_method,
+    at: new Date(payload.auth_time * 1000),
+  };
 }
 
 // The ended-session lookup that rides on the session read's user query: one row when this token's
@@ -190,6 +219,10 @@ export interface AuthUser {
   // The `jti` of the cookie session, so a logout can close the sockets it opened. Absent on an API
   // key and on a token issued before sessions carried one.
   sessionId?: string;
+  // The cookie session's password fingerprint (`pwd`) and what opened it. Absent on an API key.
+  // Read by passkey registration (docs/passkeys.md).
+  sessionPwd?: string | null;
+  signIn?: SessionSignIn;
 }
 
 // The session a logout ended: whose it was, and its `jti`.
@@ -459,7 +492,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       async setAuthCookie(
         user: AuthUser,
         passwordHash: string | null,
-        options: { proofSessionId?: string } = {},
+        options: { proofSessionId?: string; method?: SignInMethod } = {},
       ) {
         const replaced = await currentSession();
         if (options.proofSessionId !== undefined) {
@@ -498,6 +531,14 @@ export const authPlugin = new Elysia({ name: "auth" })
           tenantId: user.tenantId === null ? null : user.tenantId.toString(),
           ...(pwd ? { pwd } : {}),
           jti: randomUUID(),
+          // NOTE: what the person just proved. Left out, the session is never a recent sign-in,
+          // which only ever costs a password prompt when adding a passkey.
+          ...(options.method
+            ? {
+                auth_method: options.method,
+                auth_time: Math.floor(Date.now() / 1000),
+              }
+            : {}),
         });
 
         cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
@@ -664,6 +705,8 @@ export const authPlugin = new Elysia({ name: "auth" })
             role: "SUPER_ADMIN",
             memberships,
             ...(payload.jti ? { sessionId: payload.jti } : {}),
+            sessionPwd: payload.pwd ?? null,
+            signIn: sessionSignIn(payload),
           };
         }
 
@@ -680,6 +723,8 @@ export const authPlugin = new Elysia({ name: "auth" })
           ...current,
           memberships,
           ...(payload.jti ? { sessionId: payload.jti } : {}),
+          sessionPwd: payload.pwd ?? null,
+          signIn: sessionSignIn(payload),
         };
       },
     };

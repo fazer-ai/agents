@@ -12,6 +12,7 @@ const PRINTED_PARAMS = new Set([
   "kid",
   "kind",
   "mediaId",
+  "passkeyId",
   "threadId",
   "variant",
 ]);

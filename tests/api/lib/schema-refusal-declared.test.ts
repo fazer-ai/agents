@@ -408,6 +408,8 @@ const behindClientChannelSwitch = (id: string) =>
   id === "GET /api/v1/sdk/:app/threads/:threadId/messages" ||
   / \/api\/v1\/client-apps(\/|$)/.test(id);
 config.clientChannel.enabled = true;
+const passkeysWas = config.passkeysEnabled;
+(config as { passkeysEnabled: boolean }).passkeysEnabled = true;
 
 const measured: Array<{
   id: string;
@@ -436,6 +438,7 @@ try {
 } finally {
   withServer.server = realServer;
   config.clientChannel.enabled = clientChannelWas;
+  (config as { passkeysEnabled: boolean }).passkeysEnabled = passkeysWas;
 }
 
 describe("a route that can answer 422 declares it", () => {

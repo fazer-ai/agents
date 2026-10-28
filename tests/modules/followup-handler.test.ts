@@ -6,6 +6,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import { recordAppointment } from "@/modules/appointments/record";
 import {
   cancelAppointment,
@@ -26,6 +27,7 @@ import { getJobHandler } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
+import { FailingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -412,6 +414,42 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  // A provider out of credit refuses every retry until the account is fixed: the follow-up's failure
+  // reaches the scheduler with the mark that dead-letters the job now. A rate limit does not.
+  test("a follow-up whose provider is out of credit fails with the mark that ends the job", async () => {
+    for (const [convId, failure, permanent] of [
+      [
+        1780,
+        Object.assign(new Error("You exceeded your current quota"), {
+          status: 429,
+          code: "insufficient_quota",
+        }),
+        true,
+      ],
+      [1781, Object.assign(new Error("slow down"), { status: 429 }), false],
+    ] as const) {
+      await seedConversation(convId);
+      const s = stubClient();
+      let thrown: unknown;
+      try {
+        await followUpHandler(jobFor(convId), appDb, {
+          makeModel: () => new FailingModel(failure),
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect([convId, thrown instanceof Error]).toEqual([convId, true]);
+      expect([convId, failsUntilAccountFixed(thrown)]).toEqual([
+        convId,
+        permanent,
+      ]);
+      expect(s.sent).toEqual([]);
+    }
   });
 
   test("(a) does NOT re-fire when lastFollowUpAt >= lastInboundAt", async () => {

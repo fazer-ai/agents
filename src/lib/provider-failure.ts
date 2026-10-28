@@ -85,6 +85,70 @@ export function failureDetail(err: unknown): Record<string, string> {
     : { fallbackFailure: reported };
 }
 
+// Whether the provider will answer the same way until a person acts on the account (no credit, a key
+// invalid or without access). A predicate over the provider's own error, allowed like `namesATimeout`:
+// it only chooses a boolean. Yes for a 401 or 403; a 429 with `insufficient_quota` (any other 429 is a
+// rate, Gemini's daily quota included, since it answers like its per-minute limit); a 402 without
+// `Retry-After` (with it, OpenRouter's in-flight budget, which clears on its own); and Anthropic's 400
+// for a credit balance too low. The full table is in docs/logs.md.
+export function failsUntilAccountFixedAt(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const status = statusOf(err);
+  const bag = err as unknown as Record<string, unknown>;
+  if (status === 401 || status === 403) return true;
+  if (status === 429) return errorCode(bag) === "insufficient_quota";
+  if (status === 402) return !hasRetryAfter(bag);
+  if (status === 400) return /credit balance is too low/i.test(err.message);
+  return false;
+}
+
+function errorCode(bag: Record<string, unknown>): string | null {
+  if (typeof bag.code === "string") return bag.code;
+  const inner = bag.error;
+  if (typeof inner === "object" && inner !== null) {
+    const code = (inner as Record<string, unknown>).code;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
+function hasRetryAfter(bag: Record<string, unknown>): boolean {
+  for (const source of [
+    bag.headers,
+    (bag.response as { headers?: unknown })?.headers,
+  ]) {
+    if (typeof source !== "object" || source === null) continue;
+    const get = (source as { get?: unknown }).get;
+    const value =
+      typeof get === "function"
+        ? get.call(source, "retry-after")
+        : ((source as Record<string, unknown>)["retry-after"] ??
+          (source as Record<string, unknown>)["Retry-After"]);
+    if (value !== null && value !== undefined && String(value).trim() !== "")
+      return true;
+  }
+  return false;
+}
+
+// Every wrapper `asProviderFailure` built.
+const wrappers = new WeakSet<Error>();
+
+// The wrappers `asProviderFailure` built for a failure `failsUntilAccountFixedAt` recognised, read
+// downstream by `failsUntilAccountFixed`, where the provider's error is only the wrapper's `cause`.
+const accountFailures = new WeakSet<Error>();
+
+// Whether this failure, wherever it surfaced, is one the provider will repeat until the account is
+// fixed: a wrapper from `asProviderFailure` that recognised it, found on the error or its causes. Only
+// a model call's failure can answer yes, so a Chatwoot 401 keeps its retries.
+export function failsUntilAccountFixed(err: unknown): boolean {
+  let e: unknown = err;
+  for (let depth = 0; e instanceof Error && depth < 5; depth++) {
+    if (accountFailures.has(e)) return true;
+    e = e.cause;
+  }
+  return false;
+}
+
 // The wrappers `asProviderFailure` built for a timeout: their name is plain "Error" and their message
 // is the word, so without this a second reading (`withFlowStage` around a model call) would call a
 // timeout a "provider error", and a provider timing out all day would never make a rate.
@@ -123,6 +187,15 @@ export function asProviderFailure(err: unknown, timedOut = false): Error {
   const failure = providerFailure(err, timedOut);
   const out = new Error(failure, { cause: err });
   if (failure === "timeout") timedOutWrappers.add(out);
+  // NOTE: a wrapper reduced again keeps its own answer: the provider's code and headers are not
+  // copied onto it, so asking the predicate of it would read a 402 with `Retry-After` as one without.
+  if (
+    wrappers.has(err as Error)
+      ? failsUntilAccountFixed(err)
+      : failsUntilAccountFixedAt(err)
+  )
+    accountFailures.add(out);
+  wrappers.add(out);
   const status = statusOf(err);
   if (status !== null) {
     (out as unknown as Record<string, unknown>).status = status;

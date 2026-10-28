@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { asProviderFailure, providerFailure } from "@/lib/provider-failure";
+import {
+  asProviderFailure,
+  failsUntilAccountFixed,
+  failsUntilAccountFixedAt,
+  providerFailure,
+} from "@/lib/provider-failure";
+import { ChatwootApiError } from "@/modules/chatwoot/client";
 
 // The decision table for what a provider failure may say once it leaves the call that made it. It
 // lives beside the rule, not beside a caller: every provider boundary asks the same question, and a
@@ -188,5 +194,102 @@ describe("providerFailure", () => {
     const thrown = asProviderFailure(new Error("ECONNREFUSED"));
     expect(thrown.message).toBe("provider error");
     expect((thrown as unknown as { status?: unknown }).status).toBeUndefined();
+  });
+});
+
+// Which provider failures the scheduler stops retrying: the ones the provider will repeat until a
+// person acts on the account. Everything else keeps its retries, a quota that clears on its own first.
+describe("failsUntilAccountFixed", () => {
+  const err = (message: string, fields: Record<string, unknown>) =>
+    Object.assign(new Error(message), fields);
+  const cases: Array<[string, Error, boolean]> = [
+    [
+      "OpenAI out of credit",
+      err("You exceeded your current quota", {
+        status: 429,
+        code: "insufficient_quota",
+      }),
+      true,
+    ],
+    [
+      "an OpenAI-compatible body carrying the code",
+      err("quota", { status: 429, error: { code: "insufficient_quota" } }),
+      true,
+    ],
+    [
+      "Anthropic out of credit",
+      err(
+        "400 Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing",
+        { status: 400 },
+      ),
+      true,
+    ],
+    [
+      "OpenRouter out of credit",
+      err("Insufficient credits", { status: 402 }),
+      true,
+    ],
+    [
+      "OpenRouter's in-flight budget, with Retry-After",
+      err("Insufficient credits", {
+        status: 402,
+        headers: new Headers({ "retry-after": "5" }),
+      }),
+      false,
+    ],
+    [
+      "the same, with the headers as a plain object",
+      err("Insufficient credits", {
+        status: 402,
+        headers: { "retry-after": "5" },
+      }),
+      false,
+    ],
+    ["an invalid key", err("Incorrect API key", { status: 401 }), true],
+    ["a key without access", err("forbidden", { status: 403 }), true],
+    [
+      "Gemini's quota, daily or per minute alike",
+      err("You exceeded your current quota, please check your plan", {
+        status: 429,
+        code: "RESOURCE_EXHAUSTED",
+      }),
+      false,
+    ],
+    ["a rate limit", err("Rate limit reached", { status: 429 }), false],
+    [
+      "another 400",
+      err("400 messages: field required", { status: 400 }),
+      false,
+    ],
+    ["an overload", err("overloaded", { status: 529 }), false],
+    ["no status at all", err("socket hang up", {}), false],
+  ];
+  test("the provider's own error, row by row", () => {
+    for (const [name, e, expected] of cases)
+      expect([name, failsUntilAccountFixedAt(e)]).toEqual([name, expected]);
+  });
+
+  test("downstream, only through the wrapper the provider boundary built", () => {
+    for (const [name, e, expected] of cases) {
+      const wrapped = asProviderFailure(e);
+      expect([name, failsUntilAccountFixed(wrapped)]).toEqual([name, expected]);
+      // Further up, under another error that keeps it as its cause.
+      const outer = new Error("turn failed", { cause: wrapped });
+      expect([name, failsUntilAccountFixed(outer)]).toEqual([name, expected]);
+      // A second pass over the wrapper (a caller that reduces again) keeps the answer, though the
+      // provider's `code` is not copied onto the wrapper.
+      expect([
+        name,
+        failsUntilAccountFixed(asProviderFailure(wrapped)),
+      ]).toEqual([name, expected]);
+    }
+  });
+
+  test("a failure that did not come out of a model call is never one", () => {
+    expect(failsUntilAccountFixed(err("bad key", { status: 401 }))).toBe(false);
+    expect(
+      failsUntilAccountFixed(new ChatwootApiError(401, "GET /conversations/1")),
+    ).toBe(false);
+    expect(failsUntilAccountFixed("HTTP 401")).toBe(false);
   });
 });

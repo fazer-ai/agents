@@ -6,6 +6,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { type PoolClass, runInPoolClass } from "@/lib/pool-class";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
@@ -161,6 +162,9 @@ export function registerDeadLetterHandler(
 ): void {
   deadLetterHandlers.set(kind, handler);
 }
+export function unregisterDeadLetterHandler(kind: string): void {
+  deadLetterHandlers.delete(kind);
+}
 export function getDeadLetterHandler(
   kind: string,
 ): DeadLetterHandler | undefined {
@@ -254,6 +258,7 @@ async function fail(
   job: ClaimedJob,
   error: string,
   base: PrismaClient,
+  final = false,
 ): Promise<void> {
   const { deadLettered, applied } = await failJob(
     job.tenantId,
@@ -263,6 +268,8 @@ async function fail(
     job.kind,
     error,
     base,
+    new Date(),
+    final,
   );
   if (!applied) await supersededWarning(job, "fail", base);
   else recordJobOutcome(job.kind, "failed");
@@ -371,7 +378,9 @@ async function runWithDeadline(
   } catch (err) {
     failedWith = errMsg(err);
     try {
-      await fail(job, failedWith, base);
+      // NOTE: a provider that will refuse every retry until the account is fixed (no credit, a dead
+      // key) goes to the dead-letter now: the retries would only delay the handoff.
+      await fail(job, failedWith, base, failsUntilAccountFixed(err));
     } finally {
       failureWritten();
     }

@@ -207,7 +207,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/contact-auth-stages-e2e.test.ts": 1,
   "tests/modules/dangling-tool-call-thread.test.ts": 1,
   "tests/modules/debounce-late-visual.test.ts": 1,
-  "tests/modules/debounce.test.ts": 10,
+  "tests/modules/debounce.test.ts": 11,
   "tests/modules/decisions-try.test.ts": 1,
   "tests/modules/delivery-sweep.test.ts": 7,
   // NOTE: The expiry line one request's conversation wrote, read by that conversation.

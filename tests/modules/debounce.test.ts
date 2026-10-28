@@ -10,6 +10,7 @@ import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import { stampedBurstStart, stampedSentAt } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -6525,6 +6526,67 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(
         (rows[0]?.detail as Record<string, unknown> | undefined)?.willRetry,
       ).toBe(willRetry);
+      await clearFlowLog(suDb, { tenantId, threadId: threadOf(conv) });
+    });
+  }
+
+  // A provider out of credit (or with a dead key) refuses every retry until a person acts on the
+  // account: the run says no retry follows even with attempts left, and its failure carries the mark
+  // the scheduler reads to dead-letter the job now. A rate limit keeps its retries.
+  for (const [name, failure, permanent] of [
+    [
+      "no credit",
+      Object.assign(new Error("You exceeded your current quota"), {
+        status: 429,
+        code: "insufficient_quota",
+      }),
+      true,
+    ],
+    [
+      "a rate limit",
+      Object.assign(new Error("slow down"), { status: 429 }),
+      false,
+    ],
+  ] as const) {
+    test(`a run that throws with ${name} on attempt 1 says whether a retry follows`, async () => {
+      const conv = name === "no credit" ? 10910 : 10911;
+      await seedConversation(conv);
+      const sent: Array<[number, string]> = [];
+      let thrown: unknown;
+      try {
+        await flushDebounceJob({
+          job: { ...jobFor(conv), attempts: 0 },
+          base: appDb,
+          deps: {
+            makeModel: () => new FailingModel(failure),
+            makeClient: makeStub({
+              pages: [page([{ id: 1, content: "oi" }])],
+              sent,
+              calls: { getMessages: 0 },
+            }),
+            checkpointer: new MemorySaver(),
+          },
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(failsUntilAccountFixed(thrown)).toBe(permanent);
+      expect(sent).toEqual([]);
+      const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: {
+          tenantId,
+          threadId: threadOf(conv),
+          stage: "generate",
+          status: "error",
+        },
+        select: { detail: true },
+      });
+      expect(rows).toHaveLength(1);
+      expect(
+        (rows[0]?.detail as Record<string, unknown> | undefined)?.willRetry,
+      ).toBe(!permanent);
       await clearFlowLog(suDb, { tenantId, threadId: threadOf(conv) });
     });
   }

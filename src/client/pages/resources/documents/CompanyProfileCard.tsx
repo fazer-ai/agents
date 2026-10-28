@@ -245,7 +245,7 @@ export function CompanyProfileCard({
   return (
     // The modal around it carries the title, so the body opens on what the profile is for.
     <div className="flex flex-col gap-4">
-      <p className="text-sm text-text-muted">
+      <p className="text-text-muted text-sm">
         {t(
           "documents.company.subtitle",
           "Printed on every document you issue.",
@@ -288,7 +288,7 @@ export function CompanyProfileCard({
               className="h-10 max-w-32 object-contain"
             />
           ) : (
-            <span className="text-sm text-text-muted">
+            <span className="text-text-muted text-sm">
               {t("documents.company.noLogo", "No logo")}
             </span>
           )}

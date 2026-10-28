@@ -790,7 +790,7 @@ function AgentEditorSkeleton() {
           <Skeleton key={key} className="h-8 w-24" />
         ))}
       </div>
-      <div className="flex flex-col gap-4 rounded-xl border border-border p-4">
+      <div className="border-border flex flex-col gap-4 rounded-xl border p-4">
         <Skeleton className="h-4 w-16" />
         <Skeleton className="h-9 w-full" />
         <Skeleton className="h-4 w-28" />
@@ -4711,7 +4711,7 @@ function AgentEditor() {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <Link
           to="/agents"
-          className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
+          className="text-text-muted hover:text-text-primary inline-flex w-fit items-center gap-1.5 text-sm"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           {t("editor.back", "Back to agents")}
@@ -4719,7 +4719,7 @@ function AgentEditor() {
         {backToConversation && (
           <Link
             to={backToConversation}
-            className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+            className="text-accent inline-flex w-fit items-center gap-1.5 text-sm hover:underline"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />
             {t("editor.backToConversation", "Back to the conversation")}
@@ -4738,8 +4738,8 @@ function AgentEditor() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <Settings2 className="h-6 w-6 text-accent" aria-hidden="true" />
-                <h1 className="truncate font-semibold text-text-primary text-xl">
+                <Settings2 className="text-accent h-6 w-6" aria-hidden="true" />
+                <h1 className="text-text-primary truncate text-xl font-semibold">
                   {name || t("editor.untitled", "Untitled agent")}
                 </h1>
                 <Badge variant={enabled ? "success" : "secondary"}>
@@ -4755,7 +4755,7 @@ function AgentEditor() {
                     className="inline-flex items-center gap-1.5"
                   >
                     <span
-                      className="h-1.5 w-1.5 rounded-full bg-warning"
+                      className="bg-warning h-1.5 w-1.5 rounded-full"
                       aria-hidden="true"
                     />
                     {t("editor.unsavedChanges", "Unsaved changes")}
@@ -4827,17 +4827,17 @@ function AgentEditor() {
             {importWarnings.length > 0 && (
               <div
                 role="alert"
-                className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-3"
+                className="border-warning bg-warning-soft flex items-start gap-2 rounded-lg border px-4 py-3"
               >
                 <TriangleAlert
-                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  className="text-warning mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 {/* The body fills the row (flex-1) so each warning's "Review" link right-aligns to the
                     section edge, not to the longest message; the X lives in the header beside the title. */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-3">
-                    <p className="font-medium text-sm text-text-primary">
+                    <p className="text-text-primary text-sm font-medium">
                       {t(
                         "editor.importWarningsTitle",
                         "Imported with warnings",
@@ -4847,7 +4847,7 @@ function AgentEditor() {
                       type="button"
                       onClick={() => setImportWarnings([])}
                       aria-label={t("common.dismiss", "Dismiss")}
-                      className="-mt-0.5 shrink-0 rounded text-text-muted hover:text-text-primary"
+                      className="text-text-muted hover:text-text-primary -mt-0.5 shrink-0 rounded"
                     >
                       <X className="h-4 w-4" aria-hidden="true" />
                     </button>
@@ -4859,7 +4859,7 @@ function AgentEditor() {
                         key={`${w.code}:${JSON.stringify(w.params ?? {})}`}
                         className="flex items-baseline justify-between gap-3"
                       >
-                        <span className="min-w-0 text-text-secondary text-xs">
+                        <span className="text-text-secondary min-w-0 text-xs">
                           {importWarningMessage(w, t)}
                         </span>
                         {w.target &&
@@ -4873,7 +4873,7 @@ function AgentEditor() {
                             <button
                               type="button"
                               onClick={() => goToImportWarning(w)}
-                              className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                              className="text-accent shrink-0 rounded text-xs font-medium hover:underline focus-visible:underline"
                             >
                               {t("editor.importWarningReview", "Review")}
                             </button>
@@ -4888,20 +4888,20 @@ function AgentEditor() {
             {/* Live config health: features enabled without a credential to run them. Persists
                 (not dismissible) since it reflects the CURRENT config; "Go to" deep-links to the field. */}
             {(configIssues.length > 0 || voiceCallWarning) && (
-              <div className="flex flex-col gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-3">
+              <div className="border-warning bg-warning-soft flex flex-col gap-2 rounded-lg border px-4 py-3">
                 <div className="flex items-start gap-2">
                   <TriangleAlert
-                    className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                    className="text-warning mt-0.5 h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
-                  <p className="font-medium text-sm text-text-primary">
+                  <p className="text-text-primary text-sm font-medium">
                     {t("editor.configIssuesTitle", "Configuration warnings")}
                   </p>
                 </div>
                 <ul className="flex flex-col gap-1">
                   {voiceCallWarning && (
                     <li className="flex items-baseline justify-between gap-3 pl-6">
-                      <span className="min-w-0 text-text-secondary text-xs">
+                      <span className="text-text-secondary min-w-0 text-xs">
                         {voiceCallWarning.message}
                       </span>
                       <button
@@ -4912,7 +4912,7 @@ function AgentEditor() {
                             sectionId: "general-voice",
                           })
                         }
-                        className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                        className="text-accent shrink-0 rounded text-xs font-medium hover:underline focus-visible:underline"
                       >
                         {voiceCallWarning.action}
                       </button>
@@ -4923,14 +4923,14 @@ function AgentEditor() {
                       key={issue.field ?? issue.knowledgeBaseId ?? issue.key}
                       className="flex items-baseline justify-between gap-3 pl-6"
                     >
-                      <span className="min-w-0 text-text-secondary text-xs">
+                      <span className="text-text-secondary min-w-0 text-xs">
                         {issueMessage(issue)}
                       </span>
                       {issueHasAction(issue) && (
                         <button
                           type="button"
                           onClick={() => goToIssue(issue)}
-                          className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                          className="text-accent shrink-0 rounded text-xs font-medium hover:underline focus-visible:underline"
                         >
                           {issueActionLabel(issue)}
                         </button>
@@ -4951,12 +4951,12 @@ function AgentEditor() {
                   <div
                     key={entry.section}
                     role="alert"
-                    className="flex items-baseline justify-between gap-3 rounded-lg border border-error bg-error-soft px-4 py-3"
+                    className="border-error bg-error-soft flex items-baseline justify-between gap-3 rounded-lg border px-4 py-3"
                   >
-                    <span className="min-w-0 text-sm text-text-primary">
+                    <span className="text-text-primary min-w-0 text-sm">
                       {entry.message}
                       {entry.noControl && (
-                        <span className="block text-text-secondary text-xs">
+                        <span className="text-text-secondary block text-xs">
                           {t(
                             "editor.refusalNoControl",
                             "This value has no field in the console, so it can only be changed through the API.",
@@ -4970,7 +4970,7 @@ function AgentEditor() {
                         onClick={() =>
                           entry.target && goToEditorTarget(entry.target)
                         }
-                        className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                        className="text-accent shrink-0 rounded text-xs font-medium hover:underline focus-visible:underline"
                       >
                         {t("editor.goToIssue", "Fix")}
                       </button>
@@ -5045,7 +5045,7 @@ function AgentEditor() {
                                 className="flex scroll-mt-4 flex-col gap-4"
                               >
                                 <div>
-                                  <h3 className="font-medium text-sm text-text-primary">
+                                  <h3 className="text-text-primary text-sm font-medium">
                                     {t(
                                       "editor.classifierSection",
                                       "Classifier",
@@ -5666,7 +5666,7 @@ function AgentEditor() {
       >
         <div className="flex flex-col gap-3">
           {anyDirty && (
-            <div className="rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-text-secondary text-xs">
+            <div className="border-warning/40 bg-warning-soft text-text-secondary rounded-lg border px-3 py-2 text-xs">
               {t(
                 "editor.cloneUnsavedNote",
                 "Cloning uses the last saved version; your unsaved changes won't be included.",

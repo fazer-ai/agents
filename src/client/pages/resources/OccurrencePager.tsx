@@ -27,7 +27,7 @@ export function OccurrencePager({
   return (
     <nav
       aria-label={label}
-      className="flex flex-wrap items-center justify-between gap-2 text-sm text-text-muted"
+      className="text-text-muted flex flex-wrap items-center justify-between gap-2 text-sm"
     >
       <span>
         {t("occurrences.pager.range", "{{first}} to {{last}} of {{total}}", {

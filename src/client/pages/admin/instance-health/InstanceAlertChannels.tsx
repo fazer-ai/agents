@@ -171,7 +171,7 @@ function ChannelModal({
         }}
       >
         {error && (
-          <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+          <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
             {error}
           </div>
         )}
@@ -221,7 +221,7 @@ function ChannelModal({
             error={urlInvalid}
           />
           {editing?.urlMasked && (
-            <p className="mt-1 text-text-muted text-xs">
+            <p className="text-text-muted mt-1 text-xs">
               {t(
                 "instanceHealth.urlKeep",
                 "Leave blank to keep the current URL.",
@@ -242,7 +242,7 @@ function ChannelModal({
               onChange={(e) => setSecret(e.target.value)}
               disabled={loading}
             />
-            <p className="mt-1 text-text-muted text-xs">
+            <p className="text-text-muted mt-1 text-xs">
               {editing?.hasSecret
                 ? t(
                     "instanceHealth.secretKeep",
@@ -254,7 +254,7 @@ function ChannelModal({
                   )}
             </p>
             {editing?.hasSecret && (
-              <label className="mt-2 flex items-center gap-2 text-sm text-text-secondary">
+              <label className="text-text-secondary mt-2 flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={clearSecret}
@@ -278,7 +278,7 @@ function ChannelModal({
             {SIGNAL_KEYS.map((key) => (
               <label
                 key={key}
-                className="flex items-center gap-2 text-sm text-text-secondary"
+                className="text-text-secondary flex items-center gap-2 text-sm"
               >
                 <input
                   type="checkbox"
@@ -291,10 +291,10 @@ function ChannelModal({
             ))}
           </div>
         </FormField>
-        <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+        <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
           <label
             htmlFor={enabledId}
-            className="font-medium text-sm text-text-primary"
+            className="text-text-primary text-sm font-medium"
           >
             {t("common.enabled", "Enabled")}
           </label>
@@ -496,10 +496,10 @@ export function InstanceAlertChannels({ pollMs }: { pollMs: number }) {
     <section className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-base text-text-primary">
+          <h2 className="text-text-primary text-base font-semibold">
             {t("instanceHealth.channelsTitle", "Instance alerts")}
           </h2>
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "instanceHealth.channelsSubtitle",
               "Where an alert goes when a signal stays above its threshold, and again when it recovers. These channels belong to the instance, not to a tenant.",
@@ -524,7 +524,7 @@ export function InstanceAlertChannels({ pollMs }: { pollMs: number }) {
       {staleSince && !error && (
         <div
           role="status"
-          className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm"
+          className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm"
         >
           {t(
             "instanceHealth.channelsStale",
@@ -558,7 +558,7 @@ export function InstanceAlertChannels({ pollMs }: { pollMs: number }) {
             >
               <div className="flex min-w-0 flex-col gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {ch.name}
                   </span>
                   <Badge variant="secondary">{ch.type}</Badge>
@@ -574,7 +574,7 @@ export function InstanceAlertChannels({ pollMs }: { pollMs: number }) {
                     )
                   )}
                 </div>
-                <span className="truncate font-mono text-text-muted text-xs">
+                <span className="text-text-muted truncate font-mono text-xs">
                   {ch.urlMasked ??
                     t(
                       "instanceHealth.awaitingUrlHint",

@@ -71,14 +71,14 @@ export function Section({
       >
         <span
           className={cn(
-            "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent",
+            "bg-bg-tertiary text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
             description && "mt-0.5",
           )}
         >
           <Icon className="h-4 w-4" aria-hidden="true" />
         </span>
         <div className="min-w-0">
-          <h3 className="flex items-center gap-1.5 font-medium text-sm text-text-primary">
+          <h3 className="text-text-primary flex items-center gap-1.5 text-sm font-medium">
             {title}
             {help ? <HelpPopover content={help} label={title} /> : null}
           </h3>
@@ -267,7 +267,7 @@ export function SectionNav({
                 className={cn(
                   "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors",
                   isActive
-                    ? "bg-bg-tertiary font-medium text-text-primary"
+                    ? "bg-bg-tertiary text-text-primary font-medium"
                     : "text-text-muted hover:bg-bg-hover hover:text-text-secondary",
                 )}
                 aria-current={isActive ? "true" : undefined}

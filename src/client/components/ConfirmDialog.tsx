@@ -67,7 +67,7 @@ export function ConfirmDialog({
       }
     >
       {payload?.message && (
-        <p className="text-sm text-text-secondary">{payload.message}</p>
+        <p className="text-text-secondary text-sm">{payload.message}</p>
       )}
     </Modal>
   );

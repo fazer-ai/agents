@@ -419,6 +419,7 @@ export class WindowLoad implements DayStore {
       // Days before the tenant's first record hold nothing: counted, never listed, since a window
       // may start centuries back.
       const held = this.dataFrom ?? addDays(last, 1);
+      // biome-ignore lint/complexity/useMathMinMax: days are ISO strings, which Math.max turns into NaN
       const from = first < held ? held : first;
       const beforeLast = held <= last ? addDays(held, -1) : last;
       this.before = first < held ? { first, last: beforeLast } : null;
@@ -514,8 +515,9 @@ export class WindowLoad implements DayStore {
       for (const [a, b] of runsOf(missing)) {
         const size = PART_DAYS[fam];
         for (let end = b; end >= a; end = addDays(end, -size)) {
-          const start =
-            addDays(end, -(size - 1)) < a ? a : addDays(end, -(size - 1));
+          const first = addDays(end, -(size - 1));
+          // biome-ignore lint/complexity/useMathMinMax: days are ISO strings, which Math.max turns into NaN
+          const start = first < a ? a : first;
           chunks.push({ fam, first: start, last: end });
         }
       }

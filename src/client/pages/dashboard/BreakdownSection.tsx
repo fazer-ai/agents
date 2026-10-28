@@ -164,7 +164,7 @@ export function BreakdownSection({
         {block.loading && !block.data ? (
           <Skeleton className="h-32 w-full" />
         ) : rows.length === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
         ) : (
@@ -200,7 +200,7 @@ export function BreakdownSection({
                             )
                           }
                           className={cn(
-                            "inline-flex items-center gap-1 hover:text-text-primary",
+                            "hover:text-text-primary inline-flex items-center gap-1",
                             active && "text-text-primary",
                           )}
                         >
@@ -223,11 +223,11 @@ export function BreakdownSection({
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.key ?? "none"} className="border-border border-t">
-                    <td className="max-w-64 truncate py-1.5 pr-3 text-text-secondary">
+                    <td className="text-text-secondary max-w-64 truncate py-1.5 pr-3">
                       {clickable && r.key !== null ? (
                         <button
                           type="button"
-                          className="truncate text-left hover:text-accent hover:underline"
+                          className="hover:text-accent truncate text-left hover:underline"
                           onClick={() =>
                             onFilter(
                               dimension === "agent"

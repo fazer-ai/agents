@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 // expandable tool marker and the playground trace, so both render tool I/O identically.
 export function TracePre({ children }: { children: ReactNode }) {
   return (
-    <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted text-xs">
+    <pre className="bg-bg-tertiary text-text-muted overflow-x-auto rounded px-2 py-1 text-xs whitespace-pre-wrap">
       {children}
     </pre>
   );
@@ -41,7 +41,7 @@ export function ToolCallDetails({
     <div className="flex flex-col gap-1.5 text-left">
       {showArgs && (
         <div className="flex flex-col gap-0.5">
-          <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+          <span className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
             {t("conversation.trail.args", "Arguments")}
           </span>
           <TracePre>
@@ -51,7 +51,7 @@ export function ToolCallDetails({
       )}
       {showOutput && (
         <div className="flex flex-col gap-0.5">
-          <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+          <span className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
             {t("conversation.trail.result", "Result")}
           </span>
           <TracePre>{output}</TracePre>
@@ -59,10 +59,10 @@ export function ToolCallDetails({
       )}
       {showError && (
         <div className="flex flex-col gap-0.5">
-          <span className="font-medium text-[10px] text-error uppercase tracking-wider">
+          <span className="text-error text-[10px] font-medium tracking-wider uppercase">
             {t("conversation.trail.error", "Error")}
           </span>
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-error text-xs">
+          <pre className="bg-bg-tertiary text-error overflow-x-auto rounded px-2 py-1 text-xs whitespace-pre-wrap">
             {error}
           </pre>
         </div>

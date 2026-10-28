@@ -63,13 +63,13 @@ export function ProactiveBreakerBanner() {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center gap-2 border-error border-b bg-error-soft px-4 py-2.5"
+      className="border-error bg-error-soft flex flex-wrap items-center gap-2 border-b px-4 py-2.5"
     >
       <TriangleAlert
-        className="h-4 w-4 shrink-0 text-error"
+        className="text-error h-4 w-4 shrink-0"
         aria-hidden="true"
       />
-      <span className="min-w-0 flex-1 text-sm text-text-primary">
+      <span className="text-text-primary min-w-0 flex-1 text-sm">
         {t(
           "proactiveBreaker.banner",
           "Proactive messages paused since {{since}}: {{sent}} sent in 24h, limit {{limit}}.",
@@ -80,7 +80,7 @@ export function ProactiveBreakerBanner() {
           },
         )}
         {!isAdmin && (
-          <span className="ml-1 text-text-secondary">
+          <span className="text-text-secondary ml-1">
             {t(
               "proactiveBreaker.bannerAskAdmin",
               "An admin of this account can resume them.",

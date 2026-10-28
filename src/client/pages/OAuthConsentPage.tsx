@@ -158,7 +158,7 @@ export function OAuthConsentPage() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center bg-bg-primary p-4">
+    <div className="bg-bg-primary flex min-h-dvh flex-col items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="mb-12 text-center">
           <Logo className="mx-auto h-10" />
@@ -167,7 +167,7 @@ export function OAuthConsentPage() {
         {state === "loading" ? (
           <div
             role="status"
-            className="space-y-4 rounded-2xl border border-border bg-bg-secondary p-8"
+            className="border-border bg-bg-secondary space-y-4 rounded-2xl border p-8"
           >
             <span className="sr-only">{t("common.loading", "Loading…")}</span>
             <Skeleton className="mx-auto h-6 w-2/3" />
@@ -176,11 +176,11 @@ export function OAuthConsentPage() {
             <Skeleton className="h-10 w-full" />
           </div>
         ) : state === "invalid" ? (
-          <div className="space-y-4 rounded-2xl border border-border bg-bg-secondary p-8 text-center">
-            <h1 className="font-semibold text-text-primary text-xl">
+          <div className="border-border bg-bg-secondary space-y-4 rounded-2xl border p-8 text-center">
+            <h1 className="text-text-primary text-xl font-semibold">
               {t("oauth.consent.expiredTitle", "Request unavailable")}
             </h1>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "oauth.consent.expiredBody",
                 "This authorization request is invalid or has expired. Reconnect from the application to try again.",
@@ -188,14 +188,14 @@ export function OAuthConsentPage() {
             </p>
           </div>
         ) : details ? (
-          <div className="space-y-6 rounded-2xl border border-border bg-bg-secondary p-8">
+          <div className="border-border bg-bg-secondary space-y-6 rounded-2xl border p-8">
             <div className="space-y-1 text-center">
-              <h1 className="font-semibold text-text-primary text-xl">
+              <h1 className="text-text-primary text-xl font-semibold">
                 {t("oauth.consent.title", "{{client}} wants access", {
                   client: details.clientName,
                 })}
               </h1>
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {t(
                   "oauth.consent.subtitle",
                   "Approve this application to connect to your account.",
@@ -204,9 +204,9 @@ export function OAuthConsentPage() {
             </div>
 
             {details.unverified ? (
-              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-3 text-sm text-text-primary">
+              <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-4 py-3 text-sm">
                 <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  className="text-warning mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <div className="space-y-1">
@@ -227,20 +227,20 @@ export function OAuthConsentPage() {
               </div>
             ) : null}
 
-            <div className="rounded-lg border border-border bg-bg-primary p-4">
-              <p className="mb-2 font-medium text-sm text-text-primary">
+            <div className="border-border bg-bg-primary rounded-lg border p-4">
+              <p className="text-text-primary mb-2 text-sm font-medium">
                 {t("oauth.consent.scopesTitle", "This will allow it to:")}
               </p>
               <ul className="space-y-2">
                 {details.scopes.length === 0 ? (
-                  <li className="text-sm text-text-secondary">
+                  <li className="text-text-secondary text-sm">
                     {t("oauth.consent.noScopes", "No access is requested.")}
                   </li>
                 ) : (
                   details.scopes.map((scope) => (
                     <li
                       key={scope}
-                      className="flex items-start gap-2 text-sm text-text-secondary"
+                      className="text-text-secondary flex items-start gap-2 text-sm"
                     >
                       <Badge variant="secondary">{scope}</Badge>
                       <span>{scopeLabel(scope)}</span>
@@ -255,7 +255,7 @@ export function OAuthConsentPage() {
                 <dt className="text-text-secondary">
                   {t("oauth.consent.account", "Signed in as")}
                 </dt>
-                <dd className="truncate text-text-primary">
+                <dd className="text-text-primary truncate">
                   {details.accountEmail}
                 </dd>
               </div>
@@ -264,7 +264,7 @@ export function OAuthConsentPage() {
                   <dt className="text-text-secondary">
                     {t("oauth.consent.workspace", "Workspace")}
                   </dt>
-                  <dd className="truncate text-text-primary">
+                  <dd className="text-text-primary truncate">
                     {details.tenantName}
                   </dd>
                 </div>
@@ -273,14 +273,14 @@ export function OAuthConsentPage() {
                 <dt className="text-text-secondary">
                   {t("oauth.consent.redirectTo", "Redirects to")}
                 </dt>
-                <dd className="truncate font-medium text-text-primary">
+                <dd className="text-text-primary truncate font-medium">
                   {details.redirectHost}
                 </dd>
               </div>
             </dl>
 
             {error && (
-              <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+              <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
                 {error}
               </div>
             )}
@@ -311,7 +311,7 @@ export function OAuthConsentPage() {
               type="button"
               onClick={switchAccount}
               disabled={submitting !== null}
-              className="block w-full text-center text-text-secondary text-xs hover:text-text-primary"
+              className="text-text-secondary hover:text-text-primary block w-full text-center text-xs"
             >
               {t("oauth.consent.switchAccount", "Not you? Use another account")}
             </button>

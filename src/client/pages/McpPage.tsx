@@ -127,10 +127,10 @@ export function McpPage() {
   return (
     <div className="space-y-8">
       <header>
-        <h2 className="font-semibold text-text-primary">
+        <h2 className="text-text-primary font-semibold">
           {t("mcp.my.title", "MCP")}
         </h2>
-        <p className="mt-0.5 text-sm text-text-muted">
+        <p className="text-text-muted mt-0.5 text-sm">
           {t(
             "mcp.my.subtitle",
             "Connect MCP apps to your account and manage what is connected.",
@@ -139,26 +139,26 @@ export function McpPage() {
       </header>
 
       {isAdmin && (
-        <div className="flex items-start gap-3 rounded-lg border border-border bg-bg-secondary p-4">
+        <div className="border-border bg-bg-secondary flex items-start gap-3 rounded-lg border p-4">
           <Info
-            className="mt-0.5 h-5 w-5 shrink-0 text-accent"
+            className="text-accent mt-0.5 h-5 w-5 shrink-0"
             aria-hidden="true"
           />
           <div className="flex-1 space-y-1.5">
-            <p className="font-medium text-sm text-text-primary">
+            <p className="text-text-primary text-sm font-medium">
               {t(
                 "mcp.my.agentToolsNote",
                 "Looking to give your agent MCP tools?",
               )}
             </p>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "mcp.my.agentToolsHint",
                 "This page is for connecting external apps to your own account. To let an agent use external MCP servers as tools, go to",
               )}{" "}
               <Link
                 to="/resources/mcp"
-                className="font-medium text-accent hover:underline"
+                className="text-accent font-medium hover:underline"
               >
                 {t("mcp.my.agentToolsLink", "Components > MCP")}
               </Link>
@@ -174,18 +174,18 @@ export function McpPage() {
       >
         {info && (
           <section className="space-y-5">
-            <h2 className="font-semibold text-lg text-text-primary">
+            <h2 className="text-text-primary text-lg font-semibold">
               {t("mcp.my.connectTitle", "How to connect")}
             </h2>
 
             <McpInstall url={info.url} />
 
             <div className="space-y-1.5">
-              <span className="font-medium text-sm text-text-secondary">
+              <span className="text-text-secondary text-sm font-medium">
                 {t("mcp.my.endpoint", "MCP endpoint")}
               </span>
               <div className="flex items-center gap-2">
-                <code className="flex-1 truncate rounded-lg border border-border bg-bg-tertiary px-3 py-2 font-mono text-text-primary text-xs">
+                <code className="border-border bg-bg-tertiary text-text-primary flex-1 truncate rounded-lg border px-3 py-2 font-mono text-xs">
                   {info.url}
                 </code>
                 <Button size="sm" variant="secondary" onClick={copyUrl}>
@@ -202,7 +202,7 @@ export function McpPage() {
             </div>
 
             <div className="space-y-1.5">
-              <span className="font-medium text-sm text-text-secondary">
+              <span className="text-text-secondary text-sm font-medium">
                 {t("mcp.my.scopes", "Available scopes")}
               </span>
               <div className="flex flex-wrap gap-1">
@@ -214,11 +214,11 @@ export function McpPage() {
               </div>
             </div>
 
-            <div className="space-y-2 rounded-lg border border-border p-4">
-              <span className="font-medium text-sm text-text-primary">
+            <div className="border-border space-y-2 rounded-lg border p-4">
+              <span className="text-text-primary text-sm font-medium">
                 {t("mcp.my.authOAuth", "OAuth 2.1 (recommended)")}
               </span>
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {t(
                   "mcp.my.authOAuthHint",
                   "Point your MCP client at the endpoint and it discovers the login automatically. Self-registration (DCR) is {{state}}.",
@@ -227,17 +227,17 @@ export function McpPage() {
               </p>
             </div>
 
-            <div className="space-y-2 rounded-lg border border-border p-4">
-              <span className="font-medium text-sm text-text-primary">
+            <div className="border-border space-y-2 rounded-lg border p-4">
+              <span className="text-text-primary text-sm font-medium">
                 {t("mcp.my.authApiKey", "API key (alternative)")}
               </span>
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {t(
                   "mcp.my.authApiKeyHint",
                   "Or send a per-tenant API key as a bearer token instead of OAuth. Create one under API keys.",
                 )}
               </p>
-              <code className="block w-fit rounded bg-bg-tertiary px-2 py-1 font-mono text-text-secondary text-xs">
+              <code className="bg-bg-tertiary text-text-secondary block w-fit rounded px-2 py-1 font-mono text-xs">
                 {"Authorization: Bearer fazerai_…"}
               </code>
             </div>
@@ -246,10 +246,10 @@ export function McpPage() {
 
         <section className="space-y-4">
           <div>
-            <h2 className="font-semibold text-lg text-text-primary">
+            <h2 className="text-text-primary text-lg font-semibold">
               {t("mcp.my.connectionsTitle", "Your connections")}
             </h2>
-            <p className="mt-0.5 text-sm text-text-muted">
+            <p className="text-text-muted mt-0.5 text-sm">
               {t(
                 "mcp.my.connectionsSubtitle",
                 "Apps you have authorized to access your account.",
@@ -273,7 +273,7 @@ export function McpPage() {
                 >
                   <div className="flex min-w-0 flex-col gap-1">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm text-text-primary">
+                      <span className="text-text-primary text-sm font-medium">
                         {conn.clientName}
                       </span>
                       {conn.unverified && (
@@ -289,7 +289,7 @@ export function McpPage() {
                         </Badge>
                       ))}
                     </div>
-                    <span className="mt-1 text-text-muted text-xs">
+                    <span className="text-text-muted mt-1 text-xs">
                       {t("mcp.my.connectedAt", "Connected {{date}}", {
                         date: formatDate(conn.connectedAt),
                       })}

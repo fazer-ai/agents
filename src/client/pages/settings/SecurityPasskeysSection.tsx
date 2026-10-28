@@ -177,7 +177,7 @@ function AddPasskeyModal({
           googleClientId ? (
             <div className="space-y-2">
               {googleCredential ? (
-                <p role="status" className="text-sm text-success">
+                <p role="status" className="text-success text-sm">
                   {t(
                     "settings.passkeyGoogleConfirmed",
                     "Google confirmed it is you. Create the passkey to continue.",
@@ -202,7 +202,7 @@ function AddPasskeyModal({
               )}
             </div>
           ) : (
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t(
                 "settings.passkeyGoogleUnavailable",
                 "Google sign-in is not available here, so there is no way to confirm it is you. Ask the administrator.",

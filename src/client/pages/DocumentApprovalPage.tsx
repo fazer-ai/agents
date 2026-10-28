@@ -434,13 +434,13 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 ? "/approvals"
                 : "/approvals?tab=history"
             }
-            className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
+            className="text-text-muted hover:text-text-primary inline-flex w-fit items-center gap-1.5 text-sm"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />
             {t("documentApproval.back", "Back to approvals")}
           </Link>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-semibold text-lg text-text-primary">
+            <h1 className="text-text-primary text-lg font-semibold">
               {approvalDocumentTitle(request)}
             </h1>
             <Badge
@@ -448,7 +448,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
             >
               {statusLabel(request.status)}
             </Badge>
-            <span className="text-sm text-text-muted">
+            <span className="text-text-muted text-sm">
               {request.status === "PENDING"
                 ? t("documentApproval.expiresAt", "Expires {{at}}", {
                     at: formatTime(request.expiresAt),
@@ -477,13 +477,13 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
           <div className="grid gap-6 lg:grid-cols-2">
             <div className="space-y-4">
               <Card className="space-y-2 p-4">
-                <h2 className="font-medium text-sm text-text-primary">
+                <h2 className="text-text-primary text-sm font-medium">
                   {t("documentApproval.customer", "Customer")}
                 </h2>
                 {contextState === "loading" ? (
                   <Skeleton className="h-16 w-full" />
                 ) : contextState === "failed" ? (
-                  <p className="text-sm text-text-muted">
+                  <p className="text-text-muted text-sm">
                     {t(
                       "documentApproval.contextError",
                       "The customer and the messages could not be loaded.",
@@ -519,7 +519,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                     )}
                   </dl>
                 ) : (
-                  <p className="text-sm text-text-muted">
+                  <p className="text-text-muted text-sm">
                     {t(
                       "documentApproval.noContact",
                       "No customer is recorded for this request.",
@@ -543,14 +543,14 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
               </Card>
 
               <Card className="space-y-3 p-4">
-                <h2 className="font-medium text-sm text-text-primary">
+                <h2 className="text-text-primary text-sm font-medium">
                   {t("documentApproval.recent", "Recent messages")}
                 </h2>
                 {contextState === "loading" && (
                   <Skeleton className="h-24 w-full" />
                 )}
                 {context?.messagesUnavailable && (
-                  <p className="text-sm text-text-muted">
+                  <p className="text-text-muted text-sm">
                     {t(
                       "documentApproval.messagesUnavailable",
                       "Chatwoot did not answer, so the messages are not shown.",
@@ -560,7 +560,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 {context &&
                   !context.messagesUnavailable &&
                   context.messages.length === 0 && (
-                    <p className="text-sm text-text-muted">
+                    <p className="text-text-muted text-sm">
                       {t("documentApproval.noMessages", "No messages.")}
                     </p>
                   )}
@@ -570,8 +570,8 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                       key={m.id ?? `m-${i}`}
                       className={
                         m.fromCustomer
-                          ? "mr-8 rounded-md bg-bg-tertiary p-2 text-sm"
-                          : "ml-8 rounded-md bg-accent-soft p-2 text-sm"
+                          ? "bg-bg-tertiary mr-8 rounded-md p-2 text-sm"
+                          : "bg-accent-soft ml-8 rounded-md p-2 text-sm"
                       }
                     >
                       <div className="text-text-muted text-xs">
@@ -582,7 +582,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                         {m.createdAt ? ` · ${formatTime(m.createdAt)}` : ""}
                       </div>
                       {m.content ? (
-                        <p className="whitespace-pre-wrap text-text-primary">
+                        <p className="text-text-primary whitespace-pre-wrap">
                           {m.content}
                         </p>
                       ) : null}
@@ -590,7 +590,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                         <p
                           // biome-ignore lint/suspicious/noArrayIndexKey: a message's attachments have no id of their own here and never reorder
                           key={j}
-                          className="whitespace-pre-wrap text-text-secondary italic"
+                          className="text-text-secondary whitespace-pre-wrap italic"
                         >
                           {a.transcribedText
                             ? t(
@@ -629,7 +629,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                   <div className="space-y-2">
                     <label
                       htmlFor="approval-note"
-                      className="font-medium text-sm text-text-primary"
+                      className="text-text-primary text-sm font-medium"
                     >
                       {t(
                         "documentApproval.noteLabel",
@@ -673,7 +673,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 )}
                 {request.status === "EXPIRED" && (
                   <div className="space-y-2">
-                    <p className="text-sm text-text-secondary">
+                    <p className="text-text-secondary text-sm">
                       {t(
                         "documentApproval.expiredHint",
                         "Nobody answered in time, so nothing was sent. Requesting it again renders it with today's date as a new request.",
@@ -689,7 +689,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                   </div>
                 )}
                 {request.status === "PENDING" && !pending && (
-                  <p className="text-sm text-text-secondary">
+                  <p className="text-text-secondary text-sm">
                     {t(
                       "documentApproval.expiring",
                       "This request ran out of time and is being closed.",
@@ -698,7 +698,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 )}
                 {request.status === "APPROVED" &&
                   request.issuedDocumentId !== null && (
-                    <p className="text-sm text-text-secondary">
+                    <p className="text-text-secondary text-sm">
                       {request.outcome === "DELIVERED"
                         ? t(
                             "documentApproval.deliveredHint",
@@ -728,7 +728,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 {request.status === "APPROVED" &&
                   request.issuedDocumentId === null && (
                     <div className="space-y-2">
-                      <p className="text-sm text-text-secondary">
+                      <p className="text-text-secondary text-sm">
                         {t(
                           "documentApproval.incomplete",
                           "Approved, but the document could not be issued, so nothing was sent. Try approving again.",
@@ -744,7 +744,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                     </div>
                   )}
                 {request.status === "REJECTED" && (
-                  <p className="text-sm text-text-secondary">
+                  <p className="text-text-secondary text-sm">
                     {request.note
                       ? t(
                           "documentApproval.rejectedWithNote",
@@ -758,7 +758,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                   </p>
                 )}
                 {request.status === "REJECTED" && request.outcome !== null && (
-                  <p className="text-sm text-text-secondary">
+                  <p className="text-text-secondary text-sm">
                     {approvalOutcomeLabel(request, t)}
                   </p>
                 )}

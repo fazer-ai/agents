@@ -297,7 +297,7 @@ export function KnowledgeApprovals({
   if (error) {
     return (
       <Card>
-        <p className="py-4 text-center text-error text-sm">
+        <p className="text-error py-4 text-center text-sm">
           {t("approvals.error", "Could not load the approval queue.")}
         </p>
       </Card>
@@ -308,13 +308,13 @@ export function KnowledgeApprovals({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <ClipboardCheck className="h-4 w-4 text-accent" aria-hidden="true" />
-        <h3 className="font-medium text-text-primary">
+        <ClipboardCheck className="text-accent h-4 w-4" aria-hidden="true" />
+        <h3 className="text-text-primary font-medium">
           {t("knowledge.approvalsTitle", "Pending approvals")}
         </h3>
         <Badge variant="warning">{approvals.length}</Badge>
       </div>
-      <p className="text-sm text-text-muted">
+      <p className="text-text-muted text-sm">
         {t(
           "approvals.subtitle",
           "Review suggestions before they enter a knowledge base. Nothing is added without approval.",
@@ -359,17 +359,17 @@ export function KnowledgeApprovals({
         <div className="flex flex-col gap-3">
           {discarded.map((d) => (
             <Card key={d.id} className="flex flex-col gap-3">
-              <h4 className="font-medium text-text-primary">
+              <h4 className="text-text-primary font-medium">
                 {d.proposedTitle ?? t("approvals.untitled", "Untitled")}
               </h4>
-              <p className="whitespace-pre-wrap text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm whitespace-pre-wrap">
                 {d.proposedContent}
               </p>
               {d.reviewerComment ? (
                 <ReviewerComment text={d.reviewerComment} />
               ) : null}
               {d.match ? (
-                <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                <div className="border-border flex flex-col gap-1 rounded-md border p-3">
                   <p className="text-text-muted text-xs">
                     {d.match.kind === "document"
                       ? t(
@@ -391,7 +391,7 @@ export function KnowledgeApprovals({
                           },
                         )}
                   </p>
-                  <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                  <p className="text-text-secondary text-sm whitespace-pre-wrap">
                     {d.match.kind === "document"
                       ? d.match.document.content
                       : d.match.content}
@@ -418,7 +418,7 @@ export function KnowledgeApprovals({
           {approvals.map((a) => (
             <Card key={a.id} className="flex flex-col gap-3">
               <div className="flex items-start justify-between gap-3">
-                <h4 className="font-medium text-text-primary">
+                <h4 className="text-text-primary font-medium">
                   {a.proposedTitle ?? t("approvals.untitled", "Untitled")}
                 </h4>
                 <Badge variant={a.status === "EDITED" ? "info" : "warning"}>
@@ -462,7 +462,7 @@ export function KnowledgeApprovals({
                   </FormField>
                 </div>
               ) : (
-                <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm whitespace-pre-wrap">
                   {a.proposedContent}
                 </p>
               )}
@@ -477,7 +477,7 @@ export function KnowledgeApprovals({
                 <ReviewerComment text={a.reviewerComment} />
               ) : null}
               {a.replaceUnavailable ? (
-                <p className="inline-flex items-start gap-1 text-text-muted text-xs">
+                <p className="text-text-muted inline-flex items-start gap-1 text-xs">
                   <FilePen
                     className="mt-0.5 h-3.5 w-3.5 shrink-0"
                     aria-hidden="true"
@@ -488,8 +488,8 @@ export function KnowledgeApprovals({
                   )}
                 </p>
               ) : a.replacesDocument ? (
-                <div className="flex flex-col gap-1 rounded-md border border-border p-3">
-                  <p className="inline-flex items-center gap-1 text-text-muted text-xs">
+                <div className="border-border flex flex-col gap-1 rounded-md border p-3">
+                  <p className="text-text-muted inline-flex items-center gap-1 text-xs">
                     <FilePen className="h-3.5 w-3.5" aria-hidden="true" />
                     {t(
                       "approvals.replaces",
@@ -497,12 +497,12 @@ export function KnowledgeApprovals({
                       { title: a.replacesDocument.title },
                     )}
                   </p>
-                  <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                  <p className="text-text-secondary text-sm whitespace-pre-wrap">
                     {a.replacesDocument.content}
                   </p>
                 </div>
               ) : null}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-text-muted text-xs">
+              <div className="text-text-muted flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                 {a.knowledgeBaseName ? (
                   <span className="inline-flex items-center gap-1">
                     <Database className="h-3.5 w-3.5" aria-hidden="true" />
@@ -514,7 +514,7 @@ export function KnowledgeApprovals({
                 {a.source?.kind === "conversation" ? (
                   <Link
                     to={`/conversations/${a.source.conversationId}`}
-                    className="inline-flex items-center gap-1 text-accent hover:underline"
+                    className="text-accent inline-flex items-center gap-1 hover:underline"
                   >
                     <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                     {t(
@@ -526,7 +526,7 @@ export function KnowledgeApprovals({
                 ) : a.source?.kind === "playground" ? (
                   <Link
                     to={`/agents/${a.source.agentId}/playground`}
-                    className="inline-flex items-center gap-1 text-accent hover:underline"
+                    className="text-accent inline-flex items-center gap-1 hover:underline"
                   >
                     <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
                     {a.source.agentName
@@ -697,7 +697,7 @@ export function KnowledgeApprovals({
 function ReviewerComment({ text }: { text: string }) {
   const { t } = useTranslation();
   return (
-    <p className="inline-flex items-start gap-1 text-text-muted text-xs">
+    <p className="text-text-muted inline-flex items-start gap-1 text-xs">
       <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       {t("approvals.reviewerComment", "Reviewer: {{text}}", { text })}
     </p>

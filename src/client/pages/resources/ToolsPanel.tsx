@@ -182,7 +182,7 @@ export function ToolsPanel() {
       {/* Two long buttons with `shrink-0` would crush the sentence beside them on a phone, so
           stacked below `sm`, side by side above it. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t("tools.subtitle", "HTTP and code tools your agents can call.")}
         </p>
         <div className="flex flex-wrap gap-2 sm:shrink-0">
@@ -234,7 +234,7 @@ export function ToolsPanel() {
             >
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {tool.label}
                   </span>
                   <Badge variant={tool.kind === "code" ? "info" : "secondary"}>
@@ -248,7 +248,7 @@ export function ToolsPanel() {
                     </Badge>
                   )}
                 </div>
-                <p className="mt-0.5 truncate text-text-muted text-xs">
+                <p className="text-text-muted mt-0.5 truncate text-xs">
                   {tool.subtitle}
                 </p>
               </div>
@@ -284,12 +284,12 @@ export function ToolsPanel() {
 
       {/* Native tools come AFTER the custom tools: they are built-in and read-only
           here, so the operator's own tools lead. */}
-      <section className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-4">
+      <section className="border-border bg-bg-secondary flex flex-col gap-3 rounded-lg border p-4">
         <div>
-          <h3 className="font-medium text-sm text-text-primary">
+          <h3 className="text-text-primary text-sm font-medium">
             {t("tools.nativeTitle", "Native tools")}
           </h3>
-          <p className="mt-0.5 text-text-muted text-xs">
+          <p className="text-text-muted mt-0.5 text-xs">
             {t(
               "tools.nativeSubtitle",
               "Built-in actions every agent can be granted. Pick them per agent in the agent editor's Tools tab.",
@@ -303,15 +303,15 @@ export function ToolsPanel() {
             return (
               <div
                 key={name}
-                className="flex items-start gap-3 rounded-lg border border-border bg-bg-tertiary p-3"
+                className="border-border bg-bg-tertiary flex items-start gap-3 rounded-lg border p-3"
               >
                 <Icon
-                  className="mt-0.5 h-5 w-5 shrink-0 text-text-muted"
+                  className="text-text-muted mt-0.5 h-5 w-5 shrink-0"
                   aria-hidden="true"
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-sm text-text-primary">
+                    <span className="text-text-primary text-sm font-medium">
                       {meta.label}
                     </span>
                     <Badge variant="secondary">
@@ -320,10 +320,10 @@ export function ToolsPanel() {
                         : t("tools.category.conversation", "Conversation")}
                     </Badge>
                   </div>
-                  <p className="mt-0.5 text-text-muted text-xs">
+                  <p className="text-text-muted mt-0.5 text-xs">
                     {meta.description}
                   </p>
-                  <p className="mt-0.5 font-mono text-[0.6875rem] text-text-muted">
+                  <p className="text-text-muted mt-0.5 font-mono text-[0.6875rem]">
                     {name}
                   </p>
                 </div>
@@ -364,13 +364,13 @@ export function ToolsPanel() {
         }
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t("tools.deleteMessage", 'Delete "{{name}}"?', {
               name: deleteModal.payload?.name ?? "",
             })}
           </p>
           {deleteRefs && deleteRefs.length > 0 && (
-            <p className="text-sm text-warning">
+            <p className="text-warning text-sm">
               {t(
                 "resources.deleteRefsWarning",
                 "{{count}} agent uses this and will stop working if you delete it.",

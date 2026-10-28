@@ -744,11 +744,11 @@ export function CredentialForm({
               type="button"
               disabled={isUpdate || testing || saving}
               aria-label={t("vault.type", "Type")}
-              className="flex min-h-8 w-full items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary py-1 pr-2.5 pl-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+              className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 w-full items-center gap-2 rounded-md border py-1 pr-2.5 pl-2.5 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
             >
               <ServiceLogo
                 service={secretTypeService(kind)}
-                className="h-4 w-4 shrink-0 text-text-secondary"
+                className="text-text-secondary h-4 w-4 shrink-0"
               />
               <span className="flex-1 truncate text-left">
                 {/* biome-ignore lint/plugin/no-dynamic-i18n-key: secret-type keys registered via magic comments above */}
@@ -756,7 +756,7 @@ export function CredentialForm({
               </span>
               <ChevronDown
                 aria-hidden="true"
-                className="h-4 w-4 shrink-0 text-text-muted"
+                className="text-text-muted h-4 w-4 shrink-0"
               />
             </button>
           </DropdownMenuPrimitive.Trigger>
@@ -769,11 +769,11 @@ export function CredentialForm({
                 zIndex: "calc(var(--z-modal) + 5)",
                 minWidth: "var(--radix-dropdown-menu-trigger-width)",
               }}
-              className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in"
+              className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 border-border bg-bg-secondary data-[state=closed]:animate-out data-[state=open]:animate-in max-h-72 overflow-y-auto rounded-lg border p-1 shadow-lg"
             >
-              <div className="mb-1 flex items-center gap-1.5 border-border border-b px-2 py-1.5">
+              <div className="border-border mb-1 flex items-center gap-1.5 border-b px-2 py-1.5">
                 <Search
-                  className="pointer-events-none h-4 w-4 shrink-0 text-text-muted"
+                  className="text-text-muted pointer-events-none h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <input
@@ -797,7 +797,7 @@ export function CredentialForm({
                     "Search types…",
                   )}
                   aria-label={t("vault.searchTypePlaceholder", "Search types…")}
-                  className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                  className="text-text-primary placeholder:text-text-muted flex-1 bg-transparent text-sm outline-none"
                 />
               </div>
 
@@ -809,14 +809,14 @@ export function CredentialForm({
               ).map(([groupKey, ids]) =>
                 ids.length === 0 ? null : (
                   <div key={groupKey}>
-                    <div className="px-2 pt-1.5 pb-0.5 font-medium text-[11px] text-text-muted uppercase tracking-wide">
+                    <div className="text-text-muted px-2 pt-1.5 pb-0.5 text-[11px] font-medium tracking-wide uppercase">
                       {/* biome-ignore lint/plugin/no-dynamic-i18n-key: both group keys declared below */}
                       {t(groupKey)}
                     </div>
                     {ids.map((id) => (
                       <DropdownMenuPrimitive.Item
                         key={id}
-                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                        className="text-text-secondary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors outline-none"
                         onSelect={() => {
                           // Re-sync the name to the new provider's label only if the operator
                           // hasn't typed their own (blank or still equal to the old type's label).
@@ -841,7 +841,7 @@ export function CredentialForm({
                       >
                         <ServiceLogo
                           service={secretTypeService(id)}
-                          className="h-4 w-4 shrink-0 text-text-secondary"
+                          className="text-text-secondary h-4 w-4 shrink-0"
                         />
                         <span className="flex-1 truncate">
                           {/* biome-ignore lint/plugin/no-dynamic-i18n-key: secret-type keys registered via magic comments above */}
@@ -860,7 +860,7 @@ export function CredentialForm({
               )}
 
               {typeSearch && noTypeResults && (
-                <div className="px-2 py-1.5 text-sm text-text-muted">
+                <div className="text-text-muted px-2 py-1.5 text-sm">
                   {t("vault.noTypeResults", "No types match your search.")}
                 </div>
               )}
@@ -919,7 +919,7 @@ export function CredentialForm({
           </span>
           <button
             type="button"
-            className="shrink-0 font-normal text-accent text-xs hover:underline"
+            className="text-accent shrink-0 text-xs font-normal hover:underline"
             onClick={() => {
               setLangfusePaste((v) => !v);
               setEnvError(false);
@@ -1007,7 +1007,7 @@ export function CredentialForm({
               }
             />
             {!envError && envText.trim() && (
-              <p className="mt-1 text-text-muted text-xs">
+              <p className="text-text-muted mt-1 text-xs">
                 {t(
                   "vault.langfuseEnvOk",
                   "Keys detected. Switch to manual fields to review, or test and save.",
@@ -1120,7 +1120,7 @@ export function CredentialForm({
               href={provLink.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-accent hover:underline"
+              className="text-accent inline-flex items-center gap-1 hover:underline"
             >
               {t(
                 "vault.affiliateCreate",
@@ -1136,7 +1136,7 @@ export function CredentialForm({
               href={provLink.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-accent hover:underline"
+              className="text-accent inline-flex items-center gap-1 hover:underline"
             >
               {t("vault.getKeyLink", "Get yours at {{service}}", {
                 service: typeLabel(kind),

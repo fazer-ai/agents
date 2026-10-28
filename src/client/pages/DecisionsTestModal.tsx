@@ -153,7 +153,7 @@ export function DecisionsTestButton({
       >
         <div className="space-y-4">
           {agents !== null && agents.length === 0 && !error ? (
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "conversation.decisionsTest.none",
                 "No agent observes with questions and rules yet. Pick Questions and rules as the engine of a monitoring agent to test it here.",

@@ -85,7 +85,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
               hasDescription ? descriptionId : undefined,
             )}
             className={cn(
-              "h-8 w-full rounded-md border border-border-hover bg-bg-tertiary px-2.5 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
+              "border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft h-8 w-full rounded-md border px-2.5 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60",
               { "border-error": hasError, "pr-10": !!showPasswordToggle },
               className,
             )}
@@ -94,7 +94,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute top-1/2 right-3 -translate-y-1/2 text-text-muted hover:text-text-primary"
+              className="text-text-muted hover:text-text-primary absolute top-1/2 right-3 -translate-y-1/2"
               tabIndex={-1}
               aria-label={
                 showPassword
@@ -111,14 +111,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
         </div>
         {errorMessage && (
-          <span id={descriptionId} className="mt-1 block text-error text-xs">
+          <span id={descriptionId} className="text-error mt-1 block text-xs">
             {errorMessage}
           </span>
         )}
         {helperText && !errorMessage && (
           <span
             id={descriptionId}
-            className="mt-1 block text-text-muted text-xs"
+            className="text-text-muted mt-1 block text-xs"
           >
             {helperText}
           </span>

@@ -50,7 +50,7 @@ export function TimezonePicker({
           type="button"
           disabled={disabled}
           aria-label={ariaLabel ?? t("hours.timezone", "Timezone")}
-          className="flex min-h-8 w-full items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary py-1 pr-2.5 pl-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+          className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 w-full items-center gap-2 rounded-md border py-1 pr-2.5 pl-2.5 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
         >
           <span className="flex-1 truncate text-left">
             {value
@@ -59,7 +59,7 @@ export function TimezonePicker({
           </span>
           <ChevronDown
             aria-hidden="true"
-            className="h-4 w-4 shrink-0 text-text-muted"
+            className="text-text-muted h-4 w-4 shrink-0"
           />
         </button>
       </DropdownMenuPrimitive.Trigger>
@@ -72,11 +72,11 @@ export function TimezonePicker({
             zIndex: "calc(var(--z-modal) + 5)",
             minWidth: "var(--radix-dropdown-menu-trigger-width)",
           }}
-          className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 rounded-lg border border-border bg-bg-secondary shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in"
+          className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 border-border bg-bg-secondary data-[state=closed]:animate-out data-[state=open]:animate-in rounded-lg border shadow-lg"
         >
-          <div className="flex items-center gap-1.5 border-border border-b px-2 py-1.5">
+          <div className="border-border flex items-center gap-1.5 border-b px-2 py-1.5">
             <Search
-              className="pointer-events-none h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted pointer-events-none h-4 w-4 shrink-0"
               aria-hidden="true"
             />
             <input
@@ -97,13 +97,13 @@ export function TimezonePicker({
               }}
               placeholder={t("hours.searchTimezone", "Search timezones…")}
               aria-label={t("hours.searchTimezone", "Search timezones…")}
-              className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+              className="text-text-primary placeholder:text-text-muted flex-1 bg-transparent text-sm outline-none"
             />
           </div>
 
           <div className="max-h-72 overflow-y-auto p-1">
             {filtered.length === 0 ? (
-              <div className="px-2 py-1.5 text-sm text-text-muted">
+              <div className="text-text-muted px-2 py-1.5 text-sm">
                 {t(
                   "hours.noTimezoneResults",
                   "No timezones match your search.",
@@ -113,7 +113,7 @@ export function TimezonePicker({
               filtered.map((tz) => (
                 <DropdownMenuPrimitive.Item
                   key={tz}
-                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                  className="text-text-secondary data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors outline-none"
                   onSelect={() => onChange(tz)}
                 >
                   <span className="flex-1 truncate">

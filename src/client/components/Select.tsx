@@ -43,7 +43,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
           aria-labelledby={props["aria-labelledby"] ?? field.labelledById}
           required={props.required ?? field.required}
           className={cn(
-            "h-8 w-full appearance-none rounded-md border border-border-hover bg-bg-tertiary pr-9 pl-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
+            "border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft h-8 w-full appearance-none rounded-md border pr-9 pl-2.5 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60",
             { "border-error": !!hasError },
             className,
           )}
@@ -52,7 +52,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
         </select>
         <ChevronDown
           aria-hidden="true"
-          className="pointer-events-none absolute top-1/2 right-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
+          className="text-text-muted pointer-events-none absolute top-1/2 right-2.5 h-4 w-4 -translate-y-1/2"
         />
       </div>
     );

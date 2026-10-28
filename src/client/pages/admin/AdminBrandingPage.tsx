@@ -20,12 +20,12 @@ export function AdminBrandingPage() {
   return (
     <div className="space-y-6">
       <header className="flex items-center gap-3">
-        <Palette className="h-6 w-6 text-accent" aria-hidden="true" />
+        <Palette className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
-          <h2 className="font-semibold text-text-primary text-xl">
+          <h2 className="text-text-primary text-xl font-semibold">
             {t("branding.title", "Branding")}
           </h2>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "branding.subtitle",
               "Customize the app's global appearance (name, colors, logo, favicon).",

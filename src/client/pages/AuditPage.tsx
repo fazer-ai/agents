@@ -99,7 +99,7 @@ function ActorPill({ kind }: { kind: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded px-1.5 py-0.5 font-medium text-xs",
+        "inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium",
         ACTOR_PILL[kind] ?? ACTOR_PILL.system,
       )}
     >
@@ -238,12 +238,12 @@ function Value({
       {/* The column header is the label, and it is only rendered from `sm` up. Below that the two
           values stack with nothing saying which is which, so each carries its own — visible on the
           narrow layout, and announced on every layout for a reader that never sees the header. */}
-      <span className="mb-0.5 block text-text-muted text-xs sm:sr-only">
+      <span className="text-text-muted mb-0.5 block text-xs sm:sr-only">
         {label}
       </span>
       <span
         className={cn(
-          "block whitespace-pre-wrap break-words font-mono text-xs",
+          "block font-mono text-xs break-words whitespace-pre-wrap",
           tone === "before" ? "text-text-muted" : "text-text-primary",
         )}
       >
@@ -253,7 +253,7 @@ function Value({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="mt-1 text-accent text-xs hover:underline"
+          className="text-accent mt-1 text-xs hover:underline"
         >
           {open
             ? t("audit.showLess", "Show less")
@@ -271,15 +271,15 @@ function FieldDiff({ diff }: { diff: ProjectionDiff }) {
   const { changes, undisclosed } = diff;
   if (changes.length === 0 && !undisclosed) {
     return (
-      <p className="px-3 py-2.5 text-text-muted text-xs">
+      <p className="text-text-muted px-3 py-2.5 text-xs">
         {t("audit.noProjection", "This action recorded no field values.")}
       </p>
     );
   }
   return (
-    <div className="divide-y divide-border">
+    <div className="divide-border divide-y">
       {undisclosed && (
-        <p className="px-3 py-2.5 text-text-secondary text-xs">
+        <p className="text-text-secondary px-3 py-2.5 text-xs">
           {t(
             "audit.undisclosed",
             "A value this entry does not show was changed, such as a secret or a header.",
@@ -291,7 +291,7 @@ function FieldDiff({ diff }: { diff: ProjectionDiff }) {
           key={c.key}
           className="grid gap-2 px-3 py-2.5 sm:grid-cols-[10rem_1fr_1fr]"
         >
-          <span className="font-medium text-sm text-text-secondary">
+          <span className="text-text-secondary text-sm font-medium">
             {c.key}
           </span>
           <Value
@@ -326,7 +326,7 @@ function AuditRowCard({
     [row.before, row.after],
   );
   return (
-    <Card className="!p-0 overflow-hidden">
+    <Card className="overflow-hidden !p-0">
       {/* The toggle and the filter shortcut are SIBLINGS rather than nested, because a button inside
           a button is not markup a browser agrees about — the inner one's activation is swallowed in
           some engines and doubled in others. The row header is the flex container; the toggle keeps
@@ -336,20 +336,20 @@ function AuditRowCard({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="flex min-w-0 flex-1 select-none flex-wrap items-center gap-2 px-3 py-2.5 text-left"
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-2 px-3 py-2.5 text-left select-none"
         >
           {expanded ? (
             <ChevronDown
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           ) : (
             <ChevronRight
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           )}
-          <span className="font-medium font-mono text-sm text-text-primary">
+          <span className="text-text-primary font-mono text-sm font-medium">
             {row.action}
           </span>
           {/* WHICH TENANT, and only where the answer is not already the page's. On a tenant trail
@@ -358,7 +358,7 @@ function AuditRowCard({
               as the same event. `null` is not "missing": it is the fleet, and those are the rows
               that outlive the tenant. */}
           {showTenant && (
-            <span className="whitespace-nowrap rounded-md bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">
+            <span className="bg-bg-tertiary text-text-secondary rounded-md px-1.5 py-0.5 font-mono text-xs whitespace-nowrap">
               {row.tenantId ? `#${row.tenantId}` : t("audit.fleetRow", "fleet")}
             </span>
           )}
@@ -367,11 +367,11 @@ function AuditRowCard({
             <span className="text-text-muted text-xs">{`#${row.actorId}`}</span>
           )}
           {row.target && (
-            <span className="truncate font-mono text-text-secondary text-xs">
+            <span className="text-text-secondary truncate font-mono text-xs">
               {row.target}
             </span>
           )}
-          <span className="ml-auto whitespace-nowrap text-text-muted text-xs tabular-nums">
+          <span className="text-text-muted ml-auto text-xs whitespace-nowrap tabular-nums">
             {formatDateTime(row.createdAt, i18n.language)}
           </span>
           <span className="text-text-muted text-xs">
@@ -394,7 +394,7 @@ function AuditRowCard({
             aria-label={t("audit.filterByAction", "Show only {{action}}", {
               action: row.action,
             })}
-            className="shrink-0 rounded-lg p-1.5 text-text-muted hover:bg-bg-tertiary hover:text-text-primary"
+            className="text-text-muted hover:bg-bg-tertiary hover:text-text-primary shrink-0 rounded-lg p-1.5"
           >
             <Filter className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
@@ -402,7 +402,7 @@ function AuditRowCard({
       </div>
       {expanded && (
         <div className="border-border border-t">
-          <div className="hidden gap-2 border-border border-b px-3 py-1.5 text-text-muted text-xs sm:grid sm:grid-cols-[10rem_1fr_1fr]">
+          <div className="border-border text-text-muted hidden gap-2 border-b px-3 py-1.5 text-xs sm:grid sm:grid-cols-[10rem_1fr_1fr]">
             <span>{t("audit.field", "Field")}</span>
             <span>{t("audit.before", "Before")}</span>
             <span>{t("audit.after", "After")}</span>
@@ -746,12 +746,12 @@ export function AuditPage() {
   return (
     <PageContainer size="wide" className="space-y-6">
       <header className="flex items-center gap-3">
-        <ClipboardList className="h-6 w-6 text-accent" aria-hidden="true" />
+        <ClipboardList className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
-          <h1 className="font-bold text-2xl text-text-primary">
+          <h1 className="text-text-primary text-2xl font-bold">
             {t("audit.title", "Audit trail")}
           </h1>
-          <p className="mt-1 text-sm text-text-secondary">
+          <p className="text-text-secondary mt-1 text-sm">
             {t(
               "audit.subtitle",
               "Every configuration change, who made it and how they were authenticated. Values are recorded when the change happens and are never re-read from the live record.",

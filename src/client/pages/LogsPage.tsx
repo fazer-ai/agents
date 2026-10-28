@@ -71,7 +71,7 @@ function LevelPill({ level }: { level: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded px-1.5 py-0.5 font-medium text-xs",
+        "inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium",
         LEVEL_PILL[level] ?? LEVEL_PILL.info,
       )}
     >
@@ -150,12 +150,12 @@ function StageRow({ row }: { row: LogItem }) {
       {hasDetail ? (
         expanded ? (
           <ChevronDown
-            className="h-3.5 w-3.5 shrink-0 text-text-muted"
+            className="text-text-muted h-3.5 w-3.5 shrink-0"
             aria-hidden="true"
           />
         ) : (
           <ChevronRight
-            className="h-3.5 w-3.5 shrink-0 text-text-muted"
+            className="text-text-muted h-3.5 w-3.5 shrink-0"
             aria-hidden="true"
           />
         )
@@ -174,7 +174,7 @@ function StageRow({ row }: { row: LogItem }) {
         <span className="text-text-muted text-xs">{row.status}</span>
       )}
       {meta && <span className="text-text-muted text-xs">{meta}</span>}
-      <span className="ml-auto text-text-muted text-xs tabular-nums">
+      <span className="text-text-muted ml-auto text-xs tabular-nums">
         {formatDateTime(row.createdAt, i18n.language)}
       </span>
     </div>
@@ -189,11 +189,11 @@ function StageRow({ row }: { row: LogItem }) {
   const external = guardrailExternalLabel(row.stage, rowDetail, t);
   const observed = guardrailObservedLabel(row.stage, rowDetail, t);
   const uncheckedLine = unchecked ? (
-    <p className="mt-1 pl-5.5 text-warning text-xs">
+    <p className="text-warning mt-1 pl-5.5 text-xs">
       {classifier ? `${unchecked} · ${classifier}` : unchecked}
     </p>
   ) : observed ? (
-    <p className="mt-1 pl-5.5 text-warning text-xs">{observed}</p>
+    <p className="text-warning mt-1 pl-5.5 text-xs">{observed}</p>
   ) : (
     external && (
       <p
@@ -219,7 +219,7 @@ function StageRow({ row }: { row: LogItem }) {
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="w-full select-none text-left"
+        className="w-full text-left select-none"
       >
         {body}
       </button>
@@ -227,14 +227,14 @@ function StageRow({ row }: { row: LogItem }) {
       {expanded && (
         <div className="mt-2 flex flex-col gap-2">
           {row.errorMessage && (
-            <p className="rounded-md border border-error/40 bg-error-soft px-2 py-1 text-error text-xs">
+            <p className="border-error/40 bg-error-soft text-error rounded-md border px-2 py-1 text-xs">
               {row.errorMessage}
             </p>
           )}
           {row.stage === "proactive_breaker" && (
             <Link
               to={PROACTIVE_BREAKER_CARD}
-              className="self-start text-accent text-xs hover:underline"
+              className="text-accent self-start text-xs hover:underline"
             >
               {t("logs.proactiveBreakerCard", "Resume or change the limit")}
             </Link>
@@ -255,16 +255,16 @@ function StageRow({ row }: { row: LogItem }) {
               <>
                 {sysPrompt && (
                   <div className="flex flex-col gap-1">
-                    <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+                    <span className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
                       {t("logs.systemPrompt", "System prompt")}
                     </span>
-                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-bg-tertiary px-2 py-1 text-text-secondary text-xs">
+                    <pre className="bg-bg-tertiary text-text-secondary max-h-72 overflow-auto rounded-md px-2 py-1 text-xs whitespace-pre-wrap">
                       {sysPrompt}
                     </pre>
                   </div>
                 )}
                 {Object.keys(rest).length > 0 && (
-                  <pre className="overflow-auto rounded-md bg-bg-tertiary px-2 py-1 text-text-secondary text-xs">
+                  <pre className="bg-bg-tertiary text-text-secondary overflow-auto rounded-md px-2 py-1 text-xs">
                     {JSON.stringify(rest, null, 2)}
                   </pre>
                 )}
@@ -308,38 +308,38 @@ function TurnGroupCard({
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(group.worstLevel === "error");
   return (
-    <Card className="!p-0 overflow-hidden">
+    <Card className="overflow-hidden !p-0">
       <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="flex min-w-0 flex-1 select-none items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left select-none"
         >
           {expanded ? (
             <ChevronDown
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           ) : (
             <ChevronRight
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           )}
           <LevelPill level={group.worstLevel} />
-          <span className="truncate text-sm text-text-secondary">
+          <span className="text-text-secondary truncate text-sm">
             {groupTitleText(logGroupTitle(group), t)}
           </span>
           {group.anonymous && (
-            <span className="inline-flex items-center rounded bg-bg-tertiary px-1.5 py-0.5 font-medium text-text-muted text-xs">
+            <span className="bg-bg-tertiary text-text-muted inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium">
               {t("logs.anonymousSession", "Anonymous visitor")}
             </span>
           )}
           <span className="text-text-muted text-xs">
             {t("logs.steps", "{{count}} steps", { count: group.rows.length })}
           </span>
-          <span className="ml-auto whitespace-nowrap text-text-muted text-xs tabular-nums">
+          <span className="text-text-muted ml-auto text-xs whitespace-nowrap tabular-nums">
             {formatDateTime(group.newestAt, i18n.language)}
           </span>
         </button>
@@ -361,7 +361,7 @@ function TurnGroupCard({
                   "logs.filterConversation",
                   "Filter logs from this conversation",
                 )}
-                className="rounded-md p-1.5 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+                className="text-text-muted hover:bg-bg-hover hover:text-text-primary rounded-md p-1.5"
               >
                 <Filter className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
@@ -370,7 +370,7 @@ function TurnGroupCard({
               <Link
                 to={`/conversations/${group.conversationId}`}
                 aria-label={t("logs.openConversation", "Open conversation")}
-                className="rounded-md p-1.5 text-text-muted hover:bg-bg-hover hover:text-text-primary"
+                className="text-text-muted hover:bg-bg-hover hover:text-text-primary rounded-md p-1.5"
               >
                 <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
               </Link>
@@ -379,7 +379,7 @@ function TurnGroupCard({
         )}
       </div>
       {expanded && (
-        <div className="divide-y divide-border border-border border-t">
+        <div className="divide-border border-border divide-y border-t">
           {group.rows.map((r) => (
             <StageRow key={r.id} row={r} />
           ))}
@@ -580,12 +580,12 @@ export function LogsPage() {
     <PageContainer size="wide" className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          <ScrollText className="h-6 w-6 text-accent" aria-hidden="true" />
+          <ScrollText className="text-accent h-6 w-6" aria-hidden="true" />
           <div>
-            <h1 className="font-bold text-2xl text-text-primary">
+            <h1 className="text-text-primary text-2xl font-bold">
               {t("logs.title", "Logs")}
             </h1>
-            <p className="mt-1 text-sm text-text-secondary">
+            <p className="text-text-secondary mt-1 text-sm">
               {t(
                 "logs.subtitle",
                 "Per-step execution flow for each agent turn: transcription, generation, audio, delivery and handoffs.",
@@ -608,7 +608,7 @@ export function LogsPage() {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">
           <Search
-            className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-muted"
+            className="text-text-muted absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2"
             aria-hidden="true"
           />
           <input
@@ -682,7 +682,7 @@ export function LogsPage() {
 
       {fromDashboard && (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary px-2.5 py-1 text-text-secondary text-xs">
+          <span className="border-border bg-bg-tertiary text-text-secondary inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs">
             {tool
               ? t(
                   "logs.scopedFromDashboardTool",
@@ -734,7 +734,7 @@ export function LogsPage() {
 
       {(conversationId || turnId) && (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary px-2.5 py-1 text-text-secondary text-xs">
+          <span className="border-border bg-bg-tertiary text-text-secondary inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs">
             {conversationId
               ? t("logs.scopedConversation", "Conversation #{{id}}", {
                   id: conversationId,

@@ -443,6 +443,7 @@ export async function loginWithPasskey(
     const written = await prisma.passkey.updateMany({
       where: { id: passkey.id, counter: expected },
       data: {
+        // biome-ignore lint/complexity/useMathMinMax: both are bigint, and Math.max throws on a bigint.
         counter: newCounter > expected ? newCounter : expected,
         backedUp: verification.authenticationInfo.credentialBackedUp,
         lastUsedAt: new Date(),

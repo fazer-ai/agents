@@ -149,7 +149,7 @@ export function OccurrenceFlagHistory({
     <Card className="flex flex-col gap-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="font-medium text-text-primary">
+          <h2 className="text-text-primary font-medium">
             {t("occurrences.history.title", "Flagged in a period")}
           </h2>
           <p className="text-text-muted text-xs">
@@ -214,7 +214,7 @@ export function OccurrenceFlagHistory({
         )}
       </div>
       {failed ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t("occurrences.history.error", "Could not read the flagged themes.")}
         </p>
       ) : customBad ? null : episodes === null ? (
@@ -224,7 +224,7 @@ export function OccurrenceFlagHistory({
           <Skeleton className="h-6 w-full" />
         </div>
       ) : episodes.length === 0 ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "occurrences.history.empty",
             "No theme was flagged during this period.",
@@ -241,7 +241,7 @@ export function OccurrenceFlagHistory({
               )}
             </p>
           )}
-          <ul className="flex flex-col divide-y divide-border">
+          <ul className="divide-border flex flex-col divide-y">
             {episodes.map((e) => (
               <li
                 key={e.id}
@@ -250,7 +250,7 @@ export function OccurrenceFlagHistory({
                 className="flex flex-col gap-1 py-2"
               >
                 <span className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium text-sm text-text-primary">
+                  <span className="text-text-primary text-sm font-medium">
                     {e.title}
                   </span>
                   {e.kinds.map((f) => (
@@ -262,7 +262,7 @@ export function OccurrenceFlagHistory({
                     </Badge>
                   ))}
                 </span>
-                <span className="flex flex-wrap items-center gap-2 text-text-muted text-xs">
+                <span className="text-text-muted flex flex-wrap items-center gap-2 text-xs">
                   <span data-episode-span>
                     {e.endedAt
                       ? t("occurrences.episodeSpan", "{{from}} to {{to}}", {
@@ -332,7 +332,7 @@ export function OccurrenceFlagHistory({
                       href={l.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-0.5 text-accent hover:underline"
+                      className="text-accent inline-flex items-center gap-0.5 hover:underline"
                     >
                       {`#${l.chatwootConversationId}`}
                       <ExternalLink className="h-3 w-3" aria-hidden="true" />

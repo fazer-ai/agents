@@ -25,8 +25,8 @@ export function ProtectedRoute({
 
   if (loading) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
-        <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
+      <div className="bg-bg-primary flex min-h-dvh items-center justify-center">
+        <Loader2 className="text-text-secondary h-6 w-6 animate-spin" />
       </div>
     );
   }
@@ -86,8 +86,8 @@ function switchesToAdministeredTenant(
 function SessionPending() {
   useSessionRetry(true);
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
-      <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
+    <div className="bg-bg-primary flex min-h-dvh items-center justify-center">
+      <Loader2 className="text-text-secondary h-6 w-6 animate-spin" />
     </div>
   );
 }

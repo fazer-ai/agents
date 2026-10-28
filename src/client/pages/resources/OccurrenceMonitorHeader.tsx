@@ -240,7 +240,7 @@ export function OccurrenceMonitorHeader({
           </form>
         ) : (
           <div className="flex min-w-0 items-center gap-1">
-            <h2 className="truncate font-medium text-text-primary">{saved}</h2>
+            <h2 className="text-text-primary truncate font-medium">{saved}</h2>
             <Button
               variant="ghost"
               size="sm"

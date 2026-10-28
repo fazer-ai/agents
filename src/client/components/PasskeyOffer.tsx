@@ -166,20 +166,20 @@ export function PasskeyOffer() {
       <section
         aria-labelledby="passkey-offer-title"
         data-floating-layer
-        className="pointer-events-auto flex flex-col gap-3 rounded-lg border border-border-hover bg-bg-secondary p-3 shadow-lg"
+        className="border-border-hover bg-bg-secondary pointer-events-auto flex flex-col gap-3 rounded-lg border p-3 shadow-lg"
       >
         <div className="flex items-start gap-2.5">
-          <span className="flex h-lh shrink-0 items-center text-accent text-sm leading-snug">
+          <span className="text-accent flex h-lh shrink-0 items-center text-sm leading-snug">
             <KeyRound className="size-4" aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
             <h2
               id="passkey-offer-title"
-              className="font-medium text-sm text-text-primary leading-snug"
+              className="text-text-primary text-sm leading-snug font-medium"
             >
               {t("passkeyOffer.title", "Sign in faster next time?")}
             </h2>
-            <p className="mt-0.5 text-sm text-text-secondary">
+            <p className="text-text-secondary mt-0.5 text-sm">
               {t(
                 "passkeyOffer.description",
                 "Save a passkey on this device and sign in with your fingerprint, face or screen lock instead of your password.",
@@ -194,7 +194,7 @@ export function PasskeyOffer() {
               onClick={() => void dismiss()}
               disabled={creating || dismissing}
               aria-label={t("passkeyOffer.close", "Close")}
-              className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+              className="text-text-muted hover:bg-bg-hover hover:text-text-primary rounded-md p-1 transition-colors disabled:opacity-50"
             >
               <X className="h-4 w-4" aria-hidden="true" />
             </button>

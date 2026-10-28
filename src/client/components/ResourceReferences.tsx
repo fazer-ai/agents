@@ -15,21 +15,21 @@ export function AgentReferences({ agents }: { agents: AgentRef[] | null }) {
   const { t } = useTranslation();
   if (!agents) {
     return (
-      <p className="text-sm text-text-muted">
+      <p className="text-text-muted text-sm">
         {t("common.loading", "Loading…")}
       </p>
     );
   }
   if (agents.length === 0) {
     return (
-      <p className="text-sm text-text-muted">
+      <p className="text-text-muted text-sm">
         {t("resources.refsEmpty", "No agents use this yet.")}
       </p>
     );
   }
   return (
     <div className="text-sm">
-      <p className="mb-1 font-medium text-text-secondary text-xs uppercase">
+      <p className="text-text-secondary mb-1 text-xs font-medium uppercase">
         {t("resources.refAgents", "Agents")}
       </p>
       <div className="flex flex-wrap gap-1.5">
@@ -37,7 +37,7 @@ export function AgentReferences({ agents }: { agents: AgentRef[] | null }) {
           <Link key={a.id} to={`/agents/${a.id}/tools`}>
             <Badge
               variant="secondary"
-              className="transition-colors hover:bg-bg-hover"
+              className="hover:bg-bg-hover transition-colors"
             >
               {a.name}
             </Badge>

@@ -91,11 +91,11 @@ export function StrongConfirmModal({
     >
       {payload && (
         <div className="flex flex-col gap-4">
-          <div className="rounded-lg border border-error bg-bg-tertiary p-3 text-error text-sm">
+          <div className="border-error bg-bg-tertiary text-error rounded-lg border p-3 text-sm">
             {payload.warning}
           </div>
           {payload.backupNote && (
-            <p className="text-sm text-text-muted">{payload.backupNote}</p>
+            <p className="text-text-muted text-sm">{payload.backupNote}</p>
           )}
           <FormField label={payload.confirmLabel} required>
             <Input

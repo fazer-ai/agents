@@ -260,7 +260,7 @@ export function SidebarResizer() {
       {/* The highlight is inset by the content panel's corner radius plus
           its vertical margin, so it traces the panel's straight left edge
           instead of running past the rounded corners. */}
-      <span className="my-[calc(var(--radius-xl)+var(--spacing)*2)] w-0.5 rounded-full bg-transparent transition-colors group-hover:bg-accent group-focus-visible:bg-accent" />
+      <span className="group-hover:bg-accent group-focus-visible:bg-accent my-[calc(var(--radius-xl)+var(--spacing)*2)] w-0.5 rounded-full bg-transparent transition-colors" />
     </div>
   );
 }

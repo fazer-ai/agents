@@ -163,9 +163,9 @@ export function GeneralTab({
         agentFallback={name}
         onExpand={() => promptModal.open()}
       />
-      {promptError && <p className="mt-1 text-error text-xs">{promptError}</p>}
+      {promptError && <p className="text-error mt-1 text-xs">{promptError}</p>}
       {voice?.instructionsNote && (
-        <p className="mt-1 text-text-muted text-xs">{voice.instructionsNote}</p>
+        <p className="text-text-muted mt-1 text-xs">{voice.instructionsNote}</p>
       )}
       {/* What these instructions cost every call, where they are written (also next to the history
           ceiling, on Behavior). Absent for a voice agent, which has no estimate to show. */}
@@ -223,7 +223,7 @@ export function GeneralTab({
     <div className="flex grow flex-col gap-4" data-problems-root="general">
       <Card className="flex flex-col gap-4">
         <div>
-          <h3 className="font-medium text-sm text-text-primary">
+          <h3 className="text-text-primary text-sm font-medium">
             {t("editor.identitySection", "Identity")}
           </h3>
           <p className="text-text-muted text-xs">
@@ -279,7 +279,7 @@ export function GeneralTab({
       ) : (
         <Card id="general-model" className="flex scroll-mt-4 flex-col gap-4">
           <div>
-            <h3 className="font-medium text-sm text-text-primary">
+            <h3 className="text-text-primary text-sm font-medium">
               {t("editor.modelSection", "Model")}
             </h3>
             <p className="text-text-muted text-xs">
@@ -519,9 +519,9 @@ export function GeneralTab({
         onOpenPlayground={onOpenPlayground}
       />
 
-      <Card className="flex flex-col gap-3 border-error/40">
+      <Card className="border-error/40 flex flex-col gap-3">
         <div>
-          <h3 className="font-medium text-error text-sm">
+          <h3 className="text-error text-sm font-medium">
             {t("editor.dangerZone", "Danger zone")}
           </h3>
           <p className="text-text-muted text-xs">

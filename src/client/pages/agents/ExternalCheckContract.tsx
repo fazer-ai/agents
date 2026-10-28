@@ -318,14 +318,14 @@ export function ExternalCheckContract() {
         >
           {parts.map((p) => (
             <section key={p.title} className="space-y-2">
-              <h3 className="font-medium text-sm text-text-primary">
+              <h3 className="text-text-primary text-sm font-medium">
                 {p.title}
               </h3>
               {p.blocks.map((b) =>
                 b.code ? (
                   <div key={b.code} className="relative">
                     <pre
-                      className="overflow-x-auto rounded-lg border border-border bg-bg-tertiary px-3 py-2 font-mono text-text-primary text-xs"
+                      className="border-border bg-bg-tertiary text-text-primary overflow-x-auto rounded-lg border px-3 py-2 font-mono text-xs"
                       data-testid={b.testId}
                     >
                       <code>{b.code}</code>
@@ -340,7 +340,7 @@ export function ExternalCheckContract() {
                 ) : (
                   <p
                     key={`${b.label ?? ""}${b.text}`}
-                    className="text-sm text-text-secondary"
+                    className="text-text-secondary text-sm"
                   >
                     {b.label && (
                       <>

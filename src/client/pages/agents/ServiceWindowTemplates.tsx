@@ -285,9 +285,9 @@ function SlotChip({
         <button
           type="button"
           className={cn(
-            "mx-0.5 inline rounded-full px-2 py-0.5 align-baseline font-medium text-xs transition-colors",
+            "mx-0.5 inline rounded-full px-2 py-0.5 align-baseline text-xs font-medium transition-colors",
             src.kind === "empty"
-              ? "border border-border-hover border-dashed text-text-muted hover:border-accent hover:text-text-primary"
+              ? "border-border-hover text-text-muted hover:border-accent hover:text-text-primary border border-dashed"
               : "bg-accent-soft text-text-primary hover:bg-accent-soft/70",
           )}
         >
@@ -299,11 +299,11 @@ function SlotChip({
           side="bottom"
           align="start"
           sideOffset={6}
-          className="z-(--z-popover) flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3 shadow-lg"
+          className="border-border bg-bg-secondary z-(--z-popover) flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 rounded-lg border p-3 shadow-lg"
           aria-label={t("editor.svcWindowSlotSource", "What goes here")}
         >
           <div className="flex flex-col gap-1">
-            <span className="font-medium text-text-muted text-xs">
+            <span className="text-text-muted text-xs font-medium">
               {t("editor.svcWindowSlotFacts", "Data")}
             </span>
             {offered.map((k) => (
@@ -311,7 +311,7 @@ function SlotChip({
                 key={k}
                 type="button"
                 className={cn(
-                  "flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-bg-hover",
+                  "hover:bg-bg-hover flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm",
                   src.kind === "var" && src.key === k
                     ? "text-text-primary"
                     : "text-text-secondary",
@@ -328,7 +328,7 @@ function SlotChip({
               >
                 {varLabel(k)}
                 {src.kind === "var" && src.key === k && (
-                  <Check className="h-4 w-4 text-accent" aria-hidden="true" />
+                  <Check className="text-accent h-4 w-4" aria-hidden="true" />
                 )}
               </button>
             ))}
@@ -600,7 +600,7 @@ function TemplateChoiceEditor({
         (def ? (
           <div className="flex flex-col gap-1.5">
             <div
-              className="whitespace-pre-wrap rounded-lg border border-border bg-bg-subtle p-3 text-sm leading-6"
+              className="border-border bg-bg-subtle rounded-lg border p-3 text-sm leading-6 whitespace-pre-wrap"
               data-testid="service-window-message"
             >
               {showPreview && preview ? (
@@ -632,30 +632,30 @@ function TemplateChoiceEditor({
                     />
                   ))}
                   {def.footer && (
-                    <div className="mt-2 text-text-muted text-xs">
+                    <div className="text-text-muted mt-2 text-xs">
                       {def.footer}
                     </div>
                   )}
                 </>
               )}
               {def.buttons.length > 0 && (
-                <div className="mt-3 flex flex-col gap-1 border-border border-t pt-2">
+                <div className="border-border mt-3 flex flex-col gap-1 border-t pt-2">
                   {def.buttons.map((b, i) => (
                     <div
                       // biome-ignore lint/suspicious/noArrayIndexKey: a button IS its position in the template.
                       key={i}
                       className="text-center"
                     >
-                      <div className="font-medium text-accent">{b.text}</div>
+                      <div className="text-accent font-medium">{b.text}</div>
                       {showPreview && preview?.buttonUrls[i] && (
-                        <div className="break-all text-text-muted text-xs">
+                        <div className="text-text-muted text-xs break-all">
                           {preview.buttonUrls[i]}
                         </div>
                       )}
                       {!showPreview &&
                         b.type === "URL" &&
                         b.url?.includes("{{") && (
-                          <div className="break-all text-text-muted text-xs">
+                          <div className="text-text-muted text-xs break-all">
                             {b.url.split("{{")[0]}
                             <SlotChip
                               example={def.examples.buttons[i] ?? ""}
@@ -692,7 +692,7 @@ function TemplateChoiceEditor({
               {preview && (
                 <button
                   type="button"
-                  className="shrink-0 text-accent hover:underline"
+                  className="text-accent shrink-0 hover:underline"
                   onClick={() => setShowPreview((v) => !v)}
                 >
                   {showPreview
@@ -714,7 +714,7 @@ function TemplateChoiceEditor({
             )}
           >
             <textarea
-              className="min-h-16 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm"
+              className="border-border bg-bg min-h-16 w-full rounded-md border px-3 py-2 text-sm"
               value={value.params.join("\n")}
               onChange={(e) =>
                 onChange({
@@ -914,7 +914,7 @@ export function ServiceWindowTemplates({
       </FormField>
       <div className="flex flex-col gap-3">
         <div>
-          <div className="font-medium text-sm">
+          <div className="text-sm font-medium">
             {t(
               "editor.svcWindowSituationsTitle",
               "Templates for specific situations",
@@ -934,17 +934,17 @@ export function ServiceWindowTemplates({
           return (
             <div
               key={situationKey(s)}
-              className="flex flex-col gap-3 rounded-lg border border-border p-4"
+              className="border-border flex flex-col gap-3 rounded-lg border p-4"
               data-testid={`situation-${situationKey(s)}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-start gap-2">
                   <Icon
-                    className="mt-0.5 h-4 w-4 shrink-0 text-text-muted"
+                    className="text-text-muted mt-0.5 h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
                   <div>
-                    <div className="font-medium text-sm">
+                    <div className="text-sm font-medium">
                       {situationTitle(s)}
                     </div>
                     <p className="text-text-muted text-xs">

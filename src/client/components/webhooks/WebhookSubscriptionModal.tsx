@@ -176,7 +176,7 @@ export function WebhookSubscriptionModal({
         }}
       >
         {error && (
-          <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+          <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
             {error}
           </div>
         )}
@@ -199,12 +199,12 @@ export function WebhookSubscriptionModal({
             )}
           />
           {urlInvalid && url.trim() ? (
-            <p className="mt-1 text-error text-xs">
+            <p className="text-error mt-1 text-xs">
               {t("common.invalidUrl", "Must be a valid http(s) URL.")}
             </p>
           ) : (
             refusal.at("url", current.url) && (
-              <p className="mt-1 text-error text-xs">
+              <p className="text-error mt-1 text-xs">
                 {refusal.at("url", current.url)}
               </p>
             )
@@ -214,7 +214,7 @@ export function WebhookSubscriptionModal({
         <fieldset>
           <legend className={labelCls}>{t("webhooks.events", "Events")}</legend>
           {refusal.at("events", current.events) && (
-            <p className="mb-1 text-error text-xs">
+            <p className="text-error mb-1 text-xs">
               {refusal.at("events", current.events)}
             </p>
           )}
@@ -254,11 +254,11 @@ export function WebhookSubscriptionModal({
           />
         </FormField>
 
-        <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+        <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
           <label
             htmlFor={enabledId}
             data-clickable={loading ? undefined : "true"}
-            className="font-medium text-sm text-text-primary"
+            className="text-text-primary text-sm font-medium"
           >
             {t("webhooks.enabled", "Enabled")}
           </label>

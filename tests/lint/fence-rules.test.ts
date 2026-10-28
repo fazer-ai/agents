@@ -359,7 +359,7 @@ function copiesConfig(): string {
   }));
   return JSON.stringify({
     root: true,
-    linter: { enabled: true, rules: { recommended: false } },
+    linter: { enabled: true, rules: { preset: "none" } },
     files: { includes: ["**/*.ts", "**/*.tsx"] },
     overrides,
   });

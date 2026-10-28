@@ -141,7 +141,7 @@ export function IntegrationsPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "integrations.subtitle",
             "Activate ready-made integrations your agents can use.",
@@ -191,7 +191,7 @@ export function IntegrationsPanel() {
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-text-primary">
+                    <span className="text-text-primary truncate font-medium">
                       {inst.name}
                     </span>
                     <Badge variant="info">
@@ -203,7 +203,7 @@ export function IntegrationsPanel() {
                       </Badge>
                     )}
                   </div>
-                  <p className="mt-0.5 truncate text-text-muted text-xs">
+                  <p className="text-text-muted mt-0.5 truncate text-xs">
                     {catalogLabel(cat) || inst.catalogType}
                     {inst.inboundAuthStrategy !== "NONE"
                       ? ` · ${authStrategyLabel(inst.inboundAuthStrategy as (typeof AUTH_STRATEGIES)[number])}`

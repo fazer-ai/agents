@@ -91,14 +91,14 @@ export function SupportModal({ email, mailtoHref, modal }: SupportModalProps) {
         </div>
       }
     >
-      <p className="text-sm text-text-secondary">
+      <p className="text-text-secondary text-sm">
         {t("support.description", "Send us an email at:")}
       </p>
       <a
         href={mailtoHref}
-        className="mt-3 flex items-center gap-3 rounded-lg border border-border bg-bg-tertiary px-4 py-3 text-text-primary transition-colors hover:border-accent hover:text-accent"
+        className="border-border bg-bg-tertiary text-text-primary hover:border-accent hover:text-accent mt-3 flex items-center gap-3 rounded-lg border px-4 py-3 transition-colors"
       >
-        <Mail className="h-4 w-4 shrink-0 text-text-muted" aria-hidden="true" />
+        <Mail className="text-text-muted h-4 w-4 shrink-0" aria-hidden="true" />
         <code className="flex-1 truncate font-mono text-sm">{email}</code>
       </a>
     </Modal>

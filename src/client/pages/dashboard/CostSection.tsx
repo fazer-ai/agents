@@ -322,7 +322,7 @@ export function CostSection({
             href={langfuseUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-text-muted text-xs hover:text-text-primary"
+            className="text-text-muted hover:text-text-primary inline-flex items-center gap-1.5 text-xs"
           >
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
             {t("dashboard.openInLangfuse", "Open in Langfuse")}
@@ -332,8 +332,8 @@ export function CostSection({
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-text-muted text-xs">
-            <Coins className="h-4 w-4 text-accent" aria-hidden="true" />
+          <div className="text-text-muted flex items-center gap-2 text-xs">
+            <Coins className="text-accent h-4 w-4" aria-hidden="true" />
             {t("dashboard.totalCost", "LLM cost")}
           </div>
           {costs.loading && !c ? (
@@ -341,7 +341,7 @@ export function CostSection({
           ) : c ? (
             <>
               <ProvisionalFigure coverage={costs.coverage}>
-                <p className="font-semibold text-2xl text-text-primary tabular-nums">
+                <p className="text-text-primary text-2xl font-semibold tabular-nums">
                   {cf.format(c.totalCostUsd)}
                 </p>
               </ProvisionalFigure>
@@ -354,7 +354,7 @@ export function CostSection({
               />
             </>
           ) : (
-            <p className="flex items-start gap-1.5 text-sm text-text-muted">
+            <p className="text-text-muted flex items-start gap-1.5 text-sm">
               <TriangleAlert
                 className="mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden="true"
@@ -365,12 +365,12 @@ export function CostSection({
           <CoverageBar coverage={costs.coverage} />
         </Card>
         <Card className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-text-muted text-xs">
-            <Coins className="h-4 w-4 text-accent" aria-hidden="true" />
+          <div className="text-text-muted flex items-center gap-2 text-xs">
+            <Coins className="text-accent h-4 w-4" aria-hidden="true" />
             {t("dashboard.cost.perConversation", "Cost / conversation")}
           </div>
           <ProvisionalFigure coverage={costs.coverage}>
-            <p className="font-semibold text-2xl text-text-primary tabular-nums">
+            <p className="text-text-primary text-2xl font-semibold tabular-nums">
               {money(c?.costPerConversation)}
             </p>
           </ProvisionalFigure>
@@ -394,15 +394,15 @@ export function CostSection({
           <CoverageBar coverage={costs.coverage} />
         </Card>
         <Card className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-text-muted text-xs">
-            <Coins className="h-4 w-4 text-accent" aria-hidden="true" />
+          <div className="text-text-muted flex items-center gap-2 text-xs">
+            <Coins className="text-accent h-4 w-4" aria-hidden="true" />
             {t(
               "dashboard.cost.perResolved",
               "Cost / conversation resolved by the agent",
             )}
           </div>
           <ProvisionalFigure coverage={costs.coverage}>
-            <p className="font-semibold text-2xl text-text-primary tabular-nums">
+            <p className="text-text-primary text-2xl font-semibold tabular-nums">
               {money(c?.costPerResolvedConversation)}
             </p>
           </ProvisionalFigure>
@@ -422,12 +422,12 @@ export function CostSection({
           <CoverageBar coverage={costs.coverage} />
         </Card>
         <Card className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-text-muted text-xs">
-            <Layers className="h-4 w-4 text-accent" aria-hidden="true" />
+          <div className="text-text-muted flex items-center gap-2 text-xs">
+            <Layers className="text-accent h-4 w-4" aria-hidden="true" />
             {t("dashboard.tokens", "Tokens (in / out)")}
           </div>
           <ProvisionalFigure coverage={costs.coverage}>
-            <p className="font-semibold text-text-primary text-xl tabular-nums">
+            <p className="text-text-primary text-xl font-semibold tabular-nums">
               {c
                 ? `${nf.format(c.tokens.prompt)} / ${nf.format(c.tokens.completion)}`
                 : "\u2014"}
@@ -445,7 +445,7 @@ export function CostSection({
 
       {c && c.unpriced.calls > 0 && (
         <p
-          className="flex items-start gap-1.5 text-warning text-xs"
+          className="text-warning flex items-start gap-1.5 text-xs"
           data-testid="cost-unpriced"
         >
           <TriangleAlert
@@ -503,7 +503,7 @@ export function CostSection({
         {costs.loading && !c && !isProvisional(costs.coverage) ? (
           <Skeleton className="h-64 w-full" />
         ) : segments.length === 0 && !isProvisional(costs.coverage) ? (
-          <p className="py-8 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
         ) : (
@@ -541,7 +541,7 @@ export function CostSection({
           <Skeleton className="h-56 w-full" />
         ) : perConv.every((r) => r.perConversation === null) &&
           !isProvisional(costs.coverage) ? (
-          <p className="py-8 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
         ) : (
@@ -584,7 +584,7 @@ export function CostSection({
         {cache.loading && !cache.data ? (
           <Skeleton className="h-24 w-full" />
         ) : cacheRows.length === 0 ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
         ) : (
@@ -592,16 +592,16 @@ export function CostSection({
             {cacheRows.map((r) => (
               <li key={r.key} className="flex flex-col gap-1">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="truncate text-text-secondary">
+                  <span className="text-text-secondary truncate">
                     {r.label ?? r.key}
                   </span>
-                  <span className="font-medium text-text-primary tabular-nums">
+                  <span className="text-text-primary font-medium tabular-nums">
                     {r.cacheShare === null ? "\u2014" : pf(r.cacheShare)}
                   </span>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-bg-tertiary">
+                <div className="bg-bg-tertiary h-2 w-full overflow-hidden rounded-full">
                   <div
-                    className="h-full rounded-full bg-accent-solid"
+                    className="bg-accent-solid h-full rounded-full"
                     style={{ width: `${(r.cacheShare ?? 0) * 100}%` }}
                   />
                 </div>
@@ -618,8 +618,8 @@ export function CostSection({
         className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
-            <Gauge className="h-4 w-4 text-accent" aria-hidden="true" />
+          <h3 className="text-text-primary flex items-center gap-2 text-sm font-medium">
+            <Gauge className="text-accent h-4 w-4" aria-hidden="true" />
             {t("dashboard.ceiling.title", "Spend ceiling")}
           </h3>
           <div className="flex items-center gap-3">
@@ -644,7 +644,7 @@ export function CostSection({
         {ceiling.loading && !ceilingData ? (
           <Skeleton className="h-16 w-full" />
         ) : !ceilingData ? (
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t("dashboard.ceiling.unread", "The ceiling could not be read.")}
           </p>
         ) : (

@@ -134,7 +134,7 @@ export function ToolPreconditionsEditor({
         group
         label={
           <span className="flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-text-muted" aria-hidden />
+            <ShieldCheck className="text-text-muted h-4 w-4" aria-hidden />
             {t("editor.toolPreconditions.title", "Tool preconditions")}
           </span>
         }
@@ -152,7 +152,7 @@ export function ToolPreconditionsEditor({
       >
         <div className="flex flex-col gap-2">
           {rows.length === 0 && (
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t(
                 "editor.toolPreconditions.empty",
                 "No preconditions. Without one, the agent may use any of its tools whenever it sees fit.",
@@ -167,7 +167,7 @@ export function ToolPreconditionsEditor({
               <div
                 // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional and reorderable only by add/remove; no stable id exists until saved.
                 key={i}
-                className="flex flex-col gap-2 rounded-lg border border-border bg-bg-secondary p-3 text-sm text-text-secondary"
+                className="border-border bg-bg-secondary text-text-secondary flex flex-col gap-2 rounded-lg border p-3 text-sm"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span>{t("editor.toolPreconditions.block", "Block")}</span>
@@ -397,7 +397,7 @@ export function ToolPreconditionsEditor({
                   </Button>
                 </div>
                 {row.tool && !assembledTools.has(row.tool) && (
-                  <p className="flex items-center gap-1.5 text-warning text-xs">
+                  <p className="text-warning flex items-center gap-1.5 text-xs">
                     <AlertTriangle
                       className="h-3.5 w-3.5 shrink-0"
                       aria-hidden

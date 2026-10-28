@@ -62,7 +62,7 @@ export function DecisionTickMarker({
 
   const line = (
     <div
-      className="flex flex-wrap items-center justify-center gap-1.5 text-text-muted text-xs"
+      className="text-text-muted flex flex-wrap items-center justify-center gap-1.5 text-xs"
       data-testid="decision-marker"
     >
       {hasDetails &&
@@ -144,7 +144,7 @@ export function DecisionTickMarker({
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="rounded px-1 py-0.5 hover:bg-bg-tertiary"
+        className="hover:bg-bg-tertiary rounded px-1 py-0.5"
       >
         {line}
       </button>
@@ -317,12 +317,12 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
     0;
   return (
     <div
-      className="grid gap-3 rounded border border-border bg-bg-secondary p-2 text-left text-xs lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]"
+      className="border-border bg-bg-secondary grid gap-3 rounded border p-2 text-left text-xs lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]"
       data-testid="decision-details"
     >
       {questions.length > 0 && (
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+          <span className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
             {t("conversation.trail.decision.questions", "Questions")}
           </span>
           {questions.map((q) => (
@@ -374,7 +374,7 @@ export function DecisionTickDetails({ tick }: { tick: DecisionTickView }) {
                 type="button"
                 onClick={() => setRestOpen((v) => !v)}
                 aria-expanded={restOpen}
-                className="flex items-center gap-1 self-start rounded px-1 py-0.5 text-text-muted hover:bg-bg-tertiary"
+                className="text-text-muted hover:bg-bg-tertiary flex items-center gap-1 self-start rounded px-1 py-0.5"
               >
                 {restOpen ? (
                   <ChevronDown
@@ -416,7 +416,7 @@ function RuleGroup({
 }) {
   return (
     <div className="flex flex-col gap-1" data-testid={testId}>
-      <span className="font-medium text-[10px] text-text-muted uppercase tracking-wider">
+      <span className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
         {title}
       </span>
       {children}
@@ -467,7 +467,7 @@ function QuestionBlock({ q }: { q: QuestionView }) {
             aria-hidden="true"
           />
         ))}
-      <span className="font-medium font-mono text-text-primary">{q.name}</span>
+      <span className="text-text-primary font-mono font-medium">{q.name}</span>
       <span
         className={cn(
           q.kind === "unanswered" || q.kind === "refusal"
@@ -486,7 +486,7 @@ function QuestionBlock({ q }: { q: QuestionView }) {
       )}
       {(q.kind === "choice" || q.kind === "score") && q.closeCall && (
         <span
-          className="rounded bg-warning-soft px-1 text-warning"
+          className="bg-warning-soft text-warning rounded px-1"
           data-testid="decision-close-call"
         >
           {t(
@@ -508,7 +508,7 @@ function QuestionBlock({ q }: { q: QuestionView }) {
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="rounded px-1 py-0.5 text-left hover:bg-bg-tertiary"
+          className="hover:bg-bg-tertiary rounded px-1 py-0.5 text-left"
         >
           {head}
         </button>
@@ -561,16 +561,16 @@ function ProbabilityLine({ row }: { row: ProbabilityRow }) {
         <span>
           <span
             className={cn(
-              "break-words font-mono",
+              "font-mono break-words",
               row.chosen
-                ? "font-semibold text-text-primary"
+                ? "text-text-primary font-semibold"
                 : "text-text-secondary",
             )}
           >
             {row.value}
           </span>
           {row.chosen && (
-            <span className="ml-1 inline-block whitespace-nowrap text-accent">
+            <span className="text-accent ml-1 inline-block whitespace-nowrap">
               {t("conversation.trail.decision.chosen", "chosen")}
             </span>
           )}
@@ -596,7 +596,7 @@ function ProbabilityLine({ row }: { row: ProbabilityRow }) {
 function Bar({ p, chosen }: { p: number; chosen: boolean }) {
   const width = `${Math.max(0, Math.min(100, Math.round(p * 100)))}%`;
   return (
-    <div className="h-1.5 w-full overflow-hidden rounded bg-bg-tertiary">
+    <div className="bg-bg-tertiary h-1.5 w-full overflow-hidden rounded">
       <div
         className={cn("h-full", chosen ? "bg-accent-solid" : "bg-text-muted")}
         style={{ width }}
@@ -629,11 +629,11 @@ function RuleRow({
       )}
       data-testid="decision-rule"
     >
-      <span className="shrink-0 font-medium text-text-primary">
+      <span className="text-text-primary shrink-0 font-medium">
         {t("conversation.trail.decision.ruleN", "Rule {{n}}", { n })}
       </span>
       {tool && (
-        <span className="shrink-0 font-mono text-text-secondary">{tool}</span>
+        <span className="text-text-secondary shrink-0 font-mono">{tool}</span>
       )}
       <span
         title={near ? text : undefined}

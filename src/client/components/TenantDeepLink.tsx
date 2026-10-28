@@ -144,7 +144,7 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
 
   if (action.kind === "unverified") {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-bg-primary p-6">
+      <div className="bg-bg-primary flex min-h-dvh items-center justify-center p-6">
         <EmptyState
           title={t("tenant.deepLinkUnverified", "Could not check this link")}
           description={t(
@@ -165,12 +165,12 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
   if (action.kind === "pending" || action.kind === "switch") {
     return (
       <div
-        className="flex min-h-dvh items-center justify-center bg-bg-primary"
+        className="bg-bg-primary flex min-h-dvh items-center justify-center"
         role="status"
       >
         <span className="sr-only">{t("common.loading", "Loading…")}</span>
         <Loader2
-          className="h-6 w-6 animate-spin text-text-secondary"
+          className="text-text-secondary h-6 w-6 animate-spin"
           aria-hidden
         />
       </div>

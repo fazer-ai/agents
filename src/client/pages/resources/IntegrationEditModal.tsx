@@ -485,7 +485,7 @@ export function ReminderConfigEditor({
                       setRows(next);
                       persist({ rows: next });
                     }}
-                    className="shrink-0 rounded-lg border border-border p-2 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-secondary"
+                    className="border-border text-text-muted hover:bg-bg-hover hover:text-text-secondary shrink-0 rounded-lg border p-2 transition-colors"
                   >
                     <X className="h-4 w-4" aria-hidden="true" />
                   </button>
@@ -579,15 +579,15 @@ function CalendarMultiPicker({
                   {checked && <Check className="h-3 w-3" aria-hidden="true" />}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary block truncate text-sm font-medium">
                     {c.summary}
                     {c.primary && (
-                      <span className="ml-1.5 text-text-muted text-xs">
+                      <span className="text-text-muted ml-1.5 text-xs">
                         {t("integrations.config.calendarPrimary", "(primary)")}
                       </span>
                     )}
                   </span>
-                  <span className="block truncate text-text-muted text-xs">
+                  <span className="text-text-muted block truncate text-xs">
                     {c.id}
                   </span>
                 </span>
@@ -1267,9 +1267,9 @@ export function IntegrationEditModal({
         ) : (
           <div className="flex flex-col gap-4">
             {sharedNotice && editId && (
-              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+              <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
                 <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  className="text-warning mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <span>
@@ -1283,16 +1283,16 @@ export function IntegrationEditModal({
 
             {/* Service selector (logo cards) on create; a fixed header on edit. */}
             {editId ? (
-              <div className="flex items-center gap-3 rounded-lg border border-border bg-bg-secondary px-3 py-2.5">
+              <div className="border-border bg-bg-secondary flex items-center gap-3 rounded-lg border px-3 py-2.5">
                 <ServiceLogo
                   service={serviceFor(form.catalogType)}
-                  className="h-6 w-6 shrink-0 text-text-primary"
+                  className="text-text-primary h-6 w-6 shrink-0"
                 />
                 <div className="min-w-0">
-                  <div className="font-medium text-sm text-text-primary">
+                  <div className="text-text-primary text-sm font-medium">
                     {catalogLabel(selectedCatalog)}
                   </div>
-                  <p className="truncate text-text-muted text-xs">
+                  <p className="text-text-muted truncate text-xs">
                     {catalogDescription(selectedCatalog)}
                   </p>
                 </div>
@@ -1339,7 +1339,7 @@ export function IntegrationEditModal({
                   ariaLabel={t("integrations.credential", "Credential")}
                 />
                 {needsGoogle && (
-                  <p className="mt-1.5 text-text-muted text-xs">
+                  <p className="text-text-muted mt-1.5 text-xs">
                     {t(
                       "integrations.googleScopeHint",
                       "Connect a Google account with the right scope (Calendar, Drive or Sheets). If a tool returns a permission error, reconnect the credential adding that scope.",
@@ -1384,7 +1384,7 @@ export function IntegrationEditModal({
                       "Name <email@yourdomain.com>",
                     )}
                   />
-                  <p className="mt-1 text-text-muted text-xs">
+                  <p className="text-text-muted mt-1 text-xs">
                     {t(
                       "integrations.config.emailFromHint",
                       "The domain must be verified on the Resend account. The agent can never change the sender.",
@@ -1437,7 +1437,7 @@ export function IntegrationEditModal({
                         )}
                         group
                       >
-                        <p className="mb-1.5 text-text-muted text-xs">
+                        <p className="text-text-muted mb-1.5 text-xs">
                           {t(
                             "integrations.config.calendarsHint",
                             "The calendars the agent may read and write. The calendar tools stay disabled until at least one is picked.",
@@ -1447,7 +1447,7 @@ export function IntegrationEditModal({
                           href="https://calendar.google.com/calendar/u/0/r/settings/createcalendar"
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="mb-2 inline-flex items-center gap-1 text-accent text-xs hover:underline"
+                          className="text-accent mb-2 inline-flex items-center gap-1 text-xs hover:underline"
                         >
                           {t(
                             "integrations.config.createCalendarLink",
@@ -1459,7 +1459,7 @@ export function IntegrationEditModal({
                           />
                         </a>
                         {!form.credentialRef ? (
-                          <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                          <p className="border-border text-text-muted rounded-lg border border-dashed px-3 py-2 text-xs">
                             {t(
                               "integrations.config.calendarsPickCredential",
                               "Choose a connected Google credential above to list its calendars.",
@@ -1525,14 +1525,14 @@ export function IntegrationEditModal({
                         )}
                         group
                       >
-                        <p className="mb-1.5 text-text-muted text-xs">
+                        <p className="text-text-muted mb-1.5 text-xs">
                           {t(
                             "integrations.config.blockingCalendarsHint",
                             "Calendars the agent respects but never books into: every event on them blocks availability (holidays, closures, days off). The agent never sees their event details.",
                           )}
                         </p>
                         {!form.credentialRef ? (
-                          <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                          <p className="border-border text-text-muted rounded-lg border border-dashed px-3 py-2 text-xs">
                             {t(
                               "integrations.config.calendarsPickCredential",
                               "Choose a connected Google credential above to list its calendars.",
@@ -1588,7 +1588,7 @@ export function IntegrationEditModal({
                         )}
                         group
                       >
-                        <p className="mb-1.5 text-text-muted text-xs">
+                        <p className="text-text-muted mb-1.5 text-xs">
                           {t(
                             "integrations.config.serviceHoursHint",
                             "The weekly hours the agent may offer for appointments. Reuses your schedules; leave it as Always available for no time-of-day limit.",
@@ -1878,7 +1878,7 @@ export function IntegrationEditModal({
                 label={t("integrations.config.folder", "Folder")}
                 group
               >
-                <p className="mb-1.5 text-text-muted text-xs">
+                <p className="text-text-muted mb-1.5 text-xs">
                   {t(
                     "integrations.config.folderHint",
                     "Optional. When set, file search is limited to this folder.",
@@ -1945,10 +1945,10 @@ export function IntegrationEditModal({
                               }`}
                             >
                               {folderId === "" && (
-                                <span className="h-2 w-2 rounded-full bg-accent-solid" />
+                                <span className="bg-accent-solid h-2 w-2 rounded-full" />
                               )}
                             </span>
-                            <span className="font-medium text-sm text-text-primary">
+                            <span className="text-text-primary text-sm font-medium">
                               {t(
                                 "integrations.config.anyFolder",
                                 "Any folder (no scope)",
@@ -1980,14 +1980,14 @@ export function IntegrationEditModal({
                                   }`}
                                 >
                                   {selected && (
-                                    <span className="h-2 w-2 rounded-full bg-accent-solid" />
+                                    <span className="bg-accent-solid h-2 w-2 rounded-full" />
                                   )}
                                 </span>
                                 <span className="min-w-0 flex-1">
-                                  <span className="block truncate font-medium text-sm text-text-primary">
+                                  <span className="text-text-primary block truncate text-sm font-medium">
                                     {f.name}
                                   </span>
-                                  <span className="block truncate text-text-muted text-xs">
+                                  <span className="text-text-muted block truncate text-xs">
                                     {f.id}
                                   </span>
                                 </span>
@@ -1995,7 +1995,7 @@ export function IntegrationEditModal({
                             );
                           })}
                           {filteredFolders.length === 0 && (
-                            <p className="px-1 text-text-muted text-xs">
+                            <p className="text-text-muted px-1 text-xs">
                               {t(
                                 "integrations.config.noFoldersMatch",
                                 "No folders match your filter.",
@@ -2034,7 +2034,7 @@ export function IntegrationEditModal({
                   />
                 </div>
                 {folderId !== "" && !isManualFolder && folderName && (
-                  <p className="mt-1 text-text-muted text-xs">
+                  <p className="text-text-muted mt-1 text-xs">
                     {t(
                       "integrations.config.folderSelected",
                       "Selected folder:",
@@ -2056,7 +2056,7 @@ export function IntegrationEditModal({
             {/* ── Tools this integration exposes (read-only) ── */}
             {selectedCatalog && selectedCatalog.tools.length > 0 && (
               <div className="flex flex-col gap-2">
-                <span className="font-medium text-sm text-text-secondary">
+                <span className="text-text-secondary text-sm font-medium">
                   {t("integrations.toolsTitle", "What this integration can do")}
                 </span>
                 <div className="flex flex-col gap-2">
@@ -2066,14 +2066,14 @@ export function IntegrationEditModal({
                     return (
                       <div
                         key={tool.name}
-                        className="flex flex-col gap-1.5 rounded-lg border border-border p-3"
+                        className="border-border flex flex-col gap-1.5 rounded-lg border p-3"
                       >
                         <div className="flex items-center gap-2">
                           <Icon
-                            className="h-4 w-4 shrink-0 text-text-muted"
+                            className="text-text-muted h-4 w-4 shrink-0"
                             aria-hidden="true"
                           />
-                          <span className="font-medium text-sm text-text-primary">
+                          <span className="text-text-primary text-sm font-medium">
                             {meta.label}
                           </span>
                         </div>
@@ -2094,13 +2094,13 @@ export function IntegrationEditModal({
 
             {/* ── Inbound webhook: Asaas payments, or the operator's own system (GENERIC) ── */}
             {selectedCatalog?.supportsInbound && (
-              <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3">
+              <div className="border-border bg-bg-secondary flex flex-col gap-3 rounded-lg border p-3">
                 <div className="flex items-center gap-2">
                   <Webhook
-                    className="h-4 w-4 shrink-0 text-accent"
+                    className="text-accent h-4 w-4 shrink-0"
                     aria-hidden="true"
                   />
-                  <span className="font-medium text-sm text-text-primary">
+                  <span className="text-text-primary text-sm font-medium">
                     {isGeneric
                       ? t(
                           "integrations.webhook.titleGeneric",
@@ -2278,8 +2278,8 @@ export function IntegrationEditModal({
                   />
                 )}
                 {editId && (
-                  <details className="rounded-lg border border-border p-3">
-                    <summary className="cursor-pointer font-medium text-sm">
+                  <details className="border-border rounded-lg border p-3">
+                    <summary className="cursor-pointer text-sm font-medium">
                       {t("integrations.test.title", "Test reception")}
                     </summary>
                     <div className="mt-3">
@@ -2315,14 +2315,14 @@ export function IntegrationEditModal({
         }
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "integrations.tokenHint",
               "Copy this URL into the provider's webhook settings. You can read it again later by editing this integration.",
             )}
           </p>
           <div className="flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-text-primary text-xs">
+            <code className="border-border bg-bg-tertiary text-text-primary min-w-0 flex-1 truncate rounded-lg border px-3 py-2 text-xs">
               {tokenModal.payload?.url}
             </code>
             <Button variant="secondary" size="sm" onClick={copyUrl}>

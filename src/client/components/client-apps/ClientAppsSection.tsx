@@ -9,7 +9,7 @@ export function ClientAppsSection(_props: { agentId: string }) {
   return (
     <section className="space-y-3">
       <div>
-        <h3 className="font-medium text-sm text-text-primary">
+        <h3 className="text-text-primary text-sm font-medium">
           {t("clientApps.title", "Embedding applications")}
         </h3>
         <p className="text-text-secondary text-xs">

@@ -382,7 +382,7 @@ export function CodeToolTestModal({
           <div className="flex flex-col gap-2">
             {contextNames.map((name) => (
               <div key={name} className="flex items-center gap-2 text-xs">
-                <code className="w-40 shrink-0 truncate rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                <code className="bg-bg-tertiary w-40 shrink-0 truncate rounded px-1 py-0.5 font-mono">
                   {name}
                 </code>
                 <Input
@@ -440,16 +440,16 @@ export function CodeToolTestModal({
         </FormField>
 
         {result && (
-          <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+          <div className="border-border flex flex-col gap-2 rounded-md border p-3">
             <div className="flex items-center gap-2 text-xs">
               {result.failed ? (
                 <AlertTriangle
-                  className="h-4 w-4 shrink-0 text-warning"
+                  className="text-warning h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
               ) : (
                 <Check
-                  className="h-4 w-4 shrink-0 text-success"
+                  className="text-success h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
               )}
@@ -463,7 +463,7 @@ export function CodeToolTestModal({
               group
               label={t("codeTools.testResult", "What the agent would receive")}
             >
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-tertiary p-2 text-text-primary text-xs">
+              <pre className="border-border bg-bg-tertiary text-text-primary max-h-48 overflow-auto rounded-md border p-2 text-xs break-words whitespace-pre-wrap">
                 {result.text}
               </pre>
             </FormField>
@@ -472,7 +472,7 @@ export function CodeToolTestModal({
                 group
                 label={t("codeTools.testLogs", "Console output")}
               >
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-tertiary p-2 text-text-secondary text-xs">
+                <pre className="border-border bg-bg-tertiary text-text-secondary max-h-40 overflow-auto rounded-md border p-2 text-xs break-words whitespace-pre-wrap">
                   {logs.join("\n")}
                 </pre>
               </FormField>

@@ -104,7 +104,7 @@ export function ExportAgentModal({
             <label
               htmlFor={switchId}
               data-clickable="true"
-              className="font-medium text-sm text-text-primary"
+              className="text-text-primary text-sm font-medium"
             >
               {t("editor.exportIncludeComponents", "Include full components")}
             </label>
@@ -133,7 +133,7 @@ export function ExportAgentModal({
             <label
               htmlFor={documentsSwitchId}
               data-clickable="true"
-              className="font-medium text-sm text-text-primary"
+              className="text-text-primary text-sm font-medium"
             >
               {t(
                 "editor.exportIncludeDocuments",
@@ -159,7 +159,7 @@ export function ExportAgentModal({
           />
         </div>
         {anyDirty && (
-          <p className="rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+          <p className="border-warning bg-warning-soft text-text-primary rounded-lg border px-3 py-2 text-xs">
             {t(
               "editor.exportUnsavedNote",
               "You have unsaved changes. Save first to export the current version, or export the last saved one.",

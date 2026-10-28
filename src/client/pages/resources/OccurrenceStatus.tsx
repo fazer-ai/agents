@@ -131,7 +131,7 @@ export function OccurrenceStatus({
       {last !== null && onShowRounds && (
         <button
           type="button"
-          className="font-medium text-accent"
+          className="text-accent font-medium"
           onClick={onShowRounds}
         >
           {t("occurrences.status.seeRounds", "See the rounds")}

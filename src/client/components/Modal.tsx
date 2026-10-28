@@ -483,7 +483,7 @@ export function Modal({
             <DialogPrimitive.Overlay
               style={overlayStyle}
               className={cn(
-                "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 bg-overlay data-[state=closed]:animate-out data-[state=open]:animate-in",
+                "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 bg-overlay data-[state=closed]:animate-out data-[state=open]:animate-in fixed inset-0",
                 stackLevel === 0 && "z-(--z-modal-overlay)",
               )}
             />
@@ -515,7 +515,7 @@ export function Modal({
               // own height (with top-50% + translateY, a modal whose body loads async paints low, then jumps).
               // Content stays the direct Portal child, so Radix's Presence still plays the exit animation.
               className={cn(
-                "data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 fixed inset-0 flex items-center justify-center p-4 focus:outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+                "data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=open]:animate-in fixed inset-0 flex items-center justify-center p-4 focus:outline-none",
                 stackLevel === 0 && "z-(--z-modal)",
               )}
             >
@@ -524,28 +524,28 @@ export function Modal({
               <div
                 ref={contentRef}
                 className={cn(
-                  "flex max-h-[calc(100dvh-2rem)] w-full flex-col rounded-xl border border-border bg-bg-secondary",
+                  "border-border bg-bg-secondary flex max-h-[calc(100dvh-2rem)] w-full flex-col rounded-xl border",
                   sizeClasses[size],
                   className,
                 )}
               >
                 {title && (
-                  <div className="flex shrink-0 items-center justify-between border-border border-b px-6 py-4">
-                    <DialogPrimitive.Title className="font-semibold text-text-primary text-xl">
+                  <div className="border-border flex shrink-0 items-center justify-between border-b px-6 py-4">
+                    <DialogPrimitive.Title className="text-text-primary text-xl font-semibold">
                       {title}
                     </DialogPrimitive.Title>
                     <DialogPrimitive.Close
                       disabled={busy}
                       // t('common.close', 'Close')
                       aria-label={t("common.close", "Close")}
-                      className="rounded-lg p-1 text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      className="text-text-muted hover:bg-bg-tertiary hover:text-text-primary rounded-lg p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <X className="h-5 w-5" aria-hidden="true" />
                     </DialogPrimitive.Close>
                   </div>
                 )}
                 {description && (
-                  <DialogPrimitive.Description className="px-6 pt-4 text-sm text-text-secondary">
+                  <DialogPrimitive.Description className="text-text-secondary px-6 pt-4 text-sm">
                     {description}
                   </DialogPrimitive.Description>
                 )}
@@ -561,7 +561,7 @@ export function Modal({
                     </ModalDirtyContext.Provider>
                   </div>
                   {footer && (
-                    <div className="shrink-0 border-border border-t px-6 py-4">
+                    <div className="border-border shrink-0 border-t px-6 py-4">
                       {footer}
                     </div>
                   )}

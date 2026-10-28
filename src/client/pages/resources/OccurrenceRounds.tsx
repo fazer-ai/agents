@@ -131,7 +131,7 @@ export function OccurrenceRounds({
     <Card className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="font-medium text-text-primary">
+          <h2 className="text-text-primary font-medium">
             {t("occurrences.runsTitle", "Rounds")}
           </h2>
           <p className="text-text-muted text-xs">
@@ -148,7 +148,7 @@ export function OccurrenceRounds({
       </div>
 
       {costFailed && (
-        <p role="alert" className="text-sm text-text-muted">
+        <p role="alert" className="text-text-muted text-sm">
           {t("occurrences.costError", "Could not read the cost.")}
         </p>
       )}
@@ -161,9 +161,9 @@ export function OccurrenceRounds({
               ["last30Days", t("occurrences.cost30", "Cost, last 30 days")],
             ] as const
           ).map(([k, label]) => (
-            <div key={k} className="rounded-lg border border-border p-3">
+            <div key={k} className="border-border rounded-lg border p-3">
               <dt className="text-text-muted text-xs">{label}</dt>
-              <dd className="font-medium text-text-primary">
+              <dd className="text-text-primary font-medium">
                 {money(cost[k].costUsd, cost[k].calls)}
               </dd>
               <dd className="text-text-muted text-xs">
@@ -184,7 +184,7 @@ export function OccurrenceRounds({
       )}
 
       {failed ? (
-        <div className="flex flex-wrap items-center gap-2 text-sm text-text-muted">
+        <div className="text-text-muted flex flex-wrap items-center gap-2 text-sm">
           <span role="alert">
             {t("occurrences.runsError", "Could not read the rounds.")}
           </span>
@@ -203,7 +203,7 @@ export function OccurrenceRounds({
           )}
         </div>
       ) : page === null ? null : page.runs.length === 0 ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {monitorOn
             ? t(
                 "occurrences.runsWaiting",
@@ -266,7 +266,7 @@ export function OccurrenceRounds({
                       {/* Why it stopped, said in the list in the screen's words; the server's own
                           text is a popover away. */}
                       {r.error && (
-                        <span className="flex items-center gap-1 text-text-muted text-xs">
+                        <span className="text-text-muted flex items-center gap-1 text-xs">
                           {t(
                             "occurrences.detail.stopped",
                             "The round stopped before finishing.",
@@ -295,7 +295,7 @@ export function OccurrenceRounds({
                     <td className="py-1 pr-3">
                       {money(r.costUsd, r.modelCalls)}
                       {r.costUsd !== null && r.unpricedCalls > 0 && (
-                        <span className="block text-text-muted text-xs">
+                        <span className="text-text-muted block text-xs">
                           {t(
                             "occurrences.costUnpriced",
                             "{{count}} calls with no price left out",
@@ -525,7 +525,7 @@ function RunDetail({ run }: { run: Run }) {
       ),
     });
   return (
-    <ul className="flex list-disc flex-col gap-1 pl-4 text-sm text-text-secondary">
+    <ul className="text-text-secondary flex list-disc flex-col gap-1 pl-4 text-sm">
       {lines.map((l) => (
         <li key={l.key}>
           <span className="inline-flex flex-wrap items-center gap-1">

@@ -94,11 +94,11 @@ export function SettingsProfilePage() {
       <div className="flex items-center gap-4">
         <Avatar name={user.name} email={user.email} size="lg" />
         <div className="min-w-0">
-          <p className="truncate font-semibold text-lg text-text-primary">
+          <p className="text-text-primary truncate text-lg font-semibold">
             {user.name || user.email}
           </p>
           {user.name && (
-            <p className="truncate text-sm text-text-muted">{user.email}</p>
+            <p className="text-text-muted truncate text-sm">{user.email}</p>
           )}
         </div>
       </div>
@@ -152,7 +152,7 @@ export function SettingsProfilePage() {
               "Your email identifies the account and cannot be changed here.",
             )}
           >
-            <span className="text-sm text-text-secondary">{user.email}</span>
+            <span className="text-text-secondary text-sm">{user.email}</span>
           </SettingsRow>
           <SettingsRow
             label={t("common.role", "Role")}
@@ -162,7 +162,7 @@ export function SettingsProfilePage() {
           </SettingsRow>
           {user.createdAt && (
             <SettingsRow label={t("settings.memberSince", "Member since")}>
-              <span className="text-sm text-text-secondary">
+              <span className="text-text-secondary text-sm">
                 {new Date(user.createdAt).toLocaleDateString(i18n.language, {
                   dateStyle: "long",
                 })}

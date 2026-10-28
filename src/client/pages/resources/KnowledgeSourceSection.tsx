@@ -368,17 +368,17 @@ export function KnowledgeSourceSection({
   }
 
   const heading = (
-    <h3 className="font-medium text-sm text-text-primary">
+    <h3 className="text-text-primary text-sm font-medium">
       {t("knowledge.source.title", "Help center source")}
     </h3>
   );
 
   if (source === undefined) {
     return (
-      <section className="rounded-lg border border-border px-3 py-2">
+      <section className="border-border rounded-lg border px-3 py-2">
         {heading}
         {loadFailed ? (
-          <p className="mt-1 text-text-muted text-xs">
+          <p className="text-text-muted mt-1 text-xs">
             {t(
               "knowledge.source.loadError",
               "Could not load this base's source.",
@@ -494,7 +494,7 @@ export function KnowledgeSourceSection({
 
   if (source === null) {
     return (
-      <section className="rounded-lg border border-border px-3 py-2">
+      <section className="border-border rounded-lg border px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           {heading}
           {canManage && !editing && (
@@ -504,7 +504,7 @@ export function KnowledgeSourceSection({
           )}
         </div>
         {!editing && (
-          <p className="mt-1 text-text-muted text-xs">
+          <p className="text-text-muted mt-1 text-xs">
             {t(
               "knowledge.source.none",
               "This base does not mirror a help center. Its documents are managed here.",
@@ -542,7 +542,7 @@ export function KnowledgeSourceSection({
   ];
 
   return (
-    <section className="rounded-lg border border-border px-3 py-2">
+    <section className="border-border rounded-lg border px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         {heading}
         {canManage && !editing && (
@@ -578,7 +578,7 @@ export function KnowledgeSourceSection({
             {rows.map(([label, value]) => (
               <div key={label} className="contents">
                 <dt className="text-text-muted">{label}</dt>
-                <dd className="break-all text-text-primary">{value}</dd>
+                <dd className="text-text-primary break-all">{value}</dd>
               </div>
             ))}
           </dl>
@@ -602,14 +602,14 @@ export function KnowledgeSourceSection({
               </span>
             )}
             {syncing && (
-              <span className="animate-pulse text-text-muted">
+              <span className="text-text-muted animate-pulse">
                 {t("knowledge.source.syncing", "Syncing…")}
               </span>
             )}
           </div>
           {ran && source.lastMessage && (
             <p
-              className={cn("mt-1 break-words text-xs", {
+              className={cn("mt-1 text-xs break-words", {
                 "text-error": source.lastStatus === "error",
                 "text-warning": source.lastStatus === "warning",
                 "text-text-muted":
@@ -631,8 +631,8 @@ export function KnowledgeSourceSection({
 export function SyncedDocNote({ sourceUrl }: { sourceUrl: string | null }) {
   const { t } = useTranslation();
   return (
-    <span className="flex flex-wrap items-center gap-1 text-text-muted text-xs">
-      <span className="rounded-full bg-bg-tertiary px-2 py-0.5">
+    <span className="text-text-muted flex flex-wrap items-center gap-1 text-xs">
+      <span className="bg-bg-tertiary rounded-full px-2 py-0.5">
         {t("knowledge.source.synced", "Synced")}
       </span>
       {sourceUrl && (

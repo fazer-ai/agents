@@ -348,27 +348,27 @@ export function AdminUsersPage() {
       {stats && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Card className="flex items-center gap-4">
-            <div className="rounded-lg bg-bg-tertiary p-3">
-              <Shield className="h-6 w-6 text-accent" aria-hidden="true" />
+            <div className="bg-bg-tertiary rounded-lg p-3">
+              <Shield className="text-accent h-6 w-6" aria-hidden="true" />
             </div>
             <div>
-              <p className="font-bold text-2xl text-text-primary">
+              <p className="text-text-primary text-2xl font-bold">
                 {stats.totalUsers}
               </p>
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {t("admin.totalUsers", "Total Users")}
               </p>
             </div>
           </Card>
           <Card className="flex items-center gap-4">
-            <div className="rounded-lg bg-bg-tertiary p-3">
-              <Shield className="h-6 w-6 text-purple" aria-hidden="true" />
+            <div className="bg-bg-tertiary rounded-lg p-3">
+              <Shield className="text-purple h-6 w-6" aria-hidden="true" />
             </div>
             <div>
-              <p className="font-bold text-2xl text-text-primary">
+              <p className="text-text-primary text-2xl font-bold">
                 {stats.adminCount}
               </p>
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {t("admin.admins", "Admins")}
               </p>
             </div>
@@ -387,7 +387,7 @@ export function AdminUsersPage() {
         <div className="mb-4 flex items-center gap-3">
           <div className="relative flex-1">
             <Search
-              className="absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
+              className="text-text-muted absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2"
               aria-hidden="true"
             />
             <input
@@ -397,7 +397,7 @@ export function AdminUsersPage() {
               onKeyDown={(e) => e.key === "Enter" && handleSearchSubmit()}
               placeholder={t("admin.searchUsers", "Search users by email...")}
               aria-label={t("admin.searchUsers", "Search users by email...")}
-              className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
+              className="border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft h-8 w-full rounded-md border pr-2.5 pl-8 text-sm transition-colors focus:ring-2 focus:outline-none"
             />
           </div>
           <Button size="sm" onClick={handleSearchSubmit} disabled={loading}>
@@ -411,7 +411,7 @@ export function AdminUsersPage() {
             {USER_SKELETON_KEYS.map((key) => (
               <div
                 key={key}
-                className="flex items-center gap-4 border-border/50 border-b px-2 py-3"
+                className="border-border/50 flex items-center gap-4 border-b px-2 py-3"
               >
                 <Skeleton className="h-4 w-48" />
                 <Skeleton className="h-4 w-32" />
@@ -429,27 +429,27 @@ export function AdminUsersPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-border border-b text-left">
-                    <th className="px-2 py-3 font-medium text-text-secondary">
+                    <th className="text-text-secondary px-2 py-3 font-medium">
                       {t("admin.email", "Email")}
                     </th>
-                    <th className="px-2 py-3 font-medium text-text-secondary">
+                    <th className="text-text-secondary px-2 py-3 font-medium">
                       {t("admin.name", "Name")}
                     </th>
                     {showTenantColumn && (
-                      <th className="px-2 py-3 font-medium text-text-secondary">
+                      <th className="text-text-secondary px-2 py-3 font-medium">
                         {t("admin.tenant", "Tenant")}
                       </th>
                     )}
-                    <th className="px-2 py-3 font-medium text-text-secondary">
+                    <th className="text-text-secondary px-2 py-3 font-medium">
                       {t("admin.role", "Role")}
                     </th>
-                    <th className="px-2 py-3 font-medium text-text-secondary">
+                    <th className="text-text-secondary px-2 py-3 font-medium">
                       {t("admin.createdAt", "Created")}
                     </th>
-                    <th className="px-2 py-3 font-medium text-text-secondary">
+                    <th className="text-text-secondary px-2 py-3 font-medium">
                       {t("admin.lastLogin", "Last Login")}
                     </th>
-                    <th className="px-2 py-3 font-medium text-text-secondary">
+                    <th className="text-text-secondary px-2 py-3 font-medium">
                       {t("admin.actions", "Actions")}
                     </th>
                   </tr>
@@ -459,7 +459,7 @@ export function AdminUsersPage() {
                     <tr>
                       <td
                         colSpan={showTenantColumn ? 7 : 6}
-                        className="px-2 py-10 text-center text-sm text-text-muted"
+                        className="text-text-muted px-2 py-10 text-center text-sm"
                       >
                         {t("admin.noUsers", "No users found")}
                       </td>
@@ -482,16 +482,16 @@ export function AdminUsersPage() {
                       return (
                         <tr
                           key={`${user.id}:${user.tenantId ?? "fleet"}`}
-                          className="border-border/50 border-b hover:bg-bg-tertiary/50"
+                          className="border-border/50 hover:bg-bg-tertiary/50 border-b"
                         >
-                          <td className="px-2 py-3 text-text-primary">
+                          <td className="text-text-primary px-2 py-3">
                             {user.email}
                           </td>
-                          <td className="px-2 py-3 text-text-secondary">
+                          <td className="text-text-secondary px-2 py-3">
                             {user.name || "-"}
                           </td>
                           {showTenantColumn && (
-                            <td className="px-2 py-3 text-text-secondary">
+                            <td className="text-text-secondary px-2 py-3">
                               {user.tenantId
                                 ? (tenantsById.get(user.tenantId) ??
                                   user.tenantId)
@@ -501,10 +501,10 @@ export function AdminUsersPage() {
                           <td className="px-2 py-3">
                             <RoleBadge role={user.role} />
                           </td>
-                          <td className="px-2 py-3 text-text-secondary">
+                          <td className="text-text-secondary px-2 py-3">
                             {formatDate(user.createdAt)}
                           </td>
-                          <td className="px-2 py-3 text-text-secondary">
+                          <td className="text-text-secondary px-2 py-3">
                             {formatDate(user.lastLoginAt)}
                           </td>
                           <td className="px-2 py-3">
@@ -515,11 +515,11 @@ export function AdminUsersPage() {
                                   onClick={() => handleToggleRole(user)}
                                   disabled={disabled}
                                   className={cn(
-                                    "inline-flex items-center gap-1 whitespace-nowrap rounded border border-border px-2 py-1 font-medium text-xs transition-colors",
+                                    "border-border inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors",
                                     {
                                       "bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary":
                                         !disabled,
-                                      "cursor-not-allowed bg-bg-tertiary text-text-muted opacity-50":
+                                      "bg-bg-tertiary text-text-muted cursor-not-allowed opacity-50":
                                         disabled,
                                     },
                                   )}
@@ -565,11 +565,11 @@ export function AdminUsersPage() {
                                   onClick={() => openDeleteUser(user)}
                                   disabled={isSelf}
                                   className={cn(
-                                    "inline-flex items-center gap-1 whitespace-nowrap rounded border border-border px-2 py-1 font-medium text-xs transition-colors",
+                                    "border-border inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors",
                                     {
                                       "bg-bg-tertiary text-text-secondary hover:bg-error/10 hover:text-error":
                                         !isSelf,
-                                      "cursor-not-allowed bg-bg-tertiary text-text-muted opacity-50":
+                                      "bg-bg-tertiary text-text-muted cursor-not-allowed opacity-50":
                                         isSelf,
                                     },
                                   )}
@@ -609,7 +609,7 @@ export function AdminUsersPage() {
                 >
                   {t("common.previous", "Previous")}
                 </Button>
-                <span className="flex items-center px-3 text-sm text-text-secondary">
+                <span className="text-text-secondary flex items-center px-3 text-sm">
                   {t("common.pageOf", "{{page}} of {{total}}", {
                     page,
                     total: totalPages,

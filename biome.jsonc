@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["src/**/*.{ts,tsx}", "scripts/**/*.ts", "tests/**/*.{ts,tsx}"]
+    "includes": [
+      "src/**/*.{ts,tsx}",
+      "scripts/**/*.ts",
+      "tests/**/*.{ts,tsx}",
+      // tests/lint/fence-rules.test.ts writes a root config here for its second Biome process, and
+      // Biome refuses a nested root config it finds while scanning.
+      "!!tests/lint/.probe-fence-*/copies-config"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -21,7 +28,7 @@
     "rules": {
       "preset": "recommended",
       "nursery": {
-        "useSortedClasses": "warn"
+        "useTailwindSortedClasses": "warn"
       },
       "style": {
         "noJsxLiterals": {
@@ -61,6 +68,14 @@
     }
   },
   "overrides": [
+    {
+      // A harness component built inside a test is built once and rendered once; the rule guards a
+      // component recreated on every render of its parent, which loses its state each time.
+      "includes": ["tests/**/*.{ts,tsx}"],
+      "linter": {
+        "rules": { "correctness": { "noComponentHookFactories": "off" } }
+      }
+    },
     {
       "includes": ["src/client/**/*.{ts,tsx}", "!src/client/lib/env.ts"],
       "plugins": ["./biome-plugins/no-bun-public-env.grit"]

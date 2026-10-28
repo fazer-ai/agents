@@ -213,7 +213,7 @@ export function ApprovalHistory() {
       )}
     >
       {requests && requests.length === 0 && (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t("approvalQueue.noHistory", "No document has been decided yet.")}
         </p>
       )}
@@ -225,15 +225,15 @@ export function ApprovalHistory() {
               <li key={r.id}>
                 <Link
                   to={`/document-approvals/${r.id}`}
-                  className="block rounded-lg hover:bg-bg-hover"
+                  className="hover:bg-bg-hover block rounded-lg"
                 >
                   <Card className="flex items-center gap-3 p-3">
                     <FileText
-                      className="h-4 w-4 shrink-0 text-text-muted"
+                      className="text-text-muted h-4 w-4 shrink-0"
                       aria-hidden="true"
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium text-sm text-text-primary">
+                      <p className="text-text-primary truncate text-sm font-medium">
                         {r.contactName
                           ? t(
                               "approvalQueue.documentFor",

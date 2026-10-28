@@ -119,7 +119,7 @@ function KpiTile({
   const navigate = useNavigate();
   return (
     <Card className={cn("flex flex-col gap-2", className)}>
-      <div className="flex items-center gap-2 text-text-muted text-xs">
+      <div className="text-text-muted flex items-center gap-2 text-xs">
         <Icon
           className={cn("h-4 w-4", accent ? "text-accent" : "text-text-muted")}
           aria-hidden="true"
@@ -133,14 +133,14 @@ function KpiTile({
             <button
               type="button"
               onClick={() => navigate(href)}
-              className="self-start font-semibold text-2xl text-text-primary tabular-nums hover:text-accent hover:underline"
+              className="text-text-primary hover:text-accent self-start text-2xl font-semibold tabular-nums hover:underline"
             >
               {primary}
             </button>
           ) : (
             <p
               className={cn(
-                "font-semibold text-2xl tabular-nums",
+                "text-2xl font-semibold tabular-nums",
                 !isProvisional(coverage) && "text-text-primary",
               )}
             >
@@ -174,14 +174,14 @@ function FunnelBar({
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between text-sm">
         <span className="text-text-secondary">{label}</span>
-        <span className="font-medium text-text-primary tabular-nums">
+        <span className="text-text-primary font-medium tabular-nums">
           {nf.format(count)}
-          <span className="ml-1 text-text-muted text-xs">{pctLabel}</span>
+          <span className="text-text-muted ml-1 text-xs">{pctLabel}</span>
         </span>
       </div>
-      <div className="h-2.5 w-full overflow-hidden rounded-full bg-bg-tertiary">
+      <div className="bg-bg-tertiary h-2.5 w-full overflow-hidden rounded-full">
         <div
-          className="h-full rounded-full bg-accent-solid transition-all"
+          className="bg-accent-solid h-full rounded-full transition-all"
           style={{ width: `${Math.max(pct, count > 0 ? 2 : 0)}%` }}
         />
       </div>
@@ -620,7 +620,7 @@ export function PerformanceSection({
         {trend.loading && !tr && !isProvisional(trend.coverage) ? (
           <Skeleton className="h-64 w-full" />
         ) : (tr?.days.length ?? 0) === 0 && !isProvisional(trend.coverage) ? (
-          <p className="py-8 text-center text-sm text-text-muted">
+          <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
         ) : (
@@ -645,7 +645,7 @@ export function PerformanceSection({
       {breakdown !== "none" && tr?.series && tr.series.length > 0 && (
         <Card className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="font-medium text-sm text-text-primary">
+            <h3 className="text-text-primary text-sm font-medium">
               {t("dashboard.trend.perSeries", "{{metric}} in the period", {
                 metric: metricLabel[metric],
               })}
@@ -662,7 +662,7 @@ export function PerformanceSection({
                 >
                   <button
                     type="button"
-                    className="truncate text-left text-text-secondary hover:text-accent hover:underline"
+                    className="text-text-secondary hover:text-accent truncate text-left hover:underline"
                     onClick={() =>
                       onFilter(
                         breakdown === "agent"
@@ -673,9 +673,9 @@ export function PerformanceSection({
                   >
                     {s.label}
                   </button>
-                  <span className="shrink-0 font-medium text-text-primary tabular-nums">
+                  <span className="text-text-primary shrink-0 font-medium tabular-nums">
                     {fmtRate(rate(s.totals, metric))}
-                    <span className="ml-1.5 text-text-muted text-xs">
+                    <span className="text-text-muted ml-1.5 text-xs">
                       {t(
                         "dashboard.trend.ofConversations",
                         "{{n}} conversations",

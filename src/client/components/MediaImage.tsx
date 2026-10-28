@@ -28,7 +28,7 @@ export function MediaImage({
   if (!url) {
     return (
       <div
-        className="h-32 w-44 max-w-full animate-pulse rounded-lg bg-bg-tertiary"
+        className="bg-bg-tertiary h-32 w-44 max-w-full animate-pulse rounded-lg"
         role="status"
         aria-label={t("common.loading", "Loading…")}
       />
@@ -40,7 +40,7 @@ export function MediaImage({
         src={url}
         alt={alt}
         className={cn(
-          "max-h-64 max-w-full rounded-lg border border-border",
+          "border-border max-h-64 max-w-full rounded-lg border",
           className,
         )}
       />

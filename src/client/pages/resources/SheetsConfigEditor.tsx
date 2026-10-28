@@ -88,14 +88,14 @@ function RadioRow({
           { "border-accent": selected, "border-border": !selected },
         )}
       >
-        {selected && <span className="h-2 w-2 rounded-full bg-accent-solid" />}
+        {selected && <span className="bg-accent-solid h-2 w-2 rounded-full" />}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium text-sm text-text-primary">
+        <span className="text-text-primary block truncate text-sm font-medium">
           {title}
         </span>
         {detail && (
-          <span className="block truncate text-text-muted text-xs">
+          <span className="text-text-muted block truncate text-xs">
             {detail}
           </span>
         )}
@@ -256,7 +256,7 @@ export function SheetsConfigEditor({
         group
       >
         <div className="flex flex-col gap-2">
-          <p className="text-sm text-text-primary" data-testid="sheets-current">
+          <p className="text-text-primary text-sm" data-testid="sheets-current">
             {spreadsheetId
               ? spreadsheetName || spreadsheetId
               : t("integrations.sheets.noSpreadsheet", "No spreadsheet chosen")}
@@ -362,7 +362,7 @@ export function SheetsConfigEditor({
       </FormField>
 
       <FormField label={t("integrations.sheets.tab", "Tab")} group>
-        <p className="mb-1.5 text-text-muted text-xs">
+        <p className="text-text-muted mb-1.5 text-xs">
           {t(
             "integrations.sheets.tabHint",
             "Row 1 of the tab names the columns; the agent reads and writes by those names.",
@@ -437,9 +437,9 @@ export function SheetsConfigEditor({
         </p>
       )}
 
-      <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+      <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
         <AlertTriangle
-          className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+          className="text-warning mt-0.5 h-4 w-4 shrink-0"
           aria-hidden="true"
         />
         <span>

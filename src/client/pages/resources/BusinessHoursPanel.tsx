@@ -95,7 +95,7 @@ export function BusinessHoursPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "hours.subtitle",
             "Weekly availability windows. Follow-ups and proactive actions respect these.",
@@ -131,7 +131,7 @@ export function BusinessHoursPanel() {
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-text-primary">
+                  <span className="text-text-primary truncate font-medium">
                     {h.name}
                   </span>
                   <Badge variant="secondary">
@@ -143,7 +143,7 @@ export function BusinessHoursPanel() {
                     </Badge>
                   )}
                 </div>
-                <p className="mt-0.5 text-text-muted text-xs">
+                <p className="text-text-muted mt-0.5 text-xs">
                   {formatWindowsSummary(
                     h.windows,
                     t("hours.noWindows", "No windows"),

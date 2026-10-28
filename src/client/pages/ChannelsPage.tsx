@@ -236,7 +236,7 @@ function InboxObserversStrip({
                   "Reconnect observer {{name}}: its bot no longer exists on Chatwoot, so it receives nothing",
                   { name: a.name },
                 )}
-                className="rounded text-text-muted hover:text-text-primary disabled:opacity-60"
+                className="text-text-muted hover:text-text-primary rounded disabled:opacity-60"
                 onClick={() => run(() => onObserve(a.id))}
               >
                 <RefreshCw className="h-3 w-3" aria-hidden="true" />
@@ -252,7 +252,7 @@ function InboxObserversStrip({
                   name: a.name,
                 },
               )}
-              className="rounded text-text-muted hover:text-text-primary disabled:opacity-60"
+              className="text-text-muted hover:text-text-primary rounded disabled:opacity-60"
               onClick={() => run(() => onUnobserve(a.id))}
             >
               <X className="h-3 w-3" aria-hidden="true" />
@@ -267,7 +267,7 @@ function InboxObserversStrip({
               type="button"
               disabled={pending || candidates.length === 0}
               aria-label={t("channels.addObserver", "Add observer")}
-              className="flex items-center gap-1 rounded-md border border-border border-dashed px-2 py-1 text-text-muted text-xs hover:text-text-primary disabled:opacity-60"
+              className="border-border text-text-muted hover:text-text-primary flex items-center gap-1 rounded-md border border-dashed px-2 py-1 text-xs disabled:opacity-60"
             >
               {pending ? (
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -281,7 +281,7 @@ function InboxObserversStrip({
             <DropdownMenuPrimitive.Content
               align="end"
               sideOffset={4}
-              className="z-50 max-h-72 w-56 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+              className="border-border bg-bg-secondary z-50 max-h-72 w-56 overflow-y-auto rounded-lg border p-1 shadow-lg"
             >
               {candidates.map((a) => (
                 <DropdownMenuPrimitive.Item
@@ -338,19 +338,19 @@ function InboxAgentPicker({
           type="button"
           disabled={pending}
           aria-label={label}
-          className="flex min-h-8 w-56 shrink-0 items-center justify-between gap-2 rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+          className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 w-56 shrink-0 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
         >
           <span className={cn("truncate", { "text-text-muted": !current })}>
             {current ? current.name : t("channels.noAgent", "No agent")}
           </span>
           {pending ? (
             <Loader2
-              className="h-4 w-4 shrink-0 animate-spin text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0 animate-spin"
               aria-hidden="true"
             />
           ) : (
             <ChevronDown
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           )}
@@ -360,7 +360,7 @@ function InboxAgentPicker({
         <DropdownMenuPrimitive.Content
           align="end"
           sideOffset={4}
-          className="z-50 max-h-72 w-56 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+          className="border-border bg-bg-secondary z-50 max-h-72 w-56 overflow-y-auto rounded-lg border p-1 shadow-lg"
         >
           <DropdownMenuPrimitive.Item
             className={pickerItemCls}
@@ -371,7 +371,7 @@ function InboxAgentPicker({
             </span>
             {value === null && (
               <Check
-                className="h-4 w-4 shrink-0 text-accent"
+                className="text-accent h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
             )}
@@ -385,7 +385,7 @@ function InboxAgentPicker({
               <span className="flex-1 truncate">{a.name}</span>
               {value === a.id && (
                 <Check
-                  className="h-4 w-4 shrink-0 text-accent"
+                  className="text-accent h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
               )}
@@ -424,7 +424,7 @@ function ChannelsSkeleton() {
             {CHANNELS_INBOX_KEYS.map((key) => (
               <li
                 key={key}
-                className="flex items-center justify-between gap-4 border-border border-b px-4 py-3 last:border-b-0"
+                className="border-border flex items-center justify-between gap-4 border-b px-4 py-3 last:border-b-0"
               >
                 <div className="flex min-w-0 flex-col gap-1.5">
                   <Skeleton className="h-4 w-40" />
@@ -1254,12 +1254,12 @@ export function ChannelsPage() {
   return (
     <PageContainer className="flex flex-col gap-6">
       <header className="flex items-center gap-3">
-        <RadioTower className="h-6 w-6 text-accent" aria-hidden="true" />
+        <RadioTower className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
-          <h1 className="font-semibold text-text-primary text-xl">
+          <h1 className="text-text-primary text-xl font-semibold">
             {t("channels.title", "Channels")}
           </h1>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "channels.subtitle",
               "Connect Chatwoot accounts and decide which agent answers each inbox.",
@@ -1275,8 +1275,8 @@ export function ChannelsPage() {
         skeleton={<ChannelsSkeleton />}
       >
         <section className="flex flex-col gap-3">
-          <h2 className="flex items-center gap-2 font-medium text-text-primary">
-            <Plug className="h-4 w-4 text-accent" aria-hidden="true" />
+          <h2 className="text-text-primary flex items-center gap-2 font-medium">
+            <Plug className="text-accent h-4 w-4" aria-hidden="true" />
             {t("channels.instance", "Chatwoot instance")}
           </h2>
 
@@ -1310,13 +1310,13 @@ export function ChannelsPage() {
             // The deployment is the section container; its accounts are nested sub-rows inside the
             // same card so they read as belonging to this one Chatwoot instance.
             <Card className="overflow-hidden p-0">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-border border-b bg-bg-tertiary/40 px-4 py-3">
+              <div className="border-border bg-bg-tertiary/40 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <ServiceLogo
                     service="chatwoot"
-                    className="h-5 w-5 shrink-0 text-text-secondary"
+                    className="text-text-secondary h-5 w-5 shrink-0"
                   />
-                  <span className="truncate font-medium text-text-primary">
+                  <span className="text-text-primary truncate font-medium">
                     {deployment.baseUrl}
                   </span>
                   <Tooltip
@@ -1330,7 +1330,7 @@ export function ChannelsPage() {
                         "channels.openInChatwoot",
                         "Open in Chatwoot",
                       )}
-                      className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                      className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
                     >
                       <ExternalLink
                         className="h-3.5 w-3.5"
@@ -1369,7 +1369,7 @@ export function ChannelsPage() {
 
               {activeAccounts.length === 0 ? (
                 <div className="flex flex-col items-center gap-3 px-4 py-8 text-center">
-                  <p className="text-sm text-text-muted">
+                  <p className="text-text-muted text-sm">
                     {isSuperAdmin
                       ? t(
                           "channels.noActiveAccounts",
@@ -1395,10 +1395,10 @@ export function ChannelsPage() {
                   {activeAccounts.map((acct) => (
                     <li
                       key={acct.id}
-                      className="flex items-center justify-between gap-4 border-border border-b py-3 pr-4 pl-8 last:border-b-0"
+                      className="border-border flex items-center justify-between gap-4 border-b py-3 pr-4 pl-8 last:border-b-0"
                     >
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="truncate text-sm text-text-primary">
+                        <span className="text-text-primary truncate text-sm">
                           {accountLabel(acct.accountName, acct.accountId)}
                         </span>
                         <Badge variant="secondary">{`#${acct.accountId}`}</Badge>
@@ -1416,7 +1416,7 @@ export function ChannelsPage() {
                               "channels.openDashboard",
                               "Open dashboard in Chatwoot",
                             )}
-                            className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                            className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
                           >
                             <ExternalLink
                               className="h-3.5 w-3.5"
@@ -1438,7 +1438,7 @@ export function ChannelsPage() {
                               "channels.createInbox",
                               "Create inbox in Chatwoot",
                             )}
-                            className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                            className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
                           >
                             <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                           </a>
@@ -1456,7 +1456,7 @@ export function ChannelsPage() {
                               "channels.syncInboxes",
                               "Sync inboxes",
                             )}
-                            className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+                            className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors disabled:opacity-50"
                           >
                             <RefreshCw className="h-4 w-4" aria-hidden="true" />
                           </button>
@@ -1476,7 +1476,7 @@ export function ChannelsPage() {
                                 "channels.removeAccountTitle",
                                 "Remove account",
                               )}
-                              className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-error/10 hover:text-error disabled:opacity-50"
+                              className="text-text-muted hover:bg-error/10 hover:text-error inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors disabled:opacity-50"
                             >
                               <Trash2 className="h-4 w-4" aria-hidden="true" />
                             </button>
@@ -1493,11 +1493,11 @@ export function ChannelsPage() {
 
         <section className="flex flex-col gap-3">
           <div>
-            <h2 className="flex items-center gap-2 font-medium text-text-primary">
-              <InboxIcon className="h-4 w-4 text-accent" aria-hidden="true" />
+            <h2 className="text-text-primary flex items-center gap-2 font-medium">
+              <InboxIcon className="text-accent h-4 w-4" aria-hidden="true" />
               {t("channels.inboxes", "Inboxes")}
             </h2>
-            <p className="mt-0.5 text-text-muted text-xs">
+            <p className="text-text-muted mt-0.5 text-xs">
               {t(
                 "channels.inboxesHelp",
                 'Assigning an agent connects the bot to that inbox; "No agent" leaves it silent.',
@@ -1523,7 +1523,7 @@ export function ChannelsPage() {
               return (
                 <div key={acct.id} className="flex flex-col gap-1.5">
                   {showAccountHeaders && (
-                    <div className="flex items-center gap-1.5 px-1 text-text-muted text-xs">
+                    <div className="text-text-muted flex items-center gap-1.5 px-1 text-xs">
                       <ServiceLogo
                         service="chatwoot"
                         className="h-3.5 w-3.5 shrink-0"
@@ -1570,7 +1570,7 @@ export function ChannelsPage() {
                             // rows are gone. So the chips and their remove buttons stay here;
                             // only adding, which needs the account, does not.
                             <div className="flex flex-col items-end gap-1.5">
-                              <span className="shrink-0 text-text-muted text-xs">
+                              <span className="text-text-muted shrink-0 text-xs">
                                 {t(
                                   "channels.accountDisconnectedOff",
                                   "Account disconnected",
@@ -1692,10 +1692,10 @@ export function ChannelsPage() {
           <div className="flex justify-center">
             <ServiceLogo
               service="chatwoot"
-              className="h-8 w-8 text-text-secondary"
+              className="text-text-secondary h-8 w-8"
             />
           </div>
-          <p className="text-center text-sm text-text-muted">
+          <p className="text-text-muted text-center text-sm">
             {t(
               "channels.connectDesc",
               "Enter your Chatwoot URL and admin token once. We validate them and then let you pick which accounts to answer.",
@@ -1759,7 +1759,7 @@ export function ChannelsPage() {
         }
       >
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "channels.editTokenDesc",
               "Paste a new admin token. It is validated against your Chatwoot and shared by every account.",
@@ -1810,7 +1810,7 @@ export function ChannelsPage() {
       >
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t(
                 "channels.manageDesc",
                 "Pick which of this Chatwoot's accounts this workspace answers. Active ones are managed from the list; removing one there frees it for another workspace.",
@@ -1832,7 +1832,7 @@ export function ChannelsPage() {
             </p>
           )}
           {manageRows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-text-muted">
+            <p className="text-text-muted py-6 text-center text-sm">
               {t(
                 "channels.noAccounts",
                 "No accounts found. Make sure your Chatwoot user is a member of the account.",
@@ -1873,12 +1873,12 @@ export function ChannelsPage() {
                           <Check className="h-3.5 w-3.5" aria-hidden="true" />
                         )}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+                      <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
                         {row.name}
                       </span>
                       <Badge variant="secondary">{`#${row.id}`}</Badge>
                       {active && (
-                        <span className="shrink-0 text-text-muted text-xs">
+                        <span className="text-text-muted shrink-0 text-xs">
                           {t("channels.statusActive", "Active")}
                         </span>
                       )}

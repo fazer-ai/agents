@@ -67,7 +67,7 @@ export function ApprovalLinkCard() {
       <Card className="py-3">
         {failed ? (
           <div className="flex items-center justify-between gap-2">
-            <span className="text-sm text-text-muted">
+            <span className="text-text-muted text-sm">
               {t(
                 "documents.approvalLink.loadError",
                 "Could not read the approval link setting.",
@@ -151,12 +151,12 @@ export function ApprovalLinkCard() {
     <>
       <Card className="flex items-center justify-between gap-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
-          <Link2 className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+          <Link2 className="text-accent h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="min-w-0">
-            <p className="truncate font-medium text-sm text-text-primary">
+            <p className="text-text-primary truncate text-sm font-medium">
               {t("documents.approvalLink.title", "Link in approval notes")}
             </p>
-            <p className="truncate text-text-muted text-xs">{current}</p>
+            <p className="text-text-muted truncate text-xs">{current}</p>
           </div>
         </div>
         <Button
@@ -187,7 +187,7 @@ export function ApprovalLinkCard() {
         }
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
               "documents.approvalLink.subtitle",
               "Every private note about an approval request (opened, approved, rejected, expired) ends with a link to the request. Point it to the app where your team reviews them, or leave it out.",
@@ -248,7 +248,7 @@ export function ApprovalLinkCard() {
             </FormField>
           )}
           {mode === "none" && (
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "documents.approvalLink.noneHelp",
                 "The notes are still written, with the decision and the reviewer's note, only without the link.",

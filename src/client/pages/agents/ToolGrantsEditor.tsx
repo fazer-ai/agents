@@ -250,19 +250,19 @@ function Section({
   return (
     <section
       id={id}
-      className="flex scroll-mt-4 flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-4"
+      className="border-border bg-bg-secondary flex scroll-mt-4 flex-col gap-3 rounded-lg border p-4"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2.5">
           {Icon && (
-            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent">
+            <span className="bg-bg-tertiary text-accent mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
               <Icon className="h-4 w-4" aria-hidden="true" />
             </span>
           )}
           <div className="min-w-0">
-            <h3 className="font-medium text-sm text-text-primary">{title}</h3>
+            <h3 className="text-text-primary text-sm font-medium">{title}</h3>
             {description && (
-              <p className="mt-0.5 text-text-muted text-xs">{description}</p>
+              <p className="text-text-muted mt-0.5 text-xs">{description}</p>
             )}
           </div>
         </div>
@@ -298,7 +298,7 @@ function CollapsibleSection({
   return (
     <section
       id={id}
-      className="flex scroll-mt-4 flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-4"
+      className="border-border bg-bg-secondary flex scroll-mt-4 flex-col gap-3 rounded-lg border p-4"
     >
       <button
         type="button"
@@ -307,22 +307,22 @@ function CollapsibleSection({
         className="flex items-start gap-2.5 text-left"
       >
         {Icon && (
-          <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent">
+          <span className="bg-bg-tertiary text-accent mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
             <Icon className="h-4 w-4" aria-hidden="true" />
           </span>
         )}
         <div className="min-w-0 flex-1">
-          <h3 className="flex flex-wrap items-center gap-2 font-medium text-sm text-text-primary">
+          <h3 className="text-text-primary flex flex-wrap items-center gap-2 text-sm font-medium">
             {title}
             {badge}
           </h3>
           {description && (
-            <p className="mt-0.5 text-text-muted text-xs">{description}</p>
+            <p className="text-text-muted mt-0.5 text-xs">{description}</p>
           )}
         </div>
         <ChevronDown
           className={cn(
-            "mt-0.5 h-4 w-4 shrink-0 text-text-muted transition-transform",
+            "text-text-muted mt-0.5 h-4 w-4 shrink-0 transition-transform",
             { "rotate-180": !collapsed },
           )}
           aria-hidden="true"
@@ -350,7 +350,7 @@ function CreateButton({
       type="button"
       onClick={onClick}
       disabled={busy}
-      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-accent text-xs hover:underline"
+      className="text-accent flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:underline"
     >
       <Plus className="h-3.5 w-3.5" aria-hidden="true" />
       {label}
@@ -389,7 +389,7 @@ function EditableCard({
           onEdit();
         }}
         aria-label={editLabel}
-        className="absolute top-3.5 right-9 flex h-5 w-5 items-center justify-center rounded text-text-muted hover:text-text-primary disabled:opacity-50"
+        className="text-text-muted hover:text-text-primary absolute top-3.5 right-9 flex h-5 w-5 items-center justify-center rounded disabled:opacity-50"
       >
         {busy ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -484,14 +484,14 @@ function ConfigurableToolCard({
           )}
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="flex items-center gap-2">
-              <span className="truncate font-medium text-sm text-text-primary">
+              <span className="text-text-primary truncate text-sm font-medium">
                 {title}
               </span>
               {badge}
               {meta}
               {configured && !expanded && (
                 <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent-solid"
+                  className="bg-accent-solid h-1.5 w-1.5 shrink-0 rounded-full"
                   aria-hidden="true"
                 />
               )}
@@ -505,7 +505,7 @@ function ConfigurableToolCard({
               "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
               selected
                 ? "border-accent-solid bg-accent-solid text-accent-foreground"
-                : "border-border text-transparent group-hover:border-text-muted",
+                : "border-border group-hover:border-text-muted text-transparent",
             )}
             aria-hidden="true"
           >
@@ -522,7 +522,7 @@ function ConfigurableToolCard({
                 ? t("editor.tools.hideConfig", "Hide settings")
                 : t("editor.tools.showConfig", "Settings")
             }
-            className="flex shrink-0 items-center self-start p-3 text-text-muted transition-colors hover:text-text-primary"
+            className="text-text-muted hover:text-text-primary flex shrink-0 items-center self-start p-3 transition-colors"
           >
             <ChevronDown
               className={cn(
@@ -535,12 +535,12 @@ function ConfigurableToolCard({
         )}
       </div>
       {selected && warning && (
-        <p className="border-border border-t px-3 py-2 text-warning text-xs">
+        <p className="border-border text-warning border-t px-3 py-2 text-xs">
           {warning}
         </p>
       )}
       {hasConfig && expanded && (
-        <div className="flex flex-col gap-4 border-border border-t bg-bg-secondary p-3">
+        <div className="border-border bg-bg-secondary flex flex-col gap-4 border-t p-3">
           {children}
         </div>
       )}
@@ -1342,7 +1342,7 @@ export function ToolGrantsEditor({
                   />
                 </EditableCard>
                 {grant && (
-                  <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
+                  <div className="border-border ml-6 flex flex-col gap-2 border-l pl-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
                         variant="secondary"
@@ -1363,16 +1363,16 @@ export function ToolGrantsEditor({
                               [m.id]: !collapsed,
                             }))
                           }
-                          className="flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
+                          className="hover:bg-bg-hover flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors"
                         >
                           <ChevronDown
                             className={cn(
-                              "h-4 w-4 shrink-0 text-text-muted transition-transform",
+                              "text-text-muted h-4 w-4 shrink-0 transition-transform",
                               { "rotate-180": !collapsed },
                             )}
                             aria-hidden="true"
                           />
-                          <span className="font-medium text-text-secondary text-xs">
+                          <span className="text-text-secondary text-xs font-medium">
                             {collapsed
                               ? t("editor.tools.mcpExpandList", "Show tools")
                               : t("editor.tools.mcpCollapseList", "Hide tools")}
@@ -1539,7 +1539,7 @@ export function ToolGrantsEditor({
                     />
                   </EditableCard>
                   {grant && offered.length > 0 && (
-                    <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
+                    <div className="border-border ml-6 flex flex-col gap-2 border-l pl-3">
                       <button
                         type="button"
                         aria-expanded={!collapsed}
@@ -1549,16 +1549,16 @@ export function ToolGrantsEditor({
                             [inst.id]: !collapsed,
                           }))
                         }
-                        className="flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
+                        className="hover:bg-bg-hover flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors"
                       >
                         <ChevronDown
                           className={cn(
-                            "h-4 w-4 shrink-0 text-text-muted transition-transform",
+                            "text-text-muted h-4 w-4 shrink-0 transition-transform",
                             { "rotate-180": !collapsed },
                           )}
                           aria-hidden="true"
                         />
-                        <span className="font-medium text-text-secondary text-xs">
+                        <span className="text-text-secondary text-xs font-medium">
                           {collapsed
                             ? t(
                                 "editor.tools.integrationExpandList",
@@ -1714,13 +1714,13 @@ export function ToolGrantsEditor({
           "Built-in actions the agent can take. Selected tools are available to the agent.",
         )}
         badge={
-          <span className="flex items-center gap-1.5 font-normal text-text-muted text-xs">
+          <span className="text-text-muted flex items-center gap-1.5 text-xs font-normal">
             {t("editor.tools.nativeActiveCount", "{{count}} active", {
               count: [...selectedNative].filter(offeredToRules).length,
             })}
             {nativeConfigured && (
               <span
-                className="h-1.5 w-1.5 rounded-full bg-accent-solid"
+                className="bg-accent-solid h-1.5 w-1.5 rounded-full"
                 aria-hidden="true"
               />
             )}

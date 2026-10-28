@@ -129,17 +129,17 @@ export function FormField({
   const title = group ? (
     <span id={titleId}>
       {label}
-      {required && <span className="ml-0.5 text-error">*</span>}
+      {required && <span className="text-error ml-0.5">*</span>}
     </span>
   ) : (
     <label htmlFor={controlId} id={titleId}>
       {label}
-      {required && <span className="ml-0.5 text-error">*</span>}
+      {required && <span className="text-error ml-0.5">*</span>}
     </label>
   );
 
   const heading = (
-    <span className="flex items-center gap-1.5 font-medium text-sm text-text-secondary">
+    <span className="text-text-secondary flex items-center gap-1.5 text-sm font-medium">
       {title}
       {help ? (
         <HelpPopover

@@ -50,7 +50,7 @@ export function ChoiceCards<T extends string>({
             key={o.value}
             data-clickable="true"
             className={cn(
-              "flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-left transition-colors focus-within:ring-2 focus-within:ring-border-focus",
+              "focus-within:ring-border-focus flex cursor-pointer flex-col gap-1 rounded-lg border p-3 text-left transition-colors focus-within:ring-2",
               on
                 ? "border-accent bg-accent-soft"
                 : "border-border bg-bg-secondary hover:bg-bg-hover",
@@ -65,7 +65,7 @@ export function ChoiceCards<T extends string>({
               data-testid={o.testId}
               className="sr-only"
             />
-            <span className="flex items-center gap-2 font-medium text-sm text-text-primary">
+            <span className="text-text-primary flex items-center gap-2 text-sm font-medium">
               <Icon
                 className={cn(
                   "h-4 w-4 shrink-0",

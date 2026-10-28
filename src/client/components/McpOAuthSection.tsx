@@ -219,8 +219,8 @@ export function McpOAuthSection({ entryId }: McpOAuthSectionProps) {
   const scopes = status?.scopes ?? [];
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-border bg-bg-tertiary p-4">
-      <p className="font-medium text-sm text-text-primary">
+    <div className="border-border bg-bg-tertiary flex flex-col gap-4 rounded-lg border p-4">
+      <p className="text-text-primary text-sm font-medium">
         {t("vault.mcpOAuth.sectionTitle", "MCP connection")}
       </p>
 
@@ -249,10 +249,10 @@ export function McpOAuthSection({ entryId }: McpOAuthSectionProps) {
               type="button"
               onClick={copyRedirectUri}
               aria-label={t("common.copy", "Copy")}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-bg-secondary text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+              className="border-border bg-bg-secondary text-text-muted hover:bg-bg-hover hover:text-text-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors"
             >
               {copied ? (
-                <Check className="h-4 w-4 text-success" aria-hidden="true" />
+                <Check className="text-success h-4 w-4" aria-hidden="true" />
               ) : (
                 <Copy className="h-4 w-4" aria-hidden="true" />
               )}
@@ -263,7 +263,7 @@ export function McpOAuthSection({ entryId }: McpOAuthSectionProps) {
 
       {statusLoading ? (
         <div
-          className="flex items-center gap-2 text-sm text-text-muted"
+          className="text-text-muted flex items-center gap-2 text-sm"
           role="status"
         >
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -274,20 +274,20 @@ export function McpOAuthSection({ entryId }: McpOAuthSectionProps) {
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <Check
-              className="h-4 w-4 shrink-0 text-success"
+              className="text-success h-4 w-4 shrink-0"
               aria-hidden="true"
             />
-            <span className="text-sm text-text-primary">
+            <span className="text-text-primary text-sm">
               {t("vault.mcpOAuth.connected", "Connected")}
             </span>
           </div>
 
           {status?.issuer && (
             <div>
-              <p className="mb-1.5 text-text-muted text-xs">
+              <p className="text-text-muted mb-1.5 text-xs">
                 {t("vault.mcpOAuth.issuerLabel", "Authorization server")}
               </p>
-              <p className="break-all font-mono text-text-secondary text-xs">
+              <p className="text-text-secondary font-mono text-xs break-all">
                 {status.issuer}
               </p>
             </div>
@@ -295,14 +295,14 @@ export function McpOAuthSection({ entryId }: McpOAuthSectionProps) {
 
           {scopes.length > 0 && (
             <div>
-              <p className="mb-1.5 text-text-muted text-xs">
+              <p className="text-text-muted mb-1.5 text-xs">
                 {t("vault.mcpOAuth.grantedScopes", "Granted scopes")}
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {scopes.map((s) => (
                   <span
                     key={s}
-                    className="inline-flex items-center rounded-full bg-bg-hover px-2 py-0.5 font-mono text-text-secondary text-xs"
+                    className="bg-bg-hover text-text-secondary inline-flex items-center rounded-full px-2 py-0.5 font-mono text-xs"
                   >
                     {s}
                   </span>
@@ -320,7 +320,7 @@ export function McpOAuthSection({ entryId }: McpOAuthSectionProps) {
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          <span className="text-sm text-text-muted">
+          <span className="text-text-muted text-sm">
             {t("vault.mcpOAuth.notConnected", "Not connected")}
           </span>
           <p className="text-text-muted text-xs">

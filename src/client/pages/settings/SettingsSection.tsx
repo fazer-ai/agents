@@ -29,18 +29,18 @@ export function SettingsSection({
       <div>
         <h2
           id={headingId}
-          className="font-semibold text-base text-text-primary"
+          className="text-text-primary text-base font-semibold"
         >
           {title}
         </h2>
         {description && (
-          <p className="mt-0.5 text-sm text-text-muted">{description}</p>
+          <p className="text-text-muted mt-0.5 text-sm">{description}</p>
         )}
       </div>
-      <div className="overflow-hidden rounded-lg border border-border bg-bg-secondary">
-        <div className="divide-y divide-border">{children}</div>
+      <div className="border-border bg-bg-secondary overflow-hidden rounded-lg border">
+        <div className="divide-border divide-y">{children}</div>
         {footer && (
-          <div className="flex items-center justify-end gap-2 border-border border-t bg-bg-primary/40 px-4 py-3">
+          <div className="border-border bg-bg-primary/40 flex items-center justify-end gap-2 border-t px-4 py-3">
             {footer}
           </div>
         )}
@@ -74,11 +74,11 @@ export function SettingsRow({
       })}
     >
       <div className="min-w-0">
-        <div id={labelId} className="font-medium text-sm text-text-primary">
+        <div id={labelId} className="text-text-primary text-sm font-medium">
           {label}
         </div>
         {description && (
-          <div className="mt-0.5 text-sm text-text-muted">{description}</div>
+          <div className="text-text-muted mt-0.5 text-sm">{description}</div>
         )}
       </div>
       {children && (

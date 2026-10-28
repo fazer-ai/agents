@@ -53,7 +53,7 @@ export function EngineCards({
       data-testid="engine-cards"
     >
       <div>
-        <h3 className="font-medium text-sm text-text-primary">
+        <h3 className="text-text-primary text-sm font-medium">
           {t("editor.engineSection", "How it decides")}
         </h3>
         <p className="text-text-muted text-xs">
@@ -131,7 +131,7 @@ export function DecisionsSetupMissing({
       data-tone={showErrors ? "error" : "neutral"}
       data-problems-summary
       className={cn(
-        "flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-text-primary text-xs",
+        "text-text-primary flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-xs",
         showErrors
           ? "border-error bg-error-soft"
           : "border-warning bg-warning-soft",

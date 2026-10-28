@@ -78,12 +78,12 @@ export function ResourcesLayout() {
     <ResourcesContext.Provider value={{ approvalsCount, setApprovalsCount }}>
       <PageContainer className="flex flex-col gap-6">
         <header className="flex items-center gap-3">
-          <LibraryBig className="h-6 w-6 text-accent" aria-hidden="true" />
+          <LibraryBig className="text-accent h-6 w-6" aria-hidden="true" />
           <div>
-            <h1 className="font-semibold text-text-primary text-xl">
+            <h1 className="text-text-primary text-xl font-semibold">
               {t("resources.title", "Components")}
             </h1>
-            <p className="mt-0.5 text-sm text-text-muted">
+            <p className="text-text-muted mt-0.5 text-sm">
               {t(
                 "resources.subtitle",
                 "Reusable tools, knowledge, schedules and credentials your agents draw from.",
@@ -96,7 +96,7 @@ export function ResourcesLayout() {
           aria-label={t("resources.title", "Components")}
           // NOTE: overflow-y-hidden is load-bearing — overflow-x: auto forces y to auto too (CSS spec),
           // and -mb-px then triggers a spurious vertical scrollbar. Pinning y to hidden prevents it.
-          className="-mb-px flex gap-1 overflow-x-auto overflow-y-hidden border-border border-b"
+          className="border-border -mb-px flex gap-1 overflow-x-auto overflow-y-hidden border-b"
         >
           {TABS.map((tab) => {
             const Icon = tab.icon;
@@ -106,10 +106,10 @@ export function ResourcesLayout() {
                 to={tab.to}
                 className={({ isActive }) =>
                   cn(
-                    "-mb-px inline-flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2 font-medium text-sm transition-colors",
+                    "-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors",
                     {
                       "border-accent text-text-primary": isActive,
-                      "border-transparent text-text-muted hover:text-text-secondary":
+                      "text-text-muted hover:text-text-secondary border-transparent":
                         !isActive,
                     },
                   )
@@ -119,7 +119,7 @@ export function ResourcesLayout() {
                 {/* biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments above TABS */}
                 {t(tab.labelKey)}
                 {tab.badge && approvalsCount > 0 && (
-                  <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent-solid px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
+                  <span className="bg-accent-solid text-accent-foreground inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[0.6875rem] leading-none font-medium">
                     {approvalsCount}
                   </span>
                 )}

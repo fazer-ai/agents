@@ -127,12 +127,12 @@ export function ApprovalsPage() {
   return (
     <PageContainer className="flex flex-col gap-6">
       <header className="flex items-center gap-3">
-        <ClipboardCheck className="h-6 w-6 text-accent" aria-hidden="true" />
+        <ClipboardCheck className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
-          <h1 className="font-semibold text-text-primary text-xl">
+          <h1 className="text-text-primary text-xl font-semibold">
             {t("approvalQueue.title", "Approvals")}
           </h1>
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {isAdmin
               ? t(
                   "approvalQueue.subtitleAdmin",
@@ -163,7 +163,7 @@ export function ApprovalsPage() {
 
       {tab === "history" && (
         <section className="flex flex-col gap-3">
-          <h2 className="font-medium text-sm text-text-primary">
+          <h2 className="text-text-primary text-sm font-medium">
             {t("approvalQueue.documents", "Documents")}
           </h2>
           <ApprovalHistory />
@@ -172,7 +172,7 @@ export function ApprovalsPage() {
 
       {tab === "pending" && (
         <section className="flex flex-col gap-3">
-          <h2 className="font-medium text-sm text-text-primary">
+          <h2 className="text-text-primary text-sm font-medium">
             {t("approvalQueue.documents", "Documents")}
           </h2>
           <DataBoundary
@@ -185,7 +185,7 @@ export function ApprovalsPage() {
             )}
           >
             {requests && requests.length === 0 && (
-              <p className="text-sm text-text-muted">
+              <p className="text-text-muted text-sm">
                 {t(
                   "approvalQueue.noDocuments",
                   "No document is waiting for approval.",
@@ -198,15 +198,15 @@ export function ApprovalsPage() {
                   <li key={r.id}>
                     <Link
                       to={`/document-approvals/${r.id}`}
-                      className="block rounded-lg hover:bg-bg-hover"
+                      className="hover:bg-bg-hover block rounded-lg"
                     >
                       <Card className="flex items-center gap-3 p-3">
                         <FileText
-                          className="h-4 w-4 shrink-0 text-text-muted"
+                          className="text-text-muted h-4 w-4 shrink-0"
                           aria-hidden="true"
                         />
                         <div className="min-w-0 flex-1">
-                          <p className="truncate font-medium text-sm text-text-primary">
+                          <p className="text-text-primary truncate text-sm font-medium">
                             {r.contactName
                               ? t(
                                   "approvalQueue.documentFor",
@@ -259,12 +259,12 @@ export function ApprovalsPage() {
 
       {tab === "pending" && isAdmin && (
         <section className="flex flex-col gap-3">
-          <h2 className="font-medium text-sm text-text-primary">
+          <h2 className="text-text-primary text-sm font-medium">
             {t("approvalQueue.knowledge", "Knowledge suggestions")}
           </h2>
           <KnowledgeApprovals onCountChange={onKnowledgeCount} />
           {shownKnowledge === 0 && (
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t(
                 "approvalQueue.noKnowledge",
                 "No knowledge suggestion is waiting for review.",

@@ -129,7 +129,7 @@ export function RegisterMcpClientModal({
     >
       <div className="space-y-4">
         {error && (
-          <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+          <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
             {error}
           </div>
         )}
@@ -173,7 +173,7 @@ export function RegisterMcpClientModal({
             {MCP_SCOPES.map((scope) => (
               <label
                 key={scope}
-                className="flex w-fit items-center gap-2 text-sm text-text-secondary"
+                className="text-text-secondary flex w-fit items-center gap-2 text-sm"
               >
                 <input
                   type="checkbox"

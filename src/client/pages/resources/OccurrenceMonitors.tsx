@@ -192,7 +192,7 @@ export function OccurrenceMonitors({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "occurrences.monitors.intro",
             "Each monitor reads its own inboxes and groups the same reasons into its own themes. Up to {{max}} per account.",
@@ -237,10 +237,10 @@ export function OccurrenceMonitors({
               <button
                 type="button"
                 onClick={() => onOpen(m.id)}
-                className="group w-full min-w-0 rounded-lg border border-border bg-bg-secondary p-5 text-left transition-colors hover:bg-bg-tertiary"
+                className="group border-border bg-bg-secondary hover:bg-bg-tertiary w-full min-w-0 rounded-lg border p-5 text-left transition-colors"
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="truncate font-medium text-text-primary group-hover:text-accent">
+                  <span className="text-text-primary group-hover:text-accent truncate font-medium">
                     {m.name}
                   </span>
                   <Badge variant={m.enabled ? "success" : "secondary"}>
@@ -249,7 +249,7 @@ export function OccurrenceMonitors({
                       : t("occurrences.monitors.off", "off")}
                   </Badge>
                 </div>
-                <p className="mt-0.5 text-text-muted text-xs">
+                <p className="text-text-muted mt-0.5 text-xs">
                   {m.inboxIds.length === 0
                     ? t("occurrences.monitors.noInboxes", "no inboxes")
                     : m.inboxIds.map(inboxName).join(", ")}

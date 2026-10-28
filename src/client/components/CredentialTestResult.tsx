@@ -17,7 +17,7 @@ export function CredentialTestResult({
   if (!result) return null;
   if (result.kind === "ok") {
     return (
-      <span className="text-sm text-success">
+      <span className="text-success text-sm">
         {t("vault.testOk", "Connection OK.")}
       </span>
     );

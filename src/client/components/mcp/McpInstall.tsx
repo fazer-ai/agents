@@ -145,10 +145,10 @@ export function McpInstall({ url }: { url: string }) {
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
-        <span className="font-medium text-sm text-text-secondary">
+        <span className="text-text-secondary text-sm font-medium">
           {t("mcp.my.installTitle", "Install in your client")}
         </span>
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t(
             "mcp.my.installHint",
             "Pick your tool and copy the snippet. Sign-in happens in your browser via OAuth, with no token to paste.",
@@ -164,7 +164,7 @@ export function McpInstall({ url }: { url: string }) {
             onClick={() => select(c.id)}
             aria-pressed={selected === c.id}
             className={cn(
-              "group rounded-lg p-2 transition-[transform,opacity] duration-150 ease-out hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent motion-reduce:transition-none",
+              "group focus-visible:ring-accent rounded-lg p-2 transition-[transform,opacity] duration-150 ease-out hover:scale-110 focus:outline-none focus-visible:ring-2 motion-reduce:transition-none",
               {
                 "opacity-100": selected === c.id,
                 "opacity-40 hover:opacity-70": selected !== c.id,
@@ -172,8 +172,8 @@ export function McpInstall({ url }: { url: string }) {
             )}
           >
             <span className="flex flex-col items-center gap-2 transition-transform duration-150 ease-out group-active:scale-95 motion-reduce:transition-none">
-              <ClientTileIcon id={c.id} className="h-9 w-9 text-text-primary" />
-              <span className="text-center font-medium text-text-primary text-xs">
+              <ClientTileIcon id={c.id} className="text-text-primary h-9 w-9" />
+              <span className="text-text-primary text-center text-xs font-medium">
                 {c.label}
               </span>
             </span>
@@ -193,7 +193,7 @@ export function McpInstall({ url }: { url: string }) {
             {copied ? t("common.copied", "Copied") : t("common.copy", "Copy")}
           </Button>
         </div>
-        <pre className="overflow-x-auto rounded-lg border border-border bg-bg-tertiary px-3 py-2 font-mono text-text-primary text-xs">
+        <pre className="border-border bg-bg-tertiary text-text-primary overflow-x-auto rounded-lg border px-3 py-2 font-mono text-xs">
           <code>{snippet.code}</code>
         </pre>
         {postNote && <p className="text-text-muted text-xs">{postNote}</p>}

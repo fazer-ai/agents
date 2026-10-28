@@ -172,25 +172,25 @@ export function AcceptInvitePage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-bg-primary p-4">
+    <div className="bg-bg-primary flex min-h-screen flex-col items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="mb-12 text-center">
           <Logo className="mx-auto h-10" />
         </div>
 
         {state === "validating" ? (
-          <div className="flex items-center justify-center rounded-2xl border border-border bg-bg-secondary p-8">
-            <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
-            <span className="ml-3 text-sm text-text-secondary">
+          <div className="border-border bg-bg-secondary flex items-center justify-center rounded-2xl border p-8">
+            <Loader2 className="text-text-secondary h-6 w-6 animate-spin" />
+            <span className="text-text-secondary ml-3 text-sm">
               {t("acceptInvite.validating", "Validating invitation…")}
             </span>
           </div>
         ) : state === "invalid" ? (
-          <div className="space-y-4 rounded-2xl border border-border bg-bg-secondary p-8 text-center">
-            <h1 className="font-semibold text-text-primary text-xl">
+          <div className="border-border bg-bg-secondary space-y-4 rounded-2xl border p-8 text-center">
+            <h1 className="text-text-primary text-xl font-semibold">
               {t("acceptInvite.invalidTitle", "Invitation unavailable")}
             </h1>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {t(
                 "acceptInvite.invalid",
                 "This invitation link is invalid or has expired.",
@@ -198,7 +198,7 @@ export function AcceptInvitePage() {
             </p>
             <Link
               to="/login"
-              className="inline-block text-accent text-sm hover:underline"
+              className="text-accent inline-block text-sm hover:underline"
             >
               {t("acceptInvite.toLogin", "Go to login")}
             </Link>
@@ -206,21 +206,21 @@ export function AcceptInvitePage() {
         ) : (
           <form
             onSubmit={handleSubmit}
-            className="space-y-4 rounded-2xl border border-border bg-bg-secondary p-8"
+            className="border-border bg-bg-secondary space-y-4 rounded-2xl border p-8"
           >
             <div className="mb-2 text-center">
-              <h1 className="font-semibold text-2xl text-text-primary">
+              <h1 className="text-text-primary text-2xl font-semibold">
                 {t("acceptInvite.title", "Accept your invitation")}
               </h1>
               {fleet && (
-                <p className="mt-2 text-sm text-text-primary">
+                <p className="text-text-primary mt-2 text-sm">
                   {t(
                     "acceptInvite.fleetNotice",
                     "You are invited as a super admin: you will administer the whole installation.",
                   )}
                 </p>
               )}
-              <p className="mt-1 text-sm text-text-secondary">
+              <p className="text-text-secondary mt-1 text-sm">
                 {fleet && joinsExisting
                   ? t(
                       "acceptInvite.fleetExistingSubtitle",
@@ -244,7 +244,7 @@ export function AcceptInvitePage() {
             </div>
 
             {error && (
-              <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+              <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
                 {error}
               </div>
             )}
@@ -252,7 +252,7 @@ export function AcceptInvitePage() {
             <div>
               <label
                 htmlFor="email"
-                className="mb-1 block font-medium text-sm text-text-primary"
+                className="text-text-primary mb-1 block text-sm font-medium"
               >
                 {t("auth.email", "Email")}
               </label>
@@ -264,7 +264,7 @@ export function AcceptInvitePage() {
                 <div>
                   <label
                     htmlFor="name"
-                    className="mb-1 block font-medium text-sm text-text-primary"
+                    className="text-text-primary mb-1 block text-sm font-medium"
                   >
                     {t("common.name", "Name")}
                   </label>
@@ -281,7 +281,7 @@ export function AcceptInvitePage() {
                 <div>
                   <label
                     htmlFor="password"
-                    className="mb-1 block font-medium text-sm text-text-primary"
+                    className="text-text-primary mb-1 block text-sm font-medium"
                   >
                     {t("auth.password", "Password")}
                   </label>
@@ -305,7 +305,7 @@ export function AcceptInvitePage() {
                 <div>
                   <label
                     htmlFor="confirmPassword"
-                    className="mb-1 block font-medium text-sm text-text-primary"
+                    className="text-text-primary mb-1 block text-sm font-medium"
                   >
                     {t("auth.confirmPassword", "Confirm Password")}
                   </label>
@@ -327,7 +327,7 @@ export function AcceptInvitePage() {
               <div>
                 <label
                   htmlFor="password"
-                  className="mb-1 block font-medium text-sm text-text-primary"
+                  className="text-text-primary mb-1 block text-sm font-medium"
                 >
                   {t("acceptInvite.currentPassword", "Current password")}
                 </label>
@@ -346,7 +346,7 @@ export function AcceptInvitePage() {
                 <button
                   type="button"
                   onClick={switchToSignIn}
-                  className="mt-2 text-accent text-sm hover:underline"
+                  className="text-accent mt-2 text-sm hover:underline"
                 >
                   {user
                     ? t(

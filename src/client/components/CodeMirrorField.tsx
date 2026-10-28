@@ -443,12 +443,12 @@ export function CodeMirrorField({
         </span>
       )}
       {over && cap !== undefined && capMax !== undefined && (
-        <span id={overId} className="mt-1 block text-error text-xs">
+        <span id={overId} className="text-error mt-1 block text-xs">
           {cap.overLimit(count - capMax, capMax)}
         </span>
       )}
       {refusedExcess > 0 && cap !== undefined && capMax !== undefined && (
-        <span role="status" className="mt-1 block text-error text-xs">
+        <span role="status" className="text-error mt-1 block text-xs">
           {cap.refused(refusedExcess, capMax)}
         </span>
       )}

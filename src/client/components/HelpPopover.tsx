@@ -72,7 +72,7 @@ export function HelpPopover({
           // without touching the drawing or the layout: it is 6px of overhang on every side,
           // which is exactly the `gap-1.5` between this and the label it sits beside, so it never
           // reaches the label's own text.
-          "relative inline-flex h-4 w-4 shrink-0 cursor-help items-center justify-center rounded-full border border-border bg-transparent p-0 font-medium text-[10px] text-text-muted transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:border-border-hover hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-border-focus focus-visible:outline-offset-2",
+          "border-border text-text-muted hover:border-border-hover hover:text-text-secondary focus-visible:outline-border-focus relative inline-flex h-4 w-4 shrink-0 cursor-help items-center justify-center rounded-full border bg-transparent p-0 text-[10px] font-medium transition-colors after:absolute after:-inset-1.5 after:content-[''] focus-visible:outline-2 focus-visible:outline-offset-2",
           className,
         )}
       >

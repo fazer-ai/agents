@@ -669,7 +669,7 @@ export function TtsOptionPicker({
           aria-label={sampleLabel(chosenSample.name, chosenOn)}
           onClick={() => play(chosenSample.url)}
           className={cn(
-            "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
+            "border-border-hover text-text-muted hover:bg-bg-hover hover:text-text-primary focus-visible:ring-accent-soft inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border px-2.5 text-sm transition-colors focus:outline-none focus-visible:ring-2",
             { "text-accent": chosenOn },
           )}
         >
@@ -858,10 +858,10 @@ function ContactFieldsPicker({
               key={field}
               className="flex flex-wrap items-center gap-x-4 gap-y-1"
             >
-              <span className="w-28 text-sm text-text-primary">
+              <span className="text-text-primary w-28 text-sm">
                 {labels[field]}
               </span>
-              <label className="flex items-center gap-1.5 text-text-secondary text-xs">
+              <label className="text-text-secondary flex items-center gap-1.5 text-xs">
                 <input
                   type="checkbox"
                   checked={visible}
@@ -871,7 +871,7 @@ function ContactFieldsPicker({
               </label>
               <label
                 className={cn(
-                  "flex items-center gap-1.5 text-text-secondary text-xs",
+                  "text-text-secondary flex items-center gap-1.5 text-xs",
                   { "opacity-50": !visible },
                 )}
               >
@@ -884,7 +884,7 @@ function ContactFieldsPicker({
                 {t("editor.contactFieldWritable", "Agent can update")}
               </label>
               {field === "email" && contactFields.writable.includes(field) && (
-                <span className="basis-full text-warning text-xs">
+                <span className="text-warning basis-full text-xs">
                   {t(
                     "editor.contactFieldEmailGate",
                     "The email is one of the values contact authorization sends to identify the person, so an agent that can change it changes who that check asks about.",
@@ -1144,10 +1144,10 @@ function StepsEditor({
           <div
             // biome-ignore lint/suspicious/noArrayIndexKey: steps are positional (no stable id); reorder is add/remove only
             key={index}
-            className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3"
+            className="border-border bg-bg-secondary flex flex-col gap-3 rounded-lg border p-3"
           >
             <div className="flex items-center justify-between gap-2">
-              <h5 className="font-medium text-sm text-text-secondary">
+              <h5 className="text-text-secondary text-sm font-medium">
                 {t("editor.followUpStep", "Step {{n}}", { n: index + 1 })}
               </h5>
               {steps.length > 1 && (
@@ -1155,7 +1155,7 @@ function StepsEditor({
                   type="button"
                   onClick={() => removeStep(index)}
                   aria-label={t("editor.followUpRemoveStep", "Remove step")}
-                  className="flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error"
+                  className="text-text-muted hover:text-error flex h-7 w-7 items-center justify-center rounded transition-colors"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -1376,7 +1376,7 @@ function SnoozedFollowUpEditor({
             </p>
           </div>
           <div>
-            <h4 className="font-medium text-sm text-text-secondary">
+            <h4 className="text-text-secondary text-sm font-medium">
               {t("editor.snoozedFollowUpCadences", "Cadences")}
             </h4>
             <p className="text-text-muted text-xs">
@@ -1387,7 +1387,7 @@ function SnoozedFollowUpEditor({
             </p>
           </div>
           {!hasDefault && (
-            <p className="rounded-md border border-border bg-bg-tertiary px-3 py-2 text-text-secondary text-xs">
+            <p className="border-border bg-bg-tertiary text-text-secondary rounded-md border px-3 py-2 text-xs">
               {t(
                 "editor.snoozedFollowUpNoDefault",
                 "No default cadence: only conversations carrying one of the labels below are chased. A plain snooze, with none of them, gets no reminder.",
@@ -1410,10 +1410,10 @@ function SnoozedFollowUpEditor({
               <div
                 // biome-ignore lint/suspicious/noArrayIndexKey: cadences are positional (no stable id); reorder is add/remove only
                 key={index}
-                className="flex flex-col gap-3 rounded-lg border border-border p-3"
+                className="border-border flex flex-col gap-3 rounded-lg border p-3"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <h5 className="font-medium text-sm">
+                  <h5 className="text-sm font-medium">
                     {isDefault
                       ? t(
                           "editor.snoozedFollowUpDefaultCadence",
@@ -1438,7 +1438,7 @@ function SnoozedFollowUpEditor({
                             "Remove cadence",
                           )
                     }
-                    className="flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error"
+                    className="text-text-muted hover:text-error flex h-7 w-7 items-center justify-center rounded transition-colors"
                   >
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
                   </button>
@@ -2600,7 +2600,7 @@ export function BehaviorTab({
                         DEFAULT_EXTRACTION_PROMPT && (
                         <button
                           type="button"
-                          className="font-normal text-accent text-xs hover:underline"
+                          className="text-accent text-xs font-normal hover:underline"
                           onClick={() =>
                             setVision({
                               ...vision,
@@ -2703,9 +2703,9 @@ export function BehaviorTab({
                   </FormField>
                 </div>
                 {tts.provider === "openrouter" && (
-                  <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+                  <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
                     <AlertTriangle
-                      className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                      className="text-warning mt-0.5 h-4 w-4 shrink-0"
                       aria-hidden="true"
                     />
                     <span>
@@ -2777,7 +2777,7 @@ export function BehaviorTab({
                 </div>
                 {tts.normalize && (
                   <div className="flex flex-col gap-3">
-                    <p className="flex items-center gap-1.5 font-medium text-sm">
+                    <p className="flex items-center gap-1.5 text-sm font-medium">
                       {t("editor.ttsNormalizeModel", "Rewrite model")}
                       <HelpPopover
                         content={t(
@@ -2932,9 +2932,9 @@ export function BehaviorTab({
                   </div>
                 )}
                 {/* Fallback voice */}
-                <div className="flex flex-col gap-3 border-border border-t pt-4">
+                <div className="border-border flex flex-col gap-3 border-t pt-4">
                   <div>
-                    <h4 className="font-medium text-sm text-text-secondary">
+                    <h4 className="text-text-secondary text-sm font-medium">
                       {t("editor.ttsFallback", "Fallback voice")}
                     </h4>
                     <p className="text-text-muted text-xs">
@@ -3033,7 +3033,7 @@ export function BehaviorTab({
                 {tts.provider === "elevenlabs" && (
                   <div className="flex flex-col gap-3">
                     <div>
-                      <p className="font-medium text-sm">
+                      <p className="text-sm font-medium">
                         {t("editor.ttsDelivery", "Voice delivery")}
                       </p>
                       <p className="text-text-muted text-xs">
@@ -3500,7 +3500,7 @@ export function BehaviorTab({
                       in docs/ui.md: the app can tell the limit now applies, so it says so, at that
                       moment, and goes away again on its own. */}
                       {signatureVarsBlocked && (
-                        <span className="ml-1 text-warning">
+                        <span className="text-warning ml-1">
                           {t(
                             "editor.signatureVarNoRoom",
                             "Not enough room left before the limit.",
@@ -3517,7 +3517,7 @@ export function BehaviorTab({
                             type="button"
                             disabled={!fits}
                             onClick={() => insertSignatureVar(v)}
-                            className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary"
+                            className="border-border bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary rounded border px-1.5 py-0.5 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {`{{${v}}}`}
                           </button>
@@ -3667,12 +3667,12 @@ export function BehaviorTab({
                             )}
                           </span>
                         )}
-                        <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+                        <div className="border-border bg-bg-tertiary rounded-lg border px-3 py-2">
                           {parts.map((part, i) => (
                             <div key={part}>
                               {i > 0 &&
                                 (signature.separator === "--" ? (
-                                  <div className="py-1 font-mono text-sm text-text-secondary">
+                                  <div className="text-text-secondary py-1 font-mono text-sm">
                                     {/* Not translatable: these are the bytes the separator puts on
                                     the wire, the same two `DELIMITERS` writes. */}
                                     {"--"}
@@ -4259,7 +4259,7 @@ export function BehaviorTab({
             />
             {summaryModelInUse && (
               <div className="flex flex-col gap-3">
-                <p className="flex items-center gap-1.5 font-medium text-sm">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
                   {t("editor.memoryModel", "Summary model")}
                   <HelpPopover
                     content={t(
@@ -4623,9 +4623,9 @@ export function BehaviorTab({
             )}
           >
             {debugModesOn && (
-              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+              <div className="border-warning bg-warning-soft text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs">
                 <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  className="text-warning mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
                 <span>
@@ -4716,7 +4716,7 @@ export function BehaviorTab({
             {/* When to reach out */}
             <div className="flex flex-col gap-4">
               <div>
-                <h4 className="font-medium text-sm text-text-secondary">
+                <h4 className="text-text-secondary text-sm font-medium">
                   {t("editor.followUp", "Follow-up")}
                 </h4>
                 <p className="text-text-muted text-xs">
@@ -4727,9 +4727,9 @@ export function BehaviorTab({
                 </p>
               </div>
               {redirectSuppressesFollowUp && (
-                <div className="flex items-start gap-2 rounded-md border border-border bg-bg-tertiary px-3 py-2 text-text-secondary text-xs">
+                <div className="border-border bg-bg-tertiary text-text-secondary flex items-start gap-2 rounded-md border px-3 py-2 text-xs">
                   <ArrowRightLeft
-                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent"
+                    className="text-accent mt-0.5 h-3.5 w-3.5 shrink-0"
                     aria-hidden="true"
                   />
                   <span>
@@ -4790,9 +4790,9 @@ export function BehaviorTab({
             </div>
 
             {/* How it is delivered: WhatsApp's 24h window governs every proactive send */}
-            <div className="flex flex-col gap-4 border-border border-t pt-4">
+            <div className="border-border flex flex-col gap-4 border-t pt-4">
               <div>
-                <h4 className="font-medium text-sm text-text-secondary">
+                <h4 className="text-text-secondary text-sm font-medium">
                   {t("editor.svcWindow", "WhatsApp 24h window")}
                 </h4>
                 <p className="text-text-muted text-xs">

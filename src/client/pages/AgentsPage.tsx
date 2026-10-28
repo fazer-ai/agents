@@ -214,12 +214,12 @@ export function AgentsPage() {
     <PageContainer className="flex flex-col gap-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Bot className="h-6 w-6 text-accent" aria-hidden="true" />
+          <Bot className="text-accent h-6 w-6" aria-hidden="true" />
           <div>
-            <h1 className="font-semibold text-text-primary text-xl">
+            <h1 className="text-text-primary text-xl font-semibold">
               {t("agents.title", "Agents")}
             </h1>
-            <p className="mt-0.5 text-sm text-text-muted">
+            <p className="text-text-muted mt-0.5 text-sm">
               {t(
                 "agents.subtitle",
                 "Build and configure each AI agent: prompt, model, tools and behavior.",
@@ -255,7 +255,7 @@ export function AgentsPage() {
         <div className="flex flex-col gap-3">
           <div className="relative min-w-0 flex-1">
             <Search
-              className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
+              className="text-text-muted pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2"
               aria-hidden="true"
             />
             <input
@@ -264,7 +264,7 @@ export function AgentsPage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t("agents.search", "Search by name…")}
               aria-label={t("agents.search", "Search by name…")}
-              className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
+              className="border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft h-8 w-full rounded-md border pr-2.5 pl-8 text-sm transition-colors focus:ring-2 focus:outline-none"
             />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -340,13 +340,13 @@ export function AgentsPage() {
                 : modelLabel(a.modelConfig);
               return (
                 <Link key={a.id} to={`/agents/${a.id}`} className="block">
-                  <Card className="flex items-center justify-between gap-4 transition-colors hover:bg-bg-hover">
-                    <span className="w-6 shrink-0 text-right text-text-muted text-xs tabular-nums">
+                  <Card className="hover:bg-bg-hover flex items-center justify-between gap-4 transition-colors">
+                    <span className="text-text-muted w-6 shrink-0 text-right text-xs tabular-nums">
                       {(page - 1) * PAGE_SIZE + i + 1}
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="truncate font-medium text-text-primary">
+                        <span className="text-text-primary truncate font-medium">
                           {a.name}
                         </span>
                         <Badge variant={a.enabled ? "success" : "secondary"}>
@@ -367,11 +367,11 @@ export function AgentsPage() {
                         )}
                         {a.outOfHours && <OutOfHoursBadge />}
                       </div>
-                      <p className="mt-0.5 truncate text-text-muted text-xs">
+                      <p className="text-text-muted mt-0.5 truncate text-xs">
                         {label || t("agents.noModel", "No model configured")}
                       </p>
                       {a.inboxes.length > 0 && (
-                        <p className="mt-0.5 flex items-center gap-1 truncate text-text-muted text-xs">
+                        <p className="text-text-muted mt-0.5 flex items-center gap-1 truncate text-xs">
                           <RadioTower
                             className="h-3 w-3 shrink-0"
                             aria-hidden="true"
@@ -381,7 +381,7 @@ export function AgentsPage() {
                           </span>
                         </p>
                       )}
-                      <p className="mt-0.5 truncate text-text-muted text-xs">
+                      <p className="text-text-muted mt-0.5 truncate text-xs">
                         {t("agents.createdRelative", "Created {{when}}", {
                           when: formatRelativeTime(a.createdAt, i18n.language),
                         })}
@@ -401,7 +401,7 @@ export function AgentsPage() {
                       </p>
                     </div>
                     <ChevronRight
-                      className="h-5 w-5 shrink-0 text-text-muted"
+                      className="text-text-muted h-5 w-5 shrink-0"
                       aria-hidden="true"
                     />
                   </Card>

@@ -276,8 +276,8 @@ function IconButton({
         aria-label={label}
         className={
           danger
-            ? "flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error disabled:opacity-40"
-            : "flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-text-primary disabled:opacity-40"
+            ? "text-text-muted hover:text-error flex h-7 w-7 items-center justify-center rounded transition-colors disabled:opacity-40"
+            : "text-text-muted hover:text-text-primary flex h-7 w-7 items-center justify-center rounded transition-colors disabled:opacity-40"
         }
       >
         {children}
@@ -1147,10 +1147,10 @@ export function DecisionsFields({
   const grantWarning = (rule: DecisionRuleForm) => (
     <div
       data-testid="decisions-rule-not-granted"
-      className="flex flex-wrap items-center gap-2 rounded-md border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs"
+      className="border-warning bg-warning-soft text-text-primary flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs"
     >
       <TriangleAlert
-        className="h-4 w-4 shrink-0 text-warning"
+        className="text-warning h-4 w-4 shrink-0"
         aria-hidden="true"
       />
       <span className="flex-1">
@@ -1260,7 +1260,7 @@ export function DecisionsFields({
               <div key={oi} className="flex flex-col gap-1">
                 <div className="flex items-start gap-2">
                   {key === "levels" && (
-                    <span className="mt-2 w-5 shrink-0 text-right text-text-muted text-xs tabular-nums">
+                    <span className="text-text-muted mt-2 w-5 shrink-0 text-right text-xs tabular-nums">
                       {oi}
                     </span>
                   )}
@@ -1377,7 +1377,7 @@ export function DecisionsFields({
     const set = (p: Partial<DecisionConditionForm>) =>
       setCondition(ri, ci, (prev) => ({ ...prev, ...p }));
     const confidence = (
-      <span className="flex items-center gap-1.5 text-text-secondary text-xs">
+      <span className="text-text-secondary flex items-center gap-1.5 text-xs">
         {t("editor.decisionsMinConfidence", "confidence at least")}
         <NumberInput
           range={DECISION_PERCENT_RANGE}
@@ -1465,7 +1465,7 @@ export function DecisionsFields({
             ))}
           </Select>
           {q?.type === "yes_no" && (
-            <span className="flex items-center gap-1.5 text-text-secondary text-xs">
+            <span className="text-text-secondary flex items-center gap-1.5 text-xs">
               {t(
                 "editor.decisionsMinProbability",
                 "probability of yes at least",
@@ -1875,7 +1875,7 @@ export function DecisionsFields({
 
       <div id="decisions-questions" className="flex scroll-mt-4 flex-col gap-3">
         <div>
-          <h4 className="font-medium text-sm text-text-primary">
+          <h4 className="text-text-primary text-sm font-medium">
             {t("editor.decisionsQuestions", "Questions")}
           </h4>
           <p className="text-text-muted text-xs">
@@ -1902,9 +1902,9 @@ export function DecisionsFields({
                   data-testid={`decisions-starter-${kind}`}
                   disabled={!starterFits(decisions, kind, starterNames)}
                   onClick={() => addStarter(kind)}
-                  className="flex flex-col gap-1 rounded-lg border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-hover disabled:opacity-50"
+                  className="border-border bg-bg-secondary hover:bg-bg-hover flex flex-col gap-1 rounded-lg border p-3 text-left transition-colors disabled:opacity-50"
                 >
-                  <span className="font-medium text-sm text-text-primary">
+                  <span className="text-text-primary text-sm font-medium">
                     {starterTitle(kind)}
                   </span>
                   <span className="text-text-muted text-xs">
@@ -1921,7 +1921,7 @@ export function DecisionsFields({
             <div
               key={q.key}
               data-testid="decisions-question"
-              className="flex flex-col gap-3 rounded-lg border border-border p-3"
+              className="border-border flex flex-col gap-3 rounded-lg border p-3"
             >
               <div className="flex items-center gap-2">
                 <button
@@ -1933,18 +1933,18 @@ export function DecisionsFields({
                   <ChevronRight
                     className={
                       qOpen
-                        ? "h-4 w-4 shrink-0 rotate-90 text-text-muted transition-transform"
-                        : "h-4 w-4 shrink-0 text-text-muted transition-transform"
+                        ? "text-text-muted h-4 w-4 shrink-0 rotate-90 transition-transform"
+                        : "text-text-muted h-4 w-4 shrink-0 transition-transform"
                     }
                     aria-hidden="true"
                   />
-                  <h5 className="shrink-0 font-medium text-sm text-text-primary">
+                  <h5 className="text-text-primary shrink-0 text-sm font-medium">
                     {t("editor.decisionsQuestionN", "Question {{n}}", {
                       n: qi + 1,
                     })}
                   </h5>
                   {!qOpen && (
-                    <span className="truncate font-mono text-text-secondary text-xs">
+                    <span className="text-text-secondary truncate font-mono text-xs">
                       {q.name}
                     </span>
                   )}
@@ -2075,7 +2075,7 @@ export function DecisionsFields({
                 </>
               )}
               {!qOpen && q.instructions.trim() && (
-                <p className="truncate text-text-secondary text-xs">
+                <p className="text-text-secondary truncate text-xs">
                   {q.instructions.trim()}
                 </p>
               )}
@@ -2149,7 +2149,7 @@ export function DecisionsFields({
 
       <div className="flex flex-col gap-3">
         <div>
-          <h4 className="font-medium text-sm text-text-primary">
+          <h4 className="text-text-primary text-sm font-medium">
             {t("editor.decisionsRules", "Rules")}
           </h4>
           <p className="text-text-muted text-xs">
@@ -2173,8 +2173,8 @@ export function DecisionsFields({
               data-broken={broken ? "true" : "false"}
               className={
                 broken
-                  ? "flex flex-col gap-3 rounded-lg border border-error p-3"
-                  : "flex flex-col gap-3 rounded-lg border border-border p-3"
+                  ? "border-error flex flex-col gap-3 rounded-lg border p-3"
+                  : "border-border flex flex-col gap-3 rounded-lg border p-3"
               }
             >
               <div className="flex flex-wrap items-center gap-2">
@@ -2187,12 +2187,12 @@ export function DecisionsFields({
                   <ChevronRight
                     className={
                       rOpen
-                        ? "h-4 w-4 shrink-0 rotate-90 text-text-muted transition-transform"
-                        : "h-4 w-4 shrink-0 text-text-muted transition-transform"
+                        ? "text-text-muted h-4 w-4 shrink-0 rotate-90 transition-transform"
+                        : "text-text-muted h-4 w-4 shrink-0 transition-transform"
                     }
                     aria-hidden="true"
                   />
-                  <h5 className="font-medium text-sm text-text-primary">
+                  <h5 className="text-text-primary text-sm font-medium">
                     {t("editor.decisionsRuleN", "Rule {{n}}", { n: ri + 1 })}
                   </h5>
                 </button>
@@ -2251,7 +2251,7 @@ export function DecisionsFields({
               {rOpen && (
                 <>
                   <div className="flex flex-col gap-2">
-                    <span className="font-medium text-text-secondary text-xs uppercase tracking-wide">
+                    <span className="text-text-secondary text-xs font-medium tracking-wide uppercase">
                       {t("editor.decisionsWhen", "When")}
                     </span>
                     {rule.when.map((cond, ci) => (
@@ -2299,7 +2299,7 @@ export function DecisionsFields({
                     </div>
                   </div>
                   <div className="flex flex-col gap-2">
-                    <span className="font-medium text-text-secondary text-xs uppercase tracking-wide">
+                    <span className="text-text-secondary text-xs font-medium tracking-wide uppercase">
                       {t("editor.decisionsThen", "Then")}
                     </span>
                     <FormField
@@ -2357,7 +2357,7 @@ export function DecisionsFields({
                     {triggerField(ri, rule)}
                     {notGranted(rule) && grantWarning(rule)}
                     {gap && (
-                      <span className="flex items-start gap-1.5 text-warning text-xs">
+                      <span className="text-warning flex items-start gap-1.5 text-xs">
                         <TriangleAlert
                           className="mt-0.5 h-3.5 w-3.5 shrink-0"
                           aria-hidden="true"
@@ -2473,7 +2473,7 @@ export function DecisionsFields({
           data-tone={tone}
           data-problems-summary
           className={cn(
-            "flex items-start gap-2 rounded-lg border px-3 py-2 text-text-primary text-xs",
+            "text-text-primary flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
             tone === "error"
               ? "border-error bg-error-soft"
               : "border-warning bg-warning-soft",

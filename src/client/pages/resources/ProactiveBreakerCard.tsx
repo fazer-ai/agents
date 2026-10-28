@@ -60,7 +60,7 @@ export function ProactiveBreakerCard() {
       <Card className="flex flex-col gap-3">
         {failed ? (
           <div className="flex items-center justify-between gap-2">
-            <span className="text-sm text-text-muted">
+            <span className="text-text-muted text-sm">
               {t(
                 "proactiveBreaker.loadError",
                 "Could not read the proactive breaker.",
@@ -181,10 +181,10 @@ export function ProactiveBreakerCard() {
     <RangeHolds>
       <Card className="flex flex-col gap-4">
         <div>
-          <h2 className="font-medium text-text-primary">
+          <h2 className="text-text-primary font-medium">
             {t("proactiveBreaker.title", "Proactive message breaker")}
           </h2>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "proactiveBreaker.desc",
               "Stops every agent's proactive messages (follow-ups, reminders, integration events, templates) when the whole account sends more than this in 24 hours, until an admin resumes them. Replies to customers are never counted or stopped.",
@@ -195,9 +195,9 @@ export function ProactiveBreakerCard() {
         {status.tripped && (
           <div
             role="status"
-            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-error bg-error-soft px-3 py-2"
+            className="border-error bg-error-soft flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2"
           >
-            <span className="text-sm text-text-primary">
+            <span className="text-text-primary text-sm">
               {t(
                 "proactiveBreaker.trippedSince",
                 "Paused since {{since}}: {{sent}} sent in 24 hours, limit {{limit}}. Changing the limit does not resume them.",
@@ -234,7 +234,7 @@ export function ProactiveBreakerCard() {
         </FormField>
 
         {mode === "auto" && (
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {autoSource}
             {autoMeasured && ` ${autoMeasured}`}
           </p>
@@ -266,7 +266,7 @@ export function ProactiveBreakerCard() {
           </FormField>
         )}
         {mode === "off" && (
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "proactiveBreaker.offHint",
               "No account-wide limit: proactive messages are bounded only by each agent's own per-conversation limit.",

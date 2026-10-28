@@ -234,7 +234,7 @@ export function PlaygroundFab({
       {open && (
         <div
           ref={panelRef}
-          className="fixed z-[var(--z-fab)] flex max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-xl"
+          className="border-border bg-bg-secondary fixed z-[var(--z-fab)] flex max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border shadow-xl"
           style={{
             width: size.w,
             height: size.h,
@@ -249,7 +249,7 @@ export function PlaygroundFab({
             <div
               onPointerDown={onResizeStart}
               aria-hidden="true"
-              className="absolute top-0 left-0 z-20 flex h-6 w-6 cursor-nwse-resize items-center justify-center text-text-muted/70 hover:text-text-secondary"
+              className="text-text-muted/70 hover:text-text-secondary absolute top-0 left-0 z-20 flex h-6 w-6 cursor-nwse-resize items-center justify-center"
             >
               <svg
                 viewBox="0 0 16 16"
@@ -271,7 +271,7 @@ export function PlaygroundFab({
               drag handler ignores pointer-downs that land on a button). */}
           <div
             onPointerDown={onTitleBarPointerDown}
-            className="relative flex cursor-grab items-center gap-2 border-border border-b py-2 pr-2 pl-8 active:cursor-grabbing"
+            className="border-border relative flex cursor-grab items-center gap-2 border-b py-2 pr-2 pl-8 active:cursor-grabbing"
           >
             <Button
               variant="secondary"
@@ -293,7 +293,7 @@ export function PlaygroundFab({
                 aria-label={t("playground.sessions", "Sessions")}
                 aria-expanded={sessionsOpen}
                 className={cn(
-                  "relative z-10 rounded p-1.5 text-text-secondary hover:bg-bg-hover hover:text-text-primary",
+                  "text-text-secondary hover:bg-bg-hover hover:text-text-primary relative z-10 rounded p-1.5",
                   { "bg-bg-hover text-text-primary": sessionsOpen },
                 )}
               >
@@ -306,7 +306,7 @@ export function PlaygroundFab({
                 type="button"
                 onClick={() => onOpenChange(false)}
                 aria-label={t("playground.minimize", "Minimize")}
-                className="relative z-10 rounded p-1 text-text-muted hover:text-text-primary"
+                className="text-text-muted hover:text-text-primary relative z-10 rounded p-1"
               >
                 <ChevronDown className="h-4 w-4" aria-hidden="true" />
               </button>
@@ -323,9 +323,9 @@ export function PlaygroundFab({
                 className="absolute inset-x-0 top-12 bottom-0 z-10 cursor-default"
                 onClick={() => setSessionsOpen(false)}
               />
-              <div className="absolute inset-x-2 top-12 z-20 max-h-72 overflow-y-auto overscroll-contain rounded-lg border border-border bg-bg-secondary p-1 shadow-lg">
+              <div className="border-border bg-bg-secondary absolute inset-x-2 top-12 z-20 max-h-72 overflow-y-auto overscroll-contain rounded-lg border p-1 shadow-lg">
                 {chat.sessions.length === 0 ? (
-                  <p className="px-2 py-1.5 text-text-muted text-xs">
+                  <p className="text-text-muted px-2 py-1.5 text-xs">
                     {t("playground.historyEmpty", "No saved sessions yet.")}
                   </p>
                 ) : (
@@ -335,7 +335,7 @@ export function PlaygroundFab({
                       <div
                         key={s.threadId}
                         className={cn(
-                          "group flex items-center gap-1 rounded-md hover:bg-bg-hover",
+                          "group hover:bg-bg-hover flex items-center gap-1 rounded-md",
                           { "bg-bg-hover": active },
                         )}
                       >
@@ -356,7 +356,7 @@ export function PlaygroundFab({
                         <button
                           type="button"
                           aria-label={t("common.delete", "Delete")}
-                          className="shrink-0 rounded p-1 text-text-muted opacity-0 transition-opacity hover:text-error group-hover:opacity-100"
+                          className="text-text-muted hover:text-error shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100"
                           onClick={() => void chat.deleteSession(s.threadId)}
                         >
                           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />

@@ -60,7 +60,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           className={cn(
             // overflow-x-hidden: the textarea always wraps (pre-wrap + break-word), so it never needs a
             // horizontal scrollbar — pinning it off kills the spurious x-scrollbar track/flash.
-            "w-full resize-y overflow-x-hidden rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1.5 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
+            "border-border-hover bg-bg-tertiary text-text-primary placeholder-text-placeholder focus:border-border-focus focus:ring-accent-soft w-full resize-y overflow-x-hidden rounded-md border px-2.5 py-1.5 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60",
             { "border-error": hasError },
             className,
           )}
@@ -76,12 +76,12 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           </span>
         )}
         {errorMessage && (
-          <span id={descriptionId} className="mt-1 block text-error text-xs">
+          <span id={descriptionId} className="text-error mt-1 block text-xs">
             {errorMessage}
           </span>
         )}
         {over && !errorMessage && max !== null && count !== null && (
-          <span id={descriptionId} className="mt-1 block text-error text-xs">
+          <span id={descriptionId} className="text-error mt-1 block text-xs">
             {t(
               "common.charOverLimit",
               "{{over}} characters over the limit. The agent only receives the first {{max}}; shorten it to save a change to this field.",
@@ -92,7 +92,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         {helperText && !errorMessage && (
           <span
             id={descriptionId}
-            className="mt-1 block text-text-muted text-xs"
+            className="text-text-muted mt-1 block text-xs"
           >
             {helperText}
           </span>

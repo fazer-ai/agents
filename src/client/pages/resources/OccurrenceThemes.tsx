@@ -232,7 +232,7 @@ export function OccurrenceThemes({
     <Card className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="font-medium text-text-primary">
+          <h2 className="text-text-primary font-medium">
             {t("occurrences.themes", "Open themes")}
           </h2>
           <p className="text-text-muted text-xs">
@@ -254,7 +254,7 @@ export function OccurrenceThemes({
         </Button>
       </div>
       {missing !== null && (
-        <p data-focus-missing className="text-sm text-text-muted">
+        <p data-focus-missing className="text-text-muted text-sm">
           {t(
             "occurrences.focusMissing",
             "“{{theme}}” is not in this list now: none of its conversations is in a monitored inbox, or it is past the themes listed.",
@@ -263,7 +263,7 @@ export function OccurrenceThemes({
         </p>
       )}
       {failed ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t("occurrences.themesError", "Could not read the themes.")}
         </p>
       ) : themes === null ? (
@@ -273,11 +273,11 @@ export function OccurrenceThemes({
           <Skeleton className="h-6 w-full" />
         </div>
       ) : themes.length === 0 ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t("occurrences.themesEmpty", "No open theme yet.")}
         </p>
       ) : (
-        <ul className="flex flex-col divide-y divide-border">
+        <ul className="divide-border flex flex-col divide-y">
           {themes
             .slice(page * THEMES_PAGE, (page + 1) * THEMES_PAGE)
             .map((th) => (
@@ -304,10 +304,10 @@ export function OccurrenceThemes({
                     />
                   )}
                   <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="font-medium text-sm text-text-primary">
+                    <span className="text-text-primary text-sm font-medium">
                       {th.title}
                     </span>
-                    <span className="flex flex-wrap items-center gap-2 text-text-muted text-xs">
+                    <span className="text-text-muted flex flex-wrap items-center gap-2 text-xs">
                       <span>
                         {t(
                           "occurrences.themeConversationCount",
@@ -379,7 +379,7 @@ export function OccurrenceThemes({
                     {detail === null || detail.id !== th.id ? (
                       <Skeleton className="h-6 w-full" />
                     ) : "failed" in detail ? (
-                      <div className="flex flex-wrap items-center gap-2 text-sm text-text-muted">
+                      <div className="text-text-muted flex flex-wrap items-center gap-2 text-sm">
                         <span role="alert">
                           {t(
                             "occurrences.themeDetailError",
@@ -405,7 +405,7 @@ export function OccurrenceThemes({
                               href={c.url}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-accent"
+                              className="text-accent inline-flex items-center gap-1"
                             >
                               {`#${c.chatwootConversationId}`}
                               <ExternalLink
@@ -430,7 +430,7 @@ export function OccurrenceThemes({
                       !("failed" in detail) &&
                       detail.theme.events.length > 0 && (
                         <div className="mt-2 flex flex-col gap-1">
-                          <h3 className="font-medium text-text-muted text-xs">
+                          <h3 className="text-text-muted text-xs font-medium">
                             {t("occurrences.themeHistory", "History")}
                           </h3>
                           <ul className="flex flex-col gap-1.5">
@@ -445,7 +445,7 @@ export function OccurrenceThemes({
                                     {eventLine(e, th.id)}
                                     <time
                                       dateTime={e.at}
-                                      className="ml-2 text-text-muted text-xs"
+                                      className="text-text-muted ml-2 text-xs"
                                     >
                                       {when(e.at)}
                                     </time>

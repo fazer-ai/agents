@@ -151,7 +151,7 @@ export function McpPanel() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-text-muted">
+        <p className="text-text-muted text-sm">
           {t("mcp.subtitle", "External MCP servers your agents can use.")}
         </p>
         <Button size="sm" onClick={() => editModal.open({})}>
@@ -184,7 +184,7 @@ export function McpPanel() {
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-text-primary">
+                  <span className="text-text-primary truncate font-medium">
                     {c.name}
                   </span>
                   <Badge variant="secondary">
@@ -196,7 +196,7 @@ export function McpPanel() {
                     </Badge>
                   )}
                 </div>
-                <p className="mt-0.5 truncate text-text-muted text-xs">
+                <p className="text-text-muted mt-0.5 truncate text-xs">
                   {c.url ?? c.command ?? "—"}
                 </p>
               </div>
@@ -248,7 +248,7 @@ export function McpPanel() {
         <div className="flex flex-col gap-3">
           <McpServerInstructions instructions={discoveredInstructions} />
           {discovered.length === 0 ? (
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t("mcp.noTools", "No tools advertised by this server.")}
             </p>
           ) : (
@@ -261,9 +261,9 @@ export function McpPanel() {
               {discovered.map((tool) => (
                 <div
                   key={tool.name}
-                  className="flex flex-col gap-1.5 rounded-lg border border-border bg-bg-secondary p-3"
+                  className="border-border bg-bg-secondary flex flex-col gap-1.5 rounded-lg border p-3"
                 >
-                  <span className="font-medium font-mono text-sm text-text-primary">
+                  <span className="text-text-primary font-mono text-sm font-medium">
                     {tool.name}
                   </span>
                   {tool.description && (
@@ -307,13 +307,13 @@ export function McpPanel() {
         }
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t("mcp.deleteMessage", 'Delete "{{name}}"?', {
               name: deleteModal.payload?.name ?? "",
             })}
           </p>
           {deleteRefs && deleteRefs.length > 0 && (
-            <p className="text-sm text-warning">
+            <p className="text-warning text-sm">
               {t(
                 "resources.deleteRefsWarning",
                 "{{count}} agent uses this and will stop working if you delete it.",

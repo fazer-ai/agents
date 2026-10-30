@@ -14,6 +14,7 @@ import {
   sentAtStamp,
   sourceStamp,
 } from "@/graph/markers";
+import { type AgentNudge, renderNudge } from "@/graph/nudge";
 import { unansweredInputs } from "@/graph/unanswered-inputs";
 
 const AT = new Date("2026-10-20T12:00:00Z");
@@ -324,4 +325,232 @@ describe("unansweredInputs", () => {
     const d = nudgeMessage("Faça o follow-up.", 7);
     expect(unansweredInputs([d, directive("d2")]).ids).toEqual([]);
   });
+});
+
+// A directive written before inputs carried a source: the text the renderer produced, with a random
+// id and no `fazerSource`. Attempts of one occasion re-render it, so the parts that are not the
+// event's data change between them.
+function legacy(
+  id: string,
+  n: AgentNudge,
+  opts: { canMessageCustomer?: boolean; conv?: number } = {},
+) {
+  const m = nudgeMessage(
+    renderNudge(n, opts.canMessageCustomer ?? true),
+    opts.conv ?? 7,
+  );
+  m.id = id;
+  return m;
+}
+
+const inactivity = (idleMin: number, instructions?: string): AgentNudge => ({
+  source: "followup",
+  kind: "inactivity",
+  summary: `The customer has been inactive for about ${idleMin} minutes.`,
+  instructions,
+  step: 1,
+});
+
+const snoozed = (
+  idleMin: number,
+  conversation: string,
+  step = 1,
+): AgentNudge => ({
+  source: "followup",
+  kind: "snoozed",
+  framing: "snoozed_reminder",
+  summary: `a person asked the customer ${idleMin} minutes ago; no reply yet`,
+  text: "Pode me mandar o comprovante?",
+  conversation,
+  step,
+});
+
+const payment = (id: string, summary: string, value = 150): AgentNudge => ({
+  source: "asaas",
+  kind: "payment",
+  status: "RECEIVED",
+  value,
+  currency: "BRL",
+  summary,
+  refs: { payment_id: id },
+});
+
+const LEGACY: Array<{
+  name: string;
+  thread: BaseMessage[];
+  removed: string[];
+}> = [
+  {
+    name: "attempts of one inactivity follow-up whose idle time grew keep the last",
+    thread: [
+      ai("a0"),
+      legacy("d1", inactivity(40)),
+      legacy("d2", inactivity(42)),
+      legacy("d3", inactivity(1206)),
+    ],
+    removed: ["d1", "d2"],
+  },
+  {
+    name: "an attempt rendered after a person took over is still the same follow-up",
+    thread: [
+      ai("a0"),
+      legacy("d1", inactivity(40)),
+      legacy("d2", inactivity(55), { canMessageCustomer: false }),
+    ],
+    removed: ["d1"],
+  },
+  {
+    name: "an attempt rendered after the operator edited the guidance is still the same follow-up",
+    thread: [
+      ai("a0"),
+      legacy("d1", inactivity(40, "Pergunte se ainda tem interesse.")),
+      legacy("d2", inactivity(55, "Ofereça o desconto de 10%.")),
+    ],
+    removed: ["d1"],
+  },
+  {
+    name: "attempts of one snoozed reminder whose wait and transcript grew keep the last",
+    thread: [
+      ai("a0"),
+      legacy("d1", snoozed(30, "agent: Pode me mandar o comprovante?")),
+      legacy(
+        "d2",
+        snoozed(95, "agent: Pode me mandar o comprovante?\ncustomer: já já", 2),
+      ),
+    ],
+    removed: ["d1"],
+  },
+  {
+    name: "a legacy follow-up the model answered stays",
+    thread: [
+      legacy("d1", inactivity(40)),
+      ai("a1"),
+      legacy("d2", inactivity(1440)),
+    ],
+    removed: [],
+  },
+  {
+    name: "two payment events with different ids both keep their facts",
+    thread: [
+      ai("a0"),
+      legacy("d1", payment("pay_1", "Payment received")),
+      legacy("d2", payment("pay_2", "Payment received")),
+    ],
+    removed: [],
+  },
+  {
+    name: "two events whose summaries differ only in a number are not merged",
+    thread: [
+      ai("a0"),
+      legacy("d1", {
+        source: "erp",
+        kind: "order",
+        summary: "Order 1041 shipped",
+      }),
+      legacy("d2", {
+        source: "erp",
+        kind: "order",
+        summary: "Order 1042 shipped",
+      }),
+    ],
+    removed: [],
+  },
+  {
+    name: "two events with different values are not merged",
+    thread: [
+      ai("a0"),
+      legacy("d1", payment("pay_1", "Payment received", 150)),
+      legacy("d2", payment("pay_1", "Payment received", 300)),
+    ],
+    removed: [],
+  },
+  {
+    name: "the same event text with different event text blocks is not merged",
+    thread: [
+      ai("a0"),
+      legacy("d1", {
+        source: "generic",
+        kind: "event",
+        text: "Pedido 1 aprovado",
+      }),
+      legacy("d2", {
+        source: "generic",
+        kind: "event",
+        text: "Pedido 2 aprovado",
+      }),
+    ],
+    removed: [],
+  },
+  {
+    name: "an inactivity follow-up and a snoozed reminder are different occasions",
+    thread: [
+      ai("a0"),
+      legacy("d1", inactivity(40)),
+      legacy("d2", snoozed(30, "agent: oi")),
+    ],
+    removed: [],
+  },
+  {
+    name: "the same follow-up on two conversations is not merged",
+    thread: [
+      ai("a0"),
+      legacy("d1", inactivity(40), { conv: 7 }),
+      legacy("d2", inactivity(55), { conv: 8 }),
+    ],
+    removed: [],
+  },
+  {
+    name: "a legacy attempt before a sourced attempt of the same follow-up is a copy",
+    thread: [
+      ai("a0"),
+      legacy("d1", inactivity(40)),
+      directive("d2", renderNudge(inactivity(55), true), "job:9:followup"),
+    ],
+    removed: ["d1"],
+  },
+  {
+    name: "a legacy event before a sourced directive of another event stays",
+    thread: [
+      ai("a0"),
+      legacy("d1", payment("pay_1", "Payment received")),
+      directive("d2", renderNudge(inactivity(55), true), "job:9:followup"),
+    ],
+    removed: [],
+  },
+  {
+    name: "two sourced deliveries that render the same event are two events",
+    thread: [
+      ai("a0"),
+      directive(
+        "d1",
+        renderNudge(payment("pay_1", "Paid"), true),
+        "delivery:1",
+      ),
+      directive(
+        "d2",
+        renderNudge(payment("pay_1", "Paid"), true),
+        "delivery:2",
+      ),
+    ],
+    removed: [],
+  },
+  {
+    name: "a hand-written directive outside the renderer's shape is matched by its whole text",
+    thread: [
+      ai("a0"),
+      directive("d1", "Faça o follow-up 1."),
+      directive("d2", "Faça o follow-up 2."),
+    ],
+    removed: [],
+  },
+];
+
+describe("unansweredInputs, directives written before inputs carried a source", () => {
+  for (const c of LEGACY) {
+    test(c.name, () => {
+      const out = unansweredInputs(c.thread);
+      expect(out.ids).toEqual(c.removed);
+      expect(out.directives).toBe(c.removed.length);
+    });
+  }
 });

@@ -8449,6 +8449,111 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.messages).toEqual([[16_627, "Oi de novo!"]]);
   });
 
+  // The residue an older version left: one directive per failed attempt of the inactivity follow-up,
+  // rendered by the real builder with the idle time of each attempt, a random id and no source.
+  // Two attempts were rendered after a person took over, and the operator edited the guidance midway.
+  async function seedLegacyFollowUps(thread: string, conv: number) {
+    const legacy = Array.from({ length: 60 }, (_, i) => {
+      const m = nudgeMessage(
+        renderNudge(
+          inactivityNudge({
+            idleMin: 40 + i * 30,
+            instructions:
+              i < 30 ? "Pergunte se ainda tem interesse." : "Ofereça ajuda.",
+            step: 1,
+            episodeStartedAt: null,
+          }),
+          i !== 10 && i !== 11,
+        ),
+        conv,
+      );
+      m.id = `legacy-${i}`;
+      return m;
+    });
+    await buildThreadStateGraph(saver16670(thread)).updateState(
+      { configurable: { thread_id: thread } },
+      {
+        messages: [
+          new HumanMessage({
+            id: "h1",
+            content: "quero um orçamento",
+            additional_kwargs: conversationStamp(conv),
+          }),
+          new AIMessage({ id: "a1", content: "Claro, me passa os detalhes." }),
+          ...legacy,
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+  }
+  const savers16670 = new Map<string, MemorySaver>();
+  const saver16670 = (thread: string) => {
+    const existing = savers16670.get(thread);
+    if (existing) return existing;
+    const created = new MemorySaver();
+    savers16670.set(thread, created);
+    return created;
+  };
+
+  for (const keyed of [false, true]) {
+    test(`a thread carrying an older version's follow-up attempts is healed by the next ${keyed ? "keyed" : "keyless"} follow-up`, async () => {
+      const conv = keyed ? 16_671 : 16_670;
+      await seedConv(conv, null);
+      const thread = `${tenantId}:${instanceId}:${conv}`;
+      await seedLegacyFollowUps(thread, conv);
+      const s = stub();
+      const seen: BaseMessage[][] = [];
+      class Answering extends BaseChatModel {
+        _llmType() {
+          return "answering";
+        }
+        override bindTools() {
+          return this as never;
+        }
+        async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+          seen.push(messages);
+          return {
+            generations: [
+              { text: "", message: new AIMessage("Ainda tem interesse?") },
+            ],
+          };
+        }
+      }
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: thread,
+        ...(keyed ? { runKey: "job:16670" } : {}),
+        nudge: inactivityNudge({
+          idleMin: 2000,
+          instructions: "Ofereça ajuda.",
+          step: 1,
+          episodeStartedAt: null,
+        }),
+        base: appDb,
+        deps: {
+          makeModel: () => new Answering({}) as never,
+          makeClient: s.makeClient,
+          checkpointer: saver16670(thread),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("messaged");
+
+      // NOTE: the new directive carries a source either way, and every legacy attempt is the same
+      // event, so the model reads one directive and the thread keeps only the new one.
+      expect((seen[0] ?? []).filter(isNudgeTurn)).toHaveLength(1);
+      const tuple = await saver16670(thread).getTuple({
+        configurable: { thread_id: thread },
+      });
+      const kept = (
+        (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+      ).filter(isNudgeTurn);
+      expect(kept).toHaveLength(1);
+      expect(stampedSource(kept[0] as BaseMessage)).not.toBeNull();
+      expect(s.messages).toEqual([[conv, "Ainda tem interesse?"]]);
+    });
+  }
+
   test("a customer message between two attempts keeps the retried directive after it", async () => {
     await seedConv(16_628, null);
     const saver = new MemorySaver();

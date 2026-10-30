@@ -103,6 +103,7 @@ import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
 import {
   conversationDividerMessage,
+  DATA_FENCE,
   humanHandbackMessage,
   isNudgeTurn,
   nudgeMessage,
@@ -428,15 +429,12 @@ export function parseThreadId(
   return { tenantId, instanceId, conversationId };
 }
 
-// Marks the untrusted-data boundary in a rendered nudge. Also a reliable signal that a persisted
-// human turn is actually a proactive nudge (renderNudge always emits it; sanitizeFreeText strips it
-// from untrusted input so it can't be forged) — the playground session rebuild relies on this.
 // The transcript a nudge may carry (`AgentNudge.conversation`). Every nudge prompt is persisted on
 // the agent's thread, so a window repeated per reminder is paid again in memory: twenty messages of
 // a short exchange fit, and a long email thread keeps its newest part.
 export const NUDGE_CONVERSATION_MAX_CHARS = 8_000;
 
-export const DATA_FENCE = "⟦external-data⟧";
+export { DATA_FENCE };
 
 // The note an operator's event becomes when the conversation is not the agent's: a person holds
 // it, it was handed to the team (`open`, maybe nobody assigned yet), or a person closed it. The

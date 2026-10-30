@@ -129,6 +129,11 @@ export function lastStampedConversationId(
   return null;
 }
 
+// Marks the untrusted-data boundary in a rendered nudge. Also a reliable signal that a persisted
+// human turn is actually a proactive nudge (renderNudge always emits it; sanitizeFreeText strips it
+// from untrusted input so it can't be forged) — the playground session rebuild relies on this.
+export const DATA_FENCE = "⟦external-data⟧";
+
 // Folded into the first human turn of a NEW conversation when the contact-inbox thread already
 // carries memory from a prior one. Written by both the reactive turn (src/graph/runtime.ts) and the
 // silent-message ingestion (src/graph/ingest.ts): the first as its own message, the second prepended

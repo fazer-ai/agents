@@ -20,9 +20,12 @@ import {
   sentAtStamp,
   stampedSource,
 } from "@/graph/markers";
+import { renderNudge } from "@/graph/nudge";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
+import { inactivityNudge } from "@/modules/followups/handlers";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
@@ -459,6 +462,53 @@ describe.skipIf(!dbUp)(
       );
       expect(lines.map((r) => r.detail)).toEqual([
         { reason: "repaired_unanswered_inputs", directives: 2, duplicates: 0 },
+      ]);
+    });
+
+    test("an older version's follow-up attempts, rendered with the idle time of each, are healed by the next reply", async () => {
+      const convId = 16_670;
+      await seedConversation(convId);
+      const rendered = (i: number, canMessage = true) => {
+        const m = nudgeMessage(
+          renderNudge(
+            inactivityNudge({
+              idleMin: 40 + i * 30,
+              instructions: undefined,
+              step: 1,
+              episodeStartedAt: null,
+            }),
+            canMessage,
+          ),
+          convId,
+        );
+        return new HumanMessage({
+          id: `legacy-${i}`,
+          content: m.content,
+          additional_kwargs: m.additional_kwargs,
+        });
+      };
+      await buildThreadStateGraph(await getCheckpointer()).updateState(
+        { configurable: { thread_id: threadOf(convId) } },
+        {
+          messages: [
+            new AIMessage({
+              id: "a1",
+              content: "Claro, me passa os detalhes.",
+            }),
+            ...Array.from({ length: 40 }, (_, i) => rendered(i, i !== 7)),
+          ],
+        },
+        THREAD_STATE_NODE,
+      );
+      const model = new ScriptedProvider(["text"]);
+      expect(
+        await attempt(convId, 0, model, [{ id: 5, content: "voltei" }], []),
+      ).toBe("done");
+
+      expect((model.seen[0] ?? []).filter(isNudgeTurn)).toHaveLength(1);
+      const stored = await storedMessages(convId);
+      expect(stored.filter(isNudgeTurn).map((m) => m.id)).toEqual([
+        "legacy-39",
       ]);
     });
   },

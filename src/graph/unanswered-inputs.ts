@@ -1,5 +1,6 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import {
+  DATA_FENCE,
   isNudgeTurn,
   isSystemMarker,
   stampedBurstStart,
@@ -12,8 +13,9 @@ import {
 // with no model output between them are compared, and the last copy stays, so an event's facts are
 // kept once and the thread's newest message is never removed. A copy names the same source (the
 // occasion of a nudge, the message a reactive turn answers) as a later input; an input written before
-// inputs carried a source is matched by its text and stamps instead. An ingested message is never a
-// copy. See docs/graph.md, "What a failed attempt leaves in the thread".
+// inputs carried a source is matched by what it carries instead: a directive by the event inside its
+// data fence, a customer input by its text and stamps. An ingested message is never a copy. See
+// docs/graph.md, "What a failed attempt leaves in the thread".
 
 function isHumanInput(m: BaseMessage): boolean {
   return m.getType() === "human";
@@ -31,12 +33,53 @@ function sameSource(
   return unsourced();
 }
 
-function sameDirective(a: BaseMessage, b: BaseMessage): boolean {
-  return sameSource(
-    a,
-    b,
-    () => typeof a.content === "string" && a.content === b.content,
+// The elapsed time the two follow-ups state in their summary, which grows between attempts.
+const ELAPSED = [
+  /(inactive for about )\d+( minutes)/g,
+  /(asked the customer )\d+( minutes ago)/g,
+];
+const TRANSCRIPT_HEADER = "conversation, oldest first";
+const TEXT_HEADER = "text (";
+
+// The event a directive without a source describes: the facts line and the event's own text inside
+// the data fence, which every attempt renders the same. What an attempt renders differently is left
+// out: the directive line (another one once a person takes over), the operator guidance (edited
+// between attempts), the transcript (it grows) and the elapsed time in the facts. Null when the text
+// is not the renderer's shape.
+function directiveEvent(text: string): string | null {
+  const lines = text.split("\n");
+  const open = lines.findIndex((l) => l.startsWith(`${DATA_FENCE} `));
+  const close = lines.lastIndexOf(DATA_FENCE);
+  if (open < 0 || close <= open + 1) return null;
+  const facts = ELAPSED.reduce(
+    (line, re) => line.replace(re, "$1N$2"),
+    lines[open + 1] as string,
   );
+  const data = [facts];
+  let inTranscript = false;
+  for (const line of lines.slice(open + 2, close)) {
+    if (line.startsWith(TRANSCRIPT_HEADER)) inTranscript = true;
+    else if (line.startsWith(TEXT_HEADER)) inTranscript = false;
+    if (!inTranscript) data.push(line);
+  }
+  return data.join("\n");
+}
+
+// Two sources compare as sources: a retry carries the same one, and two deliveries that render the
+// same event are still two events. A directive without a source is compared by the event it
+// carries, against a later one with or without a source: left unanswered, its facts are the later
+// one's, so removing it loses nothing.
+function sameDirective(a: BaseMessage, b: BaseMessage): boolean {
+  if (stampedConversationId(a) !== stampedConversationId(b)) return false;
+  const sa = stampedSource(a);
+  const sb = stampedSource(b);
+  if (sa !== null && sb !== null) return sa === sb;
+  if (typeof a.content !== "string" || typeof b.content !== "string")
+    return false;
+  const ea = directiveEvent(a.content);
+  const eb = directiveEvent(b.content);
+  if (ea !== null && eb !== null) return ea === eb;
+  return sa === null && sb === null && a.content === b.content;
 }
 
 // A turn's customer input: named by its source or dated, and not an ingested message.

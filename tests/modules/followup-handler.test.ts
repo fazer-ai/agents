@@ -17,6 +17,7 @@ import {
   ChatwootApiError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
+import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
 import { debounceDedupeKey } from "@/modules/debounce/service";
 import {
   ensureAllTenantSweeps,
@@ -1208,7 +1209,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         whatsappProvider: null,
         handledThrough,
         stillOpen: async () => ({ open: new Set([16752]), settled: new Set() }),
-        turnQueued: async () => false,
+        turnQueued: async (_ids: number[]) => false,
         base: appDb,
         deps: { makeClient: s.makeClient },
       });
@@ -1249,6 +1250,56 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       } else {
         expect(result).toEqual({ outcome: "done" });
         expect(s.sent.map(([c]) => c)).toEqual([convId]);
+      }
+    }
+  });
+
+  // A customer message's delivery still being worked, or stranded with its recovery queued, is a turn
+  // coming as much as a flush is; one already processed is not.
+  test("a customer message below the watermark holds the step while its delivery can still run a turn", async () => {
+    for (const [convId, status, recovery] of [
+      [1680, "PROCESSING", false],
+      [1681, "DEAD", true],
+      [1682, "PROCESSED", false],
+    ] as const) {
+      await seedPastWatermark(convId, convId * 10 + 3);
+      const row = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `followup-1672-${convId}`,
+          event: "message_created",
+          status,
+          conversationId: convId,
+          inboundMessageId: convId * 10 + 1,
+        },
+      });
+      if (recovery)
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(row.id),
+            status: "PENDING",
+            runAt: new Date(),
+            payload: { deliveryRowId: String(row.id) },
+          },
+        });
+      const s = stubClient({
+        page: [
+          customerRow(convId * 10 + 1, 3600),
+          phoneRow(convId * 10 + 2),
+          customerRow(convId * 10 + 3, 3600),
+          replyRow(convId * 10 + 4),
+        ],
+      });
+      const result = await run(convId, s);
+      if (status === "PROCESSED") {
+        expect(result).toEqual({ outcome: "done" });
+        expect(s.sent.map(([c]) => c)).toEqual([convId]);
+      } else {
+        expect(result).toMatchObject({ outcome: "reschedule" });
+        expect(s.sent).toEqual([]);
       }
     }
   });

@@ -33,7 +33,6 @@ import {
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
-import { turnQueuedOnThread } from "@/modules/debounce/service";
 import {
   readSelectionState,
   selectOpenMessages,
@@ -73,6 +72,7 @@ import {
   type LastReplyDelivery,
   lastReplyDelivery,
   type Row,
+  turnQueuedFor,
 } from "./undelivered";
 
 // Follow-up handlers for the scheduler. The SWEEP is coarse: it enqueues a FOLLOWUP per inactive,
@@ -1006,6 +1006,16 @@ export async function followUpHandler(
     );
     return { open, settled: new Set([...state.claimed, ...state.dispensed]) };
   };
+  // Whether work on record can still run a turn for the customer messages the read found waiting.
+  const turnQueued = (messageIds: number[]) =>
+    turnQueuedFor({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conversationId,
+      threadId,
+      messageIds,
+      base,
+    });
   let delivery: LastReplyDelivery;
   try {
     delivery = await lastReplyDelivery({
@@ -1016,7 +1026,7 @@ export async function followUpHandler(
       handledThrough,
       whatsappProvider: ctx.whatsappProvider,
       stillOpen,
-      turnQueued: () => turnQueuedOnThread({ tenantId, threadId, base }),
+      turnQueued,
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
     });
@@ -1080,7 +1090,7 @@ export async function followUpHandler(
             handledThrough,
             whatsappProvider: ctx.whatsappProvider,
             stillOpen,
-            turnQueued: () => turnQueuedOnThread({ tenantId, threadId, base }),
+            turnQueued,
             base,
             ...(deps?.makeClient
               ? { deps: { makeClient: deps.makeClient } }

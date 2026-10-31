@@ -111,28 +111,6 @@ export async function reactionArmedOnThread(params: {
   return row !== null && readReactionArmed(row.payload);
 }
 
-// Whether a flush is queued or running for the thread: the turn a customer message still open is
-// waiting for. The follow-up asks it before holding for that turn, so a message nothing will answer
-// does not hold it.
-export async function turnQueuedOnThread(params: {
-  tenantId: bigint;
-  threadId: string;
-  base?: PrismaClient;
-}): Promise<boolean> {
-  const base = params.base ?? basePrisma;
-  const row = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-    db.schedulerJob.findFirst({
-      where: {
-        kind: "DEBOUNCE",
-        dedupeKey: debounceDedupeKey(params.threadId),
-        status: { in: ["PENDING", "CLAIMED"] },
-      },
-      select: { id: true },
-    }),
-  );
-  return row !== null;
-}
-
 // Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already. Under
 // `armDebounce`'s lock rather than a `payloadPatch` on `rescheduleJob`: that CAS needs the row still
 // CLAIMED, and a message arriving mid-flush re-arms it to PENDING, so the stamp would be dropped and

@@ -108,6 +108,13 @@ type LastReplyDeliveryParams = {
   stillOpen: (
     rows: Row[],
   ) => Promise<{ open: Set<number>; settled: Set<number> }>;
+  // Whether a turn is queued for this conversation (a flush pending or running). An open customer
+  // message at or below the watermark holds the step only then: a turn already ran past it, and
+  // nothing else runs one for it.
+  turnQueued: () => Promise<boolean>;
+  // False once the step has held for a turn as long as it may: the read then judges the reply as if
+  // no turn were coming.
+  holdForTurn?: boolean;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
@@ -254,13 +261,18 @@ async function readLastReplyDelivery(
     );
   const reply = replyOf(read, newest);
   const { open, settled } = await params.stillOpen(read);
-  // A customer message at or below the handled watermark is not owed a turn, whatever its own row
-  // says: a turn already ran past it, and only a new event runs the flush again.
-  const owed = (m: Row) =>
+  // A customer message at or below the handled watermark is owed a turn only while one is queued: a
+  // turn already ran past it, and only a new event or the flush's own retry runs one again.
+  const waiting = read.filter((m) => customer(m) && open.has(m.id));
+  const above = (m: Row) =>
     params.handledThrough === null || m.id > params.handledThrough;
   // NOTE: any owed one the read holds, before the reply too: one that arrived after the turn's last
   // look and before its reply was written is still queued for its own turn.
-  if (read.some((m) => customer(m) && open.has(m.id) && owed(m)))
+  if (
+    params.holdForTurn !== false &&
+    waiting.length > 0 &&
+    (waiting.some(above) || (await params.turnQueued()))
+  )
     return { state: "customer_spoke" };
   // A person's public reply or template that was not refused, written after a refused message,
   // moved the conversation past it. Attributed the way the flush attributes it

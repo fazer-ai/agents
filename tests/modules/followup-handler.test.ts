@@ -17,6 +17,7 @@ import {
   ChatwootApiError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
+import { debounceDedupeKey } from "@/modules/debounce/service";
 import {
   ensureAllTenantSweeps,
   followUpHandler,
@@ -1206,11 +1207,96 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         whatsappProvider: null,
         handledThrough,
         stillOpen: async () => ({ open: new Set([16752]), settled: new Set() }),
+        turnQueued: async () => false,
         base: appDb,
         deps: { makeClient: s.makeClient },
       });
     expect((await ask(null)).state).toBe("customer_spoke");
     expect((await ask(16752)).state).not.toBe("customer_spoke");
+  });
+
+  // A turn the flush queued for itself (the retry after a partial claim) still answers a customer
+  // message below the watermark, so the step holds for it; a flush already spent does not.
+  test("a customer message below the watermark holds the step while a flush is queued for it", async () => {
+    for (const [convId, status] of [
+      [1676, "PENDING"],
+      [1677, "DONE"],
+    ] as const) {
+      await seedPastWatermark(convId, convId * 10 + 3);
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(threadOf(convId)),
+          status,
+          runAt: new Date(Date.now() + 5_000),
+          payload: { threadId: threadOf(convId) },
+        },
+      });
+      const s = stubClient({
+        page: [
+          customerRow(convId * 10 + 1),
+          phoneRow(convId * 10 + 2),
+          customerRow(convId * 10 + 3),
+          replyRow(convId * 10 + 4),
+        ],
+      });
+      const result = await run(convId, s);
+      if (status === "PENDING") {
+        expect(result).toMatchObject({ outcome: "reschedule" });
+        expect(s.sent).toEqual([]);
+      } else {
+        expect(result).toEqual({ outcome: "done" });
+        expect(s.sent.map(([c]) => c)).toEqual([convId]);
+      }
+    }
+  });
+
+  // The hold is bounded from its first deferral: the stamp rides along, and past the bound the reply
+  // is judged as if no turn were coming.
+  test("a step holds for a turn from its first deferral, and stops holding past the bound", async () => {
+    const runHeld = (
+      convId: number,
+      s: ReturnType<typeof stubClient>,
+      heldSince: number,
+    ) =>
+      followUpHandler(
+        {
+          ...jobFor(convId),
+          payload: { threadId: threadOf(convId), turnHeldSince: heldSince },
+        },
+        appDb,
+        {
+          makeModel: fakeModel,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      );
+    await seedPastWatermark(1678, 16783);
+    const fresh = stubClient({
+      page: [customerRow(16783), replyRow(16784), customerRow(16785)],
+    });
+    const first = await run(1678, fresh);
+    expect(first).toMatchObject({ outcome: "reschedule" });
+    const stamp = (first as unknown as { payload: { turnHeldSince: number } })
+      .payload.turnHeldSince;
+    expect(Math.abs(stamp - Date.now())).toBeLessThan(5_000);
+    const again = await runHeld(1678, fresh, stamp - 60_000);
+    expect(again).toMatchObject({
+      outcome: "reschedule",
+      payload: { turnHeldSince: stamp - 60_000 },
+    });
+    expect(fresh.sent).toEqual([]);
+
+    await seedPastWatermark(1679, 16793);
+    const late = stubClient({
+      page: [customerRow(16793), replyRow(16794), customerRow(16795)],
+    });
+    expect(await runHeld(1679, late, Date.now() - 11 * 60_000)).toEqual({
+      outcome: "done",
+    });
+    expect(late.sent.map(([c]) => c)).toEqual([1679]);
   });
 
   // The hand-over is pinned to the customer message the reply answered: one the mirror recorded past

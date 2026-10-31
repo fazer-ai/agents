@@ -33,6 +33,7 @@ import {
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
+import { turnQueuedOnThread } from "@/modules/debounce/service";
 import {
   readSelectionState,
   selectOpenMessages,
@@ -92,6 +93,10 @@ const IN_FLIGHT_BACKOFF_MS = 30_000;
 // cancelled. Coarse (1h) because the sweep already filters these out — this only catches a FOLLOWUP
 // that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
+// How long a step holds for a turn the customer's open message is waiting on. Past it the reply is
+// judged as if none were coming: a turn that has not run in that long is not one the step can wait
+// for, and holding without a bound reads the conversation from Chatwoot every backoff, forever.
+const TURN_HOLD_MAX_MS = 10 * 60_000;
 // How long a follow-up the live gate declined waits before it is offered again. The
 // decline stamps nothing, so the sweep would select the conversation on its next pass; parked for
 // this long instead, the pass leaves the row alone. An hour rather than never, because the mirror the
@@ -1005,6 +1010,18 @@ export async function followUpHandler(
     );
     return { open, settled: new Set([...state.claimed, ...state.dispensed]) };
   };
+  const heldSince =
+    typeof job.payload.turnHeldSince === "number"
+      ? job.payload.turnHeldSince
+      : null;
+  const holdForTurn =
+    heldSince === null || Date.now() - heldSince < TURN_HOLD_MAX_MS;
+  if (!holdForTurn)
+    logger.warn(
+      "followUpHandler: held %d min for a turn that did not run; judging the reply without it (thread=%s)",
+      Math.round((Date.now() - (heldSince ?? 0)) / 60_000),
+      threadId,
+    );
   let delivery: LastReplyDelivery;
   try {
     delivery = await lastReplyDelivery({
@@ -1015,6 +1032,8 @@ export async function followUpHandler(
       handledThrough,
       whatsappProvider: ctx.whatsappProvider,
       stillOpen,
+      turnQueued: () => turnQueuedOnThread({ tenantId, threadId, base }),
+      holdForTurn,
       base,
       ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
     });
@@ -1043,7 +1062,11 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
-      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+      payload: {
+        ...job.payload,
+        deferredUnder: BACKOFF_DEFERRAL,
+        turnHeldSince: heldSince ?? Date.now(),
+      },
     };
   }
   if (delivery.state === "resend_pending") {
@@ -1078,6 +1101,8 @@ export async function followUpHandler(
             handledThrough,
             whatsappProvider: ctx.whatsappProvider,
             stillOpen,
+            turnQueued: () => turnQueuedOnThread({ tenantId, threadId, base }),
+            holdForTurn,
             base,
             ...(deps?.makeClient
               ? { deps: { makeClient: deps.makeClient } }

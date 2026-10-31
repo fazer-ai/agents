@@ -254,9 +254,13 @@ async function readLastReplyDelivery(
     );
   const reply = replyOf(read, newest);
   const { open, settled } = await params.stillOpen(read);
-  // NOTE: any the read holds, before the reply too: one that arrived after the turn's last look and
-  // before its reply was written is still queued for its own turn.
-  if (read.some((m) => customer(m) && open.has(m.id)))
+  // A customer message at or below the handled watermark is not owed a turn, whatever its own row
+  // says: a turn already ran past it, and only a new event runs the flush again.
+  const owed = (m: Row) =>
+    params.handledThrough === null || m.id > params.handledThrough;
+  // NOTE: any owed one the read holds, before the reply too: one that arrived after the turn's last
+  // look and before its reply was written is still queued for its own turn.
+  if (read.some((m) => customer(m) && open.has(m.id) && owed(m)))
     return { state: "customer_spoke" };
   // A person's public reply or template that was not refused, written after a refused message,
   // moved the conversation past it. Attributed the way the flush attributes it

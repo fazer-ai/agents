@@ -22,6 +22,7 @@ import {
   followUpHandler,
   registerFollowUpHandlers,
 } from "@/modules/followups/handlers";
+import { lastReplyDelivery } from "@/modules/followups/undelivered";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -1125,6 +1126,91 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await run(1712, s)).toMatchObject({ outcome: "reschedule" });
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
+  });
+
+  // A customer message the watermark already passed is not a turn coming, even when nothing closes it
+  // message by message: answered from the phone by a sender-less row that the provider does not let us
+  // attribute, it has no claim, no dispensal and no reply boundary. Only a new event runs the flush, so
+  // waiting for its turn waits forever.
+  async function seedPastWatermark(convId: number, handled: number) {
+    await seedConversation(convId, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: {
+        replyClaimFloorMessageId: 0,
+        lastHandledMessageId: handled,
+        lastRepliedMessageId: handled,
+        lastInboundMessageId: handled,
+      },
+    });
+  }
+  const phoneRow = (id: number) => ({ ...replyRow(id), sender: null });
+
+  test("a customer message below the watermark that nothing closed does not hold the step", async () => {
+    await seedPastWatermark(1672, 16723);
+    const s = stubClient({
+      page: [
+        customerRow(16721),
+        phoneRow(16722),
+        customerRow(16723),
+        replyRow(16724),
+      ],
+    });
+    expect(await run(1672, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1672]);
+    expect(await lastFollowUpOf(1672)).not.toBeNull();
+  });
+
+  test("a customer message past the watermark still holds the step, beside one below it", async () => {
+    await seedPastWatermark(1673, 16733);
+    const s = stubClient({
+      page: [
+        customerRow(16731),
+        phoneRow(16732),
+        customerRow(16733),
+        replyRow(16734),
+        customerRow(16735),
+      ],
+    });
+    expect(await run(1673, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(await lastFollowUpOf(1673)).toBeNull();
+  });
+
+  test("a refused reply after a customer message below the watermark is still handed over", async () => {
+    await seedPastWatermark(1674, 16743);
+    const s = stubClient({
+      page: [
+        customerRow(16741),
+        phoneRow(16742),
+        customerRow(16743),
+        replyRow(16744, { refused: true }),
+      ],
+    });
+    expect(await run(1674, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1674]);
+  });
+
+  // The watermark decides only when there is one: with none, nothing says a turn ran past the
+  // customer's message, so it is still a turn coming. The handler never reaches the read without one,
+  // so the read is asked directly.
+  test("with no watermark, an open customer message is still a turn coming", async () => {
+    const s = stubClient({ page: [replyRow(16751), customerRow(16752)] });
+    const ask = (handledThrough: number | null) =>
+      lastReplyDelivery({
+        tenantId,
+        instanceId,
+        chatwootConversationId: 1675,
+        agentBotIds: [5],
+        whatsappProvider: null,
+        handledThrough,
+        stillOpen: async () => ({ open: new Set([16752]), settled: new Set() }),
+        base: appDb,
+        deps: { makeClient: s.makeClient },
+      });
+    expect((await ask(null)).state).toBe("customer_spoke");
+    expect((await ask(16752)).state).not.toBe("customer_spoke");
   });
 
   // The hand-over is pinned to the customer message the reply answered: one the mirror recorded past

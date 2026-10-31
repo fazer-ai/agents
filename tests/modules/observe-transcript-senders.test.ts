@@ -117,6 +117,22 @@ describe("who wrote each line of the observer's transcript", () => {
     ]);
   });
 
+  test("on a Cloud inbox, a phone reply carrying Cloud's marks is a person, and only there", () => {
+    const phone = [
+      row(1, "outgoing", "Liguei pra você agora", { cloudEcho: true }),
+    ];
+    expect(
+      renderTranscript(
+        transcriptFromRows(phone, 20, { whatsappProvider: "whatsapp_cloud" }),
+      ),
+    ).toBe("Atendente (pessoa): Liguei pra você agora");
+    expect(
+      renderTranscript(
+        transcriptFromRows(phone, 20, { whatsappProvider: "baileys" }),
+      ),
+    ).not.toContain("(pessoa)");
+  });
+
   test("a paired-phone reply is a person only where the provider's echo can be trusted", () => {
     const phone = [
       row(1, "outgoing", "Liguei pra você agora", {
@@ -124,7 +140,7 @@ describe("who wrote each line of the observer's transcript", () => {
       }),
     ];
     const trusted = renderTranscript(
-      transcriptFromRows(phone, 20, { trustPhoneEcho: true }),
+      transcriptFromRows(phone, 20, { whatsappProvider: "baileys" }),
     );
     expect(trusted).toBe("Atendente (pessoa): Liguei pra você agora");
     // On a provider that does not reserve echo ids, a lost send response comes back as this same

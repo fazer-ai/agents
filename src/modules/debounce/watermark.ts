@@ -6,10 +6,7 @@ import {
   type ChatwootMessageRow,
   pendingIncoming,
 } from "@/modules/chatwoot/messages";
-import {
-  providerReservesEchoIds,
-  SESSION_SENDER_NAME,
-} from "@/modules/chatwoot/normalize";
+import { phoneReplyMarked } from "@/modules/chatwoot/normalize";
 
 // `Conversation.lastHandledMessageId` marks the last inbound message the bot either answered or
 // deliberately skipped (handoff mid-turn, human-owned period, consumed /commands, guardrail
@@ -456,16 +453,13 @@ export function foreignReplyBoundary(
   page: readonly ChatwootMessageRow[],
   opts: ReplyIdentity,
 ): number {
-  const deviceCounts = providerReservesEchoIds(opts.whatsappProvider);
   let boundary = 0;
   for (const m of page) {
     const somebodyElse =
       m.senderType === "user" ||
       (m.senderType === "agent_bot" &&
         (opts.managedBotId === null || m.senderId !== opts.managedBotId)) ||
-      (m.senderType === null &&
-        m.externalSenderName === SESSION_SENDER_NAME &&
-        deviceCounts);
+      (m.senderType === null && phoneReplyMarked(m, opts.whatsappProvider));
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       !m.private &&

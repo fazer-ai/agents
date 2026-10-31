@@ -44,6 +44,7 @@ const suDb = su as PrismaClient;
 
 const INBOX_ID = 84;
 const ZAPI_INBOX_ID = 85;
+const CLOUD_INBOX_ID = 86;
 const OUR_BOT = 21;
 // A second persona's bot, which a conversation can be assigned to while the inbox is bound to the
 // first. Chatwoot fans the message to both routes and only this one's delivery passes the gate.
@@ -168,6 +169,17 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         chatwootInboxId: ZAPI_INBOX_ID,
         name: "WhatsApp (zapi)",
         provider: "zapi",
+        agentId: agent.id,
+      },
+    });
+    // And on the official Cloud API, where a phone reply carries only Cloud's own marks.
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: CLOUD_INBOX_ID,
+        name: "WhatsApp (Cloud)",
+        provider: "whatsapp_cloud",
         agentId: agent.id,
       },
     });
@@ -530,6 +542,36 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     ).toBe("recovered");
     expect(togglesFor(convId)).toHaveLength(1);
     expect((await convRow(convId)).status).toBe("open");
+  });
+
+  // A phone reply on Cloud is stored as its own shape, so a row stranded before the inbox was read
+  // still owes the takeover there, and only there.
+  test("a stranded Cloud phone reply is recovered on a Cloud inbox, and on no other", async () => {
+    const onCloud = await seedStranded(9175, {
+      shape: "cloud_echo",
+      inboxId: CLOUD_INBOX_ID,
+    });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: onCloud,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(9175)).toHaveLength(1);
+    expect((await convRow(9175)).status).toBe("open");
+
+    const onBaileys = await seedStranded(9176, { shape: "cloud_echo" });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: onBaileys,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("not-owed");
+    expect(togglesFor(9176)).toHaveLength(0);
   });
 
   test("the customer writing in the window does NOT refuse the recovery", async () => {

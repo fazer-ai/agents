@@ -7,7 +7,7 @@
 // (test mode, availability, redirect) die with the process, so the sweep arms a DELIVERY_RECOVERY
 // that re-runs that path (./recover-delivery.ts). Why: docs/chatwoot.md, "Webhook receiver".
 
-import type { HumanReplyRoute } from "./normalize";
+import type { HumanReplyShape } from "./normalize";
 import { LATE_TRANSCRIPTION_EVENT, TURN_BEARING_EVENT } from "./normalize";
 
 export interface StrandedDeliveryRow {
@@ -179,6 +179,6 @@ function bearsTurn(
 // Whether the stored shape is one this build can act on. A String column rather than an enum, like
 // `event` beside it, so the reader answers for what is actually in the row: null from an older
 // build, and anything else from a build that spells a shape this one does not know.
-export function isHumanReplyShape(v: string | null): v is HumanReplyRoute {
-  return v === "composer" || v === "device";
+export function isHumanReplyShape(v: string | null): v is HumanReplyShape {
+  return v === "composer" || v === "device" || v === "cloud_echo";
 }

@@ -14,7 +14,7 @@ import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { loadChatwootClient } from "./instance";
 import {
-  type HumanReplyRoute,
+  type HumanReplyShape,
   isNewHumanReplyToCustomer,
   normalizeChatwootEvent,
   resolveHumanReplyRoute,
@@ -62,7 +62,7 @@ export function namesRecoverableHumanReply<
 ): row is T & {
   conversationId: number;
   humanReplyMessageId: number;
-  humanReplyShape: HumanReplyRoute;
+  humanReplyShape: HumanReplyShape;
 } {
   return (
     row.conversationId !== null &&

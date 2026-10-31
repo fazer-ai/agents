@@ -45,7 +45,6 @@ import {
 } from "@/modules/chatwoot/instance";
 import { labelsNarrated } from "@/modules/chatwoot/label-activity";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
-import { providerReservesEchoIds } from "@/modules/chatwoot/normalize";
 import {
   readWindowRows,
   renderTranscript,
@@ -1004,7 +1003,7 @@ export async function readObserveEvidence(p: {
   );
   const transcript = transcriptFromRows(rows, p.windowMessages, {
     ownBotIds,
-    trustPhoneEcho: providerReservesEchoIds(conv?.inbox?.provider ?? null),
+    whatsappProvider: conv?.inbox?.provider ?? null,
   });
   // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
   // the operator wiped is not part of this one either.

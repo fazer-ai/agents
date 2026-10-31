@@ -243,6 +243,7 @@ export function normalizeChatwootEvent(
       // The content is the emoji; in_reply_to points at the message it reacts to.
       isReaction: ca?.is_reaction === true,
       externalSenderName: ca ? str(ca.external_sender_name) : null,
+      cloudEcho: cloudEchoMarked(ca ?? null),
       // NOTE: The Subject header of an inbound email. Read through the shared reader so
       // the delivered event and the REST page cannot disagree about what the subject is.
       emailSubject: emailSubjectFrom(ca),
@@ -652,6 +653,37 @@ export function providerReservesEchoIds(provider: string | null): boolean {
   return provider !== null && ECHO_RESERVING_WHATSAPP_PROVIDERS.has(provider);
 }
 
+// WHATSAPP CLOUD'S OWN MARKS of a message typed in the WhatsApp Business app (coexistence):
+// `external_echo`, or `external_created_at`, WhatsApp's timestamp of a message that came in from Meta.
+// The Cloud API never echoes what was sent through it, and the sender-less rows Chatwoot builds
+// itself carry neither, so on Cloud alone either one names a person. PROVISIONAL, undone once the
+// fork writes `external_sender_name` on these rows: docs/chatwoot.md, "On WhatsApp Cloud the device row".
+const CLOUD_PROVIDER = "whatsapp_cloud";
+
+export function cloudEchoMarked(ca: Record<string, unknown> | null): boolean {
+  return (
+    ca !== null &&
+    (ca.external_echo === true ||
+      (ca.external_created_at !== undefined && ca.external_created_at !== null))
+  );
+}
+
+// Whether a sender-less outgoing message's marks say a person sent it from the phone, on the inbox's
+// provider: the session's marker where the provider reserves its ids, or Cloud's own marks on Cloud.
+// The ONE answer every reader asks (the takeover, the flush's boundary, the snoozed ladder, the
+// transcript), so they cannot disagree about who wrote a row.
+export function phoneReplyMarked(
+  m: { externalSenderName?: string | null; cloudEcho?: boolean },
+  provider: string | null,
+): boolean {
+  if (
+    m.externalSenderName === SESSION_SENDER_NAME &&
+    providerReservesEchoIds(provider)
+  )
+    return true;
+  return provider === CLOUD_PROVIDER && m.cloudEcho === true;
+}
+
 // The person-answering shape by the other route: typed on the phone paired to the inbox's number.
 // The fork stores that echo sender-less, so only `external_sender_name` sees it; a bare "outgoing
 // with no sender" also matches an automation rule, a scheduled message and a CSAT survey.
@@ -660,14 +692,25 @@ export function providerReservesEchoIds(provider: string | null): boolean {
 // the PAYLOAD half: the provider half needs the inbox row, read only when this superset passes.
 // docs/chatwoot.md, "A person answering the customer ends the attendance".
 export function hasDeviceAttendantShape(e: NormalizedChatwootEvent): boolean {
-  return (
-    e.message?.messageType === "outgoing" &&
-    e.message.private !== true &&
-    e.message.isReaction !== true &&
-    e.message.imported !== true &&
-    (e.message.sender ?? null) === null &&
-    e.message.externalSenderName === SESSION_SENDER_NAME
-  );
+  return deviceReplyShape(e) !== null;
+}
+
+// Which of the phone's marks the payload carries: the session's (`device`) or only Cloud's
+// (`cloud_echo`). Two shapes, so the inbox half trusts each on its own providers only: a session
+// provider's automation row gets `external_created_at` once it is sent, and must not read as a person.
+function deviceReplyShape(
+  e: NormalizedChatwootEvent,
+): "device" | "cloud_echo" | null {
+  if (
+    e.message?.messageType !== "outgoing" ||
+    e.message.private === true ||
+    e.message.isReaction === true ||
+    e.message.imported === true ||
+    (e.message.sender ?? null) !== null
+  )
+    return null;
+  if (e.message.externalSenderName === SESSION_SENDER_NAME) return "device";
+  return e.message.cloudEcho === true ? "cloud_echo" : null;
 }
 
 export function isDeviceAttendantMessage(
@@ -680,12 +723,7 @@ export function isDeviceAttendantMessage(
 ): boolean {
   // NOTE: through `resolveHumanReplyRoute`, so this predicate and the recovery that asks it of a
   // stored shape cannot disagree about which providers the marker is trusted on.
-  return (
-    resolveHumanReplyRoute(
-      hasDeviceAttendantShape(e) ? "device" : null,
-      opts,
-    ) !== null
-  );
+  return resolveHumanReplyRoute(deviceReplyShape(e), opts) !== null;
 }
 
 // COULD this event be a person answering the customer, before the inbox row has been read? Decides
@@ -701,6 +739,9 @@ export function mayBeNewHumanReply(e: NormalizedChatwootEvent): boolean {
 // that says why (the CRM or somebody's phone) cannot disagree. The two predicates are DISJOINT (a
 // `user` sender vs no sender), so the order they are asked in decides nothing.
 export type HumanReplyRoute = "composer" | "device";
+// What the payload alone can say: a route, or a phone reply carrying only Cloud's marks, which only a
+// Cloud inbox makes a `device` route (`resolveHumanReplyRoute`).
+export type HumanReplyShape = HumanReplyRoute | "cloud_echo";
 
 // THE HALF THE PAYLOAD ANSWERS. `device` here is a shape, not yet a verdict: an unreserved
 // provider's echo wears it too, and only the inbox row tells them apart (providerReservesEchoIds).
@@ -708,16 +749,15 @@ export type HumanReplyRoute = "composer" | "device";
 // process death still says what it was about, and the recovery asks the second half later.
 export function humanReplyShape(
   e: NormalizedChatwootEvent,
-): HumanReplyRoute | null {
+): HumanReplyShape | null {
   if (isHumanAgentMessage(e)) return "composer";
-  if (hasDeviceAttendantShape(e)) return "device";
-  return null;
+  return deviceReplyShape(e);
 }
 
 // message_created only, for the reason isNewHumanAgentMessage gives.
 export function newHumanReplyShape(
   e: NormalizedChatwootEvent,
-): HumanReplyRoute | null {
+): HumanReplyShape | null {
   return e.event === "message_created" ? humanReplyShape(e) : null;
 }
 
@@ -726,13 +766,23 @@ export function newHumanReplyShape(
 // provider refuses it, the same refusal `isDeviceAttendantMessage` makes, asked of the shape
 // instead of the event, so a caller that no longer HAS the event can still ask it.
 export function resolveHumanReplyRoute(
-  shape: HumanReplyRoute | null,
+  shape: HumanReplyShape | null,
   opts: { whatsappProvider: string | null },
 ): HumanReplyRoute | null {
   if (shape === "composer") return "composer";
-  if (shape === "device" && providerReservesEchoIds(opts.whatsappProvider)) {
+  if (
+    shape === "device" &&
+    phoneReplyMarked(
+      { externalSenderName: SESSION_SENDER_NAME },
+      opts.whatsappProvider,
+    )
+  )
     return "device";
-  }
+  if (
+    shape === "cloud_echo" &&
+    phoneReplyMarked({ cloudEcho: true }, opts.whatsappProvider)
+  )
+    return "device";
   return null;
 }
 

@@ -31,8 +31,7 @@ import {
 import {
   isSnoozedForAPerson,
   parseLiveConversation,
-  providerReservesEchoIds,
-  SESSION_SENDER_NAME,
+  phoneReplyMarked,
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
 import {
@@ -258,11 +257,7 @@ function personWrote(
     return false;
   if (r.private || r.isReaction || r.imported) return false;
   if (r.senderType === "user") return !r.platformSent;
-  return (
-    r.senderType === null &&
-    r.externalSenderName === SESSION_SENDER_NAME &&
-    providerReservesEchoIds(opts.whatsappProvider)
-  );
+  return r.senderType === null && phoneReplyMarked(r, opts.whatsappProvider);
 }
 
 function customerWrote(r: ChatwootMessageRow): boolean {
@@ -690,7 +685,7 @@ export async function snoozedFollowUpHandler(
         ownBotIds: new Set(
           await instanceAgentBotChatwootIds(tenantId, instanceId, base),
         ),
-        trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
+        whatsappProvider: ctx.reply.whatsappProvider,
       }),
       // The nudge's own budget, spent here per message: cut again there, the window would lose the
       // label of its oldest line.

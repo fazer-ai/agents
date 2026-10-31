@@ -223,7 +223,7 @@ import {
   effectiveAssignee,
   firstAudioAttachment,
   foreignBotMessageOf,
-  type HumanReplyRoute,
+  type HumanReplyShape,
   heldByAnotherParty,
   inboundTranscriptionOnUpdate,
   incomingRenderable,
@@ -1392,7 +1392,7 @@ interface LedgerFacts {
   event: string;
   conversationId: number | null;
   inboundMessageId: number | null;
-  humanReplyShape: HumanReplyRoute | null;
+  humanReplyShape: HumanReplyShape | null;
   routeAgentBotId: number | null;
   humanReplyMessageId: number | null;
   bindingGeneration: number | null;

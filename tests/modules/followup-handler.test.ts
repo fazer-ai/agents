@@ -1090,12 +1090,13 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await lastFollowUpOf(1710)).toBeNull();
   });
 
-  const customerRow = (id: number) => ({
+  // A minute old by default, inside the window an open message past the watermark holds the step.
+  const customerRow = (id: number, agoSec = 60) => ({
     id,
     content: "Quanto custa?",
     message_type: 0,
     private: false,
-    created_at: Math.floor(Date.now() / 1000) - 900,
+    created_at: Math.floor(Date.now() / 1000) - agoSec,
     sender: { type: "contact", id: 31 },
     content_attributes: {},
   });
@@ -1235,9 +1236,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       });
       const s = stubClient({
         page: [
-          customerRow(convId * 10 + 1),
+          customerRow(convId * 10 + 1, 3600),
           phoneRow(convId * 10 + 2),
-          customerRow(convId * 10 + 3),
+          customerRow(convId * 10 + 3, 3600),
           replyRow(convId * 10 + 4),
         ],
       });
@@ -1252,51 +1253,31 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     }
   });
 
-  // The hold is bounded from its first deferral: the stamp rides along, and past the bound the reply
-  // is judged as if no turn were coming.
-  test("a step holds for a turn from its first deferral, and stops holding past the bound", async () => {
-    const runHeld = (
-      convId: number,
-      s: ReturnType<typeof stubClient>,
-      heldSince: number,
-    ) =>
-      followUpHandler(
-        {
-          ...jobFor(convId),
-          payload: { threadId: threadOf(convId), turnHeldSince: heldSince },
-        },
-        appDb,
-        {
-          makeModel: fakeModel,
-          makeClient: s.makeClient,
-          checkpointer: new MemorySaver(),
-          persistUsage: async () => {},
-        },
-      );
-    await seedPastWatermark(1678, 16783);
-    const fresh = stubClient({
-      page: [customerRow(16783), replyRow(16784), customerRow(16785)],
-    });
-    const first = await run(1678, fresh);
-    expect(first).toMatchObject({ outcome: "reschedule" });
-    const stamp = (first as unknown as { payload: { turnHeldSince: number } })
-      .payload.turnHeldSince;
-    expect(Math.abs(stamp - Date.now())).toBeLessThan(5_000);
-    const again = await runHeld(1678, fresh, stamp - 60_000);
-    expect(again).toMatchObject({
-      outcome: "reschedule",
-      payload: { turnHeldSince: stamp - 60_000 },
-    });
-    expect(fresh.sent).toEqual([]);
-
-    await seedPastWatermark(1679, 16793);
-    const late = stubClient({
-      page: [customerRow(16793), replyRow(16794), customerRow(16795)],
-    });
-    expect(await runHeld(1679, late, Date.now() - 11 * 60_000)).toEqual({
-      outcome: "done",
-    });
-    expect(late.sent.map(([c]) => c)).toEqual([1679]);
+  // Past the watermark with no flush queued, an open message holds the step only while its webhook
+  // can still be on the way. The bound is read from the message itself, so no re-arm of the job can
+  // restart it.
+  test("an open message past the watermark stops holding the step once its turn could have run", async () => {
+    for (const [convId, agoSec] of [
+      [1678, 60],
+      [1679, 11 * 60],
+    ] as const) {
+      await seedPastWatermark(convId, convId * 10 + 3);
+      const s = stubClient({
+        page: [
+          customerRow(convId * 10 + 3, 3600),
+          replyRow(convId * 10 + 4),
+          customerRow(convId * 10 + 5, agoSec),
+        ],
+      });
+      const result = await run(convId, s);
+      if (agoSec === 60) {
+        expect(result).toMatchObject({ outcome: "reschedule" });
+        expect(s.sent).toEqual([]);
+      } else {
+        expect(result).toEqual({ outcome: "done" });
+        expect(s.sent.map(([c]) => c)).toEqual([convId]);
+      }
+    }
   });
 
   // The hand-over is pinned to the customer message the reply answered: one the mirror recorded past

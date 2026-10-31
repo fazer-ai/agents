@@ -60,6 +60,9 @@ const MAX_PAGES = 5;
 // The fork's catch-up read (by id), and how many of them the read past the reply's start takes.
 const CATCH_UP_PAGE = 100;
 const CATCH_UP_MAX_READS = 5;
+// How long an open customer message past the watermark holds the step with no flush queued for it:
+// its webhook may still be on the way. One older than this with nothing queued is not getting a turn.
+const TURN_ARRIVAL_GRACE_MS = 10 * 60_000;
 
 export type Row = ReturnType<typeof parseChatwootMessages>[number];
 
@@ -108,13 +111,9 @@ type LastReplyDeliveryParams = {
   stillOpen: (
     rows: Row[],
   ) => Promise<{ open: Set<number>; settled: Set<number> }>;
-  // Whether a turn is queued for this conversation (a flush pending or running). An open customer
-  // message at or below the watermark holds the step only then: a turn already ran past it, and
-  // nothing else runs one for it.
+  // Whether a turn is queued for this conversation (a flush pending or running): the one an open
+  // customer message the watermark already passed is waiting for, when it waits for any.
   turnQueued: () => Promise<boolean>;
-  // False once the step has held for a turn as long as it may: the read then judges the reply as if
-  // no turn were coming.
-  holdForTurn?: boolean;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
@@ -261,17 +260,22 @@ async function readLastReplyDelivery(
     );
   const reply = replyOf(read, newest);
   const { open, settled } = await params.stillOpen(read);
-  // A customer message at or below the handled watermark is owed a turn only while one is queued: a
-  // turn already ran past it, and only a new event or the flush's own retry runs one again.
+  // An open customer message holds the step while a turn for it can still come: a flush queued for
+  // the conversation (its retry after a partial claim answers one the watermark already passed), or,
+  // past the watermark, a webhook still on its way, for as long as one takes to arrive. Past that the
+  // reply is judged as if no turn were coming: holding without a bound reads the conversation from
+  // Chatwoot every backoff, forever.
+  const now = params.now ?? new Date();
   const waiting = read.filter((m) => customer(m) && open.has(m.id));
-  const above = (m: Row) =>
-    params.handledThrough === null || m.id > params.handledThrough;
-  // NOTE: any owed one the read holds, before the reply too: one that arrived after the turn's last
+  const arriving = (m: Row) =>
+    (params.handledThrough === null || m.id > params.handledThrough) &&
+    m.createdAt != null &&
+    now.getTime() < m.createdAt.getTime() + TURN_ARRIVAL_GRACE_MS;
+  // NOTE: any open one the read holds, before the reply too: one that arrived after the turn's last
   // look and before its reply was written is still queued for its own turn.
   if (
-    params.holdForTurn !== false &&
     waiting.length > 0 &&
-    (waiting.some(above) || (await params.turnQueued()))
+    (waiting.some(arriving) || (await params.turnQueued()))
   )
     return { state: "customer_spoke" };
   // A person's public reply or template that was not refused, written after a refused message,
@@ -324,7 +328,6 @@ async function readLastReplyDelivery(
       select: { runAt: true, status: true, dedupeKey: true },
     }),
   );
-  const now = params.now ?? new Date();
   const queued = jobs.filter(
     (j) => j.status === "PENDING" || j.status === "CLAIMED",
   );

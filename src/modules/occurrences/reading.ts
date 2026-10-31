@@ -13,7 +13,6 @@ import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
-import { providerReservesEchoIds } from "@/modules/chatwoot/normalize";
 import {
   readWindowRows,
   renderTranscript,
@@ -545,7 +544,7 @@ export async function runReadingStep(
       if (media.verdict === "defer") return "deferred";
       const lineOpts = {
         ownBotIds: await botIdsOf(c.chatwootInstanceId),
-        trustPhoneEcho: providerReservesEchoIds(await providerOf(c.inboxId)),
+        whatsappProvider: await providerOf(c.inboxId),
       };
       // Not when the reading's model cannot be called: the conversation stays pending, and the
       // media would be paid for again once the memory forgets it.

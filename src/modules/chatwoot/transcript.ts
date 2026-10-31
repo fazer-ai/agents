@@ -12,6 +12,7 @@ import {
   parseChatwootMessages,
   toRenderable,
 } from "@/modules/chatwoot/messages";
+import { phoneReplyMarked } from "@/modules/chatwoot/normalize";
 import {
   renderAttendantMessage,
   renderInboundMessage,
@@ -140,7 +141,7 @@ const ROLE_LABEL: Record<TranscriptLine["role"], string> = {
 function outgoingRole(
   m: ChatwootMessageRow,
   ownBotIds: ReadonlySet<number>,
-  trustPhoneEcho: boolean,
+  whatsappProvider: string | null,
 ): TranscriptLine["role"] {
   if (m.imported) return "attendant";
   if (m.platformSent === true) return "assistant";
@@ -149,9 +150,10 @@ function outgoingRole(
       ? "assistant"
       : "attendant";
   if (m.senderType === "user") return "person";
-  // A paired-phone reply is a person only where the provider reserves its echo ids: elsewhere a lost
-  // send response comes back as the same sender-less, marked echo of our own reply.
-  if (m.externalSenderName && trustPhoneEcho) return "person";
+  // A paired-phone reply is a person only where its marks can be trusted (`phoneReplyMarked`):
+  // elsewhere a lost send response comes back as the same sender-less, marked echo of our own reply.
+  if (m.senderType === null && phoneReplyMarked(m, whatsappProvider))
+    return "person";
   return "attendant";
 }
 
@@ -164,13 +166,14 @@ export function transcriptFromRows(
   // `dated` keeps each message's own time, for a reader with no other clock for a relative word.
   opts: {
     ownBotIds?: ReadonlySet<number>;
-    trustPhoneEcho?: boolean;
+    // The inbox's WhatsApp provider, which says whether a phone reply's marks name a person.
+    whatsappProvider?: string | null;
     dated?: boolean;
     ids?: boolean;
   } = {},
 ): TranscriptLine[] {
   const ownBotIds = opts.ownBotIds ?? new Set<number>();
-  const trustPhoneEcho = opts.trustPhoneEcho === true;
+  const whatsappProvider = opts.whatsappProvider ?? null;
   // Built from every PUBLIC row fetched, not from the windowed slice: a reply inside the window can
   // quote a message older than it, and the quote is then the only thing that says what it is about.
   // What stays out of the lines stays out of the quotes: a private note, a reaction, an activity row.
@@ -205,7 +208,7 @@ export function transcriptFromRows(
       role:
         m.messageType === "incoming"
           ? "customer"
-          : outgoingRole(m, ownBotIds, trustPhoneEcho),
+          : outgoingRole(m, ownBotIds, whatsappProvider),
       text: clean,
       ...(opts.dated ? { at: m.createdAt ?? null } : {}),
       ...(opts.ids ? { messageId: m.id } : {}),

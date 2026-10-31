@@ -60,6 +60,7 @@ const suDb = su as PrismaClient;
 const INBOX_ID = 74;
 const ORPHAN_INBOX_ID = 75;
 const ZAPI_INBOX_ID = 76;
+const CLOUD_INBOX_ID = 78;
 const OUR_BOT = 14;
 let tenantId = 0n;
 let instanceId = 0n;
@@ -278,6 +279,18 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         chatwootInboxId: ZAPI_INBOX_ID,
         name: "WhatsApp (zapi)",
         provider: "zapi",
+        agentId: agent.id,
+      },
+    });
+    // Same agent, an inbox on the official WhatsApp Cloud API, where a phone reply carries Cloud's own
+    // marks and not the session's.
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: CLOUD_INBOX_ID,
+        name: "WhatsApp (Cloud)",
+        provider: "whatsapp_cloud",
         agentId: agent.id,
       },
     });
@@ -863,6 +876,52 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     await deliver(conv, { ...composerReply("aqui é a Ana") }, ZAPI_INBOX_ID);
     expect(toggles(conv).length).toBe(1);
     expect(liveStatus.get(conv)).toBe("open");
+  });
+
+  // A reply typed in the WhatsApp Business app on a Cloud number (coexistence) comes back sender-less
+  // with Cloud's own marks and without the session's: WhatsApp's timestamp, or the fork's echo flag.
+  const cloudReply = (text: string, marks: Record<string, unknown>) => ({
+    content: text,
+    message_type: "outgoing",
+    sender: null,
+    content_attributes: marks,
+  });
+
+  test("on a Cloud inbox, a phone reply marked by Cloud's timestamp or its echo flag is a person", async () => {
+    for (const [conv, marks] of [
+      [8521, { external_created_at: Math.floor(Date.now() / 1000) }],
+      [8522, { external_echo: true }],
+    ] as const) {
+      await deliver(conv, { ...customerSays("oi") }, CLOUD_INBOX_ID);
+      await deliver(
+        conv,
+        { ...cloudReply("já te respondo", marks) },
+        CLOUD_INBOX_ID,
+      );
+      expect(toggles(conv).length).toBe(1);
+      expect(liveStatus.get(conv)).toBe("open");
+      expect((await takeoverRows(conv))[0]?.detail).toMatchObject({
+        outcome: "taken_over",
+        via: "device",
+      });
+    }
+  });
+
+  // What Chatwoot builds itself (automation, scheduled message, CSAT) carries neither mark, an echo
+  // flag of false is no flag, and Cloud's marks name nobody on a provider that is not Cloud.
+  test("Cloud's marks are a person only on a Cloud inbox, and only when present", async () => {
+    const at = { external_created_at: Math.floor(Date.now() / 1000) };
+    for (const [conv, inbox, marks] of [
+      [8523, CLOUD_INBOX_ID, {}],
+      [8524, CLOUD_INBOX_ID, { external_echo: false }],
+      [8525, INBOX_ID, at],
+      [8526, ZAPI_INBOX_ID, { ...at, external_echo: true }],
+    ] as const) {
+      await deliver(conv, { ...customerSays("oi") }, inbox);
+      await deliver(conv, { ...cloudReply("mensagem", marks) }, inbox);
+      expect(toggles(conv).length).toBe(0);
+      expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    }
   });
 
   // WHEN the row is silenced, which is the whole ordering decision. Every reader that decides

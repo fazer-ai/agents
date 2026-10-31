@@ -39,6 +39,7 @@ describe("parseChatwootMessages", () => {
       visuals: [],
       audio: null,
       externalSenderName: null,
+      cloudEcho: false,
       imported: false,
       senderId: null,
     });

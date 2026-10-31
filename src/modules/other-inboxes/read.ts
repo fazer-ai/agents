@@ -11,7 +11,6 @@ import {
   parseChatwootMessages,
   toRenderable,
 } from "@/modules/chatwoot/messages";
-import { providerReservesEchoIds } from "@/modules/chatwoot/normalize";
 import {
   renderTranscript,
   TRANSCRIPT_MAX_CHARS,
@@ -156,7 +155,7 @@ export async function readOtherConversation(p: {
     return renderTranscript(
       transcriptFromRows(rows, rows.length, {
         ownBotIds,
-        trustPhoneEcho: providerReservesEchoIds(p.provider),
+        whatsappProvider: p.provider,
         dated: true,
       }),
       maxChars,

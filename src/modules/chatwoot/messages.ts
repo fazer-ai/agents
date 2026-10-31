@@ -11,6 +11,7 @@ import {
   activityTypeFrom,
   bodyImageVisuals,
   chatwootTimestamp,
+  cloudEchoMarked,
   emailSubjectFrom,
   firstLocationAttachment,
   isVisualFileType,
@@ -103,6 +104,9 @@ export interface ChatwootMessageRow {
   // scheduled message, CSAT survey). Trusting it also needs the inbox's WhatsApp provider; see
   // `foreignReplyBoundary` and `providerReservesEchoIds`.
   externalSenderName: string | null;
+  // WhatsApp Cloud's own marks of a phone reply, trusted only on a Cloud inbox (`phoneReplyMarked`).
+  // Optional because a hand-built row carries none.
+  cloudEcho?: boolean;
   // `content_attributes.imported`, written by the history importer. The fence on the mark above: an
   // import inserts old messages with today's ids, so a backfilled phone reply lands above a live,
   // unanswered customer message and, read as a boundary, would silence the operator's backlog the
@@ -355,6 +359,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
         typeof ca?.external_sender_name === "string"
           ? ca.external_sender_name
           : null,
+      cloudEcho: cloudEchoMarked(ca ?? null),
       imported: ca?.imported === true,
       ...(typeof ca?.external_error === "string" && ca.external_error.trim()
         ? { externalError: ca.external_error }

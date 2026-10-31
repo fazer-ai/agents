@@ -200,6 +200,9 @@ function page(
     // the WhatsApp session (an attendant typing on the paired phone), with nobody in the `sender`
     // field.
     fromDevice?: boolean;
+    // WhatsApp Cloud's own marks on a reply typed in the WhatsApp Business app (coexistence):
+    // `external_created_at`, WhatsApp's timestamp, with no `external_sender_name`.
+    fromCloudPhone?: boolean;
     // `content_attributes.imported`: a row the history importer backfilled, which carries today's
     // id and last year's conversation.
     imported?: boolean;
@@ -212,6 +215,7 @@ function page(
       const ca = {
         ...(m.reaction ? { is_reaction: true } : {}),
         ...(m.fromDevice ? { external_sender_name: "WhatsApp" } : {}),
+        ...(m.fromCloudPhone ? { external_created_at: 1793390000 } : {}),
         ...(m.imported ? { imported: true } : {}),
       };
       return {
@@ -2046,6 +2050,66 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect((await withProvider(959, "zapi")).map(([, text]) => text)).toEqual(
         [REPLY],
       );
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider: null },
+      });
+    }
+  });
+
+  // THE SAME FENCE ON WHATSAPP CLOUD. A reply typed in the WhatsApp Business app on a Cloud number
+  // carries Cloud's own marks, never the session's, and the Cloud API never echoes what was sent
+  // through it, so on Cloud those marks are a person. On a session provider the same marks alone are
+  // not: an automation row there gets `external_created_at` once it is sent.
+  test("a phone reply on a CLOUD inbox closes the burst by Cloud's marks, and only on Cloud", async () => {
+    const withProvider = async (convId: number, provider: string) => {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider },
+      });
+      await seedConversation(convId);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      const sent: Array<[number, string]> = [];
+      await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+                {
+                  id: 3,
+                  content: "oi, aqui é a Ana",
+                  type: 1,
+                  fromCloudPhone: true,
+                },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      return sent;
+    };
+
+    try {
+      expect(await withProvider(1675, "whatsapp_cloud")).toEqual([]);
+      expect(
+        (await withProvider(1676, "baileys")).map(([, text]) => text),
+      ).toEqual([REPLY]);
     } finally {
       await suDb.inbox.update({
         where: { id: inboxDbId },

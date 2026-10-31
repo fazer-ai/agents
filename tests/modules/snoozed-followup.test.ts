@@ -229,6 +229,19 @@ describe("snoozed ladder: what the live read decides", () => {
     ).toBe(false);
   });
 
+  test("on a Cloud inbox, a phone reply carrying Cloud's marks counts, and only there", () => {
+    const phone = (id: number) =>
+      row({ id, senderType: null, senderId: null, cloudEcho: true });
+    const a = findSnoozedAnchor([row({ id: 11 }), phone(12)], CLOUD);
+    expect(a?.messageId).toBe(12);
+    expect(spoke([phone(21)], 20)).toBe(true);
+    for (const whatsappProvider of ["baileys", "zapi", null])
+      expect(someoneSpokeAfter([phone(21)], 20, { whatsappProvider })).toBe(
+        false,
+      );
+    expect(spoke([{ ...phone(21), imported: true }], 20)).toBe(false);
+  });
+
   test("a ladder ended on its anchor stays ended when the cadence grows; a new anchor clears it", () => {
     const at = new Date("2026-10-09T10:00:00Z");
     const stored = { anchorId: 5, step: SNOOZED_LADDER_ENDED, at };

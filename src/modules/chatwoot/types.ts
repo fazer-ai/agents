@@ -78,6 +78,9 @@ export interface NormalizedChatwootMessage {
   // in the payload that separates an attendant replying on the paired phone from the other three
   // shapes of sender-less outgoing message Chatwoot itself produces (see isDeviceAttendantMessage).
   externalSenderName?: string | null;
+  // WhatsApp Cloud's own marks of a phone reply (`external_echo`, or `external_created_at`), trusted
+  // only on a Cloud inbox (`phoneReplyMarked`).
+  cloudEcho?: boolean;
   // The email's Subject header, from `content_attributes.email.subject`. Only a mailbox writes that
   // bag, so its presence is the channel gate. Null on every other channel.
   emailSubject?: string | null;

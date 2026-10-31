@@ -18,6 +18,8 @@ import {
   hasAnswerableContent,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
+import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
+import { debounceDedupeKey } from "@/modules/debounce/service";
 import { foreignReplyBoundary } from "@/modules/debounce/watermark";
 
 // Whether the bot's newest reply in a conversation reached the customer, asked before a follow-up
@@ -60,6 +62,9 @@ const MAX_PAGES = 5;
 // The fork's catch-up read (by id), and how many of them the read past the reply's start takes.
 const CATCH_UP_PAGE = 100;
 const CATCH_UP_MAX_READS = 5;
+// How long an open customer message past the watermark holds the step with no flush queued for it:
+// its webhook may still be on the way. One older than this with nothing queued is not getting a turn.
+const TURN_ARRIVAL_GRACE_MS = 10 * 60_000;
 
 export type Row = ReturnType<typeof parseChatwootMessages>[number];
 
@@ -89,6 +94,59 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// Whether a turn can still come for this conversation from work already on record: a flush queued
+// or running (its retry after a partial claim answers a message the watermark already passed), a
+// customer message's webhook delivery still being worked or stranded for the sweep to recover, or a
+// recovery of one queued. Asked of the records, not of the paths that write them, so a turn queued
+// by any of them holds the follow-up for its customer message.
+export async function turnQueuedFor(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  chatwootConversationId: number;
+  threadId: string;
+  // The customer messages still waiting: only their own deliveries can run a turn for them.
+  messageIds: number[];
+  base: PrismaClient;
+}): Promise<boolean> {
+  return runScopedOn(params.base, sysCtx(params.tenantId), async (db) => {
+    const flush = await db.schedulerJob.findFirst({
+      where: {
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(params.threadId),
+        status: { in: ["PENDING", "CLAIMED"] },
+      },
+      select: { id: true },
+    });
+    if (flush) return true;
+    const deliveries = await db.chatwootWebhookDelivery.findMany({
+      where: {
+        chatwootInstanceId: params.instanceId,
+        conversationId: params.chatwootConversationId,
+        inboundMessageId: { in: params.messageIds },
+      },
+      select: { id: true, status: true },
+    });
+    if (
+      deliveries.some(
+        (d) => d.status === "PENDING" || d.status === "PROCESSING",
+      )
+    )
+      return true;
+    if (deliveries.length === 0) return false;
+    const recovery = await db.schedulerJob.findFirst({
+      where: {
+        kind: "DELIVERY_RECOVERY",
+        dedupeKey: {
+          in: deliveries.map((d) => deliveryRecoveryDedupeKey(d.id)),
+        },
+        status: { in: ["PENDING", "CLAIMED"] },
+      },
+      select: { id: true },
+    });
+    return recovery !== null;
+  });
+}
+
 type LastReplyDeliveryParams = {
   tenantId: bigint;
   instanceId: bigint;
@@ -108,6 +166,9 @@ type LastReplyDeliveryParams = {
   stillOpen: (
     rows: Row[],
   ) => Promise<{ open: Set<number>; settled: Set<number> }>;
+  // Whether a turn is queued for this conversation (a flush pending or running): the one an open
+  // customer message the watermark already passed is waiting for, when it waits for any.
+  turnQueued: (messageIds: number[]) => Promise<boolean>;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
@@ -254,9 +315,24 @@ async function readLastReplyDelivery(
     );
   const reply = replyOf(read, newest);
   const { open, settled } = await params.stillOpen(read);
-  // NOTE: any the read holds, before the reply too: one that arrived after the turn's last look and
-  // before its reply was written is still queued for its own turn.
-  if (read.some((m) => customer(m) && open.has(m.id)))
+  // An open customer message holds the step while a turn for it can still come: a flush queued for
+  // the conversation (its retry after a partial claim answers one the watermark already passed), or,
+  // past the watermark, a webhook still on its way, for as long as one takes to arrive. Past that the
+  // reply is judged as if no turn were coming: holding without a bound reads the conversation from
+  // Chatwoot every backoff, forever.
+  const now = params.now ?? new Date();
+  const waiting = read.filter((m) => customer(m) && open.has(m.id));
+  const arriving = (m: Row) =>
+    (params.handledThrough === null || m.id > params.handledThrough) &&
+    m.createdAt != null &&
+    now.getTime() < m.createdAt.getTime() + TURN_ARRIVAL_GRACE_MS;
+  // NOTE: any open one the read holds, before the reply too: one that arrived after the turn's last
+  // look and before its reply was written is still queued for its own turn.
+  if (
+    waiting.length > 0 &&
+    (waiting.some(arriving) ||
+      (await params.turnQueued(waiting.map((m) => m.id))))
+  )
     return { state: "customer_spoke" };
   // A person's public reply or template that was not refused, written after a refused message,
   // moved the conversation past it. Attributed the way the flush attributes it
@@ -308,7 +384,6 @@ async function readLastReplyDelivery(
       select: { runAt: true, status: true, dedupeKey: true },
     }),
   );
-  const now = params.now ?? new Date();
   const queued = jobs.filter(
     (j) => j.status === "PENDING" || j.status === "CLAIMED",
   );

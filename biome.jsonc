@@ -89,6 +89,20 @@
       ]
     },
     {
+      // NOTE: a Radix dialog outside <Modal> misses the slide to the center (docs/modals.md). Exempt:
+      // Modal.tsx is the one that slides; DiscardDialog.tsx is fixed text and two buttons, nothing
+      // loads, and a <Modal> renders it, so it cannot be one; Sidebar.tsx is the mobile drawer,
+      // full height on the left edge, with no top edge to move. The probe path is the rule's test.
+      "includes": [
+        "src/client/**/*.{ts,tsx}",
+        "!src/client/components/Modal.tsx",
+        "!src/client/components/DiscardDialog.tsx",
+        "!src/client/components/Sidebar.tsx",
+        "tests/lint/.probe-dialog-*/**/*.tsx"
+      ],
+      "plugins": ["./biome-plugins/no-dialog-outside-modal.grit"]
+    },
+    {
       "includes": ["src/api/**/*.ts"],
       "plugins": ["./biome-plugins/no-dynamic-translate-key.grit"]
     },

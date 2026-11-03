@@ -1,0 +1,15 @@
+// Refuses an import of a Radix dialog (`@radix-ui/react-dialog` or
+// `@radix-ui/react-alert-dialog`) anywhere in src/client/ but the files
+// biome.jsonc exempts, each with why. A modal that loads when it opens changes
+// height when the answer lands, and a dialog centered on its own height moves
+// its top edge by half of it in one frame; `<Modal>` slides both edges to the
+// new center until the person touches it and keeps the top edge after that
+// (docs/modals.md), so a dialog gets that rule only if it is drawn by
+// `<Modal>`. An exception is a dialog that cannot change height while open
+// (fixed text, or a full-height drawer).
+language js;
+
+JsImport() as $import where {
+    $import <: r"^import[\s\S]*from\s*[\"']@radix-ui/react-(?:alert-)?dialog[\"'][\s\S]*$",
+    register_diagnostic(span = $import, message = "A dialog is drawn by <Modal> (src/client/components/Modal.tsx), which moves a dialog whose body changes height without a jump (docs/modals.md). A dialog that cannot change height while open is exempted in biome.jsonc with why.")
+}

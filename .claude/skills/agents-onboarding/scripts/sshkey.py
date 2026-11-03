@@ -33,21 +33,26 @@ _AK_BASENAME = "authorized" "_keys"
 
 # Runs on the VPS, shipped base64-piped to `bash` so quoting can't corrupt it. Drops blank lines and
 # guarantees the final newline (awk always terminates the last record); a file that is already clean is
-# left byte for byte untouched (no rewrite, no backup). Never splits, reorders or dedups keys: gluing is
+# left byte for byte untouched (no rewrite, no backup); the swap is a same-directory rename and every step is
+# checked, so a full disk or a failed awk leaves the original in place and no success marker is printed. Never splits, reorders or dedups keys: gluing is
 # `coolify.py heal-localhost`'s job, and by this point the file holds only the keys that were registered.
 NORMALIZE_SH = r"""
 set -u
 AK="$HOME/.ssh/__AKB__"
 if [ ! -f "$AK" ]; then printf 'NORMALIZE_DONE changed=no keys=0 missing=yes\n'; exit 0; fi
-TMP=$(mktemp) || exit 1
-awk 'NF' "$AK" > "$TMP"
+TMP="$AK.norm.$$"
+trap 'rm -f "$TMP"' EXIT
+# Stage next to the file (same filesystem) and swap it in with a rename, so a failure at any step leaves
+# the original untouched; every step is checked and a failure exits non-zero without the DONE marker.
+awk 'NF' "$AK" > "$TMP" || exit 1
+chmod 600 "$TMP" || exit 1
 CHANGED=no
 if ! cmp -s "$AK" "$TMP"; then
-  cp "$AK" "$AK.bak.$(date +%s)" 2>/dev/null || true
-  cat "$TMP" > "$AK" && CHANGED=yes
+  cp "$AK" "$AK.bak.$(date +%s)" || exit 1
+  mv "$TMP" "$AK" || exit 1
+  CHANGED=yes
 fi
-chmod 600 "$AK"
-rm -f "$TMP"
+chmod 600 "$AK" || exit 1
 KN=$(grep -cE '^(ssh-|ecdsa-|sk-)' "$AK" 2>/dev/null || true)
 printf 'NORMALIZE_DONE changed=%s keys=%s missing=no\n' "$CHANGED" "${KN:-0}"
 """

@@ -60,3 +60,4 @@ Entregou os 5 → vá direto pra **etapa 6** (a mesma pra todos os tiers).
   serve`. Um `command:` próprio quebra o boot.
 - **agents → Chatwoot pela URL pública**: o `deployment_connect` funciona contra a URL **pública** do Chatwoot,
   sem gambiarra de rede interna (detalhe na gotcha de [`deploy-b-portainer.md`](deploy-b-portainer.md)).
+- **Chatwoot e agents na mesma rede privada, com os endereços públicos atrás de um bloqueio** (Cloudflare Access, VPN): declare o Chatwoot em `SSRF_INTERNAL_TARGETS` (env do agents, `host:porta`) e passe no `deployment_connect` a `base_url` privada do Chatwoot, `webhook_base_url` com o endereço privado do agents e `public_url` com o endereço que as pessoas abrem. No Chatwoot, `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`. Detalhe em `docs/deploy.md`, "Chatwoot on a private network".

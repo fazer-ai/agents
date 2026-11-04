@@ -153,6 +153,9 @@ async function authFailureDetail(res: Response): Promise<string | undefined> {
 
 export interface ChatwootClientConfig {
   baseUrl: string;
+  // The address people open this Chatwoot on, for links a person follows; null or absent means
+  // baseUrl. Differs when baseUrl is a private address only the servers reach.
+  publicUrl?: string | null;
   accountId: number;
   adminToken: string;
   botToken: string;
@@ -314,6 +317,15 @@ export interface ChatwootClientDeps {
 // Docker network) is a declared host:port and not a reason to turn the guard off for the whole
 // instance. Only the deployment's base URL comes through here: an attachment on any other host goes
 // through the plain guard (see `downloadAttachment`).
+// The origin of the links a person follows into this Chatwoot: its public address when the
+// connection has one, else the base URL. Without a trailing slash.
+export function chatwootLinkBase(dep: {
+  baseUrl: string;
+  publicUrl?: string | null;
+}): string {
+  return (dep.publicUrl || dep.baseUrl).replace(/\/+$/, "");
+}
+
 export function assertSafeChatwootUrl(url: string): Promise<URL> {
   return assertSafeOutboundUrl(url, {
     internalTargets: appConfig.ssrf.internalTargets,
@@ -1943,15 +1955,21 @@ export class ChatwootClient {
   // asks `ConversationPolicy#show?` about the caller: a credential that is neither an administrator
   // nor a member of that inbox has the reuse refused in silence and gets a second conversation.
 
-  // The operator-facing dashboard link of a conversation of this account. `displayId` is the number
-  // the API calls `id` (the fork serializes `display_id` there), never the internal row id.
+  // A conversation's dashboard path on the base URL. `displayId` is the number the API calls `id`
+  // (the fork serializes `display_id` there), never the internal row id. Stable for a deployment, so
+  // it also keys idempotent writes; a link a person follows is `conversationLink`.
   conversationUrl(displayId: number): string {
     return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
   }
 
+  // The operator-facing link of a conversation, on the address people open this Chatwoot on.
+  conversationLink(displayId: number): string {
+    return `${chatwootLinkBase(this.config)}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
+  }
+
   // The account's custom-attribute settings page, where an operator edits a definition's pattern.
   attributesSettingsUrl(): string {
-    return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/settings/custom-attributes/list`;
+    return `${chatwootLinkBase(this.config)}/app/accounts/${this.config.accountId}/settings/custom-attributes/list`;
   }
 
   async getContact(contactId: number): Promise<ChatwootContact | null> {

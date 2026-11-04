@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import config, { parseWebhookBaseUrl } from "@/config";
+import config from "@/config";
 import {
   attachmentFetchTarget,
+  chatwootLinkBase,
   createChatwootClient,
   fetchChatwootProfile,
 } from "@/modules/chatwoot/client";
-import { assertDeploymentConnectable } from "@/modules/chatwoot/management";
+import {
+  assertDeploymentConnectable,
+  chatwootDeploymentUpdateSchema,
+  isCleanHttpBase,
+} from "@/modules/chatwoot/management";
 
 // A Chatwoot reached on a private address (same VPC, same Docker network) is a declared
 // SSRF_INTERNAL_TARGETS entry, not a reason to turn the guard off. These run the REAL guard (no
@@ -229,23 +234,18 @@ describe("isInstanceUrl follows the attachment rule", () => {
   });
 });
 
-describe("parseWebhookBaseUrl", () => {
-  test("defaults to the public URL without a trailing slash", () => {
-    expect(
-      parseWebhookBaseUrl(undefined, "X", "https://agents.example.com/"),
-    ).toBe("https://agents.example.com");
-    expect(parseWebhookBaseUrl("  ", "X", "https://a.example.com")).toBe(
-      "https://a.example.com",
-    );
+describe("the connection's two optional addresses", () => {
+  test("absent is kept, empty or null clears, a value is stored canonical", () => {
+    const parse = (v: unknown) =>
+      chatwootDeploymentUpdateSchema.parse({ webhookBaseUrl: v })
+        .webhookBaseUrl;
+    expect(parse(undefined)).toBeUndefined();
+    expect(parse(null)).toBeNull();
+    expect(parse("  ")).toBeNull();
+    expect(parse("http://10.0.0.6:3000/")).toBe("http://10.0.0.6:3000");
   });
 
-  test("takes a private http base", () => {
-    expect(parseWebhookBaseUrl("http://10.0.0.6:3000/", "X", "https://p")).toBe(
-      "http://10.0.0.6:3000",
-    );
-  });
-
-  test("fails the boot by name on a value that is not a clean http(s) URL", () => {
+  test("refuses what would misplace the webhook mount or carry credentials", () => {
     for (const bad of [
       "10.0.0.6:3000",
       "ftp://10.0.0.6",
@@ -255,9 +255,32 @@ describe("parseWebhookBaseUrl", () => {
       "http://10.0.0.6:3000/?",
       "http://10.0.0.6:3000/#",
     ]) {
+      expect(isCleanHttpBase(bad)).toBe(false);
       expect(() =>
-        parseWebhookBaseUrl(bad, "CHATWOOT_WEBHOOK_BASE_URL", "https://p"),
-      ).toThrow(/CHATWOOT_WEBHOOK_BASE_URL/);
+        chatwootDeploymentUpdateSchema.parse({ publicUrl: bad }),
+      ).toThrow();
     }
+  });
+
+  test("links follow the public address, and the keyed URL stays on the base", async () => {
+    expect(
+      chatwootLinkBase({
+        baseUrl: "http://10.0.0.5:3000",
+        publicUrl: "https://desk.example.com/",
+      }),
+    ).toBe("https://desk.example.com");
+    expect(chatwootLinkBase({ baseUrl: "http://10.0.0.5:3000/" })).toBe(
+      "http://10.0.0.5:3000",
+    );
+    const client = await createChatwootClient({
+      ...clientConfig("http://10.0.0.5:3000"),
+      publicUrl: "https://desk.example.com",
+    });
+    expect(client.conversationLink(7)).toBe(
+      "https://desk.example.com/app/accounts/1/conversations/7",
+    );
+    expect(client.conversationUrl(7)).toBe(
+      "http://10.0.0.5:3000/app/accounts/1/conversations/7",
+    );
   });
 });

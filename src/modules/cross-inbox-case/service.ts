@@ -32,6 +32,7 @@ export { destinationIdentity };
 export type CaseClient = Pick<
   ChatwootClient,
   | "conversationUrl"
+  | "conversationLink"
   | "getInbox"
   | "getConversation"
   | "getContact"
@@ -507,7 +508,7 @@ async function run(
   if (target === null) return { kind: "not_configured" };
   const origin = input.originConversationId;
   const detached = input.detachedOrigin ?? null;
-  const originUrl = detached?.url ?? client.conversationUrl(origin);
+  const originUrl = detached?.url ?? client.conversationLink(origin);
   const interpolate = input.interpolate ?? ((t: string) => t);
 
   let step = "read_target_inbox";

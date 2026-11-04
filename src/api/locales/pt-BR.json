@@ -26,6 +26,7 @@
     "chatwootAccountTaken": "Esta conta do Chatwoot já está conectada a outro tenant; uma conta pertence a um único tenant.",
     "chatwootBindFailed": "Não foi possível sincronizar o bot com o Chatwoot.",
     "chatwootDeploymentNotFound": "Nenhuma instalação do Chatwoot está conectada.",
+    "chatwootDeploymentNothingToChange": "Nada para alterar: envie um token de admin novo, webhookBaseUrl ou publicUrl.",
     "chatwootDifferentDeployment": "Este tenant já está conectado a outra instalação do Chatwoot. Desconecte-a primeiro para trocar de servidor.",
     "chatwootDomainConfirmMismatch": "A confirmação do domínio não confere.",
     "chatwootInboxProbeFailed": "Não foi possível confirmar com o Chatwoot que esta caixa de entrada foi excluída.",

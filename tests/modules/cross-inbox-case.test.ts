@@ -124,6 +124,8 @@ function fakeChatwoot(
   const client: CaseClient = {
     conversationUrl: (id: number) =>
       `https://cw.example/app/accounts/1/conversations/${id}`,
+    conversationLink: (id: number) =>
+      `https://cw.example/app/accounts/1/conversations/${id}`,
     getInbox: async (id: number) => {
       record("getInbox", [id]);
       const ib = inboxes[id];

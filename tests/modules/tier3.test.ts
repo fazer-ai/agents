@@ -809,6 +809,27 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenant}`);
   });
 
+  test("the console's Chatwoot link uses the connection's public address when it has one", async () => {
+    const before = await getConversationDetail(ctx(tenant), convId, appDb);
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId: tenant },
+    });
+    expect(before.chatwootBaseUrl).toBe(dep.baseUrl);
+    await suDb.chatwootDeployment.update({
+      where: { id: dep.id },
+      data: { publicUrl: "https://desk.example.com" },
+    });
+    try {
+      const after = await getConversationDetail(ctx(tenant), convId, appDb);
+      expect(after.chatwootBaseUrl).toBe("https://desk.example.com");
+    } finally {
+      await suDb.chatwootDeployment.update({
+        where: { id: dep.id },
+        data: { publicUrl: null },
+      });
+    }
+  });
+
   test("detail returns the metadata shell with NO network call", async () => {
     const stub = makeStub();
     const detail = await getConversationDetail(ctx(tenant), convId, appDb);

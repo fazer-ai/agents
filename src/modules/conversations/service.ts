@@ -37,6 +37,7 @@ import {
   attachmentFetchTarget,
   ChatwootApiError,
   type ChatwootClient,
+  chatwootLinkBase,
 } from "@/modules/chatwoot/client";
 import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
 import {
@@ -732,7 +733,10 @@ async function loadConvRef(
     observers: { agentId: bigint }[];
   } | null;
   contact: { name: string | null; voiceReply: boolean | null } | null;
-  instance: { accountId: number; deployment: { baseUrl: string } };
+  instance: {
+    accountId: number;
+    deployment: { baseUrl: string; publicUrl: string | null };
+  };
 }> {
   const conv = await runScopedOn(base, ctx, (db) =>
     db.conversation.findUnique({
@@ -773,7 +777,7 @@ async function loadConvRef(
         instance: {
           select: {
             accountId: true,
-            deployment: { select: { baseUrl: true } },
+            deployment: { select: { baseUrl: true, publicUrl: true } },
           },
         },
       },
@@ -1770,7 +1774,7 @@ export async function getConversationDetail(
       : null,
     followUp,
     appointmentReminders,
-    chatwootBaseUrl: conv.instance.deployment.baseUrl,
+    chatwootBaseUrl: chatwootLinkBase(conv.instance.deployment),
     accountId: conv.instance.accountId,
     trail,
     usage: await getConversationUsage(ctx, id, base),

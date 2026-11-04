@@ -6,6 +6,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { updateChatwootDeployment } from "@/modules/chatwoot/management";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import {
   effectiveAssignee,
@@ -1338,10 +1339,12 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     );
   });
 
-  // Chatwoot on a private network calls this app on CHATWOOT_WEBHOOK_BASE_URL, not PUBLIC_URL.
-  test("re-provisioning writes the configured webhook base, not the public URL", async () => {
+  // Each connection says where its Chatwoot calls the agents; an installation can serve a Chatwoot on a
+  // private network and another on the internet at the same time.
+  test("re-provisioning writes the connection's webhook base, and a connection without one uses PUBLIC_URL", async () => {
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
       where: { tenantId, accountId: 2 },
+      select: { id: true, deploymentId: true },
     });
     const agent = await suDb.agent.findFirstOrThrow({
       where: { tenantId, name: "Vendas" },
@@ -1354,15 +1357,13 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
         return { id: 57, access_token: "ACCESS_57", secret: PROV_SECRET };
       },
     } as unknown as ChatwootClient;
-    const saved = config.chatwoot.webhookBaseUrl;
-    config.chatwoot.webhookBaseUrl = "http://10.0.0.6:3000";
-    try {
-      await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", stubClient, {
-        base: appDb,
-      });
-    } finally {
-      config.chatwoot.webhookBaseUrl = saved;
-    }
+    await suDb.chatwootDeployment.update({
+      where: { id: inst.deploymentId },
+      data: { webhookBaseUrl: "http://10.0.0.6:3000" },
+    });
+    await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", stubClient, {
+      base: appDb,
+    });
     expect(urls).toHaveLength(1);
     const url = urls[0] as string;
     expect(
@@ -1374,6 +1375,44 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     expect(row.webhookRouteTokenHash).toBe(
       hashRouteToken(url.split("/").pop() as string),
     );
+
+    // Another tenant, another Chatwoot, no webhook base: its bot calls PUBLIC_URL.
+    const other = await suDb.tenant.create({
+      data: { name: "CW cloud", slug: `cw-cloud-${process.pid}` },
+    });
+    try {
+      const cloud = await seedChatwootInstance(suDb, {
+        tenantId: other.id,
+        accountId: 9,
+        baseUrl: "https://cloud.example.com",
+        adminToken: encryptJson("ADMIN"),
+      });
+      const cloudAgent = await suDb.agent.create({
+        data: { tenantId: other.id, name: "Nuvem", systemPrompt: "x" },
+      });
+      const cloudUrls: string[] = [];
+      await ensureAgentBot(
+        other.id,
+        cloud.id,
+        cloudAgent.id,
+        "Nuvem",
+        {
+          listAgentBots: async () => [],
+          createAgentBot: async (p: { outgoingUrl: string }) => {
+            cloudUrls.push(p.outgoingUrl);
+            return { id: 77, access_token: "A77", secret: "S77" };
+          },
+        } as unknown as ChatwootClient,
+        { base: appDb },
+      );
+      expect(
+        cloudUrls[0]?.startsWith(
+          `${config.publicUrl.replace(/\/+$/, "")}/api/v1/chatwoot/webhook/`,
+        ),
+      ).toBe(true);
+    } finally {
+      await suDb.tenant.delete({ where: { id: other.id } });
+    }
   });
 
   test("moves a live bot still calling another base onto the configured one", async () => {
@@ -1664,6 +1703,97 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       where: { chatwootInstanceId: inst.id, agentId: agent.id },
     });
     expect(after.webhookRouteTokenHash).toBe(before.webhookRouteTokenHash);
+  });
+
+  test("editing the connection moves its live bots to a new webhook base, and its public address drives the links", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const patches: Array<{ id: number; url: string }> = [];
+    const makeClient = async () =>
+      ({
+        listAgentBots: async () => [
+          {
+            id: 57,
+            name: "Vendas",
+            outgoingUrl: "http://10.0.0.6:3000/api/v1/chatwoot/webhook/x",
+          },
+        ],
+        updateAgentBot: async (id: number, p: { outgoingUrl: string }) => {
+          patches.push({ id, url: p.outgoingUrl });
+          return {};
+        },
+      }) as unknown as ChatwootClient;
+    const dto = await updateChatwootDeployment(
+      ctx,
+      {
+        webhookBaseUrl: "http://10.0.0.7:3000/",
+        publicUrl: "https://desk.example.com",
+      },
+      { repoint: { base: appDb, makeClient } },
+      appDb,
+    );
+    expect(dto.webhookBaseUrl).toBe("http://10.0.0.7:3000");
+    expect(dto.publicUrl).toBe("https://desk.example.com");
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.id).toBe(57);
+    expect(
+      patches[0]?.url.startsWith(
+        "http://10.0.0.7:3000/api/v1/chatwoot/webhook/",
+      ),
+    ).toBe(true);
+    const audit = await suDb.auditLog.findFirst({
+      where: { tenantId, action: "deployment.update_urls" },
+      orderBy: { id: "desc" },
+    });
+    expect(audit).not.toBeNull();
+
+    // Only the public address changes: no bot moves.
+    await updateChatwootDeployment(
+      ctx,
+      { publicUrl: "https://desk2.example.com" },
+      { repoint: { base: appDb, makeClient } },
+      appDb,
+    );
+    expect(patches).toHaveLength(1);
+
+    // The client a turn gets carries the public address, and links use it.
+    let seen: { publicUrl?: string | null } = {};
+    await loadChatwootClient(tenantId, inst.id, {
+      base: appDb,
+      makeClient: async (cfg) => {
+        seen = cfg;
+        return {} as ChatwootClient;
+      },
+    });
+    expect(seen.publicUrl).toBe("https://desk2.example.com");
+
+    // A bare `?` would put the webhook mount in the query.
+    await expect(
+      updateChatwootDeployment(
+        ctx,
+        { webhookBaseUrl: "http://10.0.0.7:3000/?" },
+        {},
+        appDb,
+      ),
+    ).rejects.toMatchObject({ statusCode: 422 });
+
+    // Cleared, both fall back to their defaults.
+    const cleared = await updateChatwootDeployment(
+      ctx,
+      { webhookBaseUrl: null, publicUrl: "" },
+      {
+        repoint: {
+          base: appDb,
+          makeClient: async () =>
+            ({ listAgentBots: async () => [] }) as unknown as ChatwootClient,
+        },
+      },
+      appDb,
+    );
+    expect(cleared.webhookBaseUrl).toBeNull();
+    expect(cleared.publicUrl).toBeNull();
   });
 });
 

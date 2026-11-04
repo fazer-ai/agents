@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { chatwootLinkBase } from "@/modules/chatwoot/client";
 import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
 import { episodeOriginQuery } from "./episode";
 import type { ChannelRedirectConfig } from "./service";
@@ -163,7 +164,7 @@ export async function linkRedirectConversations(
           where: { id: p.instanceId },
           select: {
             accountId: true,
-            deployment: { select: { baseUrl: true } },
+            deployment: { select: { baseUrl: true, publicUrl: true } },
           },
         }),
       );
@@ -173,12 +174,12 @@ export async function linkRedirectConversations(
         botToken: bot?.accessToken,
       });
       const chatUrl = conversationUrl(
-        inst.deployment.baseUrl,
+        chatwootLinkBase(inst.deployment),
         inst.accountId,
         p.widgetConv.displayId,
       );
       const waUrl = conversationUrl(
-        inst.deployment.baseUrl,
+        chatwootLinkBase(inst.deployment),
         inst.accountId,
         sibling.chatwootConversationId,
       );

@@ -73,7 +73,9 @@ export function VoiceChannelsTab({
       // keep switches a failed binding left out of step with what the server saved.
       if (inb.error || !inb.data) throw inb.error;
       setInstances([...dep.data.accounts]);
-      setBaseUrl(dep.data.deployment?.baseUrl ?? "");
+      setBaseUrl(
+        dep.data.deployment?.publicUrl || dep.data.deployment?.baseUrl || "",
+      );
       setInboxes([...inb.data.inboxes]);
       if (ag.data) setAgents([...ag.data.agents]);
     } catch {

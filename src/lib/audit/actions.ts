@@ -47,6 +47,7 @@ export const AUDIT_ACTIONS = [
   "deployment.disconnect",
   "deployment.rotate_token",
   "deployment.set_accounts",
+  "deployment.update_urls",
   "document_approval.approve",
   "document_approval.reject",
   "document_approval.request_again",

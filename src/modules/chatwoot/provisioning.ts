@@ -61,8 +61,24 @@ function parseCreatedAgentBot(raw: unknown): CreatedAgentBot {
 
 export interface EnsureAgentBotDeps {
   base?: PrismaClient;
-  // The base Chatwoot calls back on, default `config.chatwoot.webhookBaseUrl`.
+  // The base Chatwoot calls back on; default the deployment's webhook base, else PUBLIC_URL.
   webhookBaseUrl?: string;
+}
+
+// The base a deployment's Chatwoot calls the agents on: the connection's own setting, or PUBLIC_URL
+// when it has none (a Chatwoot that reaches the agents on the public address).
+export async function deploymentWebhookBase(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+): Promise<string> {
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootInstance.findUnique({
+      where: { id: instanceId },
+      select: { deployment: { select: { webhookBaseUrl: true } } },
+    }),
+  );
+  return row?.deployment.webhookBaseUrl ?? config.publicUrl;
 }
 
 // Whether a bot's outgoing_url is the one this row expects: the configured webhook base followed by
@@ -94,7 +110,9 @@ export async function ensureAgentBot(
   deps: EnsureAgentBotDeps = {},
 ): Promise<EnsuredAgentBot> {
   const base = deps.base ?? basePrisma;
-  const webhookBaseUrl = deps.webhookBaseUrl ?? config.chatwoot.webhookBaseUrl;
+  const webhookBaseUrl =
+    deps.webhookBaseUrl ??
+    (await deploymentWebhookBase(base, tenantId, instanceId));
   const key = {
     tenantId_chatwootInstanceId_agentId: {
       tenantId,
@@ -362,6 +380,87 @@ export async function renameAgentBots(
       db.chatwootAgentBot.update({ where: { id: bot.id }, data: { name } }),
     );
   }
+}
+
+export interface RepointDeps {
+  base?: PrismaClient;
+  makeClient?: LoadClientFactory;
+}
+
+// After a connection's webhook base changes, moves every live bot of the tenant's deployment onto it
+// (one deployment per tenant), so the operator does not re-bind each inbox. Best-effort per instance:
+// a Chatwoot that cannot be read leaves its bots for the next bind, which runs the same check.
+export async function repointDeploymentBots(
+  tenantId: bigint,
+  deps: RepointDeps = {},
+): Promise<{ moved: number; failed: number }> {
+  const base = deps.base ?? basePrisma;
+  const bots = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findMany({
+      select: {
+        chatwootInstanceId: true,
+        agentId: true,
+        chatwootAgentBotId: true,
+        webhookRouteTokenHash: true,
+      },
+    }),
+  );
+  let moved = 0;
+  let failed = 0;
+  const byInstance = new Map<bigint, typeof bots>();
+  for (const b of bots) {
+    const list = byInstance.get(b.chatwootInstanceId) ?? [];
+    list.push(b);
+    byInstance.set(b.chatwootInstanceId, list);
+  }
+  for (const [instanceId, list] of byInstance) {
+    try {
+      const webhookBaseUrl = await deploymentWebhookBase(
+        base,
+        tenantId,
+        instanceId,
+      );
+      const client = await loadChatwootClient(tenantId, instanceId, {
+        base,
+        makeClient: deps.makeClient,
+      });
+      const live = new Map(
+        (await client.listAgentBots()).map((b) => [b.id, b.outgoingUrl]),
+      );
+      for (const bot of list) {
+        const url = live.get(bot.chatwootAgentBotId);
+        if (
+          url === undefined ||
+          callsThisRow(url, webhookBaseUrl, bot.webhookRouteTokenHash)
+        )
+          continue;
+        await repointAgentBot(
+          base,
+          tenantId,
+          {
+            tenantId_chatwootInstanceId_agentId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              agentId: bot.agentId,
+            },
+          },
+          bot.chatwootAgentBotId,
+          bot.webhookRouteTokenHash,
+          webhookBaseUrl,
+          client,
+        );
+        moved += 1;
+      }
+    } catch (err) {
+      failed += list.length;
+      logger.warn(
+        "chatwoot: could not move the bots of instance %s to the new webhook base: %s",
+        String(instanceId),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  return { moved, failed };
 }
 
 type LoadClientFactory = (

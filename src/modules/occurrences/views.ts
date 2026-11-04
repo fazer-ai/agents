@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { chatwootLinkBase } from "@/modules/chatwoot/client";
 import {
   type OccurrencesConfig,
   readMonitorConfig,
@@ -109,9 +110,12 @@ const memberOf = (inboxIds: bigint[]) => ({
 
 export const conversationUrl = (c: {
   chatwootConversationId: number;
-  instance: { accountId: number; deployment: { baseUrl: string } };
+  instance: {
+    accountId: number;
+    deployment: { baseUrl: string; publicUrl: string | null };
+  };
 }) =>
-  `${c.instance.deployment.baseUrl.replace(/\/+$/, "")}/app/accounts/${c.instance.accountId}/conversations/${c.chatwootConversationId}`;
+  `${chatwootLinkBase(c.instance.deployment)}/app/accounts/${c.instance.accountId}/conversations/${c.chatwootConversationId}`;
 
 // The themes a list shows: open, with at least one conversation of a monitored inbox. A theme whose every conversation
 // left it (its inbox taken off the monitor, its reason cleared) has nothing to show until one is
@@ -283,7 +287,7 @@ export async function themeRowsOn(
             instance: {
               select: {
                 accountId: true,
-                deployment: { select: { baseUrl: true } },
+                deployment: { select: { baseUrl: true, publicUrl: true } },
               },
             },
           },
@@ -378,7 +382,7 @@ export async function getTheme(
             instance: {
               select: {
                 accountId: true,
-                deployment: { select: { baseUrl: true } },
+                deployment: { select: { baseUrl: true, publicUrl: true } },
               },
             },
           },
@@ -604,7 +608,7 @@ export async function flagEpisodesOn(
           instance: {
             select: {
               accountId: true,
-              deployment: { select: { baseUrl: true } },
+              deployment: { select: { baseUrl: true, publicUrl: true } },
             },
           },
         },

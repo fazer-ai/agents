@@ -90,7 +90,6 @@ const {
   DB_LOCK_TIMEOUT_MS,
   CHATWOOT_DELIVERY_CONCURRENCY,
   CHATWOOT_ACK_POOL_MAX,
-  CHATWOOT_WEBHOOK_BASE_URL,
   TTS_CHECK_URL,
   TTS_CHECK_MODE,
   TTS_CHECK_TOKEN,
@@ -169,42 +168,6 @@ export const parseInternalTargets = (
     out.push({ host: host.replace(/^\[|\]$/g, ""), port });
   }
   return out;
-};
-
-// CHATWOOT_WEBHOOK_BASE_URL is the address Chatwoot uses to reach this app, written into every Agent
-// Bot's outgoing_url. It defaults to PUBLIC_URL, which is right when both sit on the internet; when
-// Chatwoot and this app share a private network and the public address is behind an access gate
-// Chatwoot cannot pass, it is the private one. A value that is not an absolute http(s) URL with no
-// query or fragment fails the boot by name: a typo here becomes the URL of every bot provisioned
-// afterwards, and Chatwoot only reports it as deliveries that never arrive.
-export const parseWebhookBaseUrl = (
-  raw: string | undefined,
-  envName: string,
-  fallback: string,
-): string => {
-  const value = (raw ?? "").trim();
-  if (value === "") return fallback.replace(/\/+$/, "");
-  let url: URL | null = null;
-  try {
-    url = new URL(value);
-  } catch {
-    url = null;
-  }
-  if (
-    !url ||
-    (url.protocol !== "http:" && url.protocol !== "https:") ||
-    url.search !== "" ||
-    url.hash !== "" ||
-    value.includes("?") ||
-    value.includes("#") ||
-    url.username !== "" ||
-    url.password !== ""
-  ) {
-    throw new Error(
-      `Invalid ${envName} "${value}": it must be an absolute http(s) URL with no credentials, query or fragment (e.g. http://10.0.0.6:3000).`,
-    );
-  }
-  return url.toString().replace(/\/+$/, "");
 };
 
 // TRUST_PROXY decides whether the forwarded chain is believed when keying the rate limiters.
@@ -566,13 +529,6 @@ const config = {
       4,
       "It sizes the Postgres pool the Chatwoot webhook ack writes its ledger row through.",
       MAX_COUNT,
-    ),
-    // The base of every Agent Bot's outgoing_url (docs/deploy.md "Chatwoot on a private network").
-    // An infrastructure setting with no console screen: it describes the network, not a tenant.
-    webhookBaseUrl: parseWebhookBaseUrl(
-      CHATWOOT_WEBHOOK_BASE_URL,
-      "CHATWOOT_WEBHOOK_BASE_URL",
-      PUBLIC_URL || "http://localhost:3000",
     ),
   },
   cdnUrl: CDN_URL ?? "",

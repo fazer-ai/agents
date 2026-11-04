@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import {
   assertAccountsClaimable,
   assertAccountsSelectable,
@@ -9,6 +10,7 @@ import {
   assertInboxBindable,
   assertInboxReconnectable,
   bindInbox,
+  chatwootDeploymentUpdateSchema,
   connectChatwootDeployment,
   getChatwootInstance,
   type InboxBotReading,
@@ -27,6 +29,7 @@ import {
   softDisconnectChatwootInstance,
   syncInboxes,
   unobserveInbox,
+  updateChatwootDeployment,
 } from "@/modules/chatwoot/management";
 import {
   bindInboxVoiceAgent,
@@ -62,6 +65,10 @@ export interface DeploymentConnectArgs {
   // provisioning, or the user has it). Used in-band but kept out of the audit (metadata only). REST
   // parity: POST /v1/chatwoot/deployment also takes the token inline.
   admin_token: string;
+  // The base this Chatwoot calls the agents on, and the address people open it on. Optional; null or
+  // empty means the default (PUBLIC_URL, and base_url). REST parity: the same fields on the POST.
+  webhook_base_url?: string | null;
+  public_url?: string | null;
   dry_run?: boolean;
 }
 
@@ -84,6 +91,8 @@ export async function deploymentConnect(
       const data = await assertDeploymentConnectable({
         baseUrl: args.base_url,
         adminToken: args.admin_token,
+        webhookBaseUrl: args.webhook_base_url,
+        publicUrl: args.public_url,
       });
       // NOTE: ADVISORY, since this one READS. It takes the base URL the line above NORMALIZED,
       // which is what the write compares and stores; the raw string would call a reconnect a
@@ -94,12 +103,22 @@ export async function deploymentConnect(
         action: "connect",
         resource: "chatwoot_deployment",
         // The raw token is never echoed back, not even in the preview.
-        preview: { baseUrl: args.base_url, adminToken: "(redacted)" },
+        preview: {
+          baseUrl: args.base_url,
+          adminToken: "(redacted)",
+          webhookBaseUrl: data.webhookBaseUrl ?? null,
+          publicUrl: data.publicUrl ?? null,
+        },
       });
     }
     const result = await connectChatwootDeployment(
       ctx,
-      { baseUrl: args.base_url, adminToken: args.admin_token },
+      {
+        baseUrl: args.base_url,
+        adminToken: args.admin_token,
+        webhookBaseUrl: args.webhook_base_url,
+        publicUrl: args.public_url,
+      },
       {},
       base,
     );
@@ -137,6 +156,51 @@ export async function deploymentRotateToken(
       base,
     );
     return ok({ dryRun: false, applied: true, deployment: updated });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Set the connection's two optional addresses (REST parity: PATCH /v1/chatwoot/deployment). The
+// preview validates them the way the apply does; a new webhook base moves the live bots on apply.
+export async function deploymentUpdate(
+  principal: VerifiedToken,
+  args: {
+    webhook_base_url?: string | null;
+    public_url?: string | null;
+    dry_run?: boolean;
+  },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = adminGate(principal);
+  if ("ok" in ctx) return ctx;
+  if (args.webhook_base_url === undefined && args.public_url === undefined) {
+    return err("send webhook_base_url and/or public_url");
+  }
+  try {
+    const input = {
+      webhookBaseUrl: args.webhook_base_url,
+      publicUrl: args.public_url,
+    };
+    if (args.dry_run !== false) {
+      const data = parseInput(chatwootDeploymentUpdateSchema, input);
+      return ok({
+        dryRun: true,
+        action: "update",
+        resource: "chatwoot_deployment",
+        preview: {
+          ...(data.webhookBaseUrl !== undefined
+            ? { webhookBaseUrl: data.webhookBaseUrl }
+            : {}),
+          ...(data.publicUrl !== undefined
+            ? { publicUrl: data.publicUrl }
+            : {}),
+        },
+      });
+    }
+    const deployment = await updateChatwootDeployment(ctx, input, {}, base);
+    return ok({ dryRun: false, applied: true, deployment });
   } catch (e) {
     return failOf(e);
   }

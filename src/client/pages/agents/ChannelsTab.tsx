@@ -112,7 +112,9 @@ export function ChannelsTab({
         return;
       }
       setInstances([...dep.data.accounts]);
-      setBaseUrl(dep.data.deployment?.baseUrl ?? "");
+      setBaseUrl(
+        dep.data.deployment?.publicUrl || dep.data.deployment?.baseUrl || "",
+      );
       if (inb.data) setInboxes([...inb.data.inboxes]);
       if (ag.data) setAgents([...ag.data.agents]);
     } catch {

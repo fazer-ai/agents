@@ -442,8 +442,13 @@ function ChannelsSkeleton() {
 
 // Three writes on this page, three forms. The names are the keys of each body, which is what the
 // route refuses by (`refused body.baseUrl`, `refused body.accountIds.0`).
-const CONNECT_FIELDS = ["baseUrl", "adminToken"] as const;
-const TOKEN_FIELDS = ["adminToken"] as const;
+const CONNECT_FIELDS = [
+  "baseUrl",
+  "adminToken",
+  "webhookBaseUrl",
+  "publicUrl",
+] as const;
+const TOKEN_FIELDS = ["adminToken", "webhookBaseUrl", "publicUrl"] as const;
 const ACCOUNTS_FIELDS = ["accountIds"] as const;
 
 export function ChannelsPage() {
@@ -472,6 +477,10 @@ export function ChannelsPage() {
   // Connect form (base URL + admin token, entered once).
   const [baseUrl, setBaseUrl] = useState("");
   const [adminToken, setAdminToken] = useState("");
+  // The connection's two optional addresses, in both the connect and the edit form: the base this
+  // Chatwoot calls the agents on, and the address people open it on. Empty means the default.
+  const [webhookBaseUrl, setWebhookBaseUrl] = useState("");
+  const [publicUrl, setPublicUrl] = useState("");
   // Three writes, three forms, three holders: the connect modal, the token modal, and the account
   // picker each save on their own, and a refusal about one must not mark another's input.
   const connectRefusal = useFieldRefusal(
@@ -481,8 +490,8 @@ export function ChannelsPage() {
   const accountsRefusal = useFieldRefusal(
     manageModal.isOpen ? ACCOUNTS_FIELDS : [],
   );
-  const connectRef = useRef({ baseUrl, adminToken });
-  connectRef.current = { baseUrl, adminToken };
+  const connectRef = useRef({ baseUrl, adminToken, webhookBaseUrl, publicUrl });
+  connectRef.current = { baseUrl, adminToken, webhookBaseUrl, publicUrl };
   const [connecting, setConnecting] = useState(false);
 
   // Every account the deployment's token can reach (from /profile), listed inline under the instance
@@ -668,6 +677,8 @@ export function ChannelsPage() {
           : `https://${connectParam}`,
       );
       setAdminToken("");
+      setWebhookBaseUrl("");
+      setPublicUrl("");
       // The component outlives the dialog, so a mark from the last session is still held here.
       connectRefusal.clear();
       connectModal.open();
@@ -682,7 +693,8 @@ export function ChannelsPage() {
     );
   }, [connectParam, loading, isSuperAdmin, deployment]);
 
-  const baseUrl0 = deployment?.baseUrl ?? "";
+  // Links a person follows go to the address people open this Chatwoot on, not to a private base.
+  const baseUrl0 = deployment?.publicUrl || deployment?.baseUrl || "";
   // The host the operator must re-type to confirm a teardown (e.g. "chat.example.com").
   const deploymentHost = (() => {
     if (!deployment) return "";
@@ -696,6 +708,8 @@ export function ChannelsPage() {
   function openConnect() {
     setBaseUrl("");
     setAdminToken("");
+    setWebhookBaseUrl("");
+    setPublicUrl("");
     // Every opening, not just the one driven by `?connect=`. The mark expires by VALUE, so a holder
     // carried across a cancel comes back the moment the operator retypes the URL that was refused —
     // an old server sentence under a box, before anything has been sent.
@@ -713,6 +727,8 @@ export function ChannelsPage() {
       const sent = {
         baseUrl: baseUrl.trim(),
         adminToken: adminToken.trim(),
+        webhookBaseUrl: webhookBaseUrl.trim() || null,
+        publicUrl: publicUrl.trim() || null,
       };
       const { data, error: err } =
         await api.api.v1.chatwoot.deployment.post(sent);
@@ -728,6 +744,8 @@ export function ChannelsPage() {
         const placed = connectRefusal.capture(err, "", sent, {
           baseUrl: connectRef.current.baseUrl.trim(),
           adminToken: connectRef.current.adminToken.trim(),
+          webhookBaseUrl: connectRef.current.webhookBaseUrl.trim() || null,
+          publicUrl: connectRef.current.publicUrl.trim() || null,
         });
         if (placed === null) return;
         showToast(
@@ -858,28 +876,59 @@ export function ChannelsPage() {
 
   function openToken() {
     setNewToken("");
+    setWebhookBaseUrl(deployment?.webhookBaseUrl ?? "");
+    setPublicUrl(deployment?.publicUrl ?? "");
     // The component outlives the dialog, so a mark from the last session is still held here.
     tokenRefusal.clear();
     tokenModal.open();
   }
 
   async function saveToken() {
-    if (!newToken.trim()) return;
+    if (!connectionDirty) return;
     setSavingToken(true);
+    // Only what changed goes out: an untouched address is not re-sent, and an empty token field keeps
+    // the stored token.
+    const sent = {
+      ...(newToken.trim() ? { adminToken: newToken.trim() } : {}),
+      ...(webhookBaseUrl.trim() !== (deployment?.webhookBaseUrl ?? "")
+        ? { webhookBaseUrl: webhookBaseUrl.trim() || null }
+        : {}),
+      ...(publicUrl.trim() !== (deployment?.publicUrl ?? "")
+        ? { publicUrl: publicUrl.trim() || null }
+        : {}),
+    };
     try {
-      const sent = { adminToken: newToken.trim() };
       const { error: err } = await api.api.v1.chatwoot.deployment.patch(sent);
       if (err) throw err;
       tokenRefusal.clear();
-      showToast(t("channels.tokenSaved", "Token updated."), "success");
+      showToast(
+        t("channels.connectionSaved", "Connection updated."),
+        "success",
+      );
       tokenModal.close();
       void load();
     } catch (e) {
       const toast = tokenRefusal.capture(
         e,
-        t("channels.tokenSaveError", "Could not update the token (check it)."),
-        { adminToken: newToken.trim() },
-        { adminToken: newTokenRef.current.trim() },
+        t(
+          "channels.connectionSaveError",
+          "Could not update the connection (check the token and the addresses).",
+        ),
+        sent,
+        {
+          ...(newTokenRef.current.trim()
+            ? { adminToken: newTokenRef.current.trim() }
+            : {}),
+          ...("webhookBaseUrl" in sent
+            ? {
+                webhookBaseUrl:
+                  connectRef.current.webhookBaseUrl.trim() || null,
+              }
+            : {}),
+          ...("publicUrl" in sent
+            ? { publicUrl: connectRef.current.publicUrl.trim() || null }
+            : {}),
+        },
       );
       if (toast) showToast(toast, "error");
     } finally {
@@ -1197,7 +1246,21 @@ export function ChannelsPage() {
   }
 
   const baseUrlInvalid = !isValidHttpUrl(baseUrl);
-  const connectDirty = baseUrl.trim() !== "" || adminToken.trim() !== "";
+  // The two optional addresses: empty is fine (the default), anything else must be a clean http(s)
+  // base, the same rule the server applies.
+  const optionalUrlInvalid = (v: string) =>
+    v.trim() !== "" && (!isValidHttpUrl(v) || /[?#]/.test(v));
+  const webhookBaseUrlInvalid = optionalUrlInvalid(webhookBaseUrl);
+  const publicUrlInvalid = optionalUrlInvalid(publicUrl);
+  const connectionDirty =
+    newToken.trim() !== "" ||
+    webhookBaseUrl.trim() !== (deployment?.webhookBaseUrl ?? "") ||
+    publicUrl.trim() !== (deployment?.publicUrl ?? "");
+  const connectDirty =
+    baseUrl.trim() !== "" ||
+    adminToken.trim() !== "" ||
+    webhookBaseUrl.trim() !== "" ||
+    publicUrl.trim() !== "";
 
   // Accounts are ordered alphabetically by name (the #id breaks ties / orders the unnamed), so the
   // page list and the manage modal show the same, stable order regardless of connection order.
@@ -1350,7 +1413,7 @@ export function ChannelsPage() {
                     </Button>
                     <Button variant="secondary" size="sm" onClick={openToken}>
                       <KeyRound className="h-4 w-4" aria-hidden="true" />
-                      {t("channels.editToken", "Edit token")}
+                      {t("channels.editConnection", "Edit connection")}
                     </Button>
                     <Button
                       variant="danger"
@@ -1681,7 +1744,13 @@ export function ChannelsPage() {
             <Button
               onClick={connectDeployment}
               loading={connecting}
-              disabled={!baseUrl.trim() || baseUrlInvalid || !adminToken.trim()}
+              disabled={
+                !baseUrl.trim() ||
+                baseUrlInvalid ||
+                !adminToken.trim() ||
+                webhookBaseUrlInvalid ||
+                publicUrlInvalid
+              }
             >
               {t("common.connect", "Connect")}
             </Button>
@@ -1732,13 +1801,58 @@ export function ChannelsPage() {
               onChange={(e) => setAdminToken(e.target.value)}
             />
           </FormField>
+          <FormField
+            label={t("channels.webhookBaseUrl", "Address this Chatwoot calls")}
+            description={t(
+              "channels.webhookBaseUrlHint",
+              "Where this Chatwoot reaches fazer.ai agents. Leave empty to use this app's public address; fill in the private address when Chatwoot and the agents share a private network.",
+            )}
+            error={
+              webhookBaseUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : connectRefusal.at(
+                    "webhookBaseUrl",
+                    webhookBaseUrl.trim() || null,
+                  )
+            }
+          >
+            <Input
+              value={webhookBaseUrl}
+              onChange={(e) => setWebhookBaseUrl(e.target.value)}
+              placeholder="http://10.0.0.6:3000"
+            />
+          </FormField>
+          <FormField
+            label={t("channels.publicUrl", "Chatwoot public address")}
+            description={t(
+              "channels.publicUrlHint",
+              "The address people open Chatwoot on, used for links. Leave empty when it is the base URL; fill it in when the base URL is a private address.",
+            )}
+            error={
+              publicUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : connectRefusal.at("publicUrl", publicUrl.trim() || null)
+            }
+          >
+            <Input
+              value={publicUrl}
+              onChange={(e) => setPublicUrl(e.target.value)}
+              placeholder="https://chat.example.com"
+            />
+          </FormField>
         </div>
       </Modal>
 
       <Modal
         modal={tokenModal}
-        unsavedChanges={newToken.trim() !== ""}
-        title={t("channels.editTokenTitle", "Edit admin token")}
+        unsavedChanges={connectionDirty}
+        title={t("channels.editConnectionTitle", "Edit Chatwoot connection")}
         footer={
           <div className="flex justify-end gap-2">
             <Button
@@ -1751,7 +1865,9 @@ export function ChannelsPage() {
             <Button
               onClick={saveToken}
               loading={savingToken}
-              disabled={!newToken.trim()}
+              disabled={
+                !connectionDirty || webhookBaseUrlInvalid || publicUrlInvalid
+              }
             >
               {t("common.save", "Save")}
             </Button>
@@ -1761,13 +1877,12 @@ export function ChannelsPage() {
         <div className="flex flex-col gap-4">
           <p className="text-text-muted text-sm">
             {t(
-              "channels.editTokenDesc",
-              "Paste a new admin token. It is validated against your Chatwoot and shared by every account.",
+              "channels.editConnectionDesc",
+              "A new admin token is validated against your Chatwoot and shared by every account. Leave it empty to keep the current one.",
             )}
           </p>
           <FormField
             label={t("channels.adminToken", "Admin access token")}
-            required
             description={t(
               "channels.adminTokenHint",
               "Stored encrypted, never shown again.",
@@ -1779,6 +1894,51 @@ export function ChannelsPage() {
               showPasswordToggle
               value={newToken}
               onChange={(e) => setNewToken(e.target.value)}
+            />
+          </FormField>
+          <FormField
+            label={t("channels.webhookBaseUrl", "Address this Chatwoot calls")}
+            description={t(
+              "channels.webhookBaseUrlHint",
+              "Where this Chatwoot reaches fazer.ai agents. Leave empty to use this app's public address; fill in the private address when Chatwoot and the agents share a private network.",
+            )}
+            error={
+              webhookBaseUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : tokenRefusal.at(
+                    "webhookBaseUrl",
+                    webhookBaseUrl.trim() || null,
+                  )
+            }
+          >
+            <Input
+              value={webhookBaseUrl}
+              onChange={(e) => setWebhookBaseUrl(e.target.value)}
+              placeholder="http://10.0.0.6:3000"
+            />
+          </FormField>
+          <FormField
+            label={t("channels.publicUrl", "Chatwoot public address")}
+            description={t(
+              "channels.publicUrlHint",
+              "The address people open Chatwoot on, used for links. Leave empty when it is the base URL; fill it in when the base URL is a private address.",
+            )}
+            error={
+              publicUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : tokenRefusal.at("publicUrl", publicUrl.trim() || null)
+            }
+          >
+            <Input
+              value={publicUrl}
+              onChange={(e) => setPublicUrl(e.target.value)}
+              placeholder="https://chat.example.com"
             />
           </FormField>
         </div>

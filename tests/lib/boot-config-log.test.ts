@@ -17,7 +17,6 @@ const READABLE_STRING_FIELDS = [
   "brandingStorageDir",
   "corsOrigin",
   "cdnUrl",
-  "chatwoot.webhookBaseUrl",
   "googleClientId",
   "allowedSignupDomains",
   "adminSignupDomains",

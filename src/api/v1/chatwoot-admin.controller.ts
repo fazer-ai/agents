@@ -32,11 +32,11 @@ import {
   reconnectInbox,
   removeChatwootInstance,
   removeInbox,
-  rotateChatwootDeploymentToken,
   setConnectedAccounts,
   softDisconnectChatwootInstance,
   syncInboxes,
   unobserveInbox,
+  updateChatwootDeployment,
 } from "@/modules/chatwoot/management";
 import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 
@@ -49,6 +49,7 @@ import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 // NOTE: the bind and the rebind refuse differently, and so do the two confirmations: one key per
 // pair would not tell the operator which of the two fields they got wrong.
 // translate('errors.chatwootBindFailed', 'The bot could not be synced with Chatwoot.')
+// translate('errors.chatwootDeploymentNothingToChange', 'Nothing to change: send a new admin token, webhookBaseUrl or publicUrl.')
 // translate('errors.inboxGoneRemote', 'This inbox no longer exists in Chatwoot. Remove its mirror.')
 // translate('errors.inboxHasForeignAgentBot', 'This inbox is answered by the Agent Bot "{{bot}}", which is not from this instance. Binding replaces it, and unbinding later does not bring it back.')
 // translate('errors.inboxAgentBotUnreadable', 'Could not read which Agent Bot answers this inbox on Chatwoot. If another one is attached, binding replaces it, and unbinding later does not bring it back.')
@@ -120,12 +121,19 @@ export const chatwootAdminController = new Elysia({
   .post(
     "/deployment",
     async ({ tenantContext, body }) => {
-      const b = body as { baseUrl: string; adminToken: string };
+      const b = body as {
+        baseUrl: string;
+        adminToken: string;
+        webhookBaseUrl?: string | null;
+        publicUrl?: string | null;
+      };
       return {
         instance: instanceIdentity,
         ...(await connectChatwootDeployment(ctxOrThrow(tenantContext), {
           baseUrl: b.baseUrl,
           adminToken: b.adminToken,
+          webhookBaseUrl: b.webhookBaseUrl,
+          publicUrl: b.publicUrl,
         })),
       };
     },
@@ -144,6 +152,18 @@ export const chatwootAdminController = new Elysia({
           description:
             "Chatwoot admin/user access token; encrypted at rest, never returned.",
         }),
+        webhookBaseUrl: t.Optional(
+          t.Union([t.String(), t.Null()], {
+            description:
+              "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+          }),
+        ),
+        publicUrl: t.Optional(
+          t.Union([t.String(), t.Null()], {
+            description:
+              "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+          }),
+        ),
       }),
       response: errors(400, 401, 403, 404, 409, 422, 502),
     },
@@ -152,26 +172,44 @@ export const chatwootAdminController = new Elysia({
   .patch(
     "/deployment",
     async ({ tenantContext, body }) => {
-      const b = body as { adminToken: string };
+      const b = body as {
+        adminToken?: string;
+        webhookBaseUrl?: string | null;
+        publicUrl?: string | null;
+      };
       return {
         instance: instanceIdentity,
-        deployment: await rotateChatwootDeploymentToken(
+        deployment: await updateChatwootDeployment(
           ctxOrThrow(tenantContext),
-          b.adminToken,
+          b,
         ),
       };
     },
     {
       requireRole: "SUPER_ADMIN",
       detail: doc(
-        "Rotate deployment token",
-        "Replace the deployment's admin token. Affects every account under it.",
+        "Edit Chatwoot deployment",
+        "Replace the deployment's admin token (affects every account under it) and/or set its two optional addresses. A new webhook base moves the deployment's live bots onto it.",
       ),
       body: t.Object({
-        adminToken: t.String({
-          minLength: 1,
-          description: "New admin token; encrypted at rest, never returned.",
-        }),
+        adminToken: t.Optional(
+          t.String({
+            minLength: 1,
+            description: "New admin token; encrypted at rest, never returned.",
+          }),
+        ),
+        webhookBaseUrl: t.Optional(
+          t.Union([t.String(), t.Null()], {
+            description:
+              "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+          }),
+        ),
+        publicUrl: t.Optional(
+          t.Union([t.String(), t.Null()], {
+            description:
+              "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+          }),
+        ),
       }),
       response: errors(400, 401, 403, 404, 422, 502),
     },

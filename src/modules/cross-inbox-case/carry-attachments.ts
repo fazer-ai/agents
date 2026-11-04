@@ -21,6 +21,7 @@ import {
 export type CarryClient = Pick<
   ChatwootClient,
   | "conversationUrl"
+  | "conversationLink"
   | "getConversation"
   | "getMessages"
   | "isInstanceUrl"
@@ -369,7 +370,7 @@ async function carryLocked(
     };
   }
 
-  const originUrl = client.conversationUrl(input.originConversationId);
+  const originUrl = client.conversationLink(input.originConversationId);
   let posted = false;
   if (files.length > 0) {
     try {

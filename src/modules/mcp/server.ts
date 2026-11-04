@@ -131,6 +131,7 @@ import {
   deploymentListAccounts,
   deploymentRotateToken,
   deploymentSetAccounts,
+  deploymentUpdate,
   inboxBind,
   inboxBindVoice,
   inboxObserve,
@@ -3826,6 +3827,20 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {
           base_url: z.string(),
           admin_token: z.string(),
+          webhook_base_url: z
+            .string()
+            .nullable()
+            .optional()
+            .describe(
+              "The base this Chatwoot calls the agents on (each bot's webhook). Omit or null for PUBLIC_URL; the agents' private address when the Chatwoot reaches them on a private network.",
+            ),
+          public_url: z
+            .string()
+            .nullable()
+            .optional()
+            .describe(
+              "The address people open this Chatwoot on, for the links in the console and case notes. Omit or null for base_url.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3833,10 +3848,35 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: {
           base_url: string;
           admin_token: string;
+          webhook_base_url?: string | null;
+          public_url?: string | null;
           dry_run?: boolean;
         },
         eff,
       ) => writeContent(await deploymentConnect(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "deployment_update",
+      {
+        description:
+          "Set the deployment's two optional addresses: webhook_base_url (the base this Chatwoot calls the agents on; null for PUBLIC_URL) and public_url (the address people open this Chatwoot on, for links; null for base_url). A new webhook base moves the deployment's live bots onto it. Previews and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          webhook_base_url: z.string().nullable().optional(),
+          public_url: z.string().nullable().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          webhook_base_url?: string | null;
+          public_url?: string | null;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await deploymentUpdate(eff, args)),
     );
 
     registerTenantTool(

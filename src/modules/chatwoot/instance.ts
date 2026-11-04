@@ -43,13 +43,16 @@ export async function loadChatwootClient(
       where: { id: instanceId },
       select: {
         accountId: true,
-        deployment: { select: { baseUrl: true, adminToken: true } },
+        deployment: {
+          select: { baseUrl: true, publicUrl: true, adminToken: true },
+        },
       },
     }),
   );
   const factory = deps.makeClient ?? createChatwootClient;
   return factory({
     baseUrl: instance.deployment.baseUrl,
+    publicUrl: instance.deployment.publicUrl,
     accountId: instance.accountId,
     adminToken: decryptJson<string>(instance.deployment.adminToken),
     botToken: deps.botToken ?? "",

@@ -60,6 +60,8 @@ function fake(
   const client: CarryClient = {
     conversationUrl: (id: number) =>
       `${INSTANCE}/app/accounts/1/conversations/${id}`,
+    conversationLink: (id: number) =>
+      `${INSTANCE}/app/accounts/1/conversations/${id}`,
     getConversation: async (id: number) => {
       calls.push({ fn: "getConversation", args: [id] });
       if (opts.caseReadFails) throw new ChatwootApiError(500, "GET");

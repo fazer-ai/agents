@@ -630,6 +630,46 @@ describe("openCaseInInbox", () => {
     expect(after[0]).toBe("setConversationCustomAttributes");
   });
 
+  test("a connection with a public address links the case and its origin through it", async () => {
+    const f = fakeChatwoot();
+    // The API base is private; people open Chatwoot at another address.
+    const client = {
+      ...f.client,
+      conversationLink: (id: number) =>
+        `https://desk.example/app/accounts/1/conversations/${id}`,
+    };
+    const r = await openCaseInInbox(client, input());
+    expect(r).toMatchObject({
+      kind: "opened",
+      caseId: 100,
+      caseUrl: "https://desk.example/app/accounts/1/conversations/100",
+    });
+    expect(
+      f.calls.filter((c) => c.fn === "sendPrivateNote").map((c) => c.args),
+    ).toEqual([
+      [
+        7,
+        "➡️ Caso aberto na caixa E-mail SAC: https://desk.example/app/accounts/1/conversations/100",
+      ],
+    ]);
+    const opening = f.calls.find(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        c.args[0] === 100 &&
+        String(c.args[1]).includes("ver conversa de origem"),
+    );
+    expect(String(opening?.args[1])).toContain(
+      "(https://desk.example/app/accounts/1/conversations/7)",
+    );
+    // Asked again, the open case comes back with the same public link.
+    const again = await openCaseInInbox(client, input());
+    expect(again).toMatchObject({
+      kind: "already_open",
+      caseId: 100,
+      caseUrl: "https://desk.example/app/accounts/1/conversations/100",
+    });
+  });
+
   test("an origin label already there is not written twice", async () => {
     const f = fakeChatwoot({
       convs: [

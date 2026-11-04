@@ -61,20 +61,21 @@ export async function loadChatwootClient(
   });
 }
 
-// The instance's Chatwoot base URL, without building a client (no token decrypted, no DNS). An
-// email body image is compared against it before it is read.
-export async function chatwootBaseUrl(
+// The instance's base URL and the public address its connection declares (null when there is none),
+// without building a client. Body images Chatwoot wrote with the public address are read through the
+// base.
+export async function chatwootAddresses(
   tenantId: bigint,
   instanceId: bigint,
   base: PrismaClient = basePrisma,
-): Promise<string> {
+): Promise<{ baseUrl: string; publicUrl: string | null }> {
   const instance = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootInstance.findUniqueOrThrow({
       where: { id: instanceId },
-      select: { deployment: { select: { baseUrl: true } } },
+      select: { deployment: { select: { baseUrl: true, publicUrl: true } } },
     }),
   );
-  return instance.deployment.baseUrl;
+  return instance.deployment;
 }
 
 // Resolves the persona's Chatwoot Agent Bot for an instance: its numeric id (the gate's "our bot")

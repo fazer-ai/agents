@@ -14,8 +14,9 @@ import {
   onChatwootHost,
   oneByBlob,
   servedBy,
+  throughBase,
 } from "@/modules/chatwoot/email-body-images";
-import { chatwootBaseUrl } from "@/modules/chatwoot/instance";
+import { chatwootAddresses } from "@/modules/chatwoot/instance";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
   BODY_IMAGE_IGNORED,
@@ -83,13 +84,20 @@ async function doProprioChatwoot(
 ): Promise<VisualAttachment[]> {
   if (corpo.length === 0) return corpo;
   try {
-    const baseUrl = await chatwootBaseUrl(
+    const { baseUrl, publicUrl } = await chatwootAddresses(
       params.tenantId,
       params.instanceId,
       params.base,
     );
     const doHost = corpo
-      .map((v) => ({ ...v, dataUrl: onChatwootHost(v.dataUrl, baseUrl) }))
+      .map((v) => ({
+        ...v,
+        dataUrl: throughBase(
+          onChatwootHost(v.dataUrl, baseUrl),
+          baseUrl,
+          publicUrl,
+        ),
+      }))
       .filter((v) => servedBy(v.dataUrl, baseUrl));
     const um = new Set(oneByBlob(doHost.map((v) => v.dataUrl)));
     return doHost.filter((v) => um.delete(v.dataUrl));

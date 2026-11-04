@@ -603,7 +603,7 @@ async function run(
         return {
           kind: "already_open",
           caseId: known,
-          caseUrl: client.conversationUrl(known),
+          caseUrl: client.conversationLink(known),
           identity: null,
           partial,
           additionDelivered,
@@ -807,7 +807,7 @@ async function run(
       // An addition reads as continued too: a listed case is in `before`, and one only the filter finds
       // is older than every listed conversation, so its number is below `newestBefore`.
       const continued = before.has(caseId) || caseId <= newestBefore;
-      const caseUrl = client.conversationUrl(caseId);
+      const caseUrl = client.conversationLink(caseId);
 
       // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
       // The case number goes first, because it is what makes the next call answer "already open".

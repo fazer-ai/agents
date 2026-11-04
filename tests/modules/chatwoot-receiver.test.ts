@@ -7,7 +7,11 @@ import config from "@/config";
 import { redactEndpoint } from "@/modules/audit/projection";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
-import { updateChatwootDeployment } from "@/modules/chatwoot/management";
+import {
+  assertAccountsClaimable,
+  normalizeChatwootBaseUrl,
+  updateChatwootDeployment,
+} from "@/modules/chatwoot/management";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import {
   effectiveAssignee,
@@ -2206,11 +2210,46 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       // The saved token was asked at the new address, and nothing else was called.
       expect(asked).toEqual([`${moved} ADMIN`]);
       expect(botCalls).toBe(0);
+      // The accounts stay reserved under the key they were claimed with, and the move pins it.
       const keys = await suDb.chatwootInstance.findMany({
         where: { tenantId },
         select: { serverKey: true },
       });
-      expect(keys.every((k) => k.serverKey === moved)).toBe(true);
+      expect(keys.map((k) => k.serverKey).sort()).toEqual(
+        instances.map((i) => i.serverKey).sort(),
+      );
+      const pinned = await suDb.chatwootDeployment.findUniqueOrThrow({
+        where: { id: dep.id },
+      });
+      expect(pinned.serverKey).toBe(normalizeChatwootBaseUrl(dep.baseUrl));
+      // Another tenant on the same Chatwoot cannot claim these accounts through either address.
+      const accountId = connected[0]?.id as number;
+      for (const address of [dep.baseUrl, moved]) {
+        const other = await suDb.tenant.create({
+          data: {
+            name: "Alias",
+            slug: `alias-${process.pid}-${address.length}`,
+          },
+        });
+        try {
+          await suDb.chatwootDeployment.create({
+            data: { tenantId: other.id, baseUrl: address, adminToken: "enc" },
+          });
+          const refused = await assertAccountsClaimable(
+            { tenantId: other.id, userId: null, role: "TENANT_ADMIN" },
+            [accountId],
+            appDb,
+          ).catch((e: unknown) => e);
+          expect((refused as Error).message).toContain(
+            "already connected to another tenant",
+          );
+        } finally {
+          await suDb.chatwootDeployment.deleteMany({
+            where: { tenantId: other.id },
+          });
+          await suDb.tenant.delete({ where: { id: other.id } });
+        }
+      }
       let seen: { baseUrl?: string } = {};
       await loadChatwootClient(tenantId, instances[0]?.id as bigint, {
         base: appDb,
@@ -2236,7 +2275,11 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     } finally {
       await suDb.chatwootDeployment.update({
         where: { id: dep.id },
-        data: { baseUrl: dep.baseUrl, adminToken: dep.adminToken },
+        data: {
+          baseUrl: dep.baseUrl,
+          adminToken: dep.adminToken,
+          serverKey: dep.serverKey,
+        },
       });
       for (const i of instances)
         await suDb.chatwootInstance.update({

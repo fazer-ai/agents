@@ -646,10 +646,14 @@ export class ChatwootClient {
     if (token === "") throw new ChatwootMissingTokenError(endpoint);
   }
 
-  // Scoped by accountBase so two installs (or two accounts) never queue behind each other on the
-  // same numeric id.
+  // Scoped by installation and account so two installs (or two accounts) never queue behind each
+  // other on the same numeric id. The installation is the deployment's identity when the loader set
+  // it, so clients loaded before and after a base URL move still share one queue per target.
   private targetKey(scope: string, id: number): string {
-    return `${this.accountBase}:${scope}:${id}`;
+    const owner = this.config.identity
+      ? `${this.config.identity}/accounts/${this.config.accountId}`
+      : this.accountBase;
+    return `${owner}:${scope}:${id}`;
   }
 
   private async request(

@@ -425,6 +425,9 @@ model ChatwootDeployment {
   // The address people open this Chatwoot on, for the links the console and case notes print. Null
   // means base_url; set when base_url is a private address only the servers reach.
   publicUrl      String?  @map("public_url")
+  // The key the deployment's accounts are reserved under across tenants: the address it was first
+  // connected on. Null means base_url; pinned when the base URL moves, so a move never frees a claim.
+  serverKey      String?  @map("server_key")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

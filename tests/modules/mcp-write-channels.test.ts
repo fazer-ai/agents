@@ -274,6 +274,45 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     expect(dep.baseUrl).not.toBe(moved);
   });
 
+  test("deployment_update base_url: an account another tenant holds at the new address is refused by the preview too", async () => {
+    const moved = "https://93.184.216.34";
+    const dep = await suDb.chatwootDeployment.create({
+      data: { tenantId: tenantB, baseUrl: moved, adminToken: "enc" },
+    });
+    await suDb.chatwootInstance.create({
+      data: {
+        tenantId: tenantB,
+        deploymentId: dep.id,
+        accountId: 3,
+        serverKey: moved,
+      },
+    });
+    try {
+      const same = async () => ({ id: 5, accounts: [{ id: 3, name: "x" }] });
+      const preview = await deploymentUpdate(
+        principal({ tenantId: tenantA }),
+        { base_url: moved },
+        { base: appDb, fetchProfile: same },
+      );
+      const apply = await deploymentUpdate(
+        principal({ tenantId: tenantA }),
+        { base_url: moved, dry_run: false },
+        { base: appDb, fetchProfile: same },
+      );
+      expect(preview.ok).toBe(false);
+      expect(apply.ok).toBe(false);
+      if (!preview.ok && !apply.ok) {
+        expect(preview.error).toBe(apply.error);
+        expect(preview.error).toContain("another tenant");
+      }
+    } finally {
+      await suDb.chatwootInstance.deleteMany({ where: { tenantId: tenantB } });
+      await suDb.chatwootDeployment.deleteMany({
+        where: { tenantId: tenantB },
+      });
+    }
+  });
+
   test("deployment_update: the preview refuses a tenant with no connection, as the apply does", async () => {
     const args = { public_url: "https://desk.channels.example" };
     const preview = await deploymentUpdate(

@@ -621,10 +621,16 @@ export async function verifyBaseUrlMove(
     });
     if (!row) return null;
     const accounts = await db.chatwootInstance.findMany({
-      where: { deploymentId: row.id, disconnectedAt: null },
-      select: { accountId: true },
+      where: { deploymentId: row.id },
+      select: { accountId: true, disconnectedAt: true },
     });
-    return { ...row, accountIds: accounts.map((a) => a.accountId) };
+    return {
+      ...row,
+      accountIds: accounts
+        .filter((a) => a.disconnectedAt === null)
+        .map((a) => a.accountId),
+      allAccountIds: accounts.map((a) => a.accountId),
+    };
   });
   if (!dep) {
     throw new NotFoundError(
@@ -663,6 +669,14 @@ export async function verifyBaseUrlMove(
   const reachable = new Set(parseChatwootAccounts(after).map((a) => a.id));
   if (dep.accountIds.some((id) => !reachable.has(id)))
     throw differentInstallationError();
+  // No other tenant may hold one of these accounts through the new address.
+  if (ctx.tenantId !== null)
+    await assertAccountsNotTakenByAnotherTenant(
+      base,
+      ctx.tenantId,
+      baseUrl,
+      dep.allAccountIds,
+    );
   return { baseUrl, from, changed: true };
 }
 
@@ -702,19 +716,6 @@ export async function updateChatwootDeployment(
       "errors.chatwootDeploymentNothingToChange",
     );
   }
-  if (moving && move) {
-    const accountIds = await runScopedOn(base, ctx, async (db) =>
-      (await db.chatwootInstance.findMany({ select: { accountId: true } })).map(
-        (a) => a.accountId,
-      ),
-    );
-    await assertAccountsNotTakenByAnotherTenant(
-      base,
-      tenantId,
-      move.baseUrl,
-      accountIds,
-    );
-  }
   let webhookMoved = false;
   const updated = await runScopedOn(base, ctx, async (db) => {
     const dep = await db.chatwootDeployment.findFirst({ select: { id: true } });
@@ -727,7 +728,12 @@ export async function updateChatwootDeployment(
     await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR NO KEY UPDATE`;
     const before = await db.chatwootDeployment.findUniqueOrThrow({
       where: { id: dep.id },
-      select: { baseUrl: true, webhookBaseUrl: true, publicUrl: true },
+      select: {
+        baseUrl: true,
+        serverKey: true,
+        webhookBaseUrl: true,
+        publicUrl: true,
+      },
     });
     if (moving && move && before.baseUrl !== move.from) {
       throw new ConflictError(
@@ -738,7 +744,11 @@ export async function updateChatwootDeployment(
     const row = await db.chatwootDeployment.update({
       where: { id: dep.id },
       data: {
-        ...(moving && move ? { baseUrl: move.baseUrl } : {}),
+        // The accounts stay reserved under the key they were claimed with: pinned here, so the old
+        // address keeps them for every other tenant while the new one is checked by base URL.
+        ...(moving && move
+          ? { baseUrl: move.baseUrl, serverKey: deploymentServerKey(before) }
+          : {}),
         ...(moving && data.adminToken !== undefined
           ? { adminToken: encryptJson(data.adminToken) }
           : {}),
@@ -750,12 +760,6 @@ export async function updateChatwootDeployment(
       select: DEPLOYMENT_SELECT,
     });
     if (moving && move) {
-      // The account key is the server's address: it moves with it, or a reconnect of the same
-      // account would read as a new server.
-      await db.chatwootInstance.updateMany({
-        where: { deploymentId: dep.id },
-        data: { serverKey: move.baseUrl },
-      });
       await auditMutation(db, ctx, {
         action: "deployment.update_base_url",
         target: `chatwoot_deployment:${dep.id}`,
@@ -849,7 +853,7 @@ export async function listDeploymentAccounts(
 ): Promise<ChatwootAccountSummary[]> {
   const dep = await runScopedOn(base, ctx, (db) =>
     db.chatwootDeployment.findFirst({
-      select: { baseUrl: true, adminToken: true },
+      select: { baseUrl: true, adminToken: true, serverKey: true },
     }),
   );
   if (!dep) {
@@ -866,13 +870,30 @@ export async function listDeploymentAccounts(
   // tenants). Superuser read so the picker can flag accounts taken by OTHER tenants (blocked) vs the
   // current tenant's own (reconnectable). Surfacing other tenants' names is fine — this path is
   // SUPER_ADMIN-only (see chatwoot-admin.controller + the mcp:admin gate).
-  const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
+  const serverKey = deploymentServerKey(dep);
   const claims = await listAccountClaims(base, serverKey, ctx.tenantId);
   return accounts.map((a) => ({ ...a, claim: claims.get(a.id) ?? null }));
 }
 
 // Map of accountId → owning-tenant claim for every ChatwootInstance on this server (active OR
 // soft-disconnected — a paused account still belongs to its tenant). Superuser (cross-tenant).
+// The key a deployment's accounts are reserved under: the address it was first connected on, pinned
+// when its base URL moves (`serverKey`), else its base URL.
+function deploymentServerKey(dep: {
+  baseUrl: string;
+  serverKey?: string | null;
+}): string {
+  return dep.serverKey ?? normalizeChatwootBaseUrl(dep.baseUrl);
+}
+
+// An account is reserved under a deployment's key AND under its current base URL: a deployment that
+// moved answers on both, so a tenant connecting through either address finds the claim.
+function claimedOn(serverKey: string) {
+  return {
+    OR: [{ serverKey }, { deployment: { baseUrl: serverKey } }],
+  };
+}
+
 async function listAccountClaims(
   base: PrismaClient,
   serverKey: string,
@@ -880,7 +901,7 @@ async function listAccountClaims(
 ): Promise<Map<number, ChatwootAccountClaim>> {
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.chatwootInstance.findMany({
-      where: { serverKey },
+      where: claimedOn(serverKey),
       select: { accountId: true, tenantId: true },
     });
     const names = new Map<bigint, string>();
@@ -1040,7 +1061,7 @@ async function assertAccountsNotTakenByAnotherTenant(
     for (let i = 0; i < accountIds.length; i += CLAIM_CHECK_CHUNK) {
       const hit = await db.chatwootInstance.findFirst({
         where: {
-          serverKey,
+          ...claimedOn(serverKey),
           accountId: { in: accountIds.slice(i, i + CLAIM_CHECK_CHUNK) },
           tenantId: { not: tenantId },
         },
@@ -1061,11 +1082,11 @@ export async function assertAccountsClaimable(
   ctx: TenantContext,
   accountIds: number[],
   base: PrismaClient = basePrisma,
-): Promise<{ id: bigint; baseUrl: string }> {
+): Promise<{ id: bigint; baseUrl: string; serverKey: string | null }> {
   const dep = await assertDeploymentConnected(ctx, base);
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
-  const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
+  const serverKey = deploymentServerKey(dep);
   await assertAccountsNotTakenByAnotherTenant(base, tenantId, serverKey, [
     ...new Set(accountIds),
   ]);
@@ -1076,9 +1097,11 @@ export async function assertAccountsClaimable(
 export async function assertDeploymentConnected(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
-): Promise<{ id: bigint; baseUrl: string }> {
+): Promise<{ id: bigint; baseUrl: string; serverKey: string | null }> {
   const dep = await runScopedOn(base, ctx, (db) =>
-    db.chatwootDeployment.findFirst({ select: { id: true, baseUrl: true } }),
+    db.chatwootDeployment.findFirst({
+      select: { id: true, baseUrl: true, serverKey: true },
+    }),
   );
   if (!dep) {
     throw new NotFoundError(
@@ -1144,7 +1167,7 @@ export async function setConnectedAccounts(
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const wanted = [...new Set(accountIds)];
   const dep = await assertAccountsClaimable(ctx, wanted, base);
-  const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
+  const serverKey = deploymentServerKey(dep);
   // One probe, not one per account, and its answer is the bound as well as the source of
   // display names. A failure still falls through to null names, and `assertAccountsSelectable` reads
   // that same null as "no list available" and applies the fallback cap instead.

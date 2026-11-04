@@ -239,13 +239,17 @@ type AgentBotKey = {
   };
 };
 
-// Moves a live bot onto the configured webhook base (or back onto this row's token): a bot provisioned
-// before CHATWOOT_WEBHOOK_BASE_URL was set keeps calling the old address, and Chatwoot cannot reach that one
-// when it is a public address behind an access gate. Only the route token's hash is stored, so the URL
-// cannot be rebuilt with the same token: a new token is minted, the row claims it first (conditioned
-// on the hash it read, so two binds racing do not leave Chatwoot and the row on different tokens), and
-// then Chatwoot is told the new URL. If Chatwoot refuses, the row goes back to the old hash, which the
-// old URL still carries. The bot's id, token and HMAC secret are unchanged.
+// Moves a live bot onto the configured webhook base, minting a new route token (only its hash is
+// stored). One transaction holds the row, conditioned on the hash read, so a racing bind waits, then
+// finds the hash changed and leaves Chatwoot alone. The PATCH goes out under that lock, the module's
+// one network call inside a transaction, bounded by the client's timeout and made once per bot. The
+// new hash is visible only at commit; a refused PATCH rolls back and the old URL keeps working. A
+// PATCH whose answer was lost leaves a token the row lacks, which `callsThisRow` repairs next bind.
+const REPOINT_TX_BUDGET = {
+  maxWait: config.dbTx.maxWaitMs,
+  timeout: 30_000,
+};
+
 async function repointAgentBot(
   base: PrismaClient,
   tenantId: bigint,
@@ -256,32 +260,35 @@ async function repointAgentBot(
   client: ChatwootClient,
 ): Promise<void> {
   const { token, hash } = generateRouteToken();
-  const claimed = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.chatwootAgentBot.updateMany({
-      where: {
-        ...key.tenantId_chatwootInstanceId_agentId,
-        chatwootAgentBotId,
-        webhookRouteTokenHash: oldHash,
-      },
-      data: { webhookRouteTokenHash: hash },
-    }),
-  );
-  if (claimed.count === 0) return; // another bind repointed it first
+  const where = {
+    ...key.tenantId_chatwootInstanceId_agentId,
+    chatwootAgentBotId,
+  };
+  let moved = false;
   try {
-    await client.updateAgentBot(chatwootAgentBotId, {
-      outgoingUrl: chatwootOutgoingUrl(webhookBaseUrl, token),
-    });
-  } catch (err) {
-    await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.chatwootAgentBot.updateMany({
-        where: {
-          ...key.tenantId_chatwootInstanceId_agentId,
-          chatwootAgentBotId,
-          webhookRouteTokenHash: hash,
-        },
-        data: { webhookRouteTokenHash: oldHash },
-      }),
+    moved = await runScopedOn(
+      base,
+      sysCtx(tenantId),
+      async (db) => {
+        // A no-op write is the row lock: a concurrent repoint blocks here, and once the holder commits
+        // its WHERE is re-checked against the new hash and matches nothing.
+        const held = await db.chatwootAgentBot.updateMany({
+          where: { ...where, webhookRouteTokenHash: oldHash },
+          data: { webhookRouteTokenHash: oldHash },
+        });
+        if (held.count === 0) return false; // another bind repointed it first
+        await client.updateAgentBot(chatwootAgentBotId, {
+          outgoingUrl: chatwootOutgoingUrl(webhookBaseUrl, token),
+        });
+        await db.chatwootAgentBot.updateMany({
+          where,
+          data: { webhookRouteTokenHash: hash },
+        });
+        return true;
+      },
+      REPOINT_TX_BUDGET,
     );
+  } catch (err) {
     logger.warn(
       { err },
       "chatwoot: could not move agent bot %d to the configured webhook base; it keeps its old URL",
@@ -289,7 +296,9 @@ async function repointAgentBot(
     );
     return;
   }
-  // The retired hash may sit in the receiver's cache; drop it, as on re-provisioning.
+  if (!moved) return;
+  // After the commit: the generation bump also refuses a lookup that started before it and would
+  // otherwise cache the new token as unknown, or the old one as still valid.
   invalidateRouteTokenCache();
   logger.info(
     "chatwoot: moved agent bot %d to the configured webhook base",

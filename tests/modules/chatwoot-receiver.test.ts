@@ -1539,6 +1539,82 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     });
   });
 
+  test("two binds repointing at once PATCH Chatwoot once, and the row holds that token", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let patchStarted = () => {};
+    const started = new Promise<void>((r) => {
+      patchStarted = r;
+    });
+    const patches: Array<Record<string, unknown>> = [];
+    const stub = () =>
+      ({
+        listAgentBots: async () => [
+          {
+            id: 57,
+            name: "Vendas",
+            outgoingUrl:
+              "https://agents.example.com/api/v1/chatwoot/webhook/old",
+          },
+        ],
+        updateAgentBot: async (_id: number, p: Record<string, unknown>) => {
+          patches.push(p);
+          patchStarted();
+          await gate;
+          return {};
+        },
+      }) as unknown as ChatwootClient;
+    const opts = { base: appDb, webhookBaseUrl: "http://10.0.0.6:3000" };
+    const first = ensureAgentBot(
+      tenantId,
+      inst.id,
+      agent.id,
+      "Vendas",
+      stub(),
+      opts,
+    );
+    await started;
+    const second = ensureAgentBot(
+      tenantId,
+      inst.id,
+      agent.id,
+      "Vendas",
+      stub(),
+      opts,
+    );
+    // The second bind has to be parked on the row the first one holds while its PATCH is out.
+    let parked = false;
+    for (let i = 0; i < 300 && !parked; i += 1) {
+      const [row] = await suDb.$queryRaw<Array<{ n: bigint }>>`
+        SELECT count(*)::bigint AS n FROM pg_stat_activity
+         WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0`;
+      parked = Number(row?.n ?? 0n) > 0;
+      if (!parked) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(parked).toBe(true);
+    release();
+    await Promise.all([first, second]);
+    expect(patches).toHaveLength(1);
+    const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    expect(row.webhookRouteTokenHash).toBe(
+      hashRouteToken(
+        String(patches[0]?.outgoingUrl ?? "")
+          .split("/")
+          .pop() as string,
+      ),
+    );
+  });
+
   test("a refused repoint keeps the row on the token Chatwoot still calls", async () => {
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
       where: { tenantId, accountId: 2 },

@@ -195,6 +195,8 @@ export const parseWebhookBaseUrl = (
     (url.protocol !== "http:" && url.protocol !== "https:") ||
     url.search !== "" ||
     url.hash !== "" ||
+    value.includes("?") ||
+    value.includes("#") ||
     url.username !== "" ||
     url.password !== ""
   ) {

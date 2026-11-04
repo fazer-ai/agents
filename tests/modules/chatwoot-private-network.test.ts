@@ -216,6 +216,8 @@ describe("parseWebhookBaseUrl", () => {
       "http://10.0.0.6:3000/?a=1",
       "http://u:p@10.0.0.6:3000",
       "http://10.0.0.6:3000/#x",
+      "http://10.0.0.6:3000/?",
+      "http://10.0.0.6:3000/#",
     ]) {
       expect(() =>
         parseWebhookBaseUrl(bad, "CHATWOOT_WEBHOOK_BASE_URL", "https://p"),

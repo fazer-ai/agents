@@ -144,6 +144,20 @@ describe("attachmentFetchTarget", () => {
     });
   });
 
+  test("same host on another scheme still goes through the declared base", () => {
+    const declared = [{ host: "chat.example.com", port: 80 }];
+    expect(
+      attachmentFetchTarget(
+        "https://chat.example.com/rails/active_storage/blobs/x/a.ogg?d=1",
+        "http://chat.example.com",
+        declared,
+      ),
+    ).toEqual({
+      url: "http://chat.example.com/rails/active_storage/blobs/x/a.ogg?d=1",
+      sameInstance: true,
+    });
+  });
+
   test("a data_url carrying credentials is not rewritten", () => {
     const u =
       "https://user:pw@chat.example.com/rails/active_storage/blobs/x/a.ogg";

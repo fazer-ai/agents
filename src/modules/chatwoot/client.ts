@@ -335,14 +335,14 @@ export function attachmentFetchTarget(
 ): { url: string; sameInstance: boolean } {
   const data = new URL(dataUrl);
   const base = new URL(baseUrl);
-  if (data.host === base.host) return { url: dataUrl, sameInstance: true };
+  if (data.origin === base.origin) return { url: dataUrl, sameInstance: true };
   const viaBase =
     data.pathname.startsWith(ACTIVE_STORAGE_PREFIX) &&
     (data.protocol === "http:" || data.protocol === "https:") &&
     data.username === "" &&
     data.password === "" &&
     matchInternalTarget(base, internalTargets) === "match";
-  if (!viaBase) return { url: dataUrl, sameInstance: false };
+  if (!viaBase) return { url: dataUrl, sameInstance: data.host === base.host };
   return {
     url: `${base.origin}${data.pathname}${data.search}`,
     sameInstance: true,

@@ -674,7 +674,7 @@ export async function verifyBaseUrlMove(
     await assertAccountsNotTakenByAnotherTenant(
       base,
       ctx.tenantId,
-      baseUrl,
+      [baseUrl],
       dep.allAccountIds,
     );
   return { baseUrl, from, changed: true };
@@ -710,11 +710,7 @@ export async function updateChatwootDeployment(
     data.publicUrl === undefined
   ) {
     if (dto) return dto;
-    throw new AppError(
-      "Nothing to change: send a new base URL, admin token, webhookBaseUrl or publicUrl.",
-      422,
-      "errors.chatwootDeploymentNothingToChange",
-    );
+    throw nothingToChangeError();
   }
   let webhookMoved = false;
   const updated = await runScopedOn(base, ctx, async (db) => {
@@ -792,6 +788,44 @@ function readStoredToken(blob: string): string {
 
 // Rotate the deployment's admin token (the operator pasted a new one). Validated by a /profile probe
 // before it persists. Affects every account under the deployment (they share it).
+function nothingToChangeError(): AppError {
+  return new AppError(
+    "Nothing to change: send a new base URL, admin token, webhookBaseUrl or publicUrl.",
+    422,
+    "errors.chatwootDeploymentNothingToChange",
+  );
+}
+
+// What `updateChatwootDeployment` refuses before it writes, asked read-only so the MCP preview
+// refuses the same calls: an unchanged address with nothing else sent, and a token the live
+// deployment does not accept.
+export async function previewChatwootDeploymentUpdate(
+  ctx: TenantContext,
+  data: ChatwootDeploymentUpdateInput,
+  deps: ListAccountsDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ baseUrl: string | null }> {
+  const dep = await assertDeploymentConnected(ctx, base);
+  const move =
+    data.baseUrl === undefined
+      ? null
+      : await verifyBaseUrlMove(ctx, data.baseUrl, data.adminToken, deps, base);
+  const moving = move?.changed === true;
+  if (data.adminToken !== undefined && !moving)
+    await listChatwootAccounts(
+      { baseUrl: dep.baseUrl, token: data.adminToken },
+      deps,
+    );
+  if (
+    !moving &&
+    data.adminToken === undefined &&
+    data.webhookBaseUrl === undefined &&
+    data.publicUrl === undefined
+  )
+    throw nothingToChangeError();
+  return { baseUrl: moving ? (move?.baseUrl ?? null) : null };
+}
+
 export async function rotateChatwootDeploymentToken(
   ctx: TenantContext,
   adminToken: string,
@@ -870,8 +904,11 @@ export async function listDeploymentAccounts(
   // tenants). Superuser read so the picker can flag accounts taken by OTHER tenants (blocked) vs the
   // current tenant's own (reconnectable). Surfacing other tenants' names is fine — this path is
   // SUPER_ADMIN-only (see chatwoot-admin.controller + the mcp:admin gate).
-  const serverKey = deploymentServerKey(dep);
-  const claims = await listAccountClaims(base, serverKey, ctx.tenantId);
+  const claims = await listAccountClaims(
+    base,
+    deploymentAddresses(dep),
+    ctx.tenantId,
+  );
   return accounts.map((a) => ({ ...a, claim: claims.get(a.id) ?? null }));
 }
 
@@ -886,22 +923,39 @@ function deploymentServerKey(dep: {
   return dep.serverKey ?? normalizeChatwootBaseUrl(dep.baseUrl);
 }
 
+// Every address a deployment answers on: its pinned key and, after a move, its current base URL.
+// Claims are read across all of them, so an account reserved under either one is found.
+function deploymentAddresses(dep: {
+  baseUrl: string;
+  serverKey?: string | null;
+}): string[] {
+  return [
+    ...new Set([
+      deploymentServerKey(dep),
+      normalizeChatwootBaseUrl(dep.baseUrl),
+    ]),
+  ];
+}
+
 // An account is reserved under a deployment's key AND under its current base URL: a deployment that
 // moved answers on both, so a tenant connecting through either address finds the claim.
-function claimedOn(serverKey: string) {
+function claimedOn(addresses: string[]) {
   return {
-    OR: [{ serverKey }, { deployment: { baseUrl: serverKey } }],
+    OR: [
+      { serverKey: { in: addresses } },
+      { deployment: { baseUrl: { in: addresses } } },
+    ],
   };
 }
 
 async function listAccountClaims(
   base: PrismaClient,
-  serverKey: string,
+  addresses: string[],
   currentTenantId: bigint | null,
 ): Promise<Map<number, ChatwootAccountClaim>> {
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.chatwootInstance.findMany({
-      where: claimedOn(serverKey),
+      where: claimedOn(addresses),
       select: { accountId: true, tenantId: true },
     });
     const names = new Map<bigint, string>();
@@ -935,14 +989,16 @@ async function connectAccount(
   accountId: number,
   accountName: string | null,
   serverKey: string,
+  addresses: string[],
   base: PrismaClient,
 ): Promise<{ id: bigint; changed: boolean }> {
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   // A Chatwoot account belongs to ONE tenant fleet-wide. RLS hides another tenant's claim from the
   // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error; the unique
-  // index on (serverKey, accountId) is the hard race-safe backstop on create.
-  await assertAccountsNotTakenByAnotherTenant(base, tenantId, serverKey, [
+  // index on (serverKey, accountId) is the hard race-safe backstop on create (for one address; a
+  // moved deployment's second address is covered by this check alone).
+  await assertAccountsNotTakenByAnotherTenant(base, tenantId, addresses, [
     accountId,
   ]);
   const result = await runScopedOn(base, ctx, async (db) => {
@@ -1050,7 +1106,7 @@ const CLAIM_CHECK_CHUNK = 1000;
 async function assertAccountsNotTakenByAnotherTenant(
   base: PrismaClient,
   tenantId: bigint,
-  serverKey: string,
+  addresses: string[],
   accountIds: number[],
 ): Promise<void> {
   if (accountIds.length === 0) return;
@@ -1061,7 +1117,7 @@ async function assertAccountsNotTakenByAnotherTenant(
     for (let i = 0; i < accountIds.length; i += CLAIM_CHECK_CHUNK) {
       const hit = await db.chatwootInstance.findFirst({
         where: {
-          ...claimedOn(serverKey),
+          ...claimedOn(addresses),
           accountId: { in: accountIds.slice(i, i + CLAIM_CHECK_CHUNK) },
           tenantId: { not: tenantId },
         },
@@ -1086,10 +1142,12 @@ export async function assertAccountsClaimable(
   const dep = await assertDeploymentConnected(ctx, base);
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
-  const serverKey = deploymentServerKey(dep);
-  await assertAccountsNotTakenByAnotherTenant(base, tenantId, serverKey, [
-    ...new Set(accountIds),
-  ]);
+  await assertAccountsNotTakenByAnotherTenant(
+    base,
+    tenantId,
+    deploymentAddresses(dep),
+    [...new Set(accountIds)],
+  );
   return dep;
 }
 
@@ -1209,6 +1267,7 @@ export async function setConnectedAccounts(
       accountId,
       nameById.get(accountId) ?? null,
       serverKey,
+      deploymentAddresses(dep),
       base,
     );
     if (changed) moved = true;

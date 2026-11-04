@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { AppError } from "@/lib/errors";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -311,6 +312,48 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
         where: { tenantId: tenantB },
       });
     }
+  });
+
+  test("deployment_update: the stored base_url alone is refused by the preview, as the apply refuses it", async () => {
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId: tenantA },
+    });
+    const same = async () => ({ id: 5, accounts: [{ id: 3, name: "x" }] });
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: `${dep.baseUrl}/` },
+      { base: appDb, fetchProfile: same },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: `${dep.baseUrl}/`, dry_run: false },
+      { base: appDb, fetchProfile: same },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) {
+      expect(preview.error).toBe(apply.error);
+      expect(preview.error).toContain("Nothing to change");
+    }
+  });
+
+  test("deployment_update admin_token: a token the deployment refuses is refused by the preview, as the apply refuses it", async () => {
+    const refuses = async () => {
+      throw new AppError("chatwoot rejected the admin token", 422);
+    };
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { admin_token: "WRONG" },
+      { base: appDb, fetchProfile: refuses },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { admin_token: "WRONG", dry_run: false },
+      { base: appDb, fetchProfile: refuses },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) expect(preview.error).toBe(apply.error);
   });
 
   test("deployment_update: the preview refuses a tenant with no connection, as the apply does", async () => {

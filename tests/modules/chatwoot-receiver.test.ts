@@ -2289,6 +2289,54 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     }
   });
 
+  test("after a move, an account another tenant holds at the new address is not claimable", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    const moved = "https://93.184.216.34";
+    const other = await suDb.tenant.create({
+      data: { name: "Holder", slug: `holder-${process.pid}` },
+    });
+    try {
+      // The moved deployment answers on `moved` and keeps its old key pinned.
+      await suDb.chatwootDeployment.update({
+        where: { id: dep.id },
+        data: {
+          baseUrl: moved,
+          serverKey: normalizeChatwootBaseUrl(dep.baseUrl),
+        },
+      });
+      const held = await suDb.chatwootDeployment.create({
+        data: { tenantId: other.id, baseUrl: moved, adminToken: "enc" },
+      });
+      await suDb.chatwootInstance.create({
+        data: {
+          tenantId: other.id,
+          deploymentId: held.id,
+          accountId: 424242,
+          serverKey: moved,
+        },
+      });
+      const refused = await assertAccountsClaimable(ctx, [424242], appDb).catch(
+        (e: unknown) => e,
+      );
+      expect((refused as Error).message).toContain(
+        "already connected to another tenant",
+      );
+    } finally {
+      await suDb.chatwootInstance.deleteMany({ where: { tenantId: other.id } });
+      await suDb.chatwootDeployment.deleteMany({
+        where: { tenantId: other.id },
+      });
+      await suDb.tenant.delete({ where: { id: other.id } });
+      await suDb.chatwootDeployment.update({
+        where: { id: dep.id },
+        data: { baseUrl: dep.baseUrl, serverKey: dep.serverKey },
+      });
+    }
+  });
+
   test("a base URL that answers as another Chatwoot is refused, and nothing is written", async () => {
     const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
     const dep = await suDb.chatwootDeployment.findFirstOrThrow({

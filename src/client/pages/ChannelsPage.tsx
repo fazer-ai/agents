@@ -449,7 +449,12 @@ const CONNECT_FIELDS = [
   "webhookBaseUrl",
   "publicUrl",
 ] as const;
-const TOKEN_FIELDS = ["adminToken", "webhookBaseUrl", "publicUrl"] as const;
+const TOKEN_FIELDS = [
+  "baseUrl",
+  "adminToken",
+  "webhookBaseUrl",
+  "publicUrl",
+] as const;
 const ACCOUNTS_FIELDS = ["accountIds"] as const;
 
 export function ChannelsPage() {

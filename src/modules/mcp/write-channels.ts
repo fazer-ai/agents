@@ -6,7 +6,6 @@ import {
   assertAccountsSelectable,
   assertBindTargetNotObserving,
   assertDeploymentConnectable,
-  assertDeploymentConnected,
   assertDeploymentNotSwitching,
   assertInboxBindable,
   assertInboxReconnectable,
@@ -20,6 +19,7 @@ import {
   listDeploymentAccounts,
   listInboxes,
   observeInbox,
+  previewChatwootDeploymentUpdate,
   previewInboxRemoval,
   readInboxBotForBind,
   readObserveTarget,
@@ -32,7 +32,6 @@ import {
   syncInboxes,
   unobserveInbox,
   updateChatwootDeployment,
-  verifyBaseUrlMove,
 } from "@/modules/chatwoot/management";
 import {
   bindInboxVoiceAgent,
@@ -207,26 +206,21 @@ export async function deploymentUpdate(
     };
     if (args.dry_run !== false) {
       const data = parseInput(chatwootDeploymentUpdateSchema, input);
-      // The apply refuses a tenant with no connection; the preview says so too.
-      await assertDeploymentConnected(ctx, base);
-      // A new address is asked the same question the apply asks (read-only: profile probes).
-      const move =
-        data.baseUrl === undefined
-          ? null
-          : await verifyBaseUrlMove(
-              ctx,
-              data.baseUrl,
-              data.adminToken,
-              deps,
-              base,
-            );
+      // The same refusals the apply makes (no connection, an unchanged address with nothing else, a
+      // refused address or token), asked read-only.
+      const { baseUrl: movedTo } = await previewChatwootDeploymentUpdate(
+        ctx,
+        data,
+        deps,
+        base,
+      );
       return ok({
         dryRun: true,
         action: "update",
         resource: "chatwoot_deployment",
         // The raw token is never echoed back, not even in the preview.
         preview: {
-          ...(move?.changed ? { baseUrl: move.baseUrl } : {}),
+          ...(movedTo !== null ? { baseUrl: movedTo } : {}),
           ...(data.adminToken !== undefined
             ? { adminToken: "(redacted)" }
             : {}),

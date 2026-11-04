@@ -107,8 +107,13 @@ export async function deploymentConnect(
         preview: {
           baseUrl: args.base_url,
           adminToken: "(redacted)",
-          webhookBaseUrl: data.webhookBaseUrl ?? null,
-          publicUrl: data.publicUrl ?? null,
+          // Only what the call sends: an omitted field keeps the stored value, null resets it.
+          ...(data.webhookBaseUrl !== undefined
+            ? { webhookBaseUrl: data.webhookBaseUrl }
+            : {}),
+          ...(data.publicUrl !== undefined
+            ? { publicUrl: data.publicUrl }
+            : {}),
         },
       });
     }

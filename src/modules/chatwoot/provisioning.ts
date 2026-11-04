@@ -96,6 +96,15 @@ function callsThisRow(
   return hashRouteToken(outgoingUrl.slice(prefix.length)) === routeTokenHash;
 }
 
+// The route token at the end of a bot's outgoing_url, whatever base precedes the mount.
+function routeTokenOf(outgoingUrl: string): string | null {
+  const mount = `${CHATWOOT_WEBHOOK_MOUNT}/`;
+  const at = outgoingUrl.lastIndexOf(mount);
+  if (at < 0) return null;
+  const token = outgoingUrl.slice(at + mount.length);
+  return token && !/[/?#]/.test(token) ? token : null;
+}
+
 // Lazy, idempotent per-persona provisioning: ensure (instance, agentId) has its own Chatwoot Agent
 // Bot, creating it on the first bind and reusing it after. Returns the bot's numeric id + decrypted
 // access token (the binder connects it to the inbox; the runtime posts with the token). The CALLER
@@ -284,12 +293,11 @@ type AgentBotKey = {
   };
 };
 
-// Moves a live bot onto the connection's webhook base with a new route token (only its hash is
-// stored). Callers only nominate a bot; a per-bot queue (single replica, docs/deploy.md) decides from a
-// fresh read of the row's hash, the connection's base and Chatwoot's URL, and reads again after a lost
-// swap or a PATCH that went through, so racing binds and edits end on the base saved last. The row
-// takes the new hash before Chatwoot hears of it, so the first delivery to the new URL resolves; a
-// refused PATCH puts the old hash back, and a lost answer is repaired by `callsThisRow` on the next bind.
+// Moves a live bot onto the connection's webhook base. A per-bot queue (single replica,
+// docs/deploy.md) decides from a fresh read of the row's hash, the connection's base and Chatwoot's
+// URL, and reads again after a lost swap or a PATCH, so racing binds and edits end on the base saved
+// last. A URL carrying the row's token keeps it; any other gets a new token, stored before Chatwoot
+// hears of it (put back if the PATCH is refused; a lost answer is repaired by `callsThisRow`).
 const repointing = new Map<number, Promise<void>>();
 const REPOINT_ATTEMPTS = 4;
 
@@ -353,6 +361,28 @@ async function repointOnce(
       callsThisRow(live.outgoingUrl, webhookBaseUrl, row.webhookRouteTokenHash)
     )
       return;
+    // Chatwoot holds this row's token: only the base moves, and the token stays, so a delivery it
+    // queued with the old URL still resolves when it is sent or retried.
+    const liveToken = routeTokenOf(live.outgoingUrl);
+    if (liveToken && hashRouteToken(liveToken) === row.webhookRouteTokenHash) {
+      try {
+        await client.updateAgentBot(chatwootAgentBotId, {
+          outgoingUrl: chatwootOutgoingUrl(webhookBaseUrl, liveToken),
+        });
+      } catch (err) {
+        logger.warn(
+          { err },
+          "chatwoot: could not move agent bot %d to the configured webhook base; it keeps its old URL",
+          chatwootAgentBotId,
+        );
+        return;
+      }
+      logger.info(
+        "chatwoot: moved agent bot %d to the configured webhook base",
+        chatwootAgentBotId,
+      );
+      continue;
+    }
     const oldHash = row.webhookRouteTokenHash;
     const { token, hash } = generateRouteToken();
     if ((await swap(oldHash, hash)).count === 0) continue; // the hash moved under us: decide again

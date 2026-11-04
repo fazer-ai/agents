@@ -202,6 +202,39 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     await appDb.$disconnect();
   });
 
+  test("deployment_connect: the preview names only the address fields the call sends", async () => {
+    // tenantB and a public IP literal, as in the dry-run test below: nothing connected, no DNS.
+    const omitted = await deploymentConnect(
+      principal({ tenantId: tenantB }),
+      { base_url: "https://93.184.216.34", admin_token: "cw-token" },
+      { base: appDb },
+    );
+    expect(omitted.ok).toBe(true);
+    if (omitted.ok) {
+      const preview = (omitted.data as { preview: Record<string, unknown> })
+        .preview;
+      expect("webhookBaseUrl" in preview).toBe(false);
+      expect("publicUrl" in preview).toBe(false);
+    }
+    const reset = await deploymentConnect(
+      principal({ tenantId: tenantB }),
+      {
+        base_url: "https://93.184.216.34",
+        admin_token: "cw-token",
+        webhook_base_url: null,
+        public_url: "https://desk.channels.example/",
+      },
+      { base: appDb },
+    );
+    expect(reset.ok).toBe(true);
+    if (reset.ok) {
+      const preview = (reset.data as { preview: Record<string, unknown> })
+        .preview;
+      expect(preview.webhookBaseUrl).toBeNull();
+      expect(preview.publicUrl).toBe("https://desk.channels.example");
+    }
+  });
+
   test("deployment_update: the preview refuses a tenant with no connection, as the apply does", async () => {
     const args = { public_url: "https://desk.channels.example" };
     const preview = await deploymentUpdate(

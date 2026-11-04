@@ -1542,6 +1542,52 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     );
   });
 
+  test("a bot whose URL carries the row's token keeps the token when only the base moves", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const before = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    const keptHash = hashRouteToken("kept-token");
+    await suDb.chatwootAgentBot.update({
+      where: { id: before.id },
+      data: { webhookRouteTokenHash: keptHash },
+    });
+    let url = "https://agents.example.com/api/v1/chatwoot/webhook/kept-token";
+    const patches: string[] = [];
+    const client = {
+      listAgentBots: async () => [{ id: 57, name: "Vendas", outgoingUrl: url }],
+      updateAgentBot: async (_id: number, p: { outgoingUrl: string }) => {
+        patches.push(p.outgoingUrl);
+        url = p.outgoingUrl;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    try {
+      await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", client, {
+        base: appDb,
+        webhookBaseUrl: "http://10.0.0.6:3000",
+      });
+      // A delivery Chatwoot queued with the old URL carries the same token, which still resolves.
+      expect(patches).toEqual([
+        "http://10.0.0.6:3000/api/v1/chatwoot/webhook/kept-token",
+      ]);
+      const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+        where: { id: before.id },
+      });
+      expect(row.webhookRouteTokenHash).toBe(keptHash);
+    } finally {
+      await suDb.chatwootAgentBot.update({
+        where: { id: before.id },
+        data: { webhookRouteTokenHash: before.webhookRouteTokenHash },
+      });
+    }
+  });
+
   test("a repoint that lost the race to another bind leaves Chatwoot alone", async () => {
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
       where: { tenantId, accountId: 2 },

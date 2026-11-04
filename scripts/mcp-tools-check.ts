@@ -14,6 +14,7 @@ type Listing = Record<"readOnly" | "write" | "admin", ListedTool[]>;
 export const RAW_SECRET_INPUTS: Record<string, readonly string[]> = {
   deployment_connect: ["admin_token"],
   deployment_rotate_token: ["admin_token"],
+  deployment_update: ["admin_token"],
   instance_list_accounts: ["admin_token"],
   langfuse_connect: ["secret_key"],
 };

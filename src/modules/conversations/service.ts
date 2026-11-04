@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { modelConfigSchema } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import { isNudgeOrigin } from "@/graph/nudge-origin";
@@ -33,8 +34,10 @@ import {
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
+  attachmentFetchTarget,
   ChatwootApiError,
   type ChatwootClient,
+  chatwootLinkBase,
 } from "@/modules/chatwoot/client";
 import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
 import {
@@ -730,7 +733,10 @@ async function loadConvRef(
     observers: { agentId: bigint }[];
   } | null;
   contact: { name: string | null; voiceReply: boolean | null } | null;
-  instance: { accountId: number; deployment: { baseUrl: string } };
+  instance: {
+    accountId: number;
+    deployment: { baseUrl: string; publicUrl: string | null };
+  };
 }> {
   const conv = await runScopedOn(base, ctx, (db) =>
     db.conversation.findUnique({
@@ -771,7 +777,7 @@ async function loadConvRef(
         instance: {
           select: {
             accountId: true,
-            deployment: { select: { baseUrl: true } },
+            deployment: { select: { baseUrl: true, publicUrl: true } },
           },
         },
       },
@@ -1768,7 +1774,7 @@ export async function getConversationDetail(
       : null,
     followUp,
     appointmentReminders,
-    chatwootBaseUrl: conv.instance.deployment.baseUrl,
+    chatwootBaseUrl: chatwootLinkBase(conv.instance.deployment),
     accountId: conv.instance.accountId,
     trail,
     usage: await getConversationUsage(ctx, id, base),
@@ -1839,10 +1845,18 @@ export async function getConversationMedia(
     }),
   );
   if (!instance) return null;
+  // The instance's own files only, by the rule `downloadAttachment` fetches with: the base's origin,
+  // or Chatwoot's public data_url when the base is a declared private address.
   let sameOrigin = false;
   try {
+    const target = attachmentFetchTarget(
+      url,
+      instance.deployment.baseUrl,
+      config.ssrf.internalTargets,
+    );
     sameOrigin =
-      new URL(url).origin === new URL(instance.deployment.baseUrl).origin;
+      new URL(target.url).origin ===
+      new URL(instance.deployment.baseUrl).origin;
   } catch {
     sameOrigin = false;
   }

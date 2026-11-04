@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { AppError } from "@/lib/errors";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -16,6 +17,7 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   deploymentConnect,
   deploymentSetAccounts,
+  deploymentUpdate,
   inboxBind,
   inboxObserve,
   inboxRemove,
@@ -199,6 +201,183 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  test("deployment_connect: the preview names only the address fields the call sends", async () => {
+    // tenantB and a public IP literal, as in the dry-run test below: nothing connected, no DNS.
+    const omitted = await deploymentConnect(
+      principal({ tenantId: tenantB }),
+      { base_url: "https://93.184.216.34", admin_token: "cw-token" },
+      { base: appDb },
+    );
+    expect(omitted.ok).toBe(true);
+    if (omitted.ok) {
+      const preview = (omitted.data as { preview: Record<string, unknown> })
+        .preview;
+      expect("webhookBaseUrl" in preview).toBe(false);
+      expect("publicUrl" in preview).toBe(false);
+    }
+    const reset = await deploymentConnect(
+      principal({ tenantId: tenantB }),
+      {
+        base_url: "https://93.184.216.34",
+        admin_token: "cw-token",
+        webhook_base_url: null,
+        public_url: "https://desk.channels.example/",
+      },
+      { base: appDb },
+    );
+    expect(reset.ok).toBe(true);
+    if (reset.ok) {
+      const preview = (reset.data as { preview: Record<string, unknown> })
+        .preview;
+      expect(preview.webhookBaseUrl).toBeNull();
+      expect(preview.publicUrl).toBe("https://desk.channels.example");
+    }
+  });
+
+  test("deployment_update base_url: the preview asks what the apply asks", async () => {
+    const moved = "https://93.184.216.34";
+    // Account 3 is connected; a Chatwoot that does not list it is another installation.
+    const elsewhere = async () => ({ id: 5, accounts: [{ id: 4, name: "x" }] });
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: moved },
+      { base: appDb, fetchProfile: elsewhere },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: moved, dry_run: false },
+      { base: appDb, fetchProfile: elsewhere },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) {
+      expect(preview.error).toBe(apply.error);
+      expect(preview.error).toContain("another Chatwoot");
+    }
+    const same = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: moved },
+      {
+        base: appDb,
+        fetchProfile: async () => ({ id: 5, accounts: [{ id: 3, name: "x" }] }),
+      },
+    );
+    expect(same.ok).toBe(true);
+    if (same.ok) {
+      const p = (same.data as { preview: Record<string, unknown> }).preview;
+      expect(p.baseUrl).toBe(moved);
+    }
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId: tenantA },
+    });
+    expect(dep.baseUrl).not.toBe(moved);
+  });
+
+  test("deployment_update base_url: an account another tenant holds at the new address is refused by the preview too", async () => {
+    const moved = "https://93.184.216.34";
+    const dep = await suDb.chatwootDeployment.create({
+      data: { tenantId: tenantB, baseUrl: moved, adminToken: "enc" },
+    });
+    await suDb.chatwootInstance.create({
+      data: {
+        tenantId: tenantB,
+        deploymentId: dep.id,
+        accountId: 3,
+        serverKey: moved,
+      },
+    });
+    try {
+      const same = async () => ({ id: 5, accounts: [{ id: 3, name: "x" }] });
+      const preview = await deploymentUpdate(
+        principal({ tenantId: tenantA }),
+        { base_url: moved },
+        { base: appDb, fetchProfile: same },
+      );
+      const apply = await deploymentUpdate(
+        principal({ tenantId: tenantA }),
+        { base_url: moved, dry_run: false },
+        { base: appDb, fetchProfile: same },
+      );
+      expect(preview.ok).toBe(false);
+      expect(apply.ok).toBe(false);
+      if (!preview.ok && !apply.ok) {
+        expect(preview.error).toBe(apply.error);
+        expect(preview.error).toContain("another tenant");
+      }
+    } finally {
+      await suDb.chatwootInstance.deleteMany({ where: { tenantId: tenantB } });
+      await suDb.chatwootDeployment.deleteMany({
+        where: { tenantId: tenantB },
+      });
+    }
+  });
+
+  test("deployment_update: the stored base_url alone is refused by the preview, as the apply refuses it", async () => {
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId: tenantA },
+    });
+    const same = async () => ({ id: 5, accounts: [{ id: 3, name: "x" }] });
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: `${dep.baseUrl}/` },
+      { base: appDb, fetchProfile: same },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: `${dep.baseUrl}/`, dry_run: false },
+      { base: appDb, fetchProfile: same },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) {
+      expect(preview.error).toBe(apply.error);
+      expect(preview.error).toContain("Nothing to change");
+    }
+  });
+
+  test("deployment_update admin_token: a token the deployment refuses is refused by the preview, as the apply refuses it", async () => {
+    const refuses = async () => {
+      throw new AppError("chatwoot rejected the admin token", 422);
+    };
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { admin_token: "WRONG" },
+      { base: appDb, fetchProfile: refuses },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { admin_token: "WRONG", dry_run: false },
+      { base: appDb, fetchProfile: refuses },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) expect(preview.error).toBe(apply.error);
+  });
+
+  test("deployment_update: the preview refuses a tenant with no connection, as the apply does", async () => {
+    const args = { public_url: "https://desk.channels.example" };
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantB }),
+      args,
+      {
+        base: appDb,
+      },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantB }),
+      { ...args, dry_run: false },
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) expect(preview.error).toBe(apply.error);
+    // A connected tenant gets its preview.
+    const ok = await deploymentUpdate(principal({ tenantId: tenantA }), args, {
+      base: appDb,
+    });
+    expect(ok.ok).toBe(true);
   });
 
   // NOTE: The APPLY's own refusal. The check runs before the credential round trip: refusing the switch

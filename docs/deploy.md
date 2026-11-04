@@ -121,6 +121,7 @@ See `.env.example` for the full list. Deploy-critical:
 - **`connection_limit` in the URL is NOT that knob, and setting it does nothing.** The runtime connects through the pg driver adapter (`PrismaPg({ connectionString, max })`, `src/api/lib/prisma.ts`), so the pool is a `pg` pool sized by `max`, and `connection_limit` is a parameter of the Prisma engine that is not in this path. Measured: a `pg` pool built from a URL carrying `?connection_limit=2`, with no `max`, ran three concurrent queries on three distinct backends and kept `options.max` at 10. It is named here because it is the knob the Prisma documentation sends you to, and a pool sized with it would be a setting that reads as applied and is not.
 - `JWT_SECRET`, `ENCRYPTION_KEY` — strong unique secrets. Rotating `ENCRYPTION_KEY` invalidates all encrypted-at-rest data (vault, Chatwoot tokens).
 - `PUBLIC_URL`, `CORS_ORIGIN`, `PORT`.
+- `SSRF_INTERNAL_TARGETS` when Chatwoot and the agents share a private network: see "Chatwoot on a private network" below.
 - Langfuse is **per-tenant** (a `langfuse` vault entry), never a global env var. To self-host the Langfuse instance itself (optional companion service), use [`.claude/skills/agents-onboarding/templates/langfuse/`](../.claude/skills/agents-onboarding/templates/langfuse/): it bundles the **MinIO blob storage that v3 ingestion requires** — the upstream one-click omits it, so reads (and the credential "test") pass while every ingest 500s and traces silently vanish. Coolify (magic vars) + Portainer/generic flavors and a verify-ingestion recipe are in its README.
 
 ### Connection budget
@@ -171,6 +172,19 @@ The onboarding's Tier B adapter drives Portainer over its API and bundles **Cadd
 ### EasyPanel / plain compose
 
 Same model, bring-your-own-proxy. Use [`docker-compose.prod.yml`](../docker-compose.prod.yml) (publishes the app's HTTP port; terminate TLS in front), provide a `pgvector/pgvector:pg17` Postgres, set the two URL pairs (superuser vs app role), and keep the image's bootstrap→migrate→serve command. On EasyPanel set the env vars in the service UI; for a plain VM, `gen-onboarding-env.ts` writes the `.env` and `docker compose -f docker-compose.prod.yml up -d` brings up the stack.
+
+### Chatwoot on a private network
+
+When Chatwoot and the agents run on the same private network and their public addresses sit behind an access gate (Cloudflare Access, a VPN-only proxy) that a call between the two servers cannot pass, point each side at the other's private address. One setting is infrastructure, the list of private services the agents may reach; the other two belong to the Chatwoot connection, because one installation can serve a Chatwoot on a private network and another on the internet.
+
+With Chatwoot at `http://10.0.0.5:3000` (opened by people at `https://chat.example.com`) and the agents at `http://10.0.0.6:3000`:
+
+- On the agents, env: `SSRF_INTERNAL_TARGETS=10.0.0.5:3000` lets the Chatwoot client reach that host and port over http with the SSRF guard on. Do not set `SSRF_ALLOW_PRIVATE_TARGETS=true` for this; it lifts the guard for every outbound call.
+- In the console, Channels, connect (or "Edit connection" on an existing one) with base URL `http://10.0.0.5:3000`, "Address this Chatwoot calls" `http://10.0.0.6:3000` and "Chatwoot public address" `https://chat.example.com`. The first is written into every Agent Bot's `outgoing_url` of this connection (empty means `PUBLIC_URL`); the second is where the console and the case notes link to (empty means the base URL), and the host whose images in an email body are read through the base. One link does not follow: the Chatwoot fork builds the contact panel's link to this console from the origin of the Agent Bot's `outgoing_url`, so with a private webhook base that link opens the private address, which works only from a browser inside the network. The same fields are on `POST`/`PATCH /v1/chatwoot/deployment` and the MCP tools `deployment_connect` and `deployment_update`.
+- Changing "Address this Chatwoot calls" moves the connection's existing bots to it right away; a bot whose Chatwoot could not be read then moves on the next bind of its inbox.
+- Chatwoot keeps building attachment URLs from its public `FRONTEND_URL`; the agents fetch them from `http://10.0.0.5:3000` with the same path, so nothing changes on the Chatwoot side.
+
+Chatwoot itself must be allowed to call a private address: its webhook sender goes through `SafeFetch`, which refuses private ranges unless the Chatwoot container has `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true` (fazer.ai Chatwoot fork). Without it the bots' deliveries to `10.0.0.6` fail on the Chatwoot side and never reach the agents. Details in `docs/chatwoot.md` "Chatwoot on a private network".
 
 ### Coolify freezes a compose default at creation time
 

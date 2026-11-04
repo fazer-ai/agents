@@ -388,6 +388,39 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(provider.calls).toBe(1);
   });
 
+  test("a blob written with the connection's public address is read through its base; another host is not", async () => {
+    await setVision(true);
+    const inst = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { deploymentId: true },
+    });
+    await suDb.chatwootDeployment.update({
+      where: { id: inst.deploymentId },
+      data: { publicUrl: "https://desk.example.com" },
+    });
+    try {
+      const path = "/rails/active_storage/blobs/redirect/sig41--x/print.png";
+      const out = await reengage(
+        1089,
+        {
+          content: "Olha o erro:",
+          content_attributes: emailBag({
+            html: `<div>Olha o erro:<img src="https://desk.example.com${path}"><img src="https://other.example.com${path.replace("sig41", "sig42")}"></div>`,
+          }),
+        },
+        { texts: ["Print de uma tela de erro."] },
+      );
+      expect(out.downloads).toEqual([`${HOST}${path}`]);
+      expect(out.turn).toContain("Print de uma tela de erro.");
+      expect(provider.calls).toBe(1);
+    } finally {
+      await suDb.chatwootDeployment.update({
+        where: { id: inst.deploymentId },
+        data: { publicUrl: null },
+      });
+    }
+  });
+
   test("the pasted shape: every Chatwoot blob in the HTML is read, the remote logo is not fetched", async () => {
     await setVision(true);
     const out = await reengage(

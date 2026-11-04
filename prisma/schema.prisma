@@ -411,16 +411,28 @@ model Invitation {
 // Chatwoot deployment" is a structural invariant (it keeps conversation.id / contact.id / inbox.id —
 // all per-deployment — globally unique within the tenant, killing cross-deployment id collisions).
 model ChatwootDeployment {
-  id         BigInt   @id @default(autoincrement())
-  tenantId   BigInt   @unique @map("tenant_id")
+  id             BigInt   @id @default(autoincrement())
+  tenantId       BigInt   @unique @map("tenant_id")
   // NOT globally unique: one Chatwoot server can back MANY tenants (one client per tenant). The
   // shared admin token only ever acts on accounts resolved from RLS-scoped rows, so sharing is safe.
   // Uniqueness lives on the ACCOUNT (ChatwootInstance.serverKey + accountId), not the server.
   // Stored canonical (lowercase origin, no trailing slash) — see normalizeChatwootBaseUrl.
-  baseUrl    String   @map("base_url")
-  adminToken String   @map("admin_token") // encrypted; the shared user/admin access token
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
+  baseUrl        String   @map("base_url")
+  adminToken     String   @map("admin_token") // encrypted; the shared user/admin access token
+  // The base THIS Chatwoot calls the agents on (each Agent Bot's outgoing_url). Null means PUBLIC_URL;
+  // set when the Chatwoot reaches the agents on a private address. Stored canonical, no trailing slash.
+  webhookBaseUrl String?  @map("webhook_base_url")
+  // The address people open this Chatwoot on, for the links the console and case notes print. Null
+  // means base_url; set when base_url is a private address only the servers reach.
+  publicUrl      String?  @map("public_url")
+  // The key the deployment's accounts are reserved under across tenants: the address it was first
+  // connected on. Null means base_url; pinned when the base URL moves, so a move never frees a claim.
+  serverKey      String?  @map("server_key")
+  // Every base URL it answered on before the current one, so each address a move left behind still
+  // holds its accounts for every other tenant.
+  formerBaseUrls String[] @default([]) @map("former_base_urls")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instances ChatwootInstance[]

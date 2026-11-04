@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import {
   assertAccountsClaimable,
   assertAccountsSelectable,
@@ -9,13 +10,16 @@ import {
   assertInboxBindable,
   assertInboxReconnectable,
   bindInbox,
+  chatwootDeploymentUpdateSchema,
   connectChatwootDeployment,
   getChatwootInstance,
   type InboxBotReading,
+  type ListAccountsDeps,
   listChatwootAccounts,
   listDeploymentAccounts,
   listInboxes,
   observeInbox,
+  previewChatwootDeploymentUpdate,
   previewInboxRemoval,
   readInboxBotForBind,
   readObserveTarget,
@@ -27,6 +31,7 @@ import {
   softDisconnectChatwootInstance,
   syncInboxes,
   unobserveInbox,
+  updateChatwootDeployment,
 } from "@/modules/chatwoot/management";
 import {
   bindInboxVoiceAgent,
@@ -62,6 +67,10 @@ export interface DeploymentConnectArgs {
   // provisioning, or the user has it). Used in-band but kept out of the audit (metadata only). REST
   // parity: POST /v1/chatwoot/deployment also takes the token inline.
   admin_token: string;
+  // The base this Chatwoot calls the agents on, and the address people open it on. Optional; null or
+  // empty means the default (PUBLIC_URL, and base_url). REST parity: the same fields on the POST.
+  webhook_base_url?: string | null;
+  public_url?: string | null;
   dry_run?: boolean;
 }
 
@@ -84,6 +93,8 @@ export async function deploymentConnect(
       const data = await assertDeploymentConnectable({
         baseUrl: args.base_url,
         adminToken: args.admin_token,
+        webhookBaseUrl: args.webhook_base_url,
+        publicUrl: args.public_url,
       });
       // NOTE: ADVISORY, since this one READS. It takes the base URL the line above NORMALIZED,
       // which is what the write compares and stores; the raw string would call a reconnect a
@@ -94,12 +105,27 @@ export async function deploymentConnect(
         action: "connect",
         resource: "chatwoot_deployment",
         // The raw token is never echoed back, not even in the preview.
-        preview: { baseUrl: args.base_url, adminToken: "(redacted)" },
+        preview: {
+          baseUrl: args.base_url,
+          adminToken: "(redacted)",
+          // Only what the call sends: an omitted field keeps the stored value, null resets it.
+          ...(data.webhookBaseUrl !== undefined
+            ? { webhookBaseUrl: data.webhookBaseUrl }
+            : {}),
+          ...(data.publicUrl !== undefined
+            ? { publicUrl: data.publicUrl }
+            : {}),
+        },
       });
     }
     const result = await connectChatwootDeployment(
       ctx,
-      { baseUrl: args.base_url, adminToken: args.admin_token },
+      {
+        baseUrl: args.base_url,
+        adminToken: args.admin_token,
+        webhookBaseUrl: args.webhook_base_url,
+        publicUrl: args.public_url,
+      },
       {},
       base,
     );
@@ -137,6 +163,78 @@ export async function deploymentRotateToken(
       base,
     );
     return ok({ dryRun: false, applied: true, deployment: updated });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Edit the connection (REST parity: PATCH /v1/chatwoot/deployment): a new base URL of the same
+// Chatwoot, the admin token and the two optional addresses. The preview asks what the apply asks; a
+// new webhook base moves the live bots on apply.
+export async function deploymentUpdate(
+  principal: VerifiedToken,
+  args: {
+    base_url?: string;
+    admin_token?: string;
+    webhook_base_url?: string | null;
+    public_url?: string | null;
+    dry_run?: boolean;
+  },
+  deps: WriteDeps & ListAccountsDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = adminGate(principal);
+  if ("ok" in ctx) return ctx;
+  if (
+    args.base_url === undefined &&
+    args.admin_token === undefined &&
+    args.webhook_base_url === undefined &&
+    args.public_url === undefined
+  ) {
+    return err(
+      "send base_url, admin_token, webhook_base_url and/or public_url",
+    );
+  }
+  try {
+    const input = {
+      ...(args.base_url !== undefined ? { baseUrl: args.base_url } : {}),
+      ...(args.admin_token !== undefined
+        ? { adminToken: args.admin_token }
+        : {}),
+      webhookBaseUrl: args.webhook_base_url,
+      publicUrl: args.public_url,
+    };
+    if (args.dry_run !== false) {
+      const data = parseInput(chatwootDeploymentUpdateSchema, input);
+      // The same refusals the apply makes (no connection, an unchanged address with nothing else, a
+      // refused address or token), asked read-only.
+      const { baseUrl: movedTo } = await previewChatwootDeploymentUpdate(
+        ctx,
+        data,
+        deps,
+        base,
+      );
+      return ok({
+        dryRun: true,
+        action: "update",
+        resource: "chatwoot_deployment",
+        // The raw token is never echoed back, not even in the preview.
+        preview: {
+          ...(movedTo !== null ? { baseUrl: movedTo } : {}),
+          ...(data.adminToken !== undefined
+            ? { adminToken: "(redacted)" }
+            : {}),
+          ...(data.webhookBaseUrl !== undefined
+            ? { webhookBaseUrl: data.webhookBaseUrl }
+            : {}),
+          ...(data.publicUrl !== undefined
+            ? { publicUrl: data.publicUrl }
+            : {}),
+        },
+      });
+    }
+    const deployment = await updateChatwootDeployment(ctx, input, deps, base);
+    return ok({ dryRun: false, applied: true, deployment });
   } catch (e) {
     return failOf(e);
   }

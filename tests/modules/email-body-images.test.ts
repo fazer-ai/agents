@@ -4,6 +4,7 @@ import {
   emailBodyImageUrlsFrom,
   oneByBlob,
   servedBy,
+  throughBase,
 } from "@/modules/chatwoot/email-body-images";
 import {
   incomingRenderable,
@@ -285,5 +286,42 @@ describe("isDecorativeImage", () => {
       ),
     ).toBe(false);
     expect(isDecorativeImage(new ArrayBuffer(3))).toBe(false);
+  });
+});
+
+describe("throughBase: a body image written with the public address of a Chatwoot on a private base", () => {
+  const BASE = "http://10.0.0.5:3000";
+  const PUBLIC = "https://desk.example.com";
+  const path = "/rails/active_storage/blobs/redirect/sig1--x/a.png";
+
+  test("the declared public host is read through the base, and then passes the host check", () => {
+    const mapped = throughBase(
+      `${PUBLIC}${path}?disposition=inline`,
+      BASE,
+      PUBLIC,
+    );
+    expect(mapped).toBe(`${BASE}${path}?disposition=inline`);
+    expect(servedBy(mapped, BASE)).toBe(true);
+  });
+
+  test("any other host stays as it is, and stays remote", () => {
+    const remote = `https://cdn.store.example${path}`;
+    expect(throughBase(remote, BASE, PUBLIC)).toBe(remote);
+    expect(servedBy(remote, BASE)).toBe(false);
+  });
+
+  test("no public address declared, nothing is mapped", () => {
+    expect(throughBase(`${PUBLIC}${path}`, BASE, null)).toBe(
+      `${PUBLIC}${path}`,
+    );
+  });
+
+  test("off Active Storage, or http for an https public address, is not mapped", () => {
+    expect(throughBase(`${PUBLIC}/api/v1/profile`, BASE, PUBLIC)).toBe(
+      `${PUBLIC}/api/v1/profile`,
+    );
+    expect(throughBase(`http://desk.example.com${path}`, BASE, PUBLIC)).toBe(
+      `http://desk.example.com${path}`,
+    );
   });
 });

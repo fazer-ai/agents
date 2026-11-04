@@ -1372,3 +1372,57 @@ describe("ChatwootApiError carries whether the response asked for a retry", () =
     expect((err as ChatwootApiError).retryAfter).toBe(expected);
   });
 });
+
+describe("one queue per target across a base URL move", () => {
+  test("clients loaded before and after a move merge into the same contact, not over each other", async () => {
+    // One Chatwoot behind two addresses: the contact's attributes live in one place.
+    let stored: Record<string, unknown> = {};
+    let gets = 0;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") {
+        gets += 1;
+        const snapshot = { ...stored };
+        // The first read is slow: an unserialized second write would read the same empty hash.
+        if (gets === 1) await new Promise((r) => setTimeout(r, 30));
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({ payload: { custom_attributes: snapshot } }),
+        } as unknown as Response;
+      }
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        custom_attributes?: Record<string, unknown>;
+      };
+      stored = body.custom_attributes ?? {};
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const deps = { fetchImpl, assertSafe: passthroughSafe };
+    const before = await createChatwootClient(
+      {
+        ...baseConfig,
+        baseUrl: "http://10.0.0.5:3000",
+        identity: "chatwoot-deployment:9",
+      },
+      deps,
+    );
+    const after = await createChatwootClient(
+      {
+        ...baseConfig,
+        baseUrl: "https://chat.example.com",
+        identity: "chatwoot-deployment:9",
+      },
+      deps,
+    );
+    await Promise.all([
+      before.setContactCustomAttributes(77, { a: 1 }),
+      after.setContactCustomAttributes(77, { b: 2 }),
+    ]);
+    expect(JSON.stringify(stored)).toBe(JSON.stringify({ a: 1, b: 2 }));
+  });
+});

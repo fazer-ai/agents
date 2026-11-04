@@ -1,6 +1,13 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import {
   cleanup,
   fireEvent,
@@ -11,6 +18,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components/Toast";
+import { invalidateVault } from "@/client/lib/vaultCache";
 import { OccurrencesPanel } from "@/client/pages/resources/OccurrencesPanel";
 
 const { default: i18n } = await import("@/client/lib/i18n");
@@ -348,6 +356,10 @@ const SET_UP = {
   reasonField: "motivo" as string | null,
   referenceField: "referencia" as string | null,
 };
+
+// The vault list is cached per process for 30s, so a file that ran before this one in the same
+// worker would otherwise hand these tests its own credentials instead of the stub's.
+beforeEach(invalidateVault);
 
 afterEach(() => {
   cleanup();

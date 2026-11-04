@@ -20,7 +20,8 @@ import {
 
 export type CarryClient = Pick<
   ChatwootClient,
-  | "conversationUrl"
+  | "conversationKey"
+  | "conversationLink"
   | "getConversation"
   | "getMessages"
   | "isInstanceUrl"
@@ -273,7 +274,7 @@ export async function carryCaseAttachments(
   // side by side, the second write would drop the first one's entries and its files would be posted
   // again on the next call. Serialized, the second reads what the first recorded.
   return withKeyedQueue(
-    `cross-inbox-case-carry:${client.conversationUrl(input.caseId)}`,
+    `cross-inbox-case-carry:${client.conversationKey(input.caseId)}`,
     () => carryLocked(client, input),
   );
 }
@@ -369,7 +370,7 @@ async function carryLocked(
     };
   }
 
-  const originUrl = client.conversationUrl(input.originConversationId);
+  const originUrl = client.conversationLink(input.originConversationId);
   let posted = false;
   if (files.length > 0) {
     try {

@@ -189,9 +189,10 @@ export interface SafeUrlOptions {
   // always run regardless — file:, ftp:, etc. are never allowed.
   allowPrivate?: boolean;
   // The internal targets THIS call may reach with the guard on, normally
-  // `config.ssrf.internalTargets`. Absent everywhere except the HTTP tool, and there only for a tool
-  // whose own allowedHosts names the host: a call site that does not pass it keeps the full guard,
-  // which is the property the instance-wide flag lacks. See `matchInternalTarget`.
+  // `config.ssrf.internalTargets`. Passed by two call sites only: the HTTP tool, for a tool whose own
+  // allowedHosts names the host, and the Chatwoot client, for the deployment's base URL (an attachment
+  // included only when it is fetched from that base). A call site that does not pass it keeps the full
+  // guard, which is the property the instance-wide flag lacks. See `matchInternalTarget`.
   internalTargets?: readonly InternalTarget[];
   // NOTE: the resolver, injectable. Same seam as `deps.assertSafe` elsewhere in the tree, and it
   // exists for one thing the real resolver cannot be made to do on demand: fail TRANSIENTLY. Which

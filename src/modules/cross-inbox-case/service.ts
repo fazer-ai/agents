@@ -31,7 +31,8 @@ export { destinationIdentity };
 // What the operation needs from the Chatwoot client, named so a test can hand it a fake.
 export type CaseClient = Pick<
   ChatwootClient,
-  | "conversationUrl"
+  | "conversationKey"
+  | "conversationLink"
   | "getInbox"
   | "getConversation"
   | "getContact"
@@ -493,7 +494,7 @@ export function openCaseInInbox(
   // calls twice would otherwise read "no case yet" twice and open two. Serialized per origin
   // conversation, the second call reads the case number the first one wrote.
   return withKeyedQueue(
-    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationUrl(input.originConversationId)}`,
+    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationKey(input.originConversationId)}`,
     () => run(client, input),
   );
 }
@@ -507,7 +508,7 @@ async function run(
   if (target === null) return { kind: "not_configured" };
   const origin = input.originConversationId;
   const detached = input.detachedOrigin ?? null;
-  const originUrl = detached?.url ?? client.conversationUrl(origin);
+  const originUrl = detached?.url ?? client.conversationLink(origin);
   const interpolate = input.interpolate ?? ((t: string) => t);
 
   let step = "read_target_inbox";
@@ -602,7 +603,7 @@ async function run(
         return {
           kind: "already_open",
           caseId: known,
-          caseUrl: client.conversationUrl(known),
+          caseUrl: client.conversationLink(known),
           identity: null,
           partial,
           additionDelivered,
@@ -723,7 +724,7 @@ async function run(
     // ORIGIN, so two origins of one contact could both list before either creates and both send an
     // opening to the same continued case. Keyed by account, inbox and case contact, the second lists
     // after the first created and reads its case as continued.
-    const caseKey = `cross-inbox-case-contact:${client.conversationUrl(0)}:${target}:${caseContactId}`;
+    const caseKey = `cross-inbox-case-contact:${client.conversationKey(0)}:${target}:${caseContactId}`;
     return await withKeyedQueue(caseKey, async (): Promise<OpenCaseResult> => {
       // 3. Open, or continue. Which of the two happened is read from the contact's conversations
       // BEFORE the call: the create answers with a conversation either way.
@@ -806,7 +807,7 @@ async function run(
       // An addition reads as continued too: a listed case is in `before`, and one only the filter finds
       // is older than every listed conversation, so its number is below `newestBefore`.
       const continued = before.has(caseId) || caseId <= newestBefore;
-      const caseUrl = client.conversationUrl(caseId);
+      const caseUrl = client.conversationLink(caseId);
 
       // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
       // The case number goes first, because it is what makes the next call answer "already open".

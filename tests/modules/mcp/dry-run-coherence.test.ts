@@ -177,6 +177,10 @@ const TABLE: Record<string, Row> = {
     skip: "takes no arguments: every refusal it has is a property of the deployment, not of an input",
   },
   deployment_rotate_token: { args: { admin_token: "" }, why: "empty token" },
+  deployment_update: {
+    args: { webhook_base_url: "http://10.0.0.6:3000/?" },
+    why: "a bare ? would put the webhook mount in the query",
+  },
   deployment_set_accounts: {
     args: { account_ids: [999999999] },
     why: "no Chatwoot deployment is connected",

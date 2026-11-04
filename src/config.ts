@@ -968,8 +968,9 @@ const config = {
         : SSRF_ALLOW_PRIVATE_TARGETS === "false"
           ? false
           : (NODE_ENV || "development") === "development",
-    // The internal services an HTTP tool may reach with the guard ON. Read only by the
-    // HTTP tool, and there only when the tool's own allowedHosts names the host. See src/lib/ssrf.ts.
+    // The internal services reachable with the guard ON. Read by the HTTP tool, there only when the
+    // tool's own allowedHosts names the host, and by the Chatwoot client, there only for the
+    // deployment's base URL. See src/lib/ssrf.ts.
     internalTargets: parseInternalTargets(
       SSRF_INTERNAL_TARGETS,
       "SSRF_INTERNAL_TARGETS",

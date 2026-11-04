@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import { type AppError, ConflictError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
@@ -808,6 +809,27 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenant}`);
   });
 
+  test("the console's Chatwoot link uses the connection's public address when it has one", async () => {
+    const before = await getConversationDetail(ctx(tenant), convId, appDb);
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId: tenant },
+    });
+    expect(before.chatwootBaseUrl).toBe(dep.baseUrl);
+    await suDb.chatwootDeployment.update({
+      where: { id: dep.id },
+      data: { publicUrl: "https://desk.example.com" },
+    });
+    try {
+      const after = await getConversationDetail(ctx(tenant), convId, appDb);
+      expect(after.chatwootBaseUrl).toBe("https://desk.example.com");
+    } finally {
+      await suDb.chatwootDeployment.update({
+        where: { id: dep.id },
+        data: { publicUrl: null },
+      });
+    }
+  });
+
   test("detail returns the metadata shell with NO network call", async () => {
     const stub = makeStub();
     const detail = await getConversationDetail(ctx(tenant), convId, appDb);
@@ -1079,6 +1101,46 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       ),
     ).rejects.toMatchObject({ statusCode: 400 });
     expect(foreign.calls.downloadAttachment).toEqual([]);
+  });
+
+  test("media admits Chatwoot's public data_url only when the base is a declared internal target", async () => {
+    const url = "https://chat.example.com/rails/active_storage/blobs/x/a.ogg";
+    const refused = makeStub();
+    await expect(
+      getConversationMedia(
+        ctx(tenant),
+        convId,
+        url,
+        { makeClient: refused.makeClient },
+        appDb,
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    const saved = config.ssrf.internalTargets;
+    config.ssrf.internalTargets = [{ host: "203.0.113.10", port: 443 }];
+    try {
+      const stub = makeStub();
+      await getConversationMedia(
+        ctx(tenant),
+        convId,
+        url,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      expect(stub.calls.downloadAttachment).toEqual([url]);
+      // Outside Active Storage the declared base does not widen anything.
+      const other = makeStub();
+      await expect(
+        getConversationMedia(
+          ctx(tenant),
+          convId,
+          "https://chat.example.com/files/a.ogg",
+          { makeClient: other.makeClient },
+          appDb,
+        ),
+      ).rejects.toMatchObject({ statusCode: 400 });
+    } finally {
+      config.ssrf.internalTargets = saved;
+    }
   });
 
   test("messages degrade gracefully when the live thread fetch fails", async () => {

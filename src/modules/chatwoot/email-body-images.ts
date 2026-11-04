@@ -115,6 +115,27 @@ export function onChatwootHost(url: string, baseUrl: string): string {
   return url.startsWith(BLOB_PATH) ? new URL(url, baseUrl).href : url;
 }
 
+// A body image Chatwoot wrote with its public address (its FRONTEND_URL) while this connection reaches
+// it on a private base: the same Active Storage path, fetched through the base, so the host check
+// below accepts it. Only the host the operator declared as this Chatwoot's public address is mapped;
+// any other host is left as it is, and stays remote.
+export function throughBase(
+  url: string,
+  baseUrl: string,
+  publicUrl: string | null | undefined,
+): string {
+  if (!publicUrl) return url;
+  try {
+    const u = new URL(url);
+    const pub = new URL(publicUrl);
+    if (u.host !== pub.host || !inActiveStorage(url)) return url;
+    if (pub.protocol === "https:" && u.protocol !== "https:") return url;
+    return new URL(`${u.pathname}${u.search}`, baseUrl).href;
+  } catch {
+    return url;
+  }
+}
+
 // Whether a body image is this Chatwoot's: on its host, and still under Active Storage once
 // normalized. A remote image in quoted HTML was never uploaded by anyone in the conversation, and is
 // not fetched. Nor is an `http:` URL for an `https:` instance: the downloader sends the admin token

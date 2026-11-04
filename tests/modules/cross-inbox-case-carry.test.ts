@@ -58,7 +58,9 @@ function fake(
     return out.buffer;
   };
   const client: CarryClient = {
-    conversationUrl: (id: number) =>
+    conversationKey: (id: number) =>
+      `${INSTANCE}/app/accounts/1/conversations/${id}`,
+    conversationLink: (id: number) =>
       `${INSTANCE}/app/accounts/1/conversations/${id}`,
     getConversation: async (id: number) => {
       calls.push({ fn: "getConversation", args: [id] });

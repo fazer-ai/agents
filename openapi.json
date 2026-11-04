@@ -58262,6 +58262,20 @@
                     "minLength": 1,
                     "description": "Chatwoot admin/user access token; encrypted at rest, never returned.",
                     "type": "string"
+                  },
+                  "webhookBaseUrl": {
+                    "description": "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "publicUrl": {
+                    "description": "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -58282,6 +58296,20 @@
                     "minLength": 1,
                     "description": "Chatwoot admin/user access token; encrypted at rest, never returned.",
                     "type": "string"
+                  },
+                  "webhookBaseUrl": {
+                    "description": "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "publicUrl": {
+                    "description": "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -58302,6 +58330,20 @@
                     "minLength": 1,
                     "description": "Chatwoot admin/user access token; encrypted at rest, never returned.",
                     "type": "string"
+                  },
+                  "webhookBaseUrl": {
+                    "description": "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "publicUrl": {
+                    "description": "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -58511,22 +58553,38 @@
         "tags": [
           "Channels"
         ],
-        "summary": "Rotate deployment token",
-        "description": "Replace the deployment's admin token. Affects every account under it.",
+        "summary": "Edit Chatwoot deployment",
+        "description": "Move the deployment to a new base URL of the same Chatwoot (a domain change), replace its admin token (affects every account under it) and/or set its two optional addresses. A new base URL is refused unless it answers as the same Chatwoot: the same user behind the token and every connected account under its id. A new webhook base moves the deployment's live bots onto it.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "adminToken"
-                ],
                 "properties": {
+                  "baseUrl": {
+                    "minLength": 1,
+                    "description": "A new address of the same Chatwoot. Passes the connection's SSRF check (SSRF_INTERNAL_TARGETS included) and is verified with the token (the new one when sent, else the saved one); another Chatwoot is refused with 422 and nothing is written. Agent Bots keep their webhook.",
+                    "type": "string"
+                  },
                   "adminToken": {
                     "minLength": 1,
                     "description": "New admin token; encrypted at rest, never returned.",
                     "type": "string"
+                  },
+                  "webhookBaseUrl": {
+                    "description": "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "publicUrl": {
+                    "description": "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -58534,14 +58592,30 @@
             "application/x-www-form-urlencoded": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "adminToken"
-                ],
                 "properties": {
+                  "baseUrl": {
+                    "minLength": 1,
+                    "description": "A new address of the same Chatwoot. Passes the connection's SSRF check (SSRF_INTERNAL_TARGETS included) and is verified with the token (the new one when sent, else the saved one); another Chatwoot is refused with 422 and nothing is written. Agent Bots keep their webhook.",
+                    "type": "string"
+                  },
                   "adminToken": {
                     "minLength": 1,
                     "description": "New admin token; encrypted at rest, never returned.",
                     "type": "string"
+                  },
+                  "webhookBaseUrl": {
+                    "description": "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "publicUrl": {
+                    "description": "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -58549,14 +58623,30 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "adminToken"
-                ],
                 "properties": {
+                  "baseUrl": {
+                    "minLength": 1,
+                    "description": "A new address of the same Chatwoot. Passes the connection's SSRF check (SSRF_INTERNAL_TARGETS included) and is verified with the token (the new one when sent, else the saved one); another Chatwoot is refused with 422 and nothing is written. Agent Bots keep their webhook.",
+                    "type": "string"
+                  },
                   "adminToken": {
                     "minLength": 1,
                     "description": "New admin token; encrypted at rest, never returned.",
                     "type": "string"
+                  },
+                  "webhookBaseUrl": {
+                    "description": "The base this Chatwoot calls the agents on (each bot's webhook). Empty or null means PUBLIC_URL; set it to the agents' private address when the Chatwoot reaches them on a private network.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "publicUrl": {
+                    "description": "The address people open this Chatwoot on, used for the links the console and case notes print. Empty or null means the base URL.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 }
               }

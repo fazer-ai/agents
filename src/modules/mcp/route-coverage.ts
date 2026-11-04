@@ -103,7 +103,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "DELETE /v1/business-hours/:id": { tool: "business_hours_delete" },
   "GET /v1/chatwoot/deployment": { tool: "instance_list" },
   "POST /v1/chatwoot/deployment": { tool: "deployment_connect" },
-  "PATCH /v1/chatwoot/deployment": { tool: "deployment_rotate_token" },
+  "PATCH /v1/chatwoot/deployment": { tool: "deployment_update" },
   "DELETE /v1/chatwoot/deployment": { none: FLEET },
   "GET /v1/chatwoot/deployment/accounts": { tool: "deployment_list_accounts" },
   "PUT /v1/chatwoot/deployment/accounts": { tool: "deployment_set_accounts" },

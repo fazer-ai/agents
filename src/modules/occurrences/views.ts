@@ -15,7 +15,7 @@ import {
 export { THEMES_LIMIT_RANGE };
 
 // Conversations shown with one theme, newest first; the count is always the whole theme's.
-const THEME_CONVERSATIONS_MAX = 200;
+export const THEME_CONVERSATIONS_MAX = 200;
 
 export interface ThemeListItem {
   id: string;
@@ -77,7 +77,7 @@ export interface ThemeLink {
 // so taking an inbox off the list takes its conversations off at once, not at the next round's
 // assignment (which prunes the memberships for good). A monitor of another account, or none, is a
 // 404 like a theme of none.
-async function monitorConfigOn(
+export async function monitorConfigOn(
   db: ScopedDb,
   tenantId: bigint,
   monitorId: bigint,
@@ -107,7 +107,7 @@ const memberOf = (inboxIds: bigint[]) => ({
   conversation: { inboxId: { in: inboxIds } },
 });
 
-const conversationUrl = (c: {
+export const conversationUrl = (c: {
   chatwootConversationId: number;
   instance: { accountId: number; deployment: { baseUrl: string } };
 }) =>

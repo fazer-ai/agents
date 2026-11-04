@@ -230,23 +230,18 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 35_244 with the dashboard and dashboard_source tools (Pro only), the voice tools,
-    // and the client channel SDK's app tools and audience filter (33_086 on the Free tree before the
-    // SDK); 35_532 with the dashboard_embed_link tools, whose job is a new secret-bearing link; 35_951
-    // with the four occurrence tools, each cut to its job and the rules that refuse (the rest is
-    // docs/occurrences.md); 36_447 with the four occurrence monitor tools (list, create, rename,
-    // delete), each a job no other tool does, with the bare sentence that says it; 36_600 once
-    // integration_create spelled out what the GENERIC catalog entry already says about payment
-    // gateways, back to 36_494 with that pointer cut to one clause.
-    expect(desc).toBeLessThanOrEqual(36_500);
+    // Measured at 36_777 on the tree that ships, the dashboard, occurrence, voice and client channel
+    // tools included, each cut to the sentence a caller cannot learn by trying (the raises are in git).
+    expect(desc).toBeLessThanOrEqual(36_900);
     // Measured at 82_062 with the agent_settings_set additions (limits, follow-ups, other inboxes,
     // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client
     // channel SDK's app tools (74_540 on the Free tree before the SDK); 84_599 with the
     // dashboard_embed_link tools and the label settings; 87_056 with the occurrence tools; 88_026
     // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools; 88_157
     // with the hold and how long a theme stays new on occurrences_set, two settings of the monitor;
-    // 88_437 with occurrence_flag_episodes_list, the flag history, a read no other tool does.
-    expect(schema).toBeLessThanOrEqual(88_500);
+    // 88_437 with occurrence_flag_episodes_list, the flag history, a read no other tool does;
+    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update.
+    expect(schema).toBeLessThanOrEqual(89_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

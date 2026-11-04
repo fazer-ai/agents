@@ -48,6 +48,7 @@ export const AUDIT_ACTIONS = [
   "deployment.rotate_token",
   "deployment.set_accounts",
   "deployment.update_urls",
+  "deployment.update_base_url",
   "document_approval.approve",
   "document_approval.reject",
   "document_approval.request_again",

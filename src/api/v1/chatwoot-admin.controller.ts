@@ -49,7 +49,9 @@ import { bindInboxVoiceAgent } from "@/modules/voice-call/inboxes";
 // NOTE: the bind and the rebind refuse differently, and so do the two confirmations: one key per
 // pair would not tell the operator which of the two fields they got wrong.
 // translate('errors.chatwootBindFailed', 'The bot could not be synced with Chatwoot.')
-// translate('errors.chatwootDeploymentNothingToChange', 'Nothing to change: send a new admin token, webhookBaseUrl or publicUrl.')
+// translate('errors.chatwootDeploymentNothingToChange', 'Nothing to change: send a new base URL, admin token, webhookBaseUrl or publicUrl.')
+// translate('errors.chatwootDifferentInstallation', 'This URL points to another Chatwoot; to switch instances, create a new connection.')
+// translate('errors.chatwootDeploymentChanged', 'The connection changed while the new address was being checked; try again.')
 // translate('errors.inboxGoneRemote', 'This inbox no longer exists in Chatwoot. Remove its mirror.')
 // translate('errors.inboxHasForeignAgentBot', 'This inbox is answered by the Agent Bot "{{bot}}", which is not from this instance. Binding replaces it, and unbinding later does not bring it back.')
 // translate('errors.inboxAgentBotUnreadable', 'Could not read which Agent Bot answers this inbox on Chatwoot. If another one is attached, binding replaces it, and unbinding later does not bring it back.')
@@ -173,6 +175,7 @@ export const chatwootAdminController = new Elysia({
     "/deployment",
     async ({ tenantContext, body }) => {
       const b = body as {
+        baseUrl?: string;
         adminToken?: string;
         webhookBaseUrl?: string | null;
         publicUrl?: string | null;
@@ -189,9 +192,16 @@ export const chatwootAdminController = new Elysia({
       requireRole: "SUPER_ADMIN",
       detail: doc(
         "Edit Chatwoot deployment",
-        "Replace the deployment's admin token (affects every account under it) and/or set its two optional addresses. A new webhook base moves the deployment's live bots onto it.",
+        "Move the deployment to a new base URL of the same Chatwoot (a domain change), replace its admin token (affects every account under it) and/or set its two optional addresses. A new base URL is refused unless it answers as the same Chatwoot: the same user behind the token and every connected account under its id. A new webhook base moves the deployment's live bots onto it.",
       ),
       body: t.Object({
+        baseUrl: t.Optional(
+          t.String({
+            minLength: 1,
+            description:
+              "A new address of the same Chatwoot. Passes the connection's SSRF check (SSRF_INTERNAL_TARGETS included) and is verified with the token (the new one when sent, else the saved one); another Chatwoot is refused with 422 and nothing is written. Agent Bots keep their webhook.",
+          }),
+        ),
         adminToken: t.Optional(
           t.String({
             minLength: 1,

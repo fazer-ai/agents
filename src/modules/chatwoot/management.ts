@@ -571,6 +571,8 @@ async function auditUrlChange(
 
 export const chatwootDeploymentUpdateSchema = z
   .object({
+    // A new address for the same Chatwoot (a domain change); verified by `verifyBaseUrlMove`.
+    baseUrl: z.string().url().max(2000).optional(),
     adminToken: z.string().min(1).max(2000).optional(),
     webhookBaseUrl: optionalDeploymentUrl,
     publicUrl: optionalDeploymentUrl,
@@ -579,6 +581,94 @@ export const chatwootDeploymentUpdateSchema = z
 export type ChatwootDeploymentUpdateInput = z.input<
   typeof chatwootDeploymentUpdateSchema
 >;
+
+function differentInstallationError(): AppError {
+  return new AppError(
+    "This URL points to another Chatwoot; to switch instances, create a new connection.",
+    422,
+    "errors.chatwootDifferentInstallation",
+    undefined,
+    "baseUrl",
+  );
+}
+
+function profileUserId(raw: unknown): number | null {
+  if (!isRecord(raw)) return null;
+  const id = raw.id;
+  return typeof id === "number"
+    ? id
+    : typeof id === "string" && /^\d+$/.test(id)
+      ? Number(id)
+      : null;
+}
+
+// Whether a new base URL is the same Chatwoot the connection already talks to, before anything is
+// written: the address passes the connection's SSRF guard, the token (the new one when sent, else the
+// saved one) reaches it, it answers as the same user the saved token belongs to (asked at the new
+// address, or at the old one when the saved token is no longer accepted at the new), and every
+// connected account is still there under its id. Read-only: the MCP preview asks it too.
+export async function verifyBaseUrlMove(
+  ctx: TenantContext,
+  rawBaseUrl: string,
+  newToken: string | undefined,
+  deps: ListAccountsDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ baseUrl: string; from: string; changed: boolean }> {
+  const baseUrl = normalizeChatwootBaseUrl(rawBaseUrl);
+  const dep = await runScopedOn(base, ctx, async (db) => {
+    const row = await db.chatwootDeployment.findFirst({
+      select: { id: true, baseUrl: true, adminToken: true },
+    });
+    if (!row) return null;
+    const accounts = await db.chatwootInstance.findMany({
+      where: { deploymentId: row.id, disconnectedAt: null },
+      select: { accountId: true },
+    });
+    return { ...row, accountIds: accounts.map((a) => a.accountId) };
+  });
+  if (!dep) {
+    throw new NotFoundError(
+      "no chatwoot deployment connected",
+      "errors.chatwootDeploymentNotFound",
+    );
+  }
+  const from = dep.baseUrl;
+  if (baseUrl === normalizeChatwootBaseUrl(from))
+    return { baseUrl, from, changed: false };
+  await assertSafeChatwootUrl(baseUrl); // DNS lookup OUTSIDE any tx
+  const savedToken = readStoredToken(dep.adminToken);
+  const token = newToken ?? savedToken;
+  const fetchProfile = deps.fetchProfile ?? fetchChatwootProfile;
+  const probe = async (url: string, t: string) => {
+    try {
+      return await fetchProfile({ baseUrl: url, token: t });
+    } catch {
+      return null;
+    }
+  };
+  const after = await probe(baseUrl, token);
+  if (after === null) {
+    throw new AppError(
+      "could not reach Chatwoot with the provided URL/token",
+      502,
+      "errors.chatwootProfileFailed",
+    );
+  }
+  const userAfter = profileUserId(after);
+  let anchor: number | null = token === savedToken ? userAfter : null;
+  if (token !== savedToken) {
+    const viaSaved =
+      (await probe(baseUrl, savedToken)) ??
+      (await probe(dep.baseUrl, savedToken));
+    anchor = viaSaved === null ? null : profileUserId(viaSaved);
+  }
+  if (userAfter === null || anchor === null || userAfter !== anchor)
+    throw differentInstallationError();
+  const reachable = new Set(parseChatwootAccounts(after).map((a) => a.id));
+  if (dep.accountIds.some((id) => !reachable.has(id)))
+    throw differentInstallationError();
+  return { baseUrl, from, changed: true };
+}
 
 // Edit the connection: rotate the admin token (validated against the live deployment, as before)
 // and/or set the two optional addresses. A new webhook base moves every live bot of the deployment
@@ -592,16 +682,41 @@ export async function updateChatwootDeployment(
   const data = parseInput(chatwootDeploymentUpdateSchema, input);
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
+  // A new base URL is verified first, network included, and nothing is written when it is refused.
+  // When it moves, a new token goes with it in the same write: rotating first would validate the
+  // token against the old address, which a domain change may have retired.
+  const move =
+    data.baseUrl === undefined
+      ? null
+      : await verifyBaseUrlMove(ctx, data.baseUrl, data.adminToken, deps, base);
+  const moving = move?.changed === true;
   let dto: ChatwootDeploymentDto | null = null;
-  if (data.adminToken !== undefined) {
+  if (data.adminToken !== undefined && !moving) {
     dto = await rotateChatwootDeploymentToken(ctx, data.adminToken, deps, base);
   }
-  if (data.webhookBaseUrl === undefined && data.publicUrl === undefined) {
+  if (
+    !moving &&
+    data.webhookBaseUrl === undefined &&
+    data.publicUrl === undefined
+  ) {
     if (dto) return dto;
     throw new AppError(
-      "Nothing to change: send a new admin token, webhookBaseUrl or publicUrl.",
+      "Nothing to change: send a new base URL, admin token, webhookBaseUrl or publicUrl.",
       422,
       "errors.chatwootDeploymentNothingToChange",
+    );
+  }
+  if (moving && move) {
+    const accountIds = await runScopedOn(base, ctx, async (db) =>
+      (await db.chatwootInstance.findMany({ select: { accountId: true } })).map(
+        (a) => a.accountId,
+      ),
+    );
+    await assertAccountsNotTakenByAnotherTenant(
+      base,
+      tenantId,
+      move.baseUrl,
+      accountIds,
     );
   }
   let webhookMoved = false;
@@ -616,11 +731,21 @@ export async function updateChatwootDeployment(
     await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR NO KEY UPDATE`;
     const before = await db.chatwootDeployment.findUniqueOrThrow({
       where: { id: dep.id },
-      select: { webhookBaseUrl: true, publicUrl: true },
+      select: { baseUrl: true, webhookBaseUrl: true, publicUrl: true },
     });
+    if (moving && move && before.baseUrl !== move.from) {
+      throw new ConflictError(
+        "the connection changed while the new address was being checked; try again",
+        "errors.chatwootDeploymentChanged",
+      );
+    }
     const row = await db.chatwootDeployment.update({
       where: { id: dep.id },
       data: {
+        ...(moving && move ? { baseUrl: move.baseUrl } : {}),
+        ...(moving && data.adminToken !== undefined
+          ? { adminToken: encryptJson(data.adminToken) }
+          : {}),
         ...(data.webhookBaseUrl !== undefined
           ? { webhookBaseUrl: data.webhookBaseUrl }
           : {}),
@@ -628,6 +753,23 @@ export async function updateChatwootDeployment(
       },
       select: DEPLOYMENT_SELECT,
     });
+    if (moving && move) {
+      // The account key is the server's address: it moves with it, or a reconnect of the same
+      // account would read as a new server.
+      await db.chatwootInstance.updateMany({
+        where: { deploymentId: dep.id },
+        data: { serverKey: move.baseUrl },
+      });
+      await auditMutation(db, ctx, {
+        action: "deployment.update_base_url",
+        target: `chatwoot_deployment:${dep.id}`,
+        before: { baseUrl: redactEndpoint(before.baseUrl) },
+        after: {
+          baseUrl: redactEndpoint(move.baseUrl),
+          ...(data.adminToken !== undefined ? { adminTokenRotated: true } : {}),
+        },
+      });
+    }
     const next = toDeploymentDto(row);
     await auditUrlChange(db, ctx, next, before);
     webhookMoved = before.webhookBaseUrl !== next.webhookBaseUrl;

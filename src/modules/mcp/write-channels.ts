@@ -15,6 +15,7 @@ import {
   connectChatwootDeployment,
   getChatwootInstance,
   type InboxBotReading,
+  type ListAccountsDeps,
   listChatwootAccounts,
   listDeploymentAccounts,
   listInboxes,
@@ -31,6 +32,7 @@ import {
   syncInboxes,
   unobserveInbox,
   updateChatwootDeployment,
+  verifyBaseUrlMove,
 } from "@/modules/chatwoot/management";
 import {
   bindInboxVoiceAgent,
@@ -167,25 +169,39 @@ export async function deploymentRotateToken(
   }
 }
 
-// Set the connection's two optional addresses (REST parity: PATCH /v1/chatwoot/deployment). The
-// preview validates them the way the apply does; a new webhook base moves the live bots on apply.
+// Edit the connection (REST parity: PATCH /v1/chatwoot/deployment): a new base URL of the same
+// Chatwoot, the admin token and the two optional addresses. The preview asks what the apply asks; a
+// new webhook base moves the live bots on apply.
 export async function deploymentUpdate(
   principal: VerifiedToken,
   args: {
+    base_url?: string;
+    admin_token?: string;
     webhook_base_url?: string | null;
     public_url?: string | null;
     dry_run?: boolean;
   },
-  deps: WriteDeps = {},
+  deps: WriteDeps & ListAccountsDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
-  if (args.webhook_base_url === undefined && args.public_url === undefined) {
-    return err("send webhook_base_url and/or public_url");
+  if (
+    args.base_url === undefined &&
+    args.admin_token === undefined &&
+    args.webhook_base_url === undefined &&
+    args.public_url === undefined
+  ) {
+    return err(
+      "send base_url, admin_token, webhook_base_url and/or public_url",
+    );
   }
   try {
     const input = {
+      ...(args.base_url !== undefined ? { baseUrl: args.base_url } : {}),
+      ...(args.admin_token !== undefined
+        ? { adminToken: args.admin_token }
+        : {}),
       webhookBaseUrl: args.webhook_base_url,
       publicUrl: args.public_url,
     };
@@ -193,11 +209,27 @@ export async function deploymentUpdate(
       const data = parseInput(chatwootDeploymentUpdateSchema, input);
       // The apply refuses a tenant with no connection; the preview says so too.
       await assertDeploymentConnected(ctx, base);
+      // A new address is asked the same question the apply asks (read-only: profile probes).
+      const move =
+        data.baseUrl === undefined
+          ? null
+          : await verifyBaseUrlMove(
+              ctx,
+              data.baseUrl,
+              data.adminToken,
+              deps,
+              base,
+            );
       return ok({
         dryRun: true,
         action: "update",
         resource: "chatwoot_deployment",
+        // The raw token is never echoed back, not even in the preview.
         preview: {
+          ...(move?.changed ? { baseUrl: move.baseUrl } : {}),
+          ...(data.adminToken !== undefined
+            ? { adminToken: "(redacted)" }
+            : {}),
           ...(data.webhookBaseUrl !== undefined
             ? { webhookBaseUrl: data.webhookBaseUrl }
             : {}),
@@ -207,7 +239,7 @@ export async function deploymentUpdate(
         },
       });
     }
-    const deployment = await updateChatwootDeployment(ctx, input, {}, base);
+    const deployment = await updateChatwootDeployment(ctx, input, deps, base);
     return ok({ dryRun: false, applied: true, deployment });
   } catch (e) {
     return failOf(e);

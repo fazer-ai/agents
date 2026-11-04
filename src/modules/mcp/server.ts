@@ -3862,8 +3862,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "deployment_update",
       {
         description:
-          "Set the deployment's two optional addresses: webhook_base_url (the base this Chatwoot calls the agents on; null for PUBLIC_URL) and public_url (the address people open this Chatwoot on, for links; null for base_url). A new webhook base moves the deployment's live bots onto it. Previews and applies NOTHING unless dry_run is false.",
+          "Edit the Chatwoot connection. base_url moves it to a new address of the same Chatwoot (a domain change): verified with the token (admin_token when sent, else the saved one) to be the same user with every connected account under its id, refused otherwise with nothing written; Agent Bots keep their webhook. admin_token replaces the shared token. And the two optional addresses: webhook_base_url (the base this Chatwoot calls the agents on; null for PUBLIC_URL) and public_url (the address people open this Chatwoot on, for links; null for base_url). A new webhook base moves the deployment's live bots onto it. Previews and applies NOTHING unless dry_run is false.",
         inputSchema: {
+          base_url: z.string().optional(),
+          admin_token: z.string().optional(),
           webhook_base_url: z.string().nullable().optional(),
           public_url: z.string().nullable().optional(),
           dry_run: z.boolean().optional(),
@@ -3871,6 +3873,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (
         args: {
+          base_url?: string;
+          admin_token?: string;
           webhook_base_url?: string | null;
           public_url?: string | null;
           dry_run?: boolean;

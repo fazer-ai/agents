@@ -52,6 +52,7 @@ import {
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { takesCalls } from "@/modules/voice-call/channel";
+import { AdvancedAddresses } from "./channels/AdvancedAddresses";
 
 type DeploymentData = Awaited<
   ReturnType<typeof api.api.v1.chatwoot.deployment.get>
@@ -506,6 +507,10 @@ export function ChannelsPage() {
   const [newToken, setNewToken] = useState("");
   const newTokenRef = useRef(newToken);
   newTokenRef.current = newToken;
+  // The base URL as typed in "Edit connection": a new address of the same Chatwoot.
+  const [editBaseUrl, setEditBaseUrl] = useState("");
+  const editBaseUrlRef = useRef(editBaseUrl);
+  editBaseUrlRef.current = editBaseUrl;
   const [savingToken, setSavingToken] = useState(false);
 
   // Per-inbox bot existence on Chatwoot (live reconcile). "missing" = bound here but the persona's
@@ -876,6 +881,7 @@ export function ChannelsPage() {
 
   function openToken() {
     setNewToken("");
+    setEditBaseUrl(deployment?.baseUrl ?? "");
     setWebhookBaseUrl(deployment?.webhookBaseUrl ?? "");
     setPublicUrl(deployment?.publicUrl ?? "");
     // The component outlives the dialog, so a mark from the last session is still held here.
@@ -889,6 +895,7 @@ export function ChannelsPage() {
     // Only what changed goes out: an untouched address is not re-sent, and an empty token field keeps
     // the stored token.
     const sent = {
+      ...(baseUrlMoved ? { baseUrl: editBaseUrl.trim() } : {}),
       ...(newToken.trim() ? { adminToken: newToken.trim() } : {}),
       ...(webhookBaseUrl.trim() !== (deployment?.webhookBaseUrl ?? "")
         ? { webhookBaseUrl: webhookBaseUrl.trim() || null }
@@ -916,6 +923,9 @@ export function ChannelsPage() {
         ),
         sent,
         {
+          ...("baseUrl" in sent
+            ? { baseUrl: editBaseUrlRef.current.trim() }
+            : {}),
           ...(newTokenRef.current.trim()
             ? { adminToken: newTokenRef.current.trim() }
             : {}),
@@ -1252,7 +1262,13 @@ export function ChannelsPage() {
     v.trim() !== "" && (!isValidHttpUrl(v) || /[?#]/.test(v));
   const webhookBaseUrlInvalid = optionalUrlInvalid(webhookBaseUrl);
   const publicUrlInvalid = optionalUrlInvalid(publicUrl);
+  // Compared the way the server stores it, so a trailing slash alone is not a move.
+  const baseUrlMoved =
+    editBaseUrl.trim().replace(/\/+$/, "") !==
+    (deployment?.baseUrl ?? "").replace(/\/+$/, "");
+  const editBaseUrlInvalid = !isValidHttpUrl(editBaseUrl);
   const connectionDirty =
+    baseUrlMoved ||
     newToken.trim() !== "" ||
     webhookBaseUrl.trim() !== (deployment?.webhookBaseUrl ?? "") ||
     publicUrl.trim() !== (deployment?.publicUrl ?? "");
@@ -1801,13 +1817,12 @@ export function ChannelsPage() {
               onChange={(e) => setAdminToken(e.target.value)}
             />
           </FormField>
-          <FormField
-            label={t("channels.webhookBaseUrl", "Address this Chatwoot calls")}
-            description={t(
-              "channels.webhookBaseUrlHint",
-              "Where this Chatwoot reaches fazer.ai agents. Leave empty to use this app's public address; fill in the private address when Chatwoot and the agents share a private network.",
-            )}
-            error={
+          <AdvancedAddresses
+            webhookBaseUrl={webhookBaseUrl}
+            publicUrl={publicUrl}
+            onWebhookBaseUrl={setWebhookBaseUrl}
+            onPublicUrl={setPublicUrl}
+            webhookBaseUrlError={
               webhookBaseUrlInvalid
                 ? t(
                     "channels.addressInvalid",
@@ -1818,20 +1833,7 @@ export function ChannelsPage() {
                     webhookBaseUrl.trim() || null,
                   )
             }
-          >
-            <Input
-              value={webhookBaseUrl}
-              onChange={(e) => setWebhookBaseUrl(e.target.value)}
-              placeholder="http://10.0.0.6:3000"
-            />
-          </FormField>
-          <FormField
-            label={t("channels.publicUrl", "Chatwoot public address")}
-            description={t(
-              "channels.publicUrlHint",
-              "The address people open Chatwoot on, used for links. Leave empty when it is the base URL; fill it in when the base URL is a private address.",
-            )}
-            error={
+            publicUrlError={
               publicUrlInvalid
                 ? t(
                     "channels.addressInvalid",
@@ -1839,13 +1841,7 @@ export function ChannelsPage() {
                   )
                 : connectRefusal.at("publicUrl", publicUrl.trim() || null)
             }
-          >
-            <Input
-              value={publicUrl}
-              onChange={(e) => setPublicUrl(e.target.value)}
-              placeholder="https://chat.example.com"
-            />
-          </FormField>
+          />
         </div>
       </Modal>
 
@@ -1866,7 +1862,10 @@ export function ChannelsPage() {
               onClick={saveToken}
               loading={savingToken}
               disabled={
-                !connectionDirty || webhookBaseUrlInvalid || publicUrlInvalid
+                !connectionDirty ||
+                editBaseUrlInvalid ||
+                webhookBaseUrlInvalid ||
+                publicUrlInvalid
               }
             >
               {t("common.save", "Save")}
@@ -1882,6 +1881,24 @@ export function ChannelsPage() {
             )}
           </p>
           <FormField
+            label={t("channels.baseUrl", "Base URL")}
+            description={t(
+              "channels.editBaseUrlHint",
+              "For a new address of this same Chatwoot (same token user and accounts). To use another Chatwoot, create a new connection.",
+            )}
+            error={
+              editBaseUrlInvalid
+                ? t("common.invalidUrl", "Must be a valid http(s) URL.")
+                : tokenRefusal.at("baseUrl", editBaseUrl.trim())
+            }
+          >
+            <Input
+              value={editBaseUrl}
+              onChange={(e) => setEditBaseUrl(e.target.value)}
+              placeholder="https://chat.example.com"
+            />
+          </FormField>
+          <FormField
             label={t("channels.adminToken", "Admin access token")}
             description={t(
               "channels.adminTokenHint",
@@ -1896,13 +1913,12 @@ export function ChannelsPage() {
               onChange={(e) => setNewToken(e.target.value)}
             />
           </FormField>
-          <FormField
-            label={t("channels.webhookBaseUrl", "Address this Chatwoot calls")}
-            description={t(
-              "channels.webhookBaseUrlHint",
-              "Where this Chatwoot reaches fazer.ai agents. Leave empty to use this app's public address; fill in the private address when Chatwoot and the agents share a private network.",
-            )}
-            error={
+          <AdvancedAddresses
+            webhookBaseUrl={webhookBaseUrl}
+            publicUrl={publicUrl}
+            onWebhookBaseUrl={setWebhookBaseUrl}
+            onPublicUrl={setPublicUrl}
+            webhookBaseUrlError={
               webhookBaseUrlInvalid
                 ? t(
                     "channels.addressInvalid",
@@ -1913,20 +1929,7 @@ export function ChannelsPage() {
                     webhookBaseUrl.trim() || null,
                   )
             }
-          >
-            <Input
-              value={webhookBaseUrl}
-              onChange={(e) => setWebhookBaseUrl(e.target.value)}
-              placeholder="http://10.0.0.6:3000"
-            />
-          </FormField>
-          <FormField
-            label={t("channels.publicUrl", "Chatwoot public address")}
-            description={t(
-              "channels.publicUrlHint",
-              "The address people open Chatwoot on, used for links. Leave empty when it is the base URL; fill it in when the base URL is a private address.",
-            )}
-            error={
+            publicUrlError={
               publicUrlInvalid
                 ? t(
                     "channels.addressInvalid",
@@ -1934,13 +1937,7 @@ export function ChannelsPage() {
                   )
                 : tokenRefusal.at("publicUrl", publicUrl.trim() || null)
             }
-          >
-            <Input
-              value={publicUrl}
-              onChange={(e) => setPublicUrl(e.target.value)}
-              placeholder="https://chat.example.com"
-            />
-          </FormField>
+          />
         </div>
       </Modal>
 

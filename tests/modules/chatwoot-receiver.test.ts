@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
+import { redactEndpoint } from "@/modules/audit/projection";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { updateChatwootDeployment } from "@/modules/chatwoot/management";
@@ -2165,6 +2166,157 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
         data: { webhookBaseUrl: null },
       });
     }
+  });
+
+  test("a new base URL of the same Chatwoot moves the connection; links and calls follow, bots keep their webhook", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    const instances = await suDb.chatwootInstance.findMany({
+      where: { tenantId },
+    });
+    const connected = instances
+      .filter((i) => i.disconnectedAt === null)
+      .map((i) => ({ id: i.accountId, name: `A${i.accountId}` }));
+    // A public IP literal: the SSRF check runs for real, with no DNS.
+    const moved = "https://93.184.216.34";
+    const asked: string[] = [];
+    let botCalls = 0;
+    try {
+      const dto = await updateChatwootDeployment(
+        ctx,
+        { baseUrl: `${moved}/` },
+        {
+          fetchProfile: async ({ baseUrl, token }) => {
+            asked.push(`${baseUrl} ${token}`);
+            return { id: 7, accounts: connected };
+          },
+          repoint: {
+            base: appDb,
+            makeClient: async () => {
+              botCalls += 1;
+              return {} as ChatwootClient;
+            },
+          },
+        },
+        appDb,
+      );
+      expect(dto.baseUrl).toBe(moved);
+      // The saved token was asked at the new address, and nothing else was called.
+      expect(asked).toEqual([`${moved} ADMIN`]);
+      expect(botCalls).toBe(0);
+      const keys = await suDb.chatwootInstance.findMany({
+        where: { tenantId },
+        select: { serverKey: true },
+      });
+      expect(keys.every((k) => k.serverKey === moved)).toBe(true);
+      let seen: { baseUrl?: string } = {};
+      await loadChatwootClient(tenantId, instances[0]?.id as bigint, {
+        base: appDb,
+        makeClient: async (cfg) => {
+          seen = cfg;
+          return {} as ChatwootClient;
+        },
+      });
+      expect(seen.baseUrl).toBe(moved);
+      const audit = await suDb.auditLog.findFirst({
+        where: { tenantId, action: "deployment.update_base_url" },
+        orderBy: { id: "desc" },
+      });
+      expect(audit).not.toBeNull();
+      expect(
+        JSON.stringify({ before: audit?.before, after: audit?.after }),
+      ).toBe(
+        JSON.stringify({
+          before: { baseUrl: redactEndpoint(dep.baseUrl) },
+          after: { baseUrl: redactEndpoint(moved) },
+        }),
+      );
+    } finally {
+      await suDb.chatwootDeployment.update({
+        where: { id: dep.id },
+        data: { baseUrl: dep.baseUrl, adminToken: dep.adminToken },
+      });
+      for (const i of instances)
+        await suDb.chatwootInstance.update({
+          where: { id: i.id },
+          data: { serverKey: i.serverKey },
+        });
+    }
+  });
+
+  test("a base URL that answers as another Chatwoot is refused, and nothing is written", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    const instances = await suDb.chatwootInstance.findMany({
+      where: { tenantId },
+    });
+    const connected = instances
+      .filter((i) => i.disconnectedAt === null)
+      .map((i) => ({ id: i.accountId, name: `A${i.accountId}` }));
+    const other = "https://93.184.216.34";
+    const refuse = async (
+      fetchProfile: (p: { baseUrl: string; token: string }) => Promise<unknown>,
+      adminToken?: string,
+    ) =>
+      updateChatwootDeployment(
+        ctx,
+        { baseUrl: other, ...(adminToken ? { adminToken } : {}) },
+        { fetchProfile },
+        appDb,
+      ).catch((e: unknown) => e);
+    // A new token reaches it, but as another user than the saved token's.
+    const otherUser = await refuse(
+      async ({ token }) =>
+        token === "NEW"
+          ? { id: 99, accounts: connected }
+          : { id: 7, accounts: connected },
+      "NEW",
+    );
+    // The same user, but a connected account is not there.
+    const missingAccount = await refuse(async () => ({
+      id: 7,
+      accounts: connected.slice(1),
+    }));
+    // The saved token is accepted neither at the new address nor at the old one: nothing proves it.
+    const unproven = await refuse(async ({ token }) => {
+      if (token === "NEW") return { id: 7, accounts: connected };
+      throw new Error("401");
+    }, "NEW");
+    for (const e of [otherUser, missingAccount, unproven]) {
+      expect((e as { statusCode?: number }).statusCode).toBe(422);
+      expect((e as Error).message).toContain("another Chatwoot");
+    }
+    // An address the SSRF check refuses never reaches Chatwoot.
+    let probed = 0;
+    const blocked = await updateChatwootDeployment(
+      ctx,
+      { baseUrl: "http://10.9.9.9:3000" },
+      {
+        fetchProfile: async () => {
+          probed += 1;
+          return { id: 7, accounts: connected };
+        },
+      },
+      appDb,
+    ).catch((e: unknown) => e);
+    expect((blocked as Error).message).toContain("Blocked outbound URL");
+    expect(probed).toBe(0);
+    const after = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    expect(after.baseUrl).toBe(dep.baseUrl);
+    expect(after.adminToken).toBe(dep.adminToken);
+    const keys = await suDb.chatwootInstance.findMany({
+      where: { tenantId },
+      select: { serverKey: true },
+    });
+    expect(keys.map((k) => k.serverKey).sort()).toEqual(
+      instances.map((i) => i.serverKey).sort(),
+    );
   });
 
   test("a bind that read the old webhook base and a connection edit that races it end on the base saved last", async () => {

@@ -235,6 +235,45 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     }
   });
 
+  test("deployment_update base_url: the preview asks what the apply asks", async () => {
+    const moved = "https://93.184.216.34";
+    // Account 3 is connected; a Chatwoot that does not list it is another installation.
+    const elsewhere = async () => ({ id: 5, accounts: [{ id: 4, name: "x" }] });
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: moved },
+      { base: appDb, fetchProfile: elsewhere },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: moved, dry_run: false },
+      { base: appDb, fetchProfile: elsewhere },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) {
+      expect(preview.error).toBe(apply.error);
+      expect(preview.error).toContain("another Chatwoot");
+    }
+    const same = await deploymentUpdate(
+      principal({ tenantId: tenantA }),
+      { base_url: moved },
+      {
+        base: appDb,
+        fetchProfile: async () => ({ id: 5, accounts: [{ id: 3, name: "x" }] }),
+      },
+    );
+    expect(same.ok).toBe(true);
+    if (same.ok) {
+      const p = (same.data as { preview: Record<string, unknown> }).preview;
+      expect(p.baseUrl).toBe(moved);
+    }
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId: tenantA },
+    });
+    expect(dep.baseUrl).not.toBe(moved);
+  });
+
   test("deployment_update: the preview refuses a tenant with no connection, as the apply does", async () => {
     const args = { public_url: "https://desk.channels.example" };
     const preview = await deploymentUpdate(

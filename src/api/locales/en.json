@@ -27,7 +27,7 @@
     "chatwootBindFailed": "The bot could not be synced with Chatwoot.",
     "chatwootDeploymentChanged": "The connection changed while the new address was being checked; try again.",
     "chatwootDeploymentNotFound": "No Chatwoot deployment is connected.",
-    "chatwootDeploymentNothingToChange": "Nothing to change: send a new admin token, webhookBaseUrl or publicUrl.",
+    "chatwootDeploymentNothingToChange": "Nothing to change: send a new base URL, admin token, webhookBaseUrl or publicUrl.",
     "chatwootDifferentDeployment": "This tenant is already connected to a different Chatwoot deployment. Disconnect it first to switch servers.",
     "chatwootDifferentInstallation": "This URL points to another Chatwoot; to switch instances, create a new connection.",
     "chatwootDomainConfirmMismatch": "The domain confirmation does not match.",

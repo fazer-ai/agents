@@ -1,11 +1,13 @@
 import logger from "@/api/lib/logger";
+import type { InternalTarget } from "@/config";
+import appConfig from "@/config";
 import {
   closeKeyedQueueTail,
   keyedQueueTail,
   withKeyedQueue,
 } from "@/lib/locks";
 import { withDeadline } from "@/lib/outbound";
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { assertSafeOutboundUrl, matchInternalTarget } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
 import type { AdditionalContactField } from "@/modules/chatwoot/contact-fields";
 import {
@@ -306,6 +308,48 @@ export interface ChatwootClientDeps {
   fetchImpl?: typeof fetch;
   assertSafe?: (url: string) => Promise<URL>;
 }
+
+// The SSRF check for a URL on the tenant's own Chatwoot deployment. The guard stays on; what it adds
+// is the operator's SSRF_INTERNAL_TARGETS, so a Chatwoot reached on a private address (same VPC, same
+// Docker network) is a declared host:port and not a reason to turn the guard off for the whole
+// instance. Only the deployment's base URL comes through here: an attachment on any other host goes
+// through the plain guard (see `downloadAttachment`).
+export function assertSafeChatwootUrl(url: string): Promise<URL> {
+  return assertSafeOutboundUrl(url, {
+    internalTargets: appConfig.ssrf.internalTargets,
+  });
+}
+
+// Where an attachment is actually fetched from. Chatwoot builds a data_url from its FRONTEND_URL,
+// which is the public address; when this app reaches Chatwoot on a declared private address that
+// public one can be closed to it (an access gate in front, no hairpin route). So a data_url on another
+// host whose path is Chatwoot's own Active Storage route is fetched from the deployment's base, same
+// path and query: the blob lives on the instance that sent the webhook, and the admin token then goes
+// to the address the operator configured and nowhere else. Done only when the base is a declared
+// internal target, so a deployment reached on its public address keeps fetching the URL as written.
+// `sameInstance` says whether the admin token may go along.
+export function attachmentFetchTarget(
+  dataUrl: string,
+  baseUrl: string,
+  internalTargets: readonly InternalTarget[],
+): { url: string; sameInstance: boolean } {
+  const data = new URL(dataUrl);
+  const base = new URL(baseUrl);
+  if (data.host === base.host) return { url: dataUrl, sameInstance: true };
+  const viaBase =
+    data.pathname.startsWith(ACTIVE_STORAGE_PREFIX) &&
+    (data.protocol === "http:" || data.protocol === "https:") &&
+    data.username === "" &&
+    data.password === "" &&
+    matchInternalTarget(base, internalTargets) === "match";
+  if (!viaBase) return { url: dataUrl, sameInstance: false };
+  return {
+    url: `${base.origin}${data.pathname}${data.search}`,
+    sameInstance: true,
+  };
+}
+
+const ACTIVE_STORAGE_PREFIX = "/rails/active_storage/";
 
 export interface AttachmentDownloadOptions {
   // Opt-in bounded retry for the write race described on ATTACHMENT_RETRY_DELAYS_MS. The eager media
@@ -1154,7 +1198,7 @@ export class ChatwootClient {
   // Conversation labels. The POST REPLACES the whole set, so set_labels reads the current labels
   // first and writes the set it derived. LabelConcern + labels/{index,create}.json.jbuilder render
   // `json.payload @labels`; create permits `labels: []` and calls `update_labels`. The read stays on
-  // the admin token: `conversations/labels` is bot-accessible only on Chatwoot from 2026-06-05 on,
+  // the admin token, because `conversations/labels` is bot-accessible only on Chatwoot from 2026-06-05 on,
   // self-hosted versions are not ours to pick, and a read attributes nothing, so a 401 buys nothing.
   async getConversationLabels(conversationId: number): Promise<string[]> {
     const res = (await this.request(
@@ -1170,7 +1214,7 @@ export class ChatwootClient {
 
   // The write is the persona's: Chatwoot names the requester on the activity line it writes, so with
   // the admin token an automated verdict would be signed by the person whose token provisioned the
-  // instance. The bot token is authorized: `conversations/labels` create is in
+  // instance. The bot token is authorized, since `conversations/labels` create is in
   // BOT_ACCESSIBLE_ENDPOINTS, and the controller authorizes against `ConversationPolicy#show?`, which
   // accepts an agent bot. `asAdmin` is for an operator-initiated write, as on assignToAgent and
   // toggleStatus: /reset peels an episode's labels off because a person asked.
@@ -1517,17 +1561,23 @@ export class ChatwootClient {
     dataUrl: string,
     opts: AttachmentDownloadOptions = {},
   ): Promise<{ bytes: ArrayBuffer; contentType: string | null }> {
-    await assertSafeOutboundUrl(dataUrl);
-    let sameHost = false;
+    let target: { url: string; sameInstance: boolean };
     try {
-      sameHost = new URL(dataUrl).host === new URL(this.config.baseUrl).host;
+      target = attachmentFetchTarget(
+        dataUrl,
+        this.config.baseUrl,
+        appConfig.ssrf.internalTargets,
+      );
     } catch {
       throw new ChatwootApiError(400, "GET attachment");
     }
+    const sameHost = target.sameInstance;
+    if (sameHost) await assertSafeChatwootUrl(target.url);
+    else await assertSafeOutboundUrl(target.url);
     const delays = opts.retryOnMissing ? ATTACHMENT_RETRY_DELAYS_MS : [];
     const sleep = opts.sleep ?? realSleep;
     for (let attempt = 0; ; attempt++) {
-      const res = await this.fetchImpl(dataUrl, {
+      const res = await this.fetchImpl(target.url, {
         method: "GET",
         headers: sameHost
           ? { [CHATWOOT_AUTH_HEADER]: this.config.adminToken }
@@ -1650,11 +1700,33 @@ export class ChatwootClient {
     });
   }
 
-  // Lists the account's Agent Bots ({id,name}[]) — used to detect a bot deleted out-of-band on
-  // Chatwoot so ensureAgentBot can re-provision instead of reusing a dead id/token.
-  async listAgentBots(): Promise<Array<{ id: number; name: string }>> {
-    return normalizeIdName(
-      await this.request(this.config.adminToken, "GET", "/agent_bots"),
+  // Lists the account's Agent Bots — used to detect a bot deleted out-of-band on Chatwoot so
+  // ensureAgentBot can re-provision instead of reusing a dead id/token, and to read the outgoing_url
+  // each one calls (absent on system bots, which Chatwoot serializes without it).
+  async listAgentBots(): Promise<
+    Array<{ id: number; name: string; outgoingUrl?: string }>
+  > {
+    const raw = await this.request(
+      this.config.adminToken,
+      "GET",
+      "/agent_bots",
+    );
+    const urls = new Map<number, string>();
+    const arr = Array.isArray(raw)
+      ? raw
+      : raw &&
+          typeof raw === "object" &&
+          Array.isArray((raw as { payload?: unknown }).payload)
+        ? (raw as { payload: unknown[] }).payload
+        : [];
+    for (const item of arr) {
+      if (!item || typeof item !== "object") continue;
+      const url = (item as { outgoing_url?: unknown }).outgoing_url;
+      const id = Number((item as { id?: unknown }).id);
+      if (typeof url === "string" && Number.isInteger(id)) urls.set(id, url);
+    }
+    return normalizeIdName(raw).map((b) =>
+      urls.has(b.id) ? { ...b, outgoingUrl: urls.get(b.id) } : b,
     );
   }
 
@@ -1662,13 +1734,17 @@ export class ChatwootClient {
   // name). Best-effort caller; PATCH to the account-scoped agent_bots resource.
   updateAgentBot(
     agentBotId: number,
-    params: { name: string },
+    params: { name?: string; outgoingUrl?: string },
   ): Promise<unknown> {
+    const body: Record<string, string> = {};
+    if (params.name !== undefined) body.name = params.name;
+    if (params.outgoingUrl !== undefined)
+      body.outgoing_url = params.outgoingUrl;
     return this.request(
       this.config.adminToken,
       "PATCH",
       `/agent_bots/${agentBotId}`,
-      { name: params.name },
+      body,
     );
   }
 
@@ -2463,12 +2539,13 @@ export class ChatwootClient {
   }
 }
 
-// Validates the tenant-configured baseUrl (anti-SSRF, https-only) before any call is possible.
+// Validates the tenant-configured baseUrl (anti-SSRF, https-only unless it is a declared internal
+// target) before any call is possible.
 export async function createChatwootClient(
   config: ChatwootClientConfig,
   deps: ChatwootClientDeps = {},
 ): Promise<ChatwootClient> {
-  const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
+  const assertSafe = deps.assertSafe ?? assertSafeChatwootUrl;
   await assertSafe(config.baseUrl);
   return new ChatwootClient(config, deps.fetchImpl ?? fetch);
 }
@@ -2483,7 +2560,7 @@ export async function fetchChatwootProfile(
   params: { baseUrl: string; token: string },
   deps: ChatwootClientDeps = {},
 ): Promise<unknown> {
-  const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
+  const assertSafe = deps.assertSafe ?? assertSafeChatwootUrl;
   await assertSafe(params.baseUrl);
   const fetchImpl = deps.fetchImpl ?? fetch;
   const root = params.baseUrl.replace(/\/+$/, "");

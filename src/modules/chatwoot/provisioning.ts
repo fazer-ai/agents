@@ -7,10 +7,13 @@ import { AppError } from "@/lib/errors";
 import { isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
-import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
+import {
+  generateRouteToken,
+  hashRouteToken,
+} from "@/modules/webhooks/inbound/route-token";
 import type { ChatwootClient } from "./client";
 import { invalidateRouteTokenCache } from "./route-token-cache";
-import { chatwootOutgoingUrl } from "./webhook-mount";
+import { CHATWOOT_WEBHOOK_MOUNT, chatwootOutgoingUrl } from "./webhook-mount";
 
 // Agent Bot provisioning: ONE Chatwoot Agent Bot per (instance, our Agent persona) — the bot is the
 // message sender shown in Chatwoot, so each persona gets its own visible identity (name = the
@@ -58,6 +61,23 @@ function parseCreatedAgentBot(raw: unknown): CreatedAgentBot {
 
 export interface EnsureAgentBotDeps {
   base?: PrismaClient;
+  // The base Chatwoot calls back on, default `config.chatwoot.webhookBaseUrl`.
+  webhookBaseUrl?: string;
+}
+
+// Whether a bot's outgoing_url is the one this row expects: the configured webhook base followed by
+// the mount, and a route token whose hash is the stored one. The base is compared as a prefix of the
+// whole mount, so `http://10.0.0.6:3000` does not accept `http://10.0.0.6:30001/...`; the token check
+// catches a URL Chatwoot holds with a token the row no longer has (a repoint whose PATCH reached
+// Chatwoot but whose answer did not), which the next bind then repairs.
+function callsThisRow(
+  outgoingUrl: string,
+  webhookBaseUrl: string,
+  routeTokenHash: string,
+) {
+  const prefix = `${webhookBaseUrl.replace(/\/+$/, "")}${CHATWOOT_WEBHOOK_MOUNT}/`;
+  if (!outgoingUrl.startsWith(prefix)) return false;
+  return hashRouteToken(outgoingUrl.slice(prefix.length)) === routeTokenHash;
 }
 
 // Lazy, idempotent per-persona provisioning: ensure (instance, agentId) has its own Chatwoot Agent
@@ -74,6 +94,7 @@ export async function ensureAgentBot(
   deps: EnsureAgentBotDeps = {},
 ): Promise<EnsuredAgentBot> {
   const base = deps.base ?? basePrisma;
+  const webhookBaseUrl = deps.webhookBaseUrl ?? config.chatwoot.webhookBaseUrl;
   const key = {
     tenantId_chatwootInstanceId_agentId: {
       tenantId,
@@ -85,7 +106,11 @@ export async function ensureAgentBot(
   const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootAgentBot.findUnique({
       where: key,
-      select: { chatwootAgentBotId: true, accessToken: true },
+      select: {
+        chatwootAgentBotId: true,
+        accessToken: true,
+        webhookRouteTokenHash: true,
+      },
     }),
   );
   if (existing) {
@@ -93,7 +118,26 @@ export async function ensureAgentBot(
     // bot out-of-band; reusing its dead id/token would 401 every reply. If it's gone, fall through to
     // re-provision and refresh THIS row in place (so re-binding the inbox repairs it).
     const live = await client.listAgentBots();
-    if (live.some((b) => b.id === existing.chatwootAgentBotId)) {
+    const liveBot = live.find((b) => b.id === existing.chatwootAgentBotId);
+    if (liveBot) {
+      if (
+        liveBot.outgoingUrl !== undefined &&
+        !callsThisRow(
+          liveBot.outgoingUrl,
+          webhookBaseUrl,
+          existing.webhookRouteTokenHash,
+        )
+      ) {
+        await repointAgentBot(
+          base,
+          tenantId,
+          key,
+          existing.chatwootAgentBotId,
+          existing.webhookRouteTokenHash,
+          webhookBaseUrl,
+          client,
+        );
+      }
       return {
         chatwootAgentBotId: existing.chatwootAgentBotId,
         accessToken: decryptJson<string>(existing.accessToken),
@@ -108,7 +152,7 @@ export async function ensureAgentBot(
   }
 
   const { token: routeToken, hash: routeTokenHash } = generateRouteToken();
-  const outgoingUrl = chatwootOutgoingUrl(config.publicUrl, routeToken);
+  const outgoingUrl = chatwootOutgoingUrl(webhookBaseUrl, routeToken);
   const created = parseCreatedAgentBot(
     await client.createAgentBot({ name: agentName, outgoingUrl }),
   );
@@ -185,6 +229,72 @@ export async function ensureAgentBot(
       accessToken: decryptJson<string>(winner.accessToken),
     };
   }
+}
+
+type AgentBotKey = {
+  tenantId_chatwootInstanceId_agentId: {
+    tenantId: bigint;
+    chatwootInstanceId: bigint;
+    agentId: bigint;
+  };
+};
+
+// Moves a live bot onto the configured webhook base (or back onto this row's token): a bot provisioned
+// before CHATWOOT_WEBHOOK_BASE_URL was set keeps calling the old address, and Chatwoot cannot reach that one
+// when it is a public address behind an access gate. Only the route token's hash is stored, so the URL
+// cannot be rebuilt with the same token: a new token is minted, the row claims it first (conditioned
+// on the hash it read, so two binds racing do not leave Chatwoot and the row on different tokens), and
+// then Chatwoot is told the new URL. If Chatwoot refuses, the row goes back to the old hash, which the
+// old URL still carries. The bot's id, token and HMAC secret are unchanged.
+async function repointAgentBot(
+  base: PrismaClient,
+  tenantId: bigint,
+  key: AgentBotKey,
+  chatwootAgentBotId: number,
+  oldHash: string,
+  webhookBaseUrl: string,
+  client: ChatwootClient,
+): Promise<void> {
+  const { token, hash } = generateRouteToken();
+  const claimed = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.updateMany({
+      where: {
+        ...key.tenantId_chatwootInstanceId_agentId,
+        chatwootAgentBotId,
+        webhookRouteTokenHash: oldHash,
+      },
+      data: { webhookRouteTokenHash: hash },
+    }),
+  );
+  if (claimed.count === 0) return; // another bind repointed it first
+  try {
+    await client.updateAgentBot(chatwootAgentBotId, {
+      outgoingUrl: chatwootOutgoingUrl(webhookBaseUrl, token),
+    });
+  } catch (err) {
+    await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.chatwootAgentBot.updateMany({
+        where: {
+          ...key.tenantId_chatwootInstanceId_agentId,
+          chatwootAgentBotId,
+          webhookRouteTokenHash: hash,
+        },
+        data: { webhookRouteTokenHash: oldHash },
+      }),
+    );
+    logger.warn(
+      { err },
+      "chatwoot: could not move agent bot %d to the configured webhook base; it keeps its old URL",
+      chatwootAgentBotId,
+    );
+    return;
+  }
+  // The retired hash may sit in the receiver's cache; drop it, as on re-provisioning.
+  invalidateRouteTokenCache();
+  logger.info(
+    "chatwoot: moved agent bot %d to the configured webhook base",
+    chatwootAgentBotId,
+  );
 }
 
 // Keep each Chatwoot bot's visible name in sync with its persona's name (the bot is the sender shown

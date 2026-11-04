@@ -13,7 +13,6 @@ import {
   isUniqueViolation,
   violatedConstraintOf,
 } from "@/lib/pg-error";
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -36,6 +35,7 @@ import {
   syncVoiceInboxes,
 } from "@/modules/voice-call/inboxes";
 import {
+  assertSafeChatwootUrl,
   ChatwootApiError,
   type ChatwootClient,
   fetchChatwootProfile,
@@ -373,7 +373,7 @@ export async function assertDeploymentConnectable(
 ) {
   const data = parseInput(chatwootDeploymentConnectSchema, input);
   data.baseUrl = normalizeChatwootBaseUrl(data.baseUrl);
-  await assertSafeOutboundUrl(data.baseUrl); // DNS lookup OUTSIDE the tx
+  await assertSafeChatwootUrl(data.baseUrl); // DNS lookup OUTSIDE the tx
   return data;
 }
 

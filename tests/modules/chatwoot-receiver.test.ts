@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
@@ -1335,6 +1336,244 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     expect(decryptJson<string>(rows[0]?.accessToken as string)).toBe(
       "ACCESS_56",
     );
+  });
+
+  // Chatwoot on a private network calls this app on CHATWOOT_WEBHOOK_BASE_URL, not PUBLIC_URL.
+  test("re-provisioning writes the configured webhook base, not the public URL", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const urls: string[] = [];
+    const stubClient = {
+      listAgentBots: async () => [],
+      createAgentBot: async (p: { name: string; outgoingUrl: string }) => {
+        urls.push(p.outgoingUrl);
+        return { id: 57, access_token: "ACCESS_57", secret: PROV_SECRET };
+      },
+    } as unknown as ChatwootClient;
+    const saved = config.chatwoot.webhookBaseUrl;
+    config.chatwoot.webhookBaseUrl = "http://10.0.0.6:3000";
+    try {
+      await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", stubClient, {
+        base: appDb,
+      });
+    } finally {
+      config.chatwoot.webhookBaseUrl = saved;
+    }
+    expect(urls).toHaveLength(1);
+    const url = urls[0] as string;
+    expect(
+      url.startsWith("http://10.0.0.6:3000/api/v1/chatwoot/webhook/"),
+    ).toBe(true);
+    const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    expect(row.webhookRouteTokenHash).toBe(
+      hashRouteToken(url.split("/").pop() as string),
+    );
+  });
+
+  test("moves a live bot still calling another base onto the configured one", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const patches: Array<{ id: number; p: Record<string, unknown> }> = [];
+    let created = 0;
+    const stubClient = {
+      listAgentBots: async () => [
+        {
+          id: 57,
+          name: "Vendas",
+          outgoingUrl: "https://agents.example.com/api/v1/chatwoot/webhook/old",
+        },
+      ],
+      updateAgentBot: async (id: number, p: Record<string, unknown>) => {
+        patches.push({ id, p });
+        return {};
+      },
+      createAgentBot: async () => {
+        created += 1;
+        return { id: 999, access_token: "x", secret: "y" };
+      },
+    } as unknown as ChatwootClient;
+    const bot = await ensureAgentBot(
+      tenantId,
+      inst.id,
+      agent.id,
+      "Vendas",
+      stubClient,
+      { base: appDb, webhookBaseUrl: "http://10.0.0.6:3000" },
+    );
+    // Same bot, same token and secret: only the URL Chatwoot calls moved.
+    expect(created).toBe(0);
+    expect(bot.chatwootAgentBotId).toBe(57);
+    expect(bot.accessToken).toBe("ACCESS_57");
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.id).toBe(57);
+    expect(Object.keys(patches[0]?.p ?? {})).toEqual(["outgoingUrl"]);
+    const url = patches[0]?.p.outgoingUrl as string;
+    expect(
+      url.startsWith("http://10.0.0.6:3000/api/v1/chatwoot/webhook/"),
+    ).toBe(true);
+    const token = url.split("/").pop() as string;
+
+    // The receiver resolves the NEW token to this bot and verifies with the unchanged secret.
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 98,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 57 } },
+    });
+    const sig = `sha256=${createHmac("sha256", PROV_SECRET).update(`${NOW}.${body}`).digest("hex")}`;
+    const r = await receiveChatwootWebhook({
+      routeToken: token,
+      rawBody: body,
+      getHeader: headersFrom({
+        "x-chatwoot-signature": sig,
+        "x-chatwoot-timestamp": String(NOW),
+        "x-chatwoot-delivery": "uuid-repoint",
+      }),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    expect(r.outcome).toBe("queued");
+    expect(r.agentBotId).toBe(57);
+
+    // Already on the configured base with this row's token: a second bind leaves it alone.
+    const again = {
+      listAgentBots: async () => [{ id: 57, name: "Vendas", outgoingUrl: url }],
+      updateAgentBot: async (id: number, p: Record<string, unknown>) => {
+        patches.push({ id, p });
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", again, {
+      base: appDb,
+      webhookBaseUrl: "http://10.0.0.6:3000",
+    });
+    expect(patches).toHaveLength(1);
+
+    // Same base, a token the row does not hold (a PATCH that landed without its answer): repaired.
+    const stale = {
+      listAgentBots: async () => [
+        {
+          id: 57,
+          name: "Vendas",
+          outgoingUrl: "http://10.0.0.6:3000/api/v1/chatwoot/webhook/not-ours",
+        },
+      ],
+      updateAgentBot: async (id: number, p: Record<string, unknown>) => {
+        patches.push({ id, p });
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", stale, {
+      base: appDb,
+      webhookBaseUrl: "http://10.0.0.6:3000",
+    });
+    expect(patches).toHaveLength(2);
+    const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    expect(row.webhookRouteTokenHash).toBe(
+      hashRouteToken(
+        String(patches[1]?.p.outgoingUrl ?? "")
+          .split("/")
+          .pop() as string,
+      ),
+    );
+  });
+
+  test("a repoint that lost the race to another bind leaves Chatwoot alone", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const before = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    const winnerHash = hashRouteToken("winner-token");
+    let patched = 0;
+    const stubClient = {
+      // Another bind repoints between our read of the row and our claim.
+      listAgentBots: async () => {
+        await suDb.chatwootAgentBot.update({
+          where: { id: before.id },
+          data: { webhookRouteTokenHash: winnerHash },
+        });
+        return [
+          {
+            id: 57,
+            name: "Vendas",
+            outgoingUrl:
+              "https://agents.example.com/api/v1/chatwoot/webhook/old",
+          },
+        ];
+      },
+      updateAgentBot: async () => {
+        patched += 1;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", stubClient, {
+      base: appDb,
+      webhookBaseUrl: "http://10.0.0.6:3000",
+    });
+    expect(patched).toBe(0);
+    const after = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { id: before.id },
+    });
+    expect(after.webhookRouteTokenHash).toBe(winnerHash);
+    await suDb.chatwootAgentBot.update({
+      where: { id: before.id },
+      data: { webhookRouteTokenHash: before.webhookRouteTokenHash },
+    });
+  });
+
+  test("a refused repoint keeps the row on the token Chatwoot still calls", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const before = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    const stubClient = {
+      listAgentBots: async () => [
+        {
+          id: 57,
+          name: "Vendas",
+          outgoingUrl: "https://agents.example.com/api/v1/chatwoot/webhook/old",
+        },
+      ],
+      updateAgentBot: async () => {
+        throw new Error("chatwoot down");
+      },
+    } as unknown as ChatwootClient;
+    const bot = await ensureAgentBot(
+      tenantId,
+      inst.id,
+      agent.id,
+      "Vendas",
+      stubClient,
+      { base: appDb, webhookBaseUrl: "http://10.0.0.6:3000" },
+    );
+    expect(bot.chatwootAgentBotId).toBe(57);
+    const after = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    expect(after.webhookRouteTokenHash).toBe(before.webhookRouteTokenHash);
   });
 });
 

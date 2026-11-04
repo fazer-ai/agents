@@ -1385,6 +1385,7 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     });
     const patches: Array<{ id: number; p: Record<string, unknown> }> = [];
     let created = 0;
+    let hashAtPatch = "";
     const stubClient = {
       listAgentBots: async () => [
         {
@@ -1395,6 +1396,11 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       ],
       updateAgentBot: async (id: number, p: Record<string, unknown>) => {
         patches.push({ id, p });
+        // The new token already resolves when Chatwoot is told the URL.
+        const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+          where: { chatwootAgentBotId: id },
+        });
+        hashAtPatch = row.webhookRouteTokenHash;
         return {};
       },
       createAgentBot: async () => {
@@ -1422,6 +1428,7 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       url.startsWith("http://10.0.0.6:3000/api/v1/chatwoot/webhook/"),
     ).toBe(true);
     const token = url.split("/").pop() as string;
+    expect(hashAtPatch).toBe(hashRouteToken(token));
 
     // The receiver resolves the NEW token to this bot and verifies with the unchanged secret.
     const body = JSON.stringify({
@@ -1539,7 +1546,7 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     });
   });
 
-  test("two binds repointing at once PATCH Chatwoot once, and the row holds that token", async () => {
+  test("two binds repointing at once never PATCH concurrently, and the row ends on the token Chatwoot holds", async () => {
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
       where: { tenantId, accountId: 2 },
     });
@@ -1556,6 +1563,8 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     });
     const patches: Array<Record<string, unknown>> = [];
     let lists = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
     const stub = () =>
       ({
         listAgentBots: async () => {
@@ -1571,8 +1580,11 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
         },
         updateAgentBot: async (_id: number, p: Record<string, unknown>) => {
           patches.push(p);
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
           patchStarted();
           await gate;
+          inFlight -= 1;
           return {};
         },
       }) as unknown as ChatwootClient;
@@ -1598,16 +1610,19 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     for (let i = 0; i < 200 && lists < 2; i += 1)
       await new Promise((r) => setTimeout(r, 5));
     expect(lists).toBe(2);
+    // Give an unserialized second repoint the time to reach Chatwoot while the first is still out.
+    for (let i = 0; i < 60 && patches.length < 2; i += 1)
+      await new Promise((r) => setTimeout(r, 5));
     expect(patches).toHaveLength(1);
     release();
     await Promise.all([first, second]);
-    expect(patches).toHaveLength(1);
+    expect(maxInFlight).toBe(1);
     const row = await suDb.chatwootAgentBot.findFirstOrThrow({
       where: { chatwootInstanceId: inst.id, agentId: agent.id },
     });
     expect(row.webhookRouteTokenHash).toBe(
       hashRouteToken(
-        String(patches[0]?.outgoingUrl ?? "")
+        String(patches[patches.length - 1]?.outgoingUrl ?? "")
           .split("/")
           .pop() as string,
       ),

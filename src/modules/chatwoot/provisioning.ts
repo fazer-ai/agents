@@ -172,6 +172,30 @@ export async function ensureAgentBot(
 
   const { token: routeToken, hash: routeTokenHash } = generateRouteToken();
   const outgoingUrl = chatwootOutgoingUrl(webhookBaseUrl, routeToken);
+  // A connection edit saved while Chatwoot was creating the bot moved every bot it found, and this
+  // row did not exist yet. Read the base again once the row is stored: a change seen here goes
+  // through the queue; one saved after this read finds the row in its own pass.
+  const reconcileNew = async (chatwootAgentBotId: number) => {
+    if (deps.webhookBaseUrl !== undefined) return;
+    try {
+      const now = await deploymentWebhookBase(base, tenantId, instanceId);
+      if (now === webhookBaseUrl) return;
+      await repointAgentBot(
+        base,
+        tenantId,
+        key,
+        chatwootAgentBotId,
+        () => deploymentWebhookBase(base, tenantId, instanceId),
+        client,
+      );
+    } catch (err) {
+      logger.warn(
+        { err },
+        "chatwoot: agent bot %d was created on a webhook base the connection no longer has; the next bind moves it",
+        chatwootAgentBotId,
+      );
+    }
+  };
   const created = parseCreatedAgentBot(
     await client.createAgentBot({ name: agentName, outgoingUrl }),
   );
@@ -202,6 +226,7 @@ export async function ensureAgentBot(
       String(instanceId),
       String(agentId),
     );
+    await reconcileNew(created.id);
     return { chatwootAgentBotId: created.id, accessToken: created.accessToken };
   }
 
@@ -226,6 +251,7 @@ export async function ensureAgentBot(
       String(instanceId),
       String(agentId),
     );
+    await reconcileNew(created.id);
     return { chatwootAgentBotId: created.id, accessToken: created.accessToken };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
@@ -266,7 +292,7 @@ type AgentBotKey = {
 // new hash before Chatwoot hears of it: the URL being left is the one Chatwoot cannot use, so the new
 // token resolves from the first delivery. A refused PATCH puts the old hash back; one whose answer was
 // lost leaves a token the row lacks, which `callsThisRow` repairs next bind.
-const repointing = new Map<number, Promise<boolean>>();
+const repointing = new Map<number, Promise<void>>();
 const REPOINT_ATTEMPTS = 3;
 
 async function repointAgentBot(
@@ -276,24 +302,23 @@ async function repointAgentBot(
   chatwootAgentBotId: number,
   resolveBase: () => Promise<string>,
   client: ChatwootClient,
-): Promise<boolean> {
-  const previous = repointing.get(chatwootAgentBotId) ?? Promise.resolve(false);
+): Promise<void> {
+  const previous = repointing.get(chatwootAgentBotId) ?? Promise.resolve();
   const run = previous
-    .catch(() => false)
+    .catch(() => {})
     .then(() =>
       repointOnce(base, tenantId, key, chatwootAgentBotId, resolveBase, client),
     );
-  const settled = run.catch(() => false);
+  const settled = run.catch(() => {});
   repointing.set(chatwootAgentBotId, settled);
   try {
-    return await run;
+    await run;
   } finally {
     if (repointing.get(chatwootAgentBotId) === settled)
       repointing.delete(chatwootAgentBotId);
   }
 }
 
-// Returns whether Chatwoot was moved by this call.
 async function repointOnce(
   base: PrismaClient,
   tenantId: bigint,
@@ -301,7 +326,7 @@ async function repointOnce(
   chatwootAgentBotId: number,
   resolveBase: () => Promise<string>,
   client: ChatwootClient,
-): Promise<boolean> {
+): Promise<void> {
   const where = {
     ...key.tenantId_chatwootInstanceId_agentId,
     chatwootAgentBotId,
@@ -320,7 +345,7 @@ async function repointOnce(
         select: { webhookRouteTokenHash: true },
       }),
     );
-    if (!row) return false; // unbound or re-provisioned meanwhile
+    if (!row) return; // unbound or re-provisioned meanwhile
     const webhookBaseUrl = await resolveBase();
     const live = (await client.listAgentBots()).find(
       (b) => b.id === chatwootAgentBotId,
@@ -329,7 +354,7 @@ async function repointOnce(
       live?.outgoingUrl === undefined ||
       callsThisRow(live.outgoingUrl, webhookBaseUrl, row.webhookRouteTokenHash)
     )
-      return false;
+      return;
     const oldHash = row.webhookRouteTokenHash;
     const { token, hash } = generateRouteToken();
     if ((await swap(oldHash, hash)).count === 0) continue; // the hash moved under us: decide again
@@ -348,19 +373,19 @@ async function repointOnce(
         "chatwoot: could not move agent bot %d to the configured webhook base; it keeps its old URL",
         chatwootAgentBotId,
       );
-      return false;
+      return;
     }
     logger.info(
       "chatwoot: moved agent bot %d to the configured webhook base",
       chatwootAgentBotId,
     );
-    return true;
+    return;
   }
   logger.warn(
     "chatwoot: agent bot %d kept changing while being moved; the next bind retries",
     chatwootAgentBotId,
   );
-  return false;
+  return;
 }
 
 // Keep each Chatwoot bot's visible name in sync with its persona's name (the bot is the sender shown
@@ -415,7 +440,7 @@ export interface RepointDeps {
 export async function repointDeploymentBots(
   tenantId: bigint,
   deps: RepointDeps = {},
-): Promise<{ moved: number; failed: number }> {
+): Promise<void> {
   const base = deps.base ?? basePrisma;
   const bots = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootAgentBot.findMany({
@@ -427,8 +452,6 @@ export async function repointDeploymentBots(
       },
     }),
   );
-  let moved = 0;
-  let failed = 0;
   const byInstance = new Map<bigint, typeof bots>();
   for (const b of bots) {
     const list = byInstance.get(b.chatwootInstanceId) ?? [];
@@ -456,7 +479,7 @@ export async function repointDeploymentBots(
           callsThisRow(url, webhookBaseUrl, bot.webhookRouteTokenHash)
         )
           continue;
-        const didMove = await repointAgentBot(
+        await repointAgentBot(
           base,
           tenantId,
           {
@@ -470,10 +493,8 @@ export async function repointDeploymentBots(
           () => deploymentWebhookBase(base, tenantId, instanceId),
           client,
         );
-        if (didMove) moved += 1;
       }
     } catch (err) {
-      failed += list.length;
       logger.warn(
         "chatwoot: could not move the bots of instance %s to the new webhook base: %s",
         String(instanceId),
@@ -481,7 +502,6 @@ export async function repointDeploymentBots(
       );
     }
   }
-  return { moved, failed };
 }
 
 type LoadClientFactory = (

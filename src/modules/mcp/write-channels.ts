@@ -6,6 +6,7 @@ import {
   assertAccountsSelectable,
   assertBindTargetNotObserving,
   assertDeploymentConnectable,
+  assertDeploymentConnected,
   assertDeploymentNotSwitching,
   assertInboxBindable,
   assertInboxReconnectable,
@@ -185,6 +186,8 @@ export async function deploymentUpdate(
     };
     if (args.dry_run !== false) {
       const data = parseInput(chatwootDeploymentUpdateSchema, input);
+      // The apply refuses a tenant with no connection; the preview says so too.
+      await assertDeploymentConnected(ctx, base);
       return ok({
         dryRun: true,
         action: "update",

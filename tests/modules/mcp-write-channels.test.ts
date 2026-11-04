@@ -16,6 +16,7 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   deploymentConnect,
   deploymentSetAccounts,
+  deploymentUpdate,
   inboxBind,
   inboxObserve,
   inboxRemove,
@@ -199,6 +200,30 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  test("deployment_update: the preview refuses a tenant with no connection, as the apply does", async () => {
+    const args = { public_url: "https://desk.channels.example" };
+    const preview = await deploymentUpdate(
+      principal({ tenantId: tenantB }),
+      args,
+      {
+        base: appDb,
+      },
+    );
+    const apply = await deploymentUpdate(
+      principal({ tenantId: tenantB }),
+      { ...args, dry_run: false },
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(false);
+    expect(apply.ok).toBe(false);
+    if (!preview.ok && !apply.ok) expect(preview.error).toBe(apply.error);
+    // A connected tenant gets its preview.
+    const ok = await deploymentUpdate(principal({ tenantId: tenantA }), args, {
+      base: appDb,
+    });
+    expect(ok.ok).toBe(true);
   });
 
   // NOTE: The APPLY's own refusal. The check runs before the credential round trip: refusing the switch

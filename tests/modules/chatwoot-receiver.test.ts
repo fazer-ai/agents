@@ -1805,6 +1805,215 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     expect(cleared.publicUrl).toBeNull();
   });
 
+  test("a hash rewritten outside the queue between its read and its swap is read again, and the bot still moves", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const before = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    let lists = 0;
+    const patches: string[] = [];
+    const stubClient = {
+      listAgentBots: async () => {
+        lists += 1;
+        // Inside the queue, after it read the row: a re-provisioning writes a new hash, and Chatwoot
+        // still calls the old address.
+        if (lists === 2)
+          await suDb.chatwootAgentBot.update({
+            where: { id: before.id },
+            data: { webhookRouteTokenHash: hashRouteToken("rewritten") },
+          });
+        return [
+          {
+            id: 57,
+            name: "Vendas",
+            outgoingUrl:
+              "https://agents.example.com/api/v1/chatwoot/webhook/old",
+          },
+        ];
+      },
+      updateAgentBot: async (_id: number, p: { outgoingUrl: string }) => {
+        patches.push(p.outgoingUrl);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await ensureAgentBot(tenantId, inst.id, agent.id, "Vendas", stubClient, {
+      base: appDb,
+      webhookBaseUrl: "http://10.0.0.6:3000",
+    });
+    expect(patches).toHaveLength(1);
+    expect(
+      patches[0]?.startsWith("http://10.0.0.6:3000/api/v1/chatwoot/webhook/"),
+    ).toBe(true);
+    const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { id: before.id },
+    });
+    expect(row.webhookRouteTokenHash).toBe(
+      hashRouteToken(String(patches[0]).split("/").pop() as string),
+    );
+    await suDb.chatwootAgentBot.update({
+      where: { id: before.id },
+      data: { webhookRouteTokenHash: before.webhookRouteTokenHash },
+    });
+  });
+
+  test("two connection edits in a row leave the bot on the base saved last, even when the first one finishes after", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Vendas" },
+    });
+    const before = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, agentId: agent.id },
+    });
+    let url = "https://agents.example.com/api/v1/chatwoot/webhook/old";
+    const listAgentBots = async () => [
+      { id: 57, name: "Vendas", outgoingUrl: url },
+    ];
+    const updateAgentBot = async (_id: number, p: { outgoingUrl: string }) => {
+      url = p.outgoingUrl;
+      return {};
+    };
+    let firstListed = () => {};
+    const firstReading = new Promise<void>((r) => {
+      firstListed = r;
+    });
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    let firstLists = 0;
+    const firstClient = {
+      listAgentBots: async () => {
+        firstLists += 1;
+        if (firstLists === 1) {
+          firstListed();
+          await firstGate;
+        }
+        return listAgentBots();
+      },
+      updateAgentBot,
+    } as unknown as ChatwootClient;
+    // Only this instance's read stalls; the tenant's other instances answer with no bots.
+    const first = updateChatwootDeployment(
+      ctx,
+      { webhookBaseUrl: "http://10.0.0.7:3000" },
+      {
+        repoint: {
+          base: appDb,
+          makeClient: async (cfg) =>
+            cfg.accountId === 2
+              ? firstClient
+              : ({
+                  listAgentBots: async () => [],
+                } as unknown as ChatwootClient),
+        },
+      },
+      appDb,
+    );
+    await firstReading;
+    await updateChatwootDeployment(
+      ctx,
+      { webhookBaseUrl: "http://10.0.0.8:3000" },
+      {
+        repoint: {
+          base: appDb,
+          makeClient: async (cfg) =>
+            (cfg.accountId === 2
+              ? { listAgentBots, updateAgentBot }
+              : { listAgentBots: async () => [] }) as unknown as ChatwootClient,
+        },
+      },
+      appDb,
+    );
+    expect(url.startsWith("http://10.0.0.8:3000/")).toBe(true);
+    releaseFirst();
+    await first;
+    expect(
+      url.startsWith("http://10.0.0.8:3000/api/v1/chatwoot/webhook/"),
+    ).toBe(true);
+    await suDb.chatwootAgentBot.update({
+      where: { id: before.id },
+      data: { webhookRouteTokenHash: before.webhookRouteTokenHash },
+    });
+    await suDb.chatwootDeployment.updateMany({
+      where: { tenantId },
+      data: { webhookBaseUrl: null },
+    });
+  });
+
+  test("a bot created while the connection moved to another webhook base ends on the new one", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Novo 1686",
+        systemPrompt: "x",
+        enabled: true,
+        modelConfig: {},
+        settings: {},
+      },
+    });
+    await suDb.chatwootDeployment.updateMany({
+      where: { tenantId },
+      data: { webhookBaseUrl: "http://10.0.0.6:3000" },
+    });
+    let url = "";
+    const client = {
+      listAgentBots: async () =>
+        url ? [{ id: 4242, name: "Novo 1686", outgoingUrl: url }] : [],
+      // The edit is saved while Chatwoot creates the bot; its pass over the bots ran before this row
+      // existed, so it moved nothing.
+      createAgentBot: async (p: { outgoingUrl: string }) => {
+        url = p.outgoingUrl;
+        await suDb.chatwootDeployment.updateMany({
+          where: { tenantId },
+          data: { webhookBaseUrl: "http://10.0.0.7:3000" },
+        });
+        return { id: 4242, access_token: "ACCESS_4242", secret: "S" };
+      },
+      updateAgentBot: async (_id: number, p: { outgoingUrl: string }) => {
+        url = p.outgoingUrl;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    try {
+      const bot = await ensureAgentBot(
+        tenantId,
+        inst.id,
+        agent.id,
+        "Novo 1686",
+        client,
+        { base: appDb },
+      );
+      expect(bot.chatwootAgentBotId).toBe(4242);
+      expect(
+        url.startsWith("http://10.0.0.7:3000/api/v1/chatwoot/webhook/"),
+      ).toBe(true);
+      const row = await suDb.chatwootAgentBot.findFirstOrThrow({
+        where: { chatwootInstanceId: inst.id, agentId: agent.id },
+      });
+      expect(row.webhookRouteTokenHash).toBe(
+        hashRouteToken(url.split("/").pop() as string),
+      );
+    } finally {
+      await suDb.chatwootAgentBot.deleteMany({ where: { agentId: agent.id } });
+      await suDb.agent.delete({ where: { id: agent.id } });
+      await suDb.chatwootDeployment.updateMany({
+        where: { tenantId },
+        data: { webhookBaseUrl: null },
+      });
+    }
+  });
+
   test("a bind that read the old webhook base and a connection edit that races it end on the base saved last", async () => {
     const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
     const inst = await suDb.chatwootInstance.findFirstOrThrow({

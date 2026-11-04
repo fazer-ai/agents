@@ -738,21 +738,6 @@ export async function updateChatwootDeployment(
         "errors.chatwootDeploymentChanged",
       );
     }
-    if (moving && move) {
-      // Asked again under the claims lock, so no account is claimed at the new address between the
-      // check and this write.
-      await lockAccountClaims(db);
-      const held = await db.chatwootInstance.findMany({
-        where: { deploymentId: dep.id },
-        select: { accountId: true },
-      });
-      await assertAccountsNotTakenByAnotherTenant(
-        base,
-        tenantId,
-        [move.baseUrl],
-        held.map((h) => h.accountId),
-      );
-    }
     const row = await db.chatwootDeployment.update({
       where: { id: dep.id },
       data: {
@@ -970,14 +955,6 @@ function deploymentAddresses(dep: {
   ];
 }
 
-// Claims across tenants are decided one at a time fleet-wide: a check and the write it allows run
-// under this lock (account connects and base URL moves), since the unique index on
-// `(serverKey, accountId)` cannot see two tenants reaching one installation through different
-// addresses. Taken after the deployment row lock, in both paths.
-async function lockAccountClaims(db: ScopedDb): Promise<void> {
-  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('chatwoot-account-claims')::bigint)`;
-}
-
 // An account is reserved under a deployment's key AND under its current base URL: a deployment that
 // moved answers on both, so a tenant connecting through either address finds the claim.
 function claimedOn(addresses: string[]) {
@@ -1037,8 +1014,8 @@ async function connectAccount(
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   // A Chatwoot account belongs to ONE tenant fleet-wide. RLS hides another tenant's claim from the
-  // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error, and ask again
-  // under the claims lock below, with the addresses read after the deployment lock.
+  // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error; the unique
+  // index on (serverKey, accountId) is the hard race-safe backstop on create, for one address.
   await assertAccountsNotTakenByAnotherTenant(base, tenantId, addresses, [
     accountId,
   ]);
@@ -1047,17 +1024,6 @@ async function connectAccount(
     // module locks in one order. It also keeps the disconnect's count honest: locking existing
     // accounts cannot block a new one being inserted, and this lock can.
     await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${deploymentId} FOR NO KEY UPDATE`;
-    await lockAccountClaims(db);
-    const dep = await db.chatwootDeployment.findUniqueOrThrow({
-      where: { id: deploymentId },
-      select: { baseUrl: true, serverKey: true, formerBaseUrls: true },
-    });
-    await assertAccountsNotTakenByAnotherTenant(
-      base,
-      tenantId,
-      deploymentAddresses(dep),
-      [accountId],
-    );
     const existing = await db.chatwootInstance.findFirst({
       where: { accountId },
       select: { id: true },

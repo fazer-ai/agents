@@ -603,10 +603,10 @@ function profileUserId(raw: unknown): number | null {
 }
 
 // Whether a new base URL is the same Chatwoot the connection already talks to, before anything is
-// written: the address passes the connection's SSRF guard, the token (the new one when sent, else the
-// saved one) reaches it, it answers as the same user the saved token belongs to (asked at the new
-// address, or at the old one when the saved token is no longer accepted at the new), and every
-// connected account is still there under its id. Read-only: the MCP preview asks it too.
+// written: the address passes the connection's SSRF guard, the SAVED token is accepted there (a token
+// is a secret of one installation, so this is what ties the two addresses; matching numeric ids are
+// not, since every installation has a user 1 and an account 1), a new token answers there as the same
+// user, and every connected account is still there under its id. Read-only: the preview asks it too.
 export async function verifyBaseUrlMove(
   ctx: TenantContext,
   rawBaseUrl: string,
@@ -655,13 +655,9 @@ export async function verifyBaseUrlMove(
     );
   }
   const userAfter = profileUserId(after);
-  let anchor: number | null = token === savedToken ? userAfter : null;
-  if (token !== savedToken) {
-    const viaSaved =
-      (await probe(baseUrl, savedToken)) ??
-      (await probe(dep.baseUrl, savedToken));
-    anchor = viaSaved === null ? null : profileUserId(viaSaved);
-  }
+  const viaSaved =
+    token === savedToken ? after : await probe(baseUrl, savedToken);
+  const anchor = viaSaved === null ? null : profileUserId(viaSaved);
   if (userAfter === null || anchor === null || userAfter !== anchor)
     throw differentInstallationError();
   const reachable = new Set(parseChatwootAccounts(after).map((a) => a.id));

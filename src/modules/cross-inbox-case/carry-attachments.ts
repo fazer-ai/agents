@@ -20,7 +20,7 @@ import {
 
 export type CarryClient = Pick<
   ChatwootClient,
-  | "conversationUrl"
+  | "conversationKey"
   | "conversationLink"
   | "getConversation"
   | "getMessages"
@@ -274,7 +274,7 @@ export async function carryCaseAttachments(
   // side by side, the second write would drop the first one's entries and its files would be posted
   // again on the next call. Serialized, the second reads what the first recorded.
   return withKeyedQueue(
-    `cross-inbox-case-carry:${client.conversationUrl(input.caseId)}`,
+    `cross-inbox-case-carry:${client.conversationKey(input.caseId)}`,
     () => carryLocked(client, input),
   );
 }

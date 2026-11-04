@@ -3341,7 +3341,7 @@ describe("the fence rule, over every native tool", () => {
           if (prop === "muted") return false;
           if (typeof prop !== "string") return undefined;
           // Pure string building, not a call to Chatwoot.
-          if (prop === "conversationUrl" || prop === "conversationLink")
+          if (prop === "conversationKey" || prop === "conversationLink")
             return (id: number) => `https://cw.example/conversations/${id}`;
           const kind = CLIENT_READS.includes(prop)
             ? "read"

@@ -122,7 +122,7 @@ function fakeChatwoot(
     fail(fn);
   };
   const client: CaseClient = {
-    conversationUrl: (id: number) =>
+    conversationKey: (id: number) =>
       `https://cw.example/app/accounts/1/conversations/${id}`,
     conversationLink: (id: number) =>
       `https://cw.example/app/accounts/1/conversations/${id}`,

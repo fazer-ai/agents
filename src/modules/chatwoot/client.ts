@@ -156,6 +156,9 @@ export interface ChatwootClientConfig {
   // The address people open this Chatwoot on, for links a person follows; null or absent means
   // baseUrl. Differs when baseUrl is a private address only the servers reach.
   publicUrl?: string | null;
+  // What stays the same while the base URL moves (a domain change of the same Chatwoot): the
+  // deployment's id, set by `loadChatwootClient`. Keys in-process queues; absent means the base URL.
+  identity?: string;
   accountId: number;
   adminToken: string;
   botToken: string;
@@ -1955,11 +1958,14 @@ export class ChatwootClient {
   // asks `ConversationPolicy#show?` about the caller: a credential that is neither an administrator
   // nor a member of that inbox has the reuse refused in silence and gets a second conversation.
 
-  // A conversation's dashboard path on the base URL. `displayId` is the number the API calls `id`
-  // (the fork serializes `display_id` there), never the internal row id. Stable for a deployment, so
-  // it also keys idempotent writes; a link a person follows is `conversationLink`.
-  conversationUrl(displayId: number): string {
-    return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
+  // A conversation's key for serializing writes: the deployment's identity, the account and the
+  // number the API calls `id` (the fork serializes `display_id` there), never the internal row id. Not
+  // a URL, so a base URL moving while a write runs does not split one conversation into two keys; a
+  // link a person follows is `conversationLink`.
+  conversationKey(displayId: number): string {
+    const identity =
+      this.config.identity ?? this.config.baseUrl.replace(/\/+$/, "");
+    return `${identity}/accounts/${this.config.accountId}/conversations/${displayId}`;
   }
 
   // The operator-facing link of a conversation, on the address people open this Chatwoot on.

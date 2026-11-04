@@ -263,7 +263,7 @@ describe("the connection's two optional addresses", () => {
     }
   });
 
-  test("links follow the public address, and the keyed URL stays on the base", async () => {
+  test("links follow the public address, and the write key follows neither", async () => {
     expect(
       chatwootLinkBase({
         baseUrl: "http://10.0.0.5:3000",
@@ -280,9 +280,23 @@ describe("the connection's two optional addresses", () => {
     expect(client.conversationLink(7)).toBe(
       "https://desk.example.com/app/accounts/1/conversations/7",
     );
-    expect(client.conversationUrl(7)).toBe(
-      "http://10.0.0.5:3000/app/accounts/1/conversations/7",
+    // The write key is not the link, and with an identity it does not follow the base URL either.
+    expect(client.conversationKey(7)).toBe(
+      "http://10.0.0.5:3000/accounts/1/conversations/7",
     );
+    config.ssrf.internalTargets = [
+      { host: "10.0.0.5", port: 3000 },
+      { host: "10.0.0.9", port: 3000 },
+    ];
+    const moved = await createChatwootClient({
+      ...clientConfig("http://10.0.0.9:3000"),
+      identity: "chatwoot-deployment:4",
+    });
+    const before = await createChatwootClient({
+      ...clientConfig("http://10.0.0.5:3000"),
+      identity: "chatwoot-deployment:4",
+    });
+    expect(moved.conversationKey(7)).toBe(before.conversationKey(7));
   });
 });
 

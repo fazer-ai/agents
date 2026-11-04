@@ -31,7 +31,7 @@ export { destinationIdentity };
 // What the operation needs from the Chatwoot client, named so a test can hand it a fake.
 export type CaseClient = Pick<
   ChatwootClient,
-  | "conversationUrl"
+  | "conversationKey"
   | "conversationLink"
   | "getInbox"
   | "getConversation"
@@ -494,7 +494,7 @@ export function openCaseInInbox(
   // calls twice would otherwise read "no case yet" twice and open two. Serialized per origin
   // conversation, the second call reads the case number the first one wrote.
   return withKeyedQueue(
-    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationUrl(input.originConversationId)}`,
+    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationKey(input.originConversationId)}`,
     () => run(client, input),
   );
 }
@@ -724,7 +724,7 @@ async function run(
     // ORIGIN, so two origins of one contact could both list before either creates and both send an
     // opening to the same continued case. Keyed by account, inbox and case contact, the second lists
     // after the first created and reads its case as continued.
-    const caseKey = `cross-inbox-case-contact:${client.conversationUrl(0)}:${target}:${caseContactId}`;
+    const caseKey = `cross-inbox-case-contact:${client.conversationKey(0)}:${target}:${caseContactId}`;
     return await withKeyedQueue(caseKey, async (): Promise<OpenCaseResult> => {
       // 3. Open, or continue. Which of the two happened is read from the contact's conversations
       // BEFORE the call: the create answers with a conversation either way.

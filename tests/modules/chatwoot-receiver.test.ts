@@ -2281,12 +2281,19 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       id: 7,
       accounts: connected.slice(1),
     }));
-    // The saved token is accepted neither at the new address nor at the old one: nothing proves it.
+    // The saved token is not accepted at the new address: nothing ties the two.
     const unproven = await refuse(async ({ token }) => {
       if (token === "NEW") return { id: 7, accounts: connected };
       throw new Error("401");
     }, "NEW");
-    for (const e of [otherUser, missingAccount, unproven]) {
+    // Another installation with the same numbers: its own token answers as user 7 with the same
+    // account ids, and the saved token is accepted only at the old address. Equal ids prove nothing.
+    const lookalike = await refuse(async ({ baseUrl, token }) => {
+      if (token === "NEW") return { id: 7, accounts: connected };
+      if (baseUrl === other) throw new Error("401");
+      return { id: 7, accounts: connected };
+    }, "NEW");
+    for (const e of [otherUser, missingAccount, unproven, lookalike]) {
       expect((e as { statusCode?: number }).statusCode).toBe(422);
       expect((e as Error).message).toContain("another Chatwoot");
     }

@@ -44,7 +44,12 @@ export async function loadChatwootClient(
       select: {
         accountId: true,
         deployment: {
-          select: { baseUrl: true, publicUrl: true, adminToken: true },
+          select: {
+            id: true,
+            baseUrl: true,
+            publicUrl: true,
+            adminToken: true,
+          },
         },
       },
     }),
@@ -53,6 +58,7 @@ export async function loadChatwootClient(
   return factory({
     baseUrl: instance.deployment.baseUrl,
     publicUrl: instance.deployment.publicUrl,
+    identity: `chatwoot-deployment:${instance.deployment.id}`,
     accountId: instance.accountId,
     adminToken: decryptJson<string>(instance.deployment.adminToken),
     botToken: deps.botToken ?? "",

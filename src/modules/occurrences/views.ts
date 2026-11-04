@@ -201,7 +201,8 @@ export async function themeRowsOn(
     Math.max(1, Math.trunc(opts.limit ?? 100)),
     THEMES_LIMIT_RANGE.max,
   );
-  const inboxIds = await monitoredInboxes(db, tenantId, monitorId);
+  const cfg = await monitorConfigOn(db, tenantId, monitorId);
+  const inboxIds = cfg.inboxIds.map(BigInt);
   // Counted, dated and ordered over the conversations of the inboxes monitored now: the stored first
   // and last seen still hold an inbox taken off the list until the next assignment prunes it.
   const spans = await themeSpans(db, monitorId, inboxIds, opts.flaggedOnly);
@@ -235,19 +236,42 @@ export async function themeRowsOn(
   const nameOf = new Map(names.map((n) => [n.id, n.name]));
   const linksOf = new Map<bigint, ThemeLink[]>();
   if (opts.links && ids.length) {
-    // One query for every theme's first conversations, then one for their addresses.
+    // The links show what the row describes: the latest conversations whose reference reading
+    // is the row's reference (a spelling merged into it included), then the latest of the rest. The
+    // row's reference is a survivor when it was flagged; one merged since answers as its survivor.
+    const referenceOf = new Map(
+      themes.map((t) => [t.id, t.flagReferenceId] as const),
+    );
+    const merged = referenceIds.length
+      ? await db.occurrenceCanonical.findMany({
+          where: { id: { in: referenceIds }, mergedIntoId: { not: null } },
+          select: { id: true, mergedIntoId: true },
+        })
+      : [];
+    const survivorOf = new Map(merged.map((m) => [m.id, m.mergedIntoId]));
+    const references = ids.map((id) => {
+      const r = referenceOf.get(id) ?? null;
+      return r === null ? null : String(survivorOf.get(r) ?? r);
+    });
+    // One query for every theme's links, then one for their addresses.
     const firsts = await db.$queryRaw<
       { theme_id: bigint; conversation_id: bigint }[]
     >`
       SELECT t.id AS theme_id, f.conversation_id
-      FROM unnest(${ids.map(String)}::bigint[]) AS t(id)
+      FROM unnest(${ids.map(String)}::bigint[], ${references}::bigint[]) AS t(id, reference_id)
       CROSS JOIN LATERAL (
         SELECT m.conversation_id
         FROM occurrence_theme_members m
         JOIN conversations cv ON cv.id = m.conversation_id
                              AND cv.inbox_id = ANY(${inboxIds.map(String)}::bigint[])
+        LEFT JOIN conversation_readings r ON r.conversation_id = m.conversation_id
+                                         AND r.monitor_id = m.monitor_id
+                                         AND r.field = ${cfg.referenceField ?? ""}
+        LEFT JOIN occurrence_canonicals k ON k.id = r.canonical_id
         WHERE m.monitor_id = ${monitorId} AND m.theme_id = t.id
-        ORDER BY m.read_at ASC, m.id ASC
+        -- COALESCE: a comparison with no reading is NULL, which DESC would put first.
+        ORDER BY COALESCE(k.id = t.reference_id OR k.merged_into_id = t.reference_id, false) DESC,
+                 m.read_at DESC, m.id DESC
         LIMIT ${opts.links}
       ) f`;
     const conversations = firsts.length

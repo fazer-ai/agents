@@ -298,7 +298,9 @@ type AgentBotKey = {
 // URL, and reads again after a lost swap or a PATCH, so racing binds and edits end on the base saved
 // last. A URL carrying the row's token keeps it; any other gets a new token, stored before Chatwoot
 // hears of it (put back if the PATCH is refused; a lost answer is repaired by `callsThisRow`).
-const repointing = new Map<number, Promise<void>>();
+// Keyed by the account's instance and the bot's id: bot ids are per Chatwoot installation, so a bare
+// id would make two installations wait on each other.
+const repointing = new Map<string, Promise<void>>();
 const REPOINT_ATTEMPTS = 4;
 
 async function repointAgentBot(
@@ -309,19 +311,19 @@ async function repointAgentBot(
   resolveBase: () => Promise<string>,
   client: ChatwootClient,
 ): Promise<void> {
-  const previous = repointing.get(chatwootAgentBotId) ?? Promise.resolve();
+  const queue = `${key.tenantId_chatwootInstanceId_agentId.chatwootInstanceId}:${chatwootAgentBotId}`;
+  const previous = repointing.get(queue) ?? Promise.resolve();
   const run = previous
     .catch(() => {})
     .then(() =>
       repointOnce(base, tenantId, key, chatwootAgentBotId, resolveBase, client),
     );
   const settled = run.catch(() => {});
-  repointing.set(chatwootAgentBotId, settled);
+  repointing.set(queue, settled);
   try {
     await run;
   } finally {
-    if (repointing.get(chatwootAgentBotId) === settled)
-      repointing.delete(chatwootAgentBotId);
+    if (repointing.get(queue) === settled) repointing.delete(queue);
   }
 }
 

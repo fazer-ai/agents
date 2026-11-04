@@ -428,6 +428,9 @@ model ChatwootDeployment {
   // The key the deployment's accounts are reserved under across tenants: the address it was first
   // connected on. Null means base_url; pinned when the base URL moves, so a move never frees a claim.
   serverKey      String?  @map("server_key")
+  // Every base URL it answered on before the current one, so each address a move left behind still
+  // holds its accounts for every other tenant.
+  formerBaseUrls String[] @default([]) @map("former_base_urls")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

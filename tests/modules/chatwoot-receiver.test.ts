@@ -2337,6 +2337,57 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     }
   });
 
+  test("an address left behind by two moves still holds the accounts for every other tenant", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    const instances = await suDb.chatwootInstance.findMany({
+      where: { tenantId },
+    });
+    const connected = instances
+      .filter((i) => i.disconnectedAt === null)
+      .map((i) => ({ id: i.accountId, name: `A${i.accountId}` }));
+    const middle = "https://93.184.216.34";
+    const last = "https://93.184.216.35";
+    const other = await suDb.tenant.create({
+      data: { name: "Middle", slug: `middle-${process.pid}` },
+    });
+    try {
+      for (const to of [middle, last])
+        await updateChatwootDeployment(
+          ctx,
+          { baseUrl: to },
+          { fetchProfile: async () => ({ id: 7, accounts: connected }) },
+          appDb,
+        );
+      await suDb.chatwootDeployment.create({
+        data: { tenantId: other.id, baseUrl: middle, adminToken: "enc" },
+      });
+      const refused = await assertAccountsClaimable(
+        { tenantId: other.id, userId: null, role: "TENANT_ADMIN" },
+        [connected[0]?.id as number],
+        appDb,
+      ).catch((e: unknown) => e);
+      expect((refused as Error).message).toContain(
+        "already connected to another tenant",
+      );
+    } finally {
+      await suDb.chatwootDeployment.deleteMany({
+        where: { tenantId: other.id },
+      });
+      await suDb.tenant.delete({ where: { id: other.id } });
+      await suDb.chatwootDeployment.update({
+        where: { id: dep.id },
+        data: {
+          baseUrl: dep.baseUrl,
+          serverKey: dep.serverKey,
+          formerBaseUrls: dep.formerBaseUrls,
+        },
+      });
+    }
+  });
+
   test("a base URL that answers as another Chatwoot is refused, and nothing is written", async () => {
     const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
     const dep = await suDb.chatwootDeployment.findFirstOrThrow({

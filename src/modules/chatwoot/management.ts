@@ -727,6 +727,7 @@ export async function updateChatwootDeployment(
       select: {
         baseUrl: true,
         serverKey: true,
+        formerBaseUrls: true,
         webhookBaseUrl: true,
         publicUrl: true,
       },
@@ -737,13 +738,37 @@ export async function updateChatwootDeployment(
         "errors.chatwootDeploymentChanged",
       );
     }
+    if (moving && move) {
+      // Asked again under the claims lock, so no account is claimed at the new address between the
+      // check and this write.
+      await lockAccountClaims(db);
+      const held = await db.chatwootInstance.findMany({
+        where: { deploymentId: dep.id },
+        select: { accountId: true },
+      });
+      await assertAccountsNotTakenByAnotherTenant(
+        base,
+        tenantId,
+        [move.baseUrl],
+        held.map((h) => h.accountId),
+      );
+    }
     const row = await db.chatwootDeployment.update({
       where: { id: dep.id },
       data: {
         // The accounts stay reserved under the key they were claimed with: pinned here, so the old
         // address keeps them for every other tenant while the new one is checked by base URL.
         ...(moving && move
-          ? { baseUrl: move.baseUrl, serverKey: deploymentServerKey(before) }
+          ? {
+              baseUrl: move.baseUrl,
+              serverKey: deploymentServerKey(before),
+              formerBaseUrls: [
+                ...new Set([
+                  ...before.formerBaseUrls,
+                  normalizeChatwootBaseUrl(before.baseUrl),
+                ]),
+              ],
+            }
           : {}),
         ...(moving && data.adminToken !== undefined
           ? { adminToken: encryptJson(data.adminToken) }
@@ -786,8 +811,6 @@ function readStoredToken(blob: string): string {
   return v;
 }
 
-// Rotate the deployment's admin token (the operator pasted a new one). Validated by a /profile probe
-// before it persists. Affects every account under the deployment (they share it).
 function nothingToChangeError(): AppError {
   return new AppError(
     "Nothing to change: send a new base URL, admin token, webhookBaseUrl or publicUrl.",
@@ -826,6 +849,8 @@ export async function previewChatwootDeploymentUpdate(
   return { baseUrl: moving ? (move?.baseUrl ?? null) : null };
 }
 
+// Rotate the deployment's admin token (the operator pasted a new one). Validated by a /profile probe
+// before it persists. Affects every account under the deployment (they share it).
 export async function rotateChatwootDeploymentToken(
   ctx: TenantContext,
   adminToken: string,
@@ -887,7 +912,12 @@ export async function listDeploymentAccounts(
 ): Promise<ChatwootAccountSummary[]> {
   const dep = await runScopedOn(base, ctx, (db) =>
     db.chatwootDeployment.findFirst({
-      select: { baseUrl: true, adminToken: true, serverKey: true },
+      select: {
+        baseUrl: true,
+        adminToken: true,
+        serverKey: true,
+        formerBaseUrls: true,
+      },
     }),
   );
   if (!dep) {
@@ -923,18 +953,29 @@ function deploymentServerKey(dep: {
   return dep.serverKey ?? normalizeChatwootBaseUrl(dep.baseUrl);
 }
 
-// Every address a deployment answers on: its pinned key and, after a move, its current base URL.
+// Every address a deployment answers on: its pinned key, its current base URL and every base URL a
+// move left behind.
 // Claims are read across all of them, so an account reserved under either one is found.
 function deploymentAddresses(dep: {
   baseUrl: string;
   serverKey?: string | null;
+  formerBaseUrls?: string[];
 }): string[] {
   return [
     ...new Set([
       deploymentServerKey(dep),
       normalizeChatwootBaseUrl(dep.baseUrl),
+      ...(dep.formerBaseUrls ?? []),
     ]),
   ];
+}
+
+// Claims across tenants are decided one at a time fleet-wide: a check and the write it allows run
+// under this lock (account connects and base URL moves), since the unique index on
+// `(serverKey, accountId)` cannot see two tenants reaching one installation through different
+// addresses. Taken after the deployment row lock, in both paths.
+async function lockAccountClaims(db: ScopedDb): Promise<void> {
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('chatwoot-account-claims')::bigint)`;
 }
 
 // An account is reserved under a deployment's key AND under its current base URL: a deployment that
@@ -944,6 +985,7 @@ function claimedOn(addresses: string[]) {
     OR: [
       { serverKey: { in: addresses } },
       { deployment: { baseUrl: { in: addresses } } },
+      { deployment: { formerBaseUrls: { hasSome: addresses } } },
     ],
   };
 }
@@ -995,9 +1037,8 @@ async function connectAccount(
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   // A Chatwoot account belongs to ONE tenant fleet-wide. RLS hides another tenant's claim from the
-  // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error; the unique
-  // index on (serverKey, accountId) is the hard race-safe backstop on create (for one address; a
-  // moved deployment's second address is covered by this check alone).
+  // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error, and ask again
+  // under the claims lock below, with the addresses read after the deployment lock.
   await assertAccountsNotTakenByAnotherTenant(base, tenantId, addresses, [
     accountId,
   ]);
@@ -1006,6 +1047,17 @@ async function connectAccount(
     // module locks in one order. It also keeps the disconnect's count honest: locking existing
     // accounts cannot block a new one being inserted, and this lock can.
     await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${deploymentId} FOR NO KEY UPDATE`;
+    await lockAccountClaims(db);
+    const dep = await db.chatwootDeployment.findUniqueOrThrow({
+      where: { id: deploymentId },
+      select: { baseUrl: true, serverKey: true, formerBaseUrls: true },
+    });
+    await assertAccountsNotTakenByAnotherTenant(
+      base,
+      tenantId,
+      deploymentAddresses(dep),
+      [accountId],
+    );
     const existing = await db.chatwootInstance.findFirst({
       where: { accountId },
       select: { id: true },
@@ -1138,7 +1190,12 @@ export async function assertAccountsClaimable(
   ctx: TenantContext,
   accountIds: number[],
   base: PrismaClient = basePrisma,
-): Promise<{ id: bigint; baseUrl: string; serverKey: string | null }> {
+): Promise<{
+  id: bigint;
+  baseUrl: string;
+  serverKey: string | null;
+  formerBaseUrls: string[];
+}> {
   const dep = await assertDeploymentConnected(ctx, base);
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
@@ -1155,10 +1212,20 @@ export async function assertAccountsClaimable(
 export async function assertDeploymentConnected(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
-): Promise<{ id: bigint; baseUrl: string; serverKey: string | null }> {
+): Promise<{
+  id: bigint;
+  baseUrl: string;
+  serverKey: string | null;
+  formerBaseUrls: string[];
+}> {
   const dep = await runScopedOn(base, ctx, (db) =>
     db.chatwootDeployment.findFirst({
-      select: { id: true, baseUrl: true, serverKey: true },
+      select: {
+        id: true,
+        baseUrl: true,
+        serverKey: true,
+        formerBaseUrls: true,
+      },
     }),
   );
   if (!dep) {

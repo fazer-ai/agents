@@ -284,16 +284,14 @@ type AgentBotKey = {
   };
 };
 
-// Moves a live bot onto the connection's webhook base, minting a new route token (only its hash is
-// stored). Callers only nominate a bot; the decision is taken inside a per-bot queue (the app is
-// single-replica, docs/deploy.md) from a fresh read of the row's hash, the connection's base and the
-// URL Chatwoot holds, so a bind and a connection edit that race both end on the base saved last. The
-// swap is conditioned on the hash just read; losing it re-reads and decides again. The row takes the
-// new hash before Chatwoot hears of it: the URL being left is the one Chatwoot cannot use, so the new
-// token resolves from the first delivery. A refused PATCH puts the old hash back; one whose answer was
-// lost leaves a token the row lacks, which `callsThisRow` repairs next bind.
+// Moves a live bot onto the connection's webhook base with a new route token (only its hash is
+// stored). Callers only nominate a bot; a per-bot queue (single replica, docs/deploy.md) decides from a
+// fresh read of the row's hash, the connection's base and Chatwoot's URL, and reads again after a lost
+// swap or a PATCH that went through, so racing binds and edits end on the base saved last. The row
+// takes the new hash before Chatwoot hears of it, so the first delivery to the new URL resolves; a
+// refused PATCH puts the old hash back, and a lost answer is repaired by `callsThisRow` on the next bind.
 const repointing = new Map<number, Promise<void>>();
-const REPOINT_ATTEMPTS = 3;
+const REPOINT_ATTEMPTS = 4;
 
 async function repointAgentBot(
   base: PrismaClient,
@@ -379,7 +377,8 @@ async function repointOnce(
       "chatwoot: moved agent bot %d to the configured webhook base",
       chatwootAgentBotId,
     );
-    return;
+    // Look once more: an edit saved while this PATCH was out found the bot still on the base it
+    // wanted, and skipped the queue; the next pass moves the bot there.
   }
   logger.warn(
     "chatwoot: agent bot %d kept changing while being moved; the next bind retries",

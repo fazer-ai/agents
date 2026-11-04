@@ -886,7 +886,7 @@ export function fillContextOf(
     contact?: { customAttributes?: unknown } | null;
   } | null,
   displayId: number,
-  client: Pick<ChatwootClient, "conversationUrl">,
+  client: Pick<ChatwootClient, "conversationLink">,
 ): FillContext {
   const bag = (v: unknown): Record<string, unknown> =>
     v && typeof v === "object" && !Array.isArray(v)
@@ -908,9 +908,10 @@ export function fillContextOf(
       ...(Number.isInteger(inbox) && context.inbox_id
         ? { inbox_id: inbox }
         : {}),
-      // A client without the dashboard's address (a test double) has no link to give.
-      ...(typeof client.conversationUrl === "function"
-        ? { link: client.conversationUrl(displayId) }
+      // A client without the dashboard's address (a test double) has no link to give. The link is the
+      // one a person follows: the connection's public address when it has one.
+      ...(typeof client.conversationLink === "function"
+        ? { link: client.conversationLink(displayId) }
         : {}),
     },
     conversationAttributes: bag(conv?.customAttributes),

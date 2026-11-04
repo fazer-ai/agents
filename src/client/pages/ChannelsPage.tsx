@@ -1386,7 +1386,7 @@ export function ChannelsPage() {
                     content={t("channels.openInChatwoot", "Open in Chatwoot")}
                   >
                     <a
-                      href={deployment.baseUrl.replace(/\/+$/, "")}
+                      href={baseUrl0.replace(/\/+$/, "")}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label={t(

@@ -11,6 +11,7 @@ import {
   chatwootDeploymentUpdateSchema,
   isCleanHttpBase,
 } from "@/modules/chatwoot/management";
+import { fillContextOf } from "@/modules/observe/job";
 
 // A Chatwoot reached on a private address (same VPC, same Docker network) is a declared
 // SSRF_INTERNAL_TARGETS entry, not a reason to turn the guard off. These run the REAL guard (no
@@ -281,6 +282,18 @@ describe("the connection's two optional addresses", () => {
     );
     expect(client.conversationUrl(7)).toBe(
       "http://10.0.0.5:3000/app/accounts/1/conversations/7",
+    );
+  });
+});
+
+describe("the observer's conversation link", () => {
+  test("a decision rule gets the link people follow, not the private base", () => {
+    const ctx = fillContextOf({ inbox_id: "3" }, null, 42, {
+      conversationLink: (id: number) =>
+        `https://desk.example.com/app/accounts/1/conversations/${id}`,
+    });
+    expect(ctx.conversation.link).toBe(
+      "https://desk.example.com/app/accounts/1/conversations/42",
     );
   });
 });

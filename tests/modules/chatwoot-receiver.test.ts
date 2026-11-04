@@ -1555,16 +1555,20 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       patchStarted = r;
     });
     const patches: Array<Record<string, unknown>> = [];
+    let lists = 0;
     const stub = () =>
       ({
-        listAgentBots: async () => [
-          {
-            id: 57,
-            name: "Vendas",
-            outgoingUrl:
-              "https://agents.example.com/api/v1/chatwoot/webhook/old",
-          },
-        ],
+        listAgentBots: async () => {
+          lists += 1;
+          return [
+            {
+              id: 57,
+              name: "Vendas",
+              outgoingUrl:
+                "https://agents.example.com/api/v1/chatwoot/webhook/old",
+            },
+          ];
+        },
         updateAgentBot: async (_id: number, p: Record<string, unknown>) => {
           patches.push(p);
           patchStarted();
@@ -1590,16 +1594,11 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       stub(),
       opts,
     );
-    // The second bind has to be parked on the row the first one holds while its PATCH is out.
-    let parked = false;
-    for (let i = 0; i < 300 && !parked; i += 1) {
-      const [row] = await suDb.$queryRaw<Array<{ n: bigint }>>`
-        SELECT count(*)::bigint AS n FROM pg_stat_activity
-         WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0`;
-      parked = Number(row?.n ?? 0n) > 0;
-      if (!parked) await new Promise((r) => setTimeout(r, 20));
-    }
-    expect(parked).toBe(true);
+    // The second bind has read Chatwoot (still the old URL) and is queued behind the first PATCH.
+    for (let i = 0; i < 200 && lists < 2; i += 1)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(lists).toBe(2);
+    expect(patches).toHaveLength(1);
     release();
     await Promise.all([first, second]);
     expect(patches).toHaveLength(1);

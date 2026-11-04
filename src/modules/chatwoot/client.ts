@@ -1540,11 +1540,16 @@ export class ChatwootClient {
     );
   }
 
-  // Whether a URL is on this instance's own host: the one place an attachment is fetched from when the
-  // caller must not reach anywhere else (carrying a customer's files into a case).
+  // Whether a URL is one of this instance's own files: the one place an attachment is fetched from
+  // when the caller must not reach anywhere else (carrying a customer's files into a case). Same rule
+  // as `downloadAttachment`, so a public data_url fetched through a private base counts.
   isInstanceUrl(url: string): boolean {
     try {
-      return new URL(url).host === new URL(this.config.baseUrl).host;
+      return attachmentFetchTarget(
+        url,
+        this.config.baseUrl,
+        appConfig.ssrf.internalTargets,
+      ).sameInstance;
     } catch {
       return false;
     }

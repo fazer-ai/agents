@@ -240,15 +240,12 @@ type AgentBotKey = {
 };
 
 // Moves a live bot onto the configured webhook base, minting a new route token (only its hash is
-// stored). One transaction holds the row, conditioned on the hash read, so a racing bind waits, then
-// finds the hash changed and leaves Chatwoot alone. The PATCH goes out under that lock, the module's
-// one network call inside a transaction, bounded by the client's timeout and made once per bot. The
-// new hash is visible only at commit; a refused PATCH rolls back and the old URL keeps working. A
-// PATCH whose answer was lost leaves a token the row lacks, which `callsThisRow` repairs next bind.
-const REPOINT_TX_BUDGET = {
-  maxWait: config.dbTx.maxWaitMs,
-  timeout: 30_000,
-};
+// stored). Repoints of one bot run one at a time in this process (the app is single-replica,
+// docs/deploy.md), and each re-reads the row first, so a racing bind finds the hash changed and leaves
+// Chatwoot alone. The PATCH goes out with no transaction open; the new hash is written after it,
+// conditioned on the old one. A refused PATCH changes nothing, and a PATCH whose answer was lost
+// leaves a token the row lacks, which `callsThisRow` repairs on the next bind.
+const repointing = new Map<number, Promise<void>>();
 
 async function repointAgentBot(
   base: PrismaClient,
@@ -259,35 +256,53 @@ async function repointAgentBot(
   webhookBaseUrl: string,
   client: ChatwootClient,
 ): Promise<void> {
-  const { token, hash } = generateRouteToken();
+  const previous = repointing.get(chatwootAgentBotId) ?? Promise.resolve();
+  const run = previous.then(() =>
+    repointOnce(
+      base,
+      tenantId,
+      key,
+      chatwootAgentBotId,
+      oldHash,
+      webhookBaseUrl,
+      client,
+    ),
+  );
+  const settled = run.catch(() => {});
+  repointing.set(chatwootAgentBotId, settled);
+  try {
+    await run;
+  } finally {
+    if (repointing.get(chatwootAgentBotId) === settled)
+      repointing.delete(chatwootAgentBotId);
+  }
+}
+
+async function repointOnce(
+  base: PrismaClient,
+  tenantId: bigint,
+  key: AgentBotKey,
+  chatwootAgentBotId: number,
+  oldHash: string,
+  webhookBaseUrl: string,
+  client: ChatwootClient,
+): Promise<void> {
   const where = {
     ...key.tenantId_chatwootInstanceId_agentId,
     chatwootAgentBotId,
   };
-  let moved = false;
+  const current = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findFirst({
+      where,
+      select: { webhookRouteTokenHash: true },
+    }),
+  );
+  if (current?.webhookRouteTokenHash !== oldHash) return; // another bind repointed it first
+  const { token, hash } = generateRouteToken();
   try {
-    moved = await runScopedOn(
-      base,
-      sysCtx(tenantId),
-      async (db) => {
-        // A no-op write is the row lock: a concurrent repoint blocks here, and once the holder commits
-        // its WHERE is re-checked against the new hash and matches nothing.
-        const held = await db.chatwootAgentBot.updateMany({
-          where: { ...where, webhookRouteTokenHash: oldHash },
-          data: { webhookRouteTokenHash: oldHash },
-        });
-        if (held.count === 0) return false; // another bind repointed it first
-        await client.updateAgentBot(chatwootAgentBotId, {
-          outgoingUrl: chatwootOutgoingUrl(webhookBaseUrl, token),
-        });
-        await db.chatwootAgentBot.updateMany({
-          where,
-          data: { webhookRouteTokenHash: hash },
-        });
-        return true;
-      },
-      REPOINT_TX_BUDGET,
-    );
+    await client.updateAgentBot(chatwootAgentBotId, {
+      outgoingUrl: chatwootOutgoingUrl(webhookBaseUrl, token),
+    });
   } catch (err) {
     logger.warn(
       { err },
@@ -296,9 +311,14 @@ async function repointAgentBot(
     );
     return;
   }
-  if (!moved) return;
-  // After the commit: the generation bump also refuses a lookup that started before it and would
-  // otherwise cache the new token as unknown, or the old one as still valid.
+  await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.updateMany({
+      where: { ...where, webhookRouteTokenHash: oldHash },
+      data: { webhookRouteTokenHash: hash },
+    }),
+  );
+  // The generation bump also refuses a lookup that started before the write and would otherwise cache
+  // the new token as unknown, or the old one as still valid.
   invalidateRouteTokenCache();
   logger.info(
     "chatwoot: moved agent bot %d to the configured webhook base",

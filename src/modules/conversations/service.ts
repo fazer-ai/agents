@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { modelConfigSchema } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import { isNudgeOrigin } from "@/graph/nudge-origin";
@@ -33,6 +34,7 @@ import {
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
+  attachmentFetchTarget,
   ChatwootApiError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
@@ -1839,10 +1841,18 @@ export async function getConversationMedia(
     }),
   );
   if (!instance) return null;
+  // The instance's own files only, by the rule `downloadAttachment` fetches with: the base's origin,
+  // or Chatwoot's public data_url when the base is a declared private address.
   let sameOrigin = false;
   try {
+    const target = attachmentFetchTarget(
+      url,
+      instance.deployment.baseUrl,
+      config.ssrf.internalTargets,
+    );
     sameOrigin =
-      new URL(url).origin === new URL(instance.deployment.baseUrl).origin;
+      new URL(target.url).origin ===
+      new URL(instance.deployment.baseUrl).origin;
   } catch {
     sameOrigin = false;
   }

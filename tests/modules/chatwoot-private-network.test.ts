@@ -193,6 +193,28 @@ describe("downloadAttachment through the private base", () => {
   });
 });
 
+describe("isInstanceUrl follows the attachment rule", () => {
+  test("a public Active Storage URL is the instance's own file only behind a declared base", async () => {
+    const priv = await createChatwootClient(
+      clientConfig("http://10.0.0.5:3000"),
+    );
+    expect(
+      priv.isInstanceUrl(
+        "https://chat.example.com/rails/active_storage/blobs/x/a.ogg",
+      ),
+    ).toBe(true);
+    expect(priv.isInstanceUrl("https://chat.example.com/files/a.ogg")).toBe(
+      false,
+    );
+    config.ssrf.internalTargets = [];
+    expect(
+      priv.isInstanceUrl(
+        "https://chat.example.com/rails/active_storage/blobs/x/a.ogg",
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("parseWebhookBaseUrl", () => {
   test("defaults to the public URL without a trailing slash", () => {
     expect(

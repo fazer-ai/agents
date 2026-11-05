@@ -3,7 +3,7 @@ import {
   createGoogleUser,
   getUserByEmail,
   getUserByGoogleId,
-  hasElevatedRoleAnywhere,
+  isAdminAnywhere,
   isEmailDomainAllowed,
   linkGoogleIdToUser,
   requireSessionUser,
@@ -50,12 +50,10 @@ export class GoogleIdMismatchError extends Error {
   }
 }
 
-export class GoogleElevatedAccountLinkBlockedError extends Error {
+export class GoogleAdminLinkBlockedError extends Error {
   constructor() {
-    super(
-      "Elevated account must complete a password login before Google linking",
-    );
-    this.name = "GoogleElevatedAccountLinkBlockedError";
+    super("Admin account must complete a password login before Google linking");
+    this.name = "GoogleAdminLinkBlockedError";
   }
 }
 
@@ -118,12 +116,12 @@ export async function upsertGoogleUser(
     if (byEmail.googleId && byEmail.googleId !== profile.sub) {
       throw new GoogleIdMismatchError();
     }
-    // NOTE: an elevated account (SUPER_ADMIN, or editor/admin of ANY tenant, since one account carries
-    // every membership) that never logged in was almost always pre-created by `bun set-admin`.
+    // NOTE: an administrator (SUPER_ADMIN, or admin of ANY tenant, since one account carries every
+    // membership) that never logged in was almost always pre-created by `bun set-admin`.
     // First-time Google linking there would let anyone holding email_verified=true for that address
     // (a Workspace admin, an insider) take it over, so one password login must come first.
-    if (hasElevatedRoleAnywhere(byEmail) && byEmail.lastLoginAt === null) {
-      throw new GoogleElevatedAccountLinkBlockedError();
+    if (isAdminAnywhere(byEmail) && byEmail.lastLoginAt === null) {
+      throw new GoogleAdminLinkBlockedError();
     }
     const linked = await linkGoogleIdToUser(byEmail.id, profile.sub);
     if (!linked) {

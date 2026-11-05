@@ -25,6 +25,7 @@ const {
   verifyPassword,
   isEmailDomainAllowed,
   hasElevatedRoleAnywhere,
+  isAdminAnywhere,
   getSignupRoleForEmail,
   getUserHasPassword,
   changeUserPassword,
@@ -57,6 +58,32 @@ describe("auth.service", () => {
       ).toBe(true);
       expect(
         hasElevatedRoleAnywhere({
+          isSuperAdmin: false,
+          memberships: [{ role: "AGENT" }],
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe("isAdminAnywhere", () => {
+    test("recognizes tenant and fleet administrators without including editors", () => {
+      expect(isAdminAnywhere({ isSuperAdmin: true, memberships: [] })).toBe(
+        true,
+      );
+      expect(
+        isAdminAnywhere({
+          isSuperAdmin: false,
+          memberships: [{ role: "TENANT_ADMIN" }],
+        }),
+      ).toBe(true);
+      expect(
+        isAdminAnywhere({
+          isSuperAdmin: false,
+          memberships: [{ role: "EDITOR" }],
+        }),
+      ).toBe(false);
+      expect(
+        isAdminAnywhere({
           isSuperAdmin: false,
           memberships: [{ role: "AGENT" }],
         }),

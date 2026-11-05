@@ -54,7 +54,7 @@ function stubApi(settings: Record<string, unknown>): void {
     const url = new URL(String(input));
     const routes: Record<string, unknown> = {
       "GET /api/auth/me": {
-        user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" },
+        user: { id: "1", email: "a@b.c", role: "ADMIN" },
       },
       "GET /api/v1/agents/1": { agent: { ...AGENT, settings } },
       "GET /api/v1/agents/1/tool-selections": {

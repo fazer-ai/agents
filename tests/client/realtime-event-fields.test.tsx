@@ -54,7 +54,7 @@ async function listen() {
         user: {
           id: "9",
           email: "op@example.com",
-          role: "TENANT_ADMIN",
+          role: "ADMIN",
           tenantId: "t1",
         },
       }),

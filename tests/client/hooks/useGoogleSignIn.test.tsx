@@ -18,12 +18,7 @@ stubExports(AuthModule, {
 
 const { useGoogleSignIn } = await import("@/client/hooks/useGoogleSignIn");
 
-const USER = {
-  id: "1",
-  email: "a@example.com",
-  name: "A",
-  role: "TENANT_ADMIN",
-};
+const USER = { id: "1", email: "a@example.com", name: "A", role: "ADMIN" };
 const realFetch = globalThis.fetch;
 
 function Harness({ onSignedIn }: { onSignedIn?: () => void }) {

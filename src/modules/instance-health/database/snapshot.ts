@@ -12,6 +12,9 @@ import { asFleetForInstanceHealth } from "../fleet-tx";
 export const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
 // Bounds one snapshot, so a server with a huge `pg_stat_statements.max` cannot fill the table.
 const MAX_ENTRIES = 5_000;
+// How old a quiet entry's last row may get before it is written again unchanged (retention is at
+// least a day).
+export const BASELINE_REFRESH_MS = 12 * 60 * 60 * 1000;
 const TEXT_MAX = 8_000;
 
 export type StatementsAvailability =
@@ -133,7 +136,10 @@ export function rowsToWrite(input: {
       prev.calls === now.calls &&
       prev.totalExecMs === now.totalExecMs &&
       prev.rows === now.rows &&
-      prev.statsSince === now.statsSince
+      prev.statsSince === now.statsSince &&
+      // A quiet entry's baseline is rewritten twice a day, so retention never prunes the only row
+      // an execution after a long silence would be measured against.
+      input.takenAt - prev.takenAt < BASELINE_REFRESH_MS
     ) {
       continue;
     }

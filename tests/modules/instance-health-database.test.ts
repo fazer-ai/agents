@@ -15,6 +15,7 @@ import {
   statementTotals,
 } from "@/modules/instance-health/database/read";
 import {
+  BASELINE_REFRESH_MS,
   pruneDatabaseScreen,
   resetSnapshotState,
   rowsToWrite,
@@ -245,6 +246,27 @@ describe("rowsToWrite: what a snapshot run writes", () => {
       takenAt: T0 + 10 * MIN,
     });
     expect(out).toEqual([]);
+  });
+
+  test("a quiet entry's baseline is written again after twelve hours, so retention never prunes the last one", () => {
+    const written = new Map([
+      [
+        "10:1:7",
+        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
+      ],
+    ]);
+    const later = T0 + BASELINE_REFRESH_MS;
+    const out = rowsToWrite({
+      entries: [entry(5)],
+      written,
+      presentAtPrevious: new Set(["10:1:7"]),
+      previousRunAt: later - 5 * MIN,
+      takenAt: later,
+    });
+    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
+      [later - 5 * MIN, 5],
+      [later, 5],
+    ]);
   });
 
   test("an entry that moves after a quiet stretch gets its unchanged value at the previous run too", () => {

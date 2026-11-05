@@ -4178,7 +4178,12 @@
     "themesViewOpen": "Open now",
     "title": "Occurrence monitor",
     "toDashboard": "Show on a dashboard",
-    "toDashboardHint": "In a dashboard, add a panel with the Occurrences source and \"Flagged themes only\"."
+    "toDashboardHint": "In a dashboard, add a panel with the Occurrences source and \"Flagged themes only\".",
+    "windowTitle": {
+      "lastHours_one": "Last hour",
+      "lastHours_other": "Last {{count}} hours",
+      "minutes": "Last {{n}} min"
+    }
   },
   "outOfHours": {
     "badge": "Out of hours"

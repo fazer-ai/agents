@@ -15,6 +15,26 @@ export interface FlagValues {
   flagHoldMinutes: number;
 }
 
+// "Last hour", "Last 90 min", "Last 2 hours": the recent window as a heading or a tab names it.
+export function windowTitle(t: TFunction, minutes: number): string {
+  if (minutes % 60 === 0)
+    return t("occurrences.windowTitle.lastHours", "Last {{count}} hours", {
+      count: minutes / 60,
+    });
+  // "min" has no number, so the minutes are not a plural count.
+  return t("occurrences.windowTitle.minutes", "Last {{n}} min", {
+    n: minutes,
+  });
+}
+
+// What the same span usually holds, as a themes row shows it beside the window's count: whole above
+// ten, one decimal under it, so 0.4 does not read as 0.
+export function usualNumber(usual: number, language: string): string {
+  return usual >= 10
+    ? Math.round(usual).toLocaleString(language)
+    : (Math.round(usual * 10) / 10).toLocaleString(language);
+}
+
 // "in the last hour", "in the last 90 minutes", "in the last 2 hours": the recent window as the flags
 // step counts it, `windowMinutes` back from the round.
 export function windowPhrase(t: TFunction, minutes: number): string {

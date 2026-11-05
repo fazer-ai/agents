@@ -1,5 +1,6 @@
-// Which conversations a theme row links to (docs/dashboards.md, the occurrences source): the latest
-// whose reference reading is the row's reference, then the latest of the rest, newest first.
+// Which conversations a theme row links to (docs/dashboards.md, the occurrences source): the latest of
+// the monitor's window, by the time the flags count each at, whatever their reference; a theme with
+// none in the window links its latest.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -40,9 +41,6 @@ afterAll(async () => {
   await appDb.$disconnect();
   await suDb.$disconnect();
 });
-
-const HOUR = 3_600_000;
-const NOW = new Date(Date.now() - HOUR);
 
 async function account() {
   const t = await suDb.tenant.create({
@@ -133,48 +131,51 @@ async function account() {
 }
 
 describe.skipIf(!dbUp)("a theme's links (DB)", () => {
-  test("a theme's links are its latest conversations of the row's reference first, then the latest of the rest", async () => {
+  // The monitor's window is 60 minutes by default and ends at the read.
+  test("a theme's links are the latest conversations of the monitor's window, whatever their reference", async () => {
     const a = await account();
-    const canonical = (name: string, mergedIntoId?: bigint) =>
+    const canonical = (name: string) =>
       suDb.occurrenceCanonical.create({
         data: {
           tenantId: a.tenantId,
           monitorId: a.monitorId,
           field: "unidade",
           name,
-          ...(mergedIntoId ? { mergedIntoId } : {}),
         },
       });
     const centro = await canonical("Loja Centro");
-    // A spelling merged into the row's reference counts as it.
-    const centroAlias = await canonical("Centro", centro.id);
     const norte = await canonical("Loja Norte");
-    const theme = await suDb.occurrenceTheme.create({
-      data: {
-        tenantId: a.tenantId,
-        monitorId: a.monitorId,
-        title: "Pix nao confirma",
-        flags: ["concentrated"],
-        flagReferenceId: centro.id,
-        flaggedAt: NOW,
-        firstSeenAt: new Date(NOW.getTime() - 10 * HOUR),
-        lastSeenAt: NOW,
-      },
-    });
+    const theme = (title: string) =>
+      suDb.occurrenceTheme.create({
+        data: {
+          tenantId: a.tenantId,
+          monitorId: a.monitorId,
+          title,
+          flags: ["concentrated"],
+          flagReferenceId: centro.id,
+          flaggedAt: new Date(),
+          lastSeenAt: new Date(),
+        },
+      });
     const member = async (
-      hoursAgo: number,
+      themeId: bigint,
+      minutesAgo: number,
       canonicalId: bigint | null,
-      inboxId: bigint = a.inbox.id,
+      o: { inboxId?: bigint; inboundMinutesAgo?: number } = {},
     ) => {
-      const c = await a.conv(inboxId);
+      const c = await a.conv(o.inboxId ?? a.inbox.id);
+      const now = Date.now();
       await suDb.occurrenceThemeMember.create({
         data: {
           tenantId: a.tenantId,
           monitorId: a.monitorId,
-          themeId: theme.id,
+          themeId,
           conversationId: c.id,
           sentence: "pix",
-          readAt: new Date(NOW.getTime() - hoursAgo * HOUR),
+          readAt: new Date(now - minutesAgo * 60_000),
+          ...(o.inboundMinutesAgo === undefined
+            ? {}
+            : { inboundAt: new Date(now - o.inboundMinutesAgo * 60_000) }),
         },
       });
       if (canonicalId !== null)
@@ -190,104 +191,44 @@ describe.skipIf(!dbUp)("a theme's links (DB)", () => {
         });
       return c.cw;
     };
-    // Two old ones of another reference, and the newest of all is of another reference too.
-    await member(9, norte.id);
-    await member(8, norte.id);
-    const centroOld = await member(5, centro.id);
-    const centroMid = await member(3, centroAlias.id);
-    await member(1, norte.id);
-    const centroNew = await member(2, centro.id);
-    // A conversation of an inbox the monitor does not read never links, however recent.
-    await member(0.5, centro.id, a.otherInbox.id);
-
-    const top = (await a.rows())[0];
-    expect(top?.reference).toBe("Loja Centro");
+    const pix = await theme("Pix nao confirma");
+    // Older than the window, of the row's reference: never ahead of a conversation of the window.
+    await member(pix.id, 120, centro.id);
+    await member(pix.id, 90, centro.id);
+    const w1 = await member(pix.id, 5, norte.id);
+    const w2 = await member(pix.id, 20, null);
+    const w3 = await member(pix.id, 40, centro.id);
+    await member(pix.id, 50, norte.id);
+    // Read inside the window, its customer message before it: it is not the window's.
+    await member(pix.id, 1, centro.id, { inboundMinutesAgo: 180 });
+    // An inbox the monitor does not read never links, however recent.
+    await member(pix.id, 0.5, centro.id, { inboxId: a.otherInbox.id });
+    const rows = await a.rows();
+    const top = rows.find((r) => r.title === "Pix nao confirma");
     expect(top?.links?.map((l) => l.chatwootConversationId)).toEqual([
-      centroNew,
-      centroMid,
-      centroOld,
+      w1,
+      w2,
+      w3,
     ]);
 
-    // Fewer of the reference than links: the rest fills in, the latest first.
-    const theme2 = await suDb.occurrenceTheme.create({
-      data: {
-        tenantId: a.tenantId,
-        monitorId: a.monitorId,
-        title: "Boleto",
-        flags: ["concentrated"],
-        flagReferenceId: centro.id,
-        flaggedAt: new Date(NOW.getTime() - HOUR),
-        lastSeenAt: NOW,
-      },
-    });
-    const member2 = async (hoursAgo: number, canonicalId: bigint | null) => {
-      const c = await a.conv();
-      await suDb.occurrenceThemeMember.create({
-        data: {
-          tenantId: a.tenantId,
-          monitorId: a.monitorId,
-          themeId: theme2.id,
-          conversationId: c.id,
-          sentence: "boleto",
-          readAt: new Date(NOW.getTime() - hoursAgo * HOUR),
-        },
-      });
-      if (canonicalId !== null)
-        await suDb.conversationReading.create({
-          data: {
-            tenantId: a.tenantId,
-            monitorId: a.monitorId,
-            conversationId: c.id,
-            field: "unidade",
-            value: "x",
-            canonicalId,
-          },
-        });
-      return c.cw;
-    };
-    await member2(6, null);
-    const restMid = await member2(4, norte.id);
-    const onlyCentro = await member2(5, centro.id);
-    const restNew = await member2(3, norte.id);
-    // Its reading of another field is not its reference: it links once, ranked as the rest.
-    await suDb.conversationReading.create({
-      data: {
-        tenantId: a.tenantId,
-        monitorId: a.monitorId,
-        conversationId: (
-          await suDb.conversation.findFirstOrThrow({
-            where: { tenantId: a.tenantId, chatwootConversationId: restNew },
-          })
-        ).id,
-        field: "queixa",
-        value: "boleto",
-      },
-    });
+    // Fewer in the window than links: only the window's, none from before it.
+    const boleto = await theme("Boleto");
+    await member(boleto.id, 200, centro.id);
+    const only = await member(boleto.id, 10, norte.id);
     const second = (await a.rows()).find((r) => r.title === "Boleto");
-    expect(second?.links?.map((l) => l.chatwootConversationId)).toEqual([
-      onlyCentro,
-      restNew,
-      restMid,
-    ]);
+    expect(second?.links?.map((l) => l.chatwootConversationId)).toEqual([only]);
 
-    // The row's reference merged into another since the flag: the survivor's readings are preferred.
-    const lojaSul = await canonical("Loja Sul");
-    await suDb.occurrenceCanonical.update({
-      where: { id: centro.id },
-      data: { mergedIntoId: lojaSul.id },
-    });
-    await suDb.occurrenceCanonical.update({
-      where: { id: centroAlias.id },
-      data: { mergedIntoId: lojaSul.id },
-    });
-    const sulNew = await member(0.8, lojaSul.id);
-    const afterMerge = (await a.rows()).find(
-      (r) => r.title === "Pix nao confirma",
-    );
-    expect(afterMerge?.links?.map((l) => l.chatwootConversationId)).toEqual([
-      sulNew,
-      centroNew,
-      centroMid,
+    // None in the window (a held theme, cooling down): its latest conversations.
+    const cooled = await theme("Esfriando");
+    const old1 = await member(cooled.id, 300, null);
+    const old2 = await member(cooled.id, 400, centro.id);
+    const old3 = await member(cooled.id, 500, norte.id);
+    await member(cooled.id, 600, norte.id);
+    const third = (await a.rows()).find((r) => r.title === "Esfriando");
+    expect(third?.links?.map((l) => l.chatwootConversationId)).toEqual([
+      old1,
+      old2,
+      old3,
     ]);
   });
 });

@@ -4338,7 +4338,14 @@
     "themesViewOpen": "Abertos agora",
     "title": "Monitor de ocorrências",
     "toDashboard": "Mostrar num dashboard",
-    "toDashboardHint": "Num dashboard, adicione um painel com a fonte Ocorrências e \"Só temas sinalizados\"."
+    "toDashboardHint": "Num dashboard, adicione um painel com a fonte Ocorrências e \"Só temas sinalizados\".",
+    "windowTitle": {
+      "lastHours_zero": "Últimas {{count}} horas",
+      "lastHours_one": "Última hora",
+      "lastHours_many": "Últimas {{count}} horas",
+      "lastHours_other": "Últimas {{count}} horas",
+      "minutes": "Últimos {{n}} min"
+    }
   },
   "outOfHours": {
     "badge": "Fora do horário"

@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { chatwootLinkBase } from "@/modules/chatwoot/client";
+import { countThemesAt } from "./flags";
 import {
   type OccurrencesConfig,
   readMonitorConfig,
@@ -33,6 +34,26 @@ export interface ThemeListItem {
   // Flagged but meeting no rule since this instant: held until the monitor's hold has passed, and drawn
   // as cooling down. Null while a rule is met, or when the theme is not flagged.
   heldSince: string | null;
+  // The monitor's window at the instant read, counted as the flags count it (docs/occurrences.md,
+  // "Flags"), so a row shows the numbers its flag was decided from.
+  window: ThemeWindow;
+}
+
+export interface ThemeWindow {
+  // The span counted: the monitor's `windowMinutes`, ending at `at`.
+  minutes: number;
+  at: string;
+  conversations: number;
+  // What the same span usually holds, from the covered history before it (`previousDays` at most);
+  // null when nothing before the window is covered yet.
+  usual: number | null;
+  // The window's most common canonical reference (a survivor's name) and how many of its
+  // conversations read as it; null when none of them has a reference, or the monitor has no field.
+  top: { name: string; conversations: number } | null;
+  // How many distinct references the window's conversations read as.
+  references: number;
+  // `top` holds at least the monitor's `concentrationShare` of the window.
+  concentrated: boolean;
 }
 
 export interface ThemeConversation {
@@ -199,7 +220,13 @@ export async function themeRowsOn(
   db: ScopedDb,
   tenantId: bigint,
   monitorId: bigint,
-  opts: { flaggedOnly?: boolean; limit?: number; links?: number } = {},
+  opts: {
+    flaggedOnly?: boolean;
+    limit?: number;
+    links?: number;
+    // The instant the window ends at; now by default.
+    now?: Date;
+  } = {},
 ): Promise<(ThemeListItem & { links?: ThemeLink[] })[]> {
   const limit = Math.min(
     Math.max(1, Math.trunc(opts.limit ?? 100)),
@@ -239,45 +266,33 @@ export async function themeRowsOn(
     : [];
   const nameOf = new Map(names.map((n) => [n.id, n.name]));
   const linksOf = new Map<bigint, ThemeLink[]>();
+  const now = opts.now ?? new Date();
+  const windowStart = new Date(now.getTime() - cfg.windowMinutes * 60_000);
   if (opts.links && ids.length) {
-    // The links show what the row describes: the latest conversations whose reference reading
-    // is the row's reference (a spelling merged into it included), then the latest of the rest. The
-    // row's reference is a survivor when it was flagged; one merged since answers as its survivor.
-    const referenceOf = new Map(
-      themes.map((t) => [t.id, t.flagReferenceId] as const),
-    );
-    const merged = referenceIds.length
-      ? await db.occurrenceCanonical.findMany({
-          where: { id: { in: referenceIds }, mergedIntoId: { not: null } },
-          select: { id: true, mergedIntoId: true },
-        })
-      : [];
-    const survivorOf = new Map(merged.map((m) => [m.id, m.mergedIntoId]));
-    const references = ids.map((id) => {
-      const r = referenceOf.get(id) ?? null;
-      return r === null ? null : String(survivorOf.get(r) ?? r);
-    });
-    // One query for every theme's links, then one for their addresses.
-    const firsts = await db.$queryRaw<
-      { theme_id: bigint; conversation_id: bigint }[]
+    // The links show what the row counts: the latest conversations of the window, by the time the
+    // flags count each at (the customer message its reading covered, else the read). A theme with none
+    // in the window (held, cooling down) links its latest conversations instead.
+    const ranked = await db.$queryRaw<
+      { theme_id: bigint; conversation_id: bigint; in_window: boolean }[]
     >`
-      SELECT t.id AS theme_id, f.conversation_id
-      FROM unnest(${ids.map(String)}::bigint[], ${references}::bigint[]) AS t(id, reference_id)
+      SELECT t.id AS theme_id, f.conversation_id, f.in_window
+      FROM unnest(${ids.map(String)}::bigint[]) AS t(id)
       CROSS JOIN LATERAL (
-        SELECT m.conversation_id
+        SELECT m.conversation_id,
+               (COALESCE(m.inbound_at, m.read_at) >= ${windowStart} AND m.read_at <= ${now}) AS in_window
         FROM occurrence_theme_members m
         JOIN conversations cv ON cv.id = m.conversation_id
                              AND cv.inbox_id = ANY(${inboxIds.map(String)}::bigint[])
-        LEFT JOIN conversation_readings r ON r.conversation_id = m.conversation_id
-                                         AND r.monitor_id = m.monitor_id
-                                         AND r.field = ${cfg.referenceField ?? ""}
-        LEFT JOIN occurrence_canonicals k ON k.id = r.canonical_id
         WHERE m.monitor_id = ${monitorId} AND m.theme_id = t.id
-        -- COALESCE: a comparison with no reading is NULL, which DESC would put first.
-        ORDER BY COALESCE(k.id = t.reference_id OR k.merged_into_id = t.reference_id, false) DESC,
-                 m.read_at DESC, m.id DESC
+        ORDER BY 2 DESC, COALESCE(m.inbound_at, m.read_at) DESC, m.id DESC
         LIMIT ${opts.links}
       ) f`;
+    const anyInWindow = new Set(
+      ranked.filter((r) => r.in_window).map((r) => r.theme_id),
+    );
+    const firsts = ranked.filter(
+      (r) => r.in_window || !anyInWindow.has(r.theme_id),
+    );
     const conversations = firsts.length
       ? await db.conversation.findMany({
           where: { id: { in: firsts.map((f) => f.conversation_id) } },
@@ -305,6 +320,7 @@ export async function themeRowsOn(
       linksOf.set(f.theme_id, list);
     }
   }
+  const windows = await themeWindowsOn(db, monitorId, cfg, ids, now);
   return themes.map((t) => ({
     id: String(t.id),
     title: t.title,
@@ -318,8 +334,84 @@ export async function themeRowsOn(
     lastSeenAt: iso(spans.get(t.id)?.last ?? null),
     flaggedAt: iso(t.flaggedAt),
     heldSince: t.flags.length > 0 ? iso(t.flagUnmetSince) : null,
+    window: windows.get(t.id) ?? emptyWindow(cfg, windows.at),
     ...(opts.links ? { links: linksOf.get(t.id) ?? [] } : {}),
   }));
+}
+
+function emptyWindow(cfg: OccurrencesConfig, at: Date): ThemeWindow {
+  return {
+    minutes: cfg.windowMinutes,
+    at: at.toISOString(),
+    conversations: 0,
+    usual: null,
+    top: null,
+    references: 0,
+    concentrated: false,
+  };
+}
+
+// Each theme's window at `now`, from the same counts the flags step decides on, with the window's top
+// reference named. `usual` scales the covered history's rate to the window, as `flagsOf` compares it.
+async function themeWindowsOn(
+  db: ScopedDb,
+  monitorId: bigint,
+  cfg: OccurrencesConfig,
+  themeIds: bigint[],
+  now: Date = new Date(),
+): Promise<Map<bigint, ThemeWindow> & { at: Date }> {
+  const out = Object.assign(new Map<bigint, ThemeWindow>(), { at: now });
+  if (!themeIds.length) return out;
+  const { counts, input } = await countThemesAt(
+    db,
+    monitorId,
+    cfg,
+    now,
+    themeIds,
+  );
+  const tops = new Map<bigint, { id: bigint; n: number }>();
+  for (const [themeId, c] of counts) {
+    let top: { id: bigint; n: number } | null = null;
+    // The tie goes to the lowest id, as `flagsOf` breaks it, so the name is the flag's.
+    for (const [id, n] of c.byReference)
+      if (!top || n > top.n || (n === top.n && id < top.id)) top = { id, n };
+    if (top) tops.set(themeId, top);
+  }
+  const named = tops.size
+    ? await db.occurrenceCanonical.findMany({
+        where: {
+          id: { in: [...new Set([...tops.values()].map((x) => x.id))] },
+        },
+        select: { id: true, name: true },
+      })
+    : [];
+  const nameOf = new Map(named.map((n) => [n.id, n.name]));
+  // Every theme asked for, counted or not: one whose members all predate the lookback has nothing in the
+  // window nor before it, which on a covered monitor is a usual of 0, not a missing history.
+  for (const themeId of themeIds) {
+    const c = counts.get(themeId) ?? {
+      window: 0,
+      before: 0,
+      fresh: false,
+      byReference: new Map<bigint, number>(),
+    };
+    const top = tops.get(themeId);
+    const name = top ? nameOf.get(top.id) : undefined;
+    out.set(themeId, {
+      minutes: cfg.windowMinutes,
+      at: now.toISOString(),
+      conversations: c.window,
+      usual:
+        input.coveredBeforeMs > 0
+          ? (c.before / input.coveredBeforeMs) * input.windowMs
+          : null,
+      top: top && name !== undefined ? { name, conversations: top.n } : null,
+      references: c.byReference.size,
+      concentrated:
+        !!top && c.window > 0 && top.n / c.window >= cfg.concentrationShare,
+    });
+  }
+  return out;
 }
 
 export async function listThemes(
@@ -437,6 +529,7 @@ export async function getTheme(
             where: { id: t.flagReferenceId },
             select: { name: true },
           });
+    const windows = await themeWindowsOn(db, monitorId, cfg, [t.id]);
     const absorbed = await db.occurrenceTheme.findMany({
       where: { monitorId, mergedIntoId: t.id },
       select: { id: true },
@@ -471,6 +564,7 @@ export async function getTheme(
       lastSeenAt: iso(span._max.readAt),
       flaggedAt: iso(t.flaggedAt),
       heldSince: t.flags.length > 0 ? iso(t.flagUnmetSince) : null,
+      window: windows.get(t.id) ?? emptyWindow(cfg, windows.at),
       conversationsShown: members.map((m) => {
         const s = referenceOf.get(m.conversationId);
         return {

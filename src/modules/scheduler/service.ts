@@ -13,10 +13,12 @@ import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
+  JOB_NEVER_DEAD,
   JOB_RETRY_BASE_MS,
   JOB_SPENDS_PROVIDER,
   JOB_TRAFFIC_RANK,
   kindsInLane,
+  NEVER_DEAD_MAX_BACKOFF_MS,
   type SchedulerLane,
 } from "@/modules/scheduler/lanes";
 import { runningJobIds } from "./running";
@@ -31,7 +33,15 @@ import { runningJobIds } from "./running";
 // tenant scope, so RLS still fences the work. `attempts` is cleared by any completed pass, so
 // MAX_ATTEMPTS bounds consecutive failures; the reaper pushes crash loops to DEAD. See `Rearm`.
 
-const MAX_ATTEMPTS = 5;
+export const MAX_ATTEMPTS = 5;
+
+// The kinds the reaper must not dead-letter either: a crash loop of a never-dead row goes back to
+// PENDING like any other attempt, and the worker announces it once past the budget.
+const NEVER_DEAD_KINDS = (
+  Object.entries(JOB_NEVER_DEAD) as [SchedulerJobKind, boolean][]
+)
+  .filter(([, never]) => never)
+  .map(([kind]) => kind);
 
 // Whether a failure of this run puts the job back to PENDING rather than to DEAD: the run's own line
 // can then say the work will be tried again, and leave the alarm to the death (when it comes).
@@ -1486,9 +1496,14 @@ export async function failJob(
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   final = false,
-): Promise<{ deadLettered: boolean; applied: boolean }> {
+): Promise<{ deadLettered: boolean; applied: boolean; exhausted: boolean }> {
   const next = attempts + 1;
-  const dead = final || next >= MAX_ATTEMPTS;
+  const spent = final || next >= MAX_ATTEMPTS;
+  // A never-dead kind past its budget stays PENDING and backs off, capped: the caller announces it
+  // instead of a death (`exhausted`). See JOB_NEVER_DEAD.
+  const neverDead = JOB_NEVER_DEAD[kind];
+  const dead = spent && !neverDead;
+  const delay = backoffMs(next, JOB_RETRY_BASE_MS[kind]);
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },
@@ -1502,7 +1517,10 @@ export async function failJob(
             status: "PENDING",
             attempts: next,
             runAt: new Date(
-              now.getTime() + backoffMs(next, JOB_RETRY_BASE_MS[kind]),
+              now.getTime() +
+                (neverDead
+                  ? Math.min(delay, NEVER_DEAD_MAX_BACKOFF_MS)
+                  : delay),
             ),
             lastError: sanitizeErrorMessage(error),
           },
@@ -1510,7 +1528,11 @@ export async function failJob(
   );
   // NOTE: `applied` is separate because `deadLettered: false` is also a healthy retry, so the caller
   // could not tell a recorded failure from a refused one.
-  return { deadLettered: dead && count > 0, applied: count > 0 };
+  return {
+    deadLettered: dead && count > 0,
+    applied: count > 0,
+    exhausted: spent && neverDead && count > 0,
+  };
 }
 
 // Takes back a run its deadline failed, so the outcome of the work it committed can be written. Only
@@ -1589,7 +1611,7 @@ export async function reapStaleJobs(
       }>
     >(Prisma.sql`
       UPDATE scheduler_jobs
-      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
+      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} AND NOT (kind::text = ANY(${NEVER_DEAD_KINDS})) THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
           attempts = attempts + 1,
           claimed_at = NULL,
           updated_at = now()

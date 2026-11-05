@@ -32,6 +32,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { lazyWithReload } from "@/client/lib/staleBuild";
 import {
+  FOLLOWUP_SWEEP_SIGNAL,
   INSTANCE_THRESHOLD_RANGES,
   throughputOfSignal,
 } from "@/modules/instance-health/signals";
@@ -495,6 +496,7 @@ function signalDetail(
       },
     );
   }
+  if (signal === FOLLOWUP_SWEEP_SIGNAL) return followUpSweepDetail(health, t);
   const lane = /^scheduler_queue_age_ms:(.+)$/.exec(signal)?.[1];
   // Never read (the database half failing): "no job overdue" would be a claim with nothing behind it.
   if (lane && health.signals.find((s) => s.signal === signal)?.value != null) {
@@ -507,6 +509,29 @@ function signalDetail(
       : t("instanceHealth.laneIdle", "No job overdue");
   }
   return null;
+}
+
+// The follow-up sweep card's line: each tenant, furthest behind first, with how long since its last
+// completed pass, and which ones are above the threshold. The worst few are enough to act on.
+const SWEEP_TENANTS_SHOWN = 5;
+
+function followUpSweepDetail(
+  health: Health,
+  t: ReturnType<typeof useTranslation>["t"],
+): string | null {
+  const sweeps = health.followUpSweeps;
+  if (sweeps.length === 0) return null;
+  const parts = sweeps.slice(0, SWEEP_TENANTS_SHOWN).map((f) =>
+    f.aboveThreshold
+      ? t("instanceHealth.sweepTenantAbove", "{{tenant}} {{age}} (above)", {
+          tenant: f.tenantSlug,
+          age: formatSignalValue(f.sinceCompletedMs, "ms"),
+        })
+      : `${f.tenantSlug} ${formatSignalValue(f.sinceCompletedMs, "ms")}`,
+  );
+  const rest = sweeps.length - SWEEP_TENANTS_SHOWN;
+  if (rest > 0) parts.push(`+${rest}`);
+  return parts.join(" · ");
 }
 
 // `pollMs` is the sampler's cadence; a test passes a short one.

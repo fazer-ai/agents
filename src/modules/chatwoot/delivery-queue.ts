@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -7,7 +7,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { withKeyedQueue } from "@/lib/locks";
 import { runInPoolClass } from "@/lib/pool-class";
 import { isDraining, trackWork } from "@/lib/shutdown";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { asSuperAdminOn } from "@/lib/tenancy";
 import { normalizeChatwootEvent } from "./normalize";
 import { handToRecovery, processRecordedChatwootDelivery } from "./webhook";
 
@@ -230,10 +230,6 @@ export function queueOverflowHandoff(handoff: () => Promise<unknown>): boolean {
   return true;
 }
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 export interface DrainStoredParams {
   base?: PrismaClient;
   // One tenant (the sweep's pass) or every tenant (boot).
@@ -245,6 +241,50 @@ export interface DrainStoredParams {
   batch?: number;
   // Tests: the turn's seams.
   deps?: RuntimeDeps;
+}
+
+interface DrainStrand {
+  id: bigint;
+  tenantId: bigint;
+  chatwootInstanceId: bigint;
+  event: string;
+  conversationId: number | null;
+  inboundMessageId: number | null;
+}
+
+// The strands read, written as SQL so `status = 'PENDING'` is a literal: the partial index of the open
+// rows (`chatwoot_webhook_deliveries_sweep_idx`, `WHERE status IN ('PENDING','PROCESSING')`) is usable
+// only when the planner can prove its predicate, and a parameter cast to the enum, which is what the
+// client sends, proves nothing even outside the tenant policy. Exported for the plan test.
+export function drainStrandsSql(p: {
+  tenantId: bigint | undefined;
+  youngest: Date;
+  ceiling: Date;
+  held: bigint[];
+  batch: number;
+}): Prisma.Sql {
+  const tenant =
+    p.tenantId === undefined
+      ? Prisma.empty
+      : Prisma.sql`AND tenant_id = ${p.tenantId}`;
+  const notHeld =
+    p.held.length > 0
+      ? Prisma.sql`AND id NOT IN (${Prisma.join(p.held)})`
+      : Prisma.empty;
+  return Prisma.sql`
+    SELECT id, tenant_id AS "tenantId", chatwoot_instance_id AS "chatwootInstanceId", event,
+           conversation_id AS "conversationId", inbound_message_id AS "inboundMessageId"
+      FROM chatwoot_webhook_deliveries
+     WHERE status = 'PENDING'
+       AND payload IS NULL
+       AND conversation_id IS NOT NULL
+       AND inbound_message_id IS NOT NULL
+       AND received_at <= ${p.youngest}
+       AND received_at > ${p.ceiling}
+       ${tenant}
+       ${notHeld}
+     ORDER BY received_at, id
+     LIMIT ${p.batch}`;
 }
 
 // One pass over the rows nothing here holds: customer messages to the recovery, stored events into the
@@ -259,10 +299,14 @@ export async function drainStoredChatwootDeliveries(
   );
   const ceiling = new Date(now - STORED_DELIVERY_MAX_AGE_MS);
   const batch = params.batch ?? DRAIN_BATCH;
+  // As the fleet, with the tenant as an explicit filter, and never under the tenant policy: there
+  // `status = 'PENDING'` (an enum, not LEAKPROOF) stays above the security barrier, so no index can use
+  // it, and the strands read walked the primary key over every row (16 s on 6.9M rows, measured in
+  // production). Every row read here carries its own tenantId into what it hands on.
+  const scope =
+    params.tenantId === undefined ? {} : { tenantId: params.tenantId };
   const run = <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) =>
-    params.tenantId === undefined
-      ? asSuperAdminOn(base, fn)
-      : runScopedOn(base, sysCtx(params.tenantId), fn);
+    asSuperAdminOn(base, fn);
 
   // The body leaves every row that will not be processed from it: one that left PENDING by a road that
   // does not clear it, and one past the ceiling. Both statements read the partial index of the rows
@@ -270,6 +314,7 @@ export async function drainStoredChatwootDeliveries(
   const { count: cleared } = await run((db) =>
     db.chatwootWebhookDelivery.updateMany({
       where: {
+        ...scope,
         payload: { not: null },
         OR: [{ status: { not: "PENDING" } }, { receivedAt: { lte: ceiling } }],
       },
@@ -283,26 +328,15 @@ export async function drainStoredChatwootDeliveries(
   // attempt that threw before its claim. Read by the sweep's partial index of PENDING rows.
   let recovered = 0;
   const strands = await run((db) =>
-    db.chatwootWebhookDelivery.findMany({
-      where: {
-        status: "PENDING",
-        payload: null,
-        conversationId: { not: null },
-        inboundMessageId: { not: null },
-        receivedAt: { lte: youngest, gt: ceiling },
-        ...(held.length > 0 ? { id: { notIn: held } } : {}),
-      },
-      orderBy: { id: "asc" },
-      take: batch,
-      select: {
-        id: true,
-        tenantId: true,
-        chatwootInstanceId: true,
-        event: true,
-        conversationId: true,
-        inboundMessageId: true,
-      },
-    }),
+    db.$queryRaw<DrainStrand[]>(
+      drainStrandsSql({
+        tenantId: params.tenantId,
+        youngest,
+        ceiling,
+        held,
+        batch,
+      }),
+    ),
   );
   for (const row of strands) {
     const handed = await handToRecovery(base, {
@@ -333,6 +367,7 @@ export async function drainStoredChatwootDeliveries(
       ? { conversationId: { not: null }, inboundMessageId: { not: null } }
       : { OR: [{ conversationId: null }, { inboundMessageId: null }] };
   const pending = (lane: AdmissionLane, id: Prisma.BigIntFilter) => ({
+    ...scope,
     status: "PENDING" as const,
     payload: { not: null },
     receivedAt: { lte: youngest },

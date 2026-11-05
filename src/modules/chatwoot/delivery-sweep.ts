@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -388,6 +388,46 @@ interface StrandedRow {
   routeRemembers: boolean | null;
 }
 
+// The stranded-delivery read (see `sweepStrandedDeliveries`). Both non-terminal states strand; the
+// staleness cutoff is the classifier's `claimedAt ?? receivedAt`; a PENDING row that still holds its
+// body is the drain's, and one this process holds in its admission queue is waiting, not stranded;
+// `readBack` picks the conversation events this pass reads back from Chatwoot or every other row, each
+// with its own cap, oldest first. Exported for the plan test.
+export function strandedSelectionSql(p: {
+  tenantId: bigint;
+  cutoff: Date;
+  held: bigint[];
+  stateEvents: string[];
+  readBack: boolean;
+  batch: number;
+}): Prisma.Sql {
+  const notHeld =
+    p.held.length > 0
+      ? Prisma.sql`AND NOT (d.status = 'PENDING' AND d.id IN (${Prisma.join(p.held)}))`
+      : Prisma.empty;
+  const stateEvent = Prisma.sql`(d.event IN (${Prisma.join(p.stateEvents)}) AND d.conversation_id IS NOT NULL)`;
+  const part = p.readBack
+    ? Prisma.sql`AND ${stateEvent}`
+    : Prisma.sql`AND NOT ${stateEvent}`;
+  return Prisma.sql`
+    SELECT d.id, d.status::text AS status, d.chatwoot_instance_id AS "chatwootInstanceId",
+           d.delivery_id AS "deliveryId", d.event, d.received_at AS "receivedAt",
+           d.claimed_at AS "claimedAt", d.attempts, d.conversation_id AS "conversationId",
+           d.inbound_message_id AS "inboundMessageId", d.human_reply_shape AS "humanReplyShape",
+           d.human_reply_message_id AS "humanReplyMessageId", d.route_observed AS "routeObserved",
+           d.route_agent_bot_id AS "routeAgentBotId", d.route_remembers AS "routeRemembers"
+      FROM chatwoot_webhook_deliveries d
+     WHERE d.tenant_id = ${p.tenantId}
+       AND d.status IN ('PENDING', 'PROCESSING')
+       AND ((d.claimed_at IS NOT NULL AND d.claimed_at < ${p.cutoff})
+            OR (d.claimed_at IS NULL AND d.received_at < ${p.cutoff}))
+       AND NOT (d.status = 'PENDING' AND d.payload IS NOT NULL)
+       ${notHeld}
+       ${part}
+     ORDER BY d.received_at
+     LIMIT ${p.batch}`;
+}
+
 export interface SweepCounts {
   // Terminal, a conversation event whose state was read back from Chatwoot and given to the mirror
   // (or found gone there). Apart from `closed`: the row owed the mirror something, and got it now.
@@ -607,59 +647,23 @@ export async function sweepStrandedDeliveries(
   // message fills the oldest-first batch, and with the read budget settling only some of them per
   // pass, the message would wait pass after pass before its recovery is even armed.
   const stateEvents = [...CONVERSATION_STATE_EVENTS];
+  // As the fleet, with the tenant as an explicit filter, and in SQL with the statuses as literals:
+  // under the tenant policy `status` (an enum, not LEAKPROOF) stays above the security barrier, and a
+  // parameter cast to the enum (what the client sends) cannot prove the partial index's predicate
+  // either, so in both cases the read walks every row of the table (docs/tenancy.md).
   const strandedOf = (readBack: boolean) =>
-    runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.chatwootWebhookDelivery.findMany({
-        where: {
-          status: { in: ["PENDING", "PROCESSING"] },
-          OR: [
-            { claimedAt: { not: null, lt: cutoff } },
-            { claimedAt: null, receivedAt: { lt: cutoff } },
-          ],
-          // A PENDING row that still holds its body is the drain's (delivery-queue.ts), which the
-          // handler ran just before this pass and which drops the body of every row it gives up on;
-          // and one this process holds in its admission queue is waiting, not stranded.
-          AND: [
-            { NOT: { status: "PENDING", payload: { not: null } } },
-            ...(held.length > 0
-              ? [{ NOT: { status: "PENDING" as const, id: { in: held } } }]
-              : []),
-            readBack
-              ? { event: { in: stateEvents }, conversationId: { not: null } }
-              : {
-                  NOT: {
-                    event: { in: stateEvents },
-                    conversationId: { not: null },
-                  },
-                },
-          ],
-        },
-        // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
-        // cutoff above already excluded every row a live attempt could be working, so ORDER is
-        // fairness under a backlog deeper than one batch, and the CAP is a bound on one pass's cost.
-        // Both are policy about how the work is spread, not about what any row means, and the passes
-        // are five minutes apart.
-        orderBy: { receivedAt: "asc" },
-        take: batch,
-        select: {
-          id: true,
-          status: true,
-          chatwootInstanceId: true,
-          deliveryId: true,
-          event: true,
-          receivedAt: true,
-          claimedAt: true,
-          attempts: true,
-          conversationId: true,
-          inboundMessageId: true,
-          humanReplyShape: true,
-          humanReplyMessageId: true,
-          routeObserved: true,
-          routeAgentBotId: true,
-          routeRemembers: true,
-        },
-      }),
-    ) as Promise<StrandedRow[]>;
+    asSuperAdminOn(base, (db) =>
+      db.$queryRaw<StrandedRow[]>(
+        strandedSelectionSql({
+          tenantId,
+          cutoff,
+          held,
+          stateEvents,
+          readBack,
+          batch,
+        }),
+      ),
+    );
   const rows = [...(await strandedOf(false)), ...(await strandedOf(true))];
 
   const { groups, rest } = takeConversationEvents(

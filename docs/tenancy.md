@@ -89,6 +89,25 @@ yields NULL, which is not TRUE either). The `users`, `tenant_users` and `mcp_oau
 isolation there is by explicit `tenant_id` filtering + the `authorize()` gate (see
 [`admin.service.ts`](../src/api/features/admin/admin.service.ts)).
 
+### A scoped read cannot index an enum column
+
+Under `tenant_isolation` Postgres evaluates a user predicate below the policy only when every function
+in it is `LEAKPROOF`, and enum equality (`enum_eq`) is not. So in a scoped transaction `kind = 'X'` or
+`status = 'PENDING'` stays above the security barrier, as a `Filter`, and never reaches an index:
+`(tenant_id, kind, dedupe_key)` is walked across every kind of the tenant, and a partial index on
+`status` is not provably usable. `bigint` and `text` equality are leakproof and do reach the index, and
+the fleet role (`fleet_super_admin`, `USING (true)`) has no barrier to stay above. Measured on a
+production tenant (issue #1700): the snoozed follow-up selection took 43 ms as a superuser and
+8,429 ms as the app role, and the stranded-delivery drain 16 s with 6.9M rows removed by filter.
+
+Two consequences. Measure a scoped query **as the app role with `app.tenant_id` set**, never as the
+database owner, which bypasses the policy and shows the fast plan. And an index a scoped read depends
+on must not need the enum column: `scheduler_jobs (tenant_id, dedupe_key)` exists for this, and a
+system sweep that filters by an enum runs as the fleet with the tenant as an explicit filter
+(`drainStoredChatwootDeliveries`). `tests/modules/scoped-index-plans.test.ts` holds both.
+
+The fleet role escapes the barrier but not the planner's half of the same rule: with any policy on the table, Postgres hides a column's statistics from a predicate whose operator is not leakproof, so even as the fleet the planner does not know that almost no row is `PENDING` (it guesses a fixed fraction) and does not know the partial index of open rows is nearly empty. Two things keep such a read on its index regardless. The enum value is a literal in the SQL (`status = 'PENDING'`): the client sends `CAST($1::text AS "InboundDeliveryStatus")`, which is not a constant at plan time, so the planner cannot prove a partial index's `WHERE status IN (...)` from it. And the order is the index's own (`ORDER BY received_at` for `(tenant_id, received_at)`), so a capped read stops early on the index instead of walking the primary key in `id` order hoping to fill its batch, which is the plan that took 16 s. Both stranded-delivery reads are written this way, and `tests/modules/delivery-strands-plans.test.ts` holds them, with a fixture whose event mix is the one measured in production.
+
 ## Roles & first-run
 
 `UserRole` is `SUPER_ADMIN | TENANT_ADMIN | AGENT`.

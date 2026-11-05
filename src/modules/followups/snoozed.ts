@@ -117,26 +117,16 @@ const ANCHOR_TEXT_MAX = 1500;
 
 // ── the sweep's half ───────────────────────────────────────────────────────────────────────────────
 
-// Called by the per-tenant FOLLOWUP_SWEEP pass with the agents whose snoozed ladder is ON. Nominates
-// every conversation the mirror says is snoozed and held by a person, on an inbox one of those agents
-// serves, that has no job in flight, or whose job is older than the conversation's last event (the
-// person wrote again, the customer answered, the labels changed, the snooze or the holder moved: the
-// handler re-decides from scratch).
-// The handler is what judges the end date, the anchor and the cadence, live.
-export async function sweepSnoozedFollowUps(
-  base: PrismaClient,
+// The snoozed sweep's selection, as the statement it runs, so a test can read the plan the database
+// gives it under the tenant policy (tests/modules/scoped-index-plans.test.ts). `now` is the app's
+// clock, the one that wrote `run_at`.
+export function snoozedSweepSelectionSql(
   tenantId: bigint,
   agentIds: bigint[],
-): Promise<number> {
-  if (agentIds.length === 0) return 0;
+  now: Date,
+): Prisma.Sql {
   const idsSql = Prisma.sql`ARRAY[${Prisma.join(agentIds)}]::bigint[]`;
-  const threads = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    (db) =>
-      db.$queryRaw<
-        Array<{ thread_id: string; finished: boolean; waiting: boolean }>
-      >`
+  return Prisma.sql`
       SELECT c.thread_id,
              -- A row whose run finished (DONE or DEAD) spent its budget on what that run saw; what
              -- re-arms it now is an event after it, so the arm is new work with a fresh budget.
@@ -197,7 +187,7 @@ export async function sweepSnoozedFollowUps(
                 -- A row waiting and already due runs next anyway: arming it again would only rewrite
                 -- it on every pass until it is claimed, since its watermark is still its last start.
                 -- Due by the app's clock, the one that wrote run_at: the database's may lag it.
-                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= ${new Date()})
+                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= ${now})
                 OR COALESCE(j.run_started_at, j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at + interval '1 second',
                   to_timestamp(c.chatwoot_status_at + 1) AT TIME ZONE 'UTC',
@@ -206,8 +196,32 @@ export async function sweepSnoozedFollowUps(
                   i.responder_bound_at
                 )
               )
+             -- A correlated lookup per candidate, by the (tenant_id, dedupe_key) index. OFFSET 0 keeps
+             -- the planner from turning this into an anti-join: under the tenant policy the kind filter
+             -- does not narrow its estimate, so it hashed every job of the tenant with a Seq Scan on
+             -- each pass (measured in production).
+             OFFSET 0
          )
-       LIMIT 500`,
+       LIMIT 500
+  `;
+}
+
+// Called by the per-tenant FOLLOWUP_SWEEP pass with the agents whose snoozed ladder is ON. Nominates
+// every conversation the mirror says is snoozed and held by a person, on an inbox one of those agents
+// serves, that has no job in flight, or whose job is older than the conversation's last event (the
+// person wrote again, the customer answered, the labels changed, the snooze or the holder moved: the
+// handler re-decides from scratch).
+// The handler is what judges the end date, the anchor and the cadence, live.
+export async function sweepSnoozedFollowUps(
+  base: PrismaClient,
+  tenantId: bigint,
+  agentIds: bigint[],
+): Promise<number> {
+  if (agentIds.length === 0) return 0;
+  const threads = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.$queryRaw<
+      Array<{ thread_id: string; finished: boolean; waiting: boolean }>
+    >(snoozedSweepSelectionSql(tenantId, agentIds, new Date())),
   );
   for (const t of threads) {
     // Never over a CLAIMED row (its outcome would be discarded): the handler re-decides from Chatwoot

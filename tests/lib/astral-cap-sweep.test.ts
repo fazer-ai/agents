@@ -390,6 +390,8 @@ const BARE_SLICES: Record<
   // `clipText` like every other cap.
   "src/client/pages/AuditPage.tsx": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
+  // The worst tenants listed on the follow-up sweep card: an array of rows, never a string.
+  "src/client/pages/admin/instance-health/InstanceHealthPage.tsx": [1, "array"],
   // The signature's own token insert, which splices at a SELECTION. A caret is a position the browser
   // maintains and it never sits between the two halves of an astral character. The two cuts in that
   // field that DO bound the value go through `clipText`.

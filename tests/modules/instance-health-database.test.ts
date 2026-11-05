@@ -911,6 +911,62 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     ).toBe(false);
   });
 
+  test("a plan that uses up the flush's time does not keep the occurrence from being stored", async () => {
+    resetStatementTimeouts();
+    await suDb.$executeRawUnsafe(
+      "CREATE TABLE IF NOT EXISTS plan_lock_probe (id int)",
+    );
+    await suDb.$executeRawUnsafe("GRANT SELECT ON plan_lock_probe TO PUBLIC");
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let locked: () => void = () => {};
+    const isLocked = new Promise<void>((r) => {
+      locked = r;
+    });
+    // Another session holds the table exclusively, so planning a statement on it waits.
+    const holder = suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          "LOCK TABLE plan_lock_probe IN ACCESS EXCLUSIVE MODE",
+        );
+        locked();
+        await held;
+      },
+      { timeout: 20_000, maxWait: 5_000 },
+    );
+    try {
+      await isLocked;
+      const sql = "SELECT id FROM plan_lock_probe WHERE id = $1";
+      const stored = await flushStatementTimeouts(
+        appDb,
+        [
+          {
+            at: Date.now(),
+            sql,
+            label: null,
+            tenantId: null,
+            fleet: false,
+            budgetMs: 1000,
+          },
+        ],
+        1,
+        1_500,
+      );
+      expect(stored).toBe(1);
+      const rows = await suDb.dbStatementTimeout.findMany({
+        where: { fingerprint: statementFingerprint(sql) },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.plan).toBeNull();
+    } finally {
+      release();
+      await holder;
+      await suDb.$executeRawUnsafe("DROP TABLE IF EXISTS plan_lock_probe");
+    }
+  });
+
   test("what is not one plannable statement is refused before anything runs", () => {
     expect(unplannableReason("SELECT 1; DROP TABLE x")).toBe(
       "more than one statement",

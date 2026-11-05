@@ -94,6 +94,12 @@ export async function capturePlan(
   // "Planned as" is read back from the transaction that planned, not restated from the event: the
   // record says which role and tenant Postgres actually applied.
   const explain = async (db: ScopedDb) => {
+    // Inside the budgeted transaction, like everything else here: no statement escapes the deadline.
+    const [version] = await db.$queryRaw<{ v: number }[]>`
+      SELECT current_setting('server_version_num')::int AS v`;
+    if ((version?.v ?? 0) < 160000) {
+      throw new Error("EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16 or later");
+    }
     await db.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
     const rows = await db.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(
       `EXPLAIN (GENERIC_PLAN) ${body}`,
@@ -111,11 +117,6 @@ export async function capturePlan(
     };
   };
   try {
-    const [version] = await base.$queryRaw<{ v: number }[]>`
-      SELECT current_setting('server_version_num')::int AS v`;
-    if ((version?.v ?? 0) < 160000) {
-      return { error: "EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16 or later" };
-    }
     // The tenant id is the one the transaction itself set, read back from its `set_config`.
     const tenantId = parseDbId(ev.tenantId);
     const planned = ev.fleet
@@ -206,13 +207,9 @@ export async function flushStatementTimeouts(
         deferredPrints.add(fingerprint);
         continue;
       }
-      let plan: { plan: string; plannedAs: string } | { error: string } | null =
-        null;
-      if (wantsPlan) {
-        plannedNow.add(fingerprint);
-        plan = await capturePlan(ev, base, left(PLAN_TIMEOUT_MS));
-      }
-      await asFleetForInstanceHealth(
+      // Stored first, the plan after: a plan that uses up the call's time must not keep the
+      // occurrence itself from being recorded, tick after tick.
+      const row = await asFleetForInstanceHealth(
         base,
         (db) =>
           db.dbStatementTimeout.create({
@@ -224,18 +221,39 @@ export async function flushStatementTimeouts(
               scopeTenantId: parseDbId(ev.tenantId),
               fleet: ev.fleet,
               budgetMs: ev.budgetMs,
-              plan: plan && "plan" in plan ? plan.plan : null,
-              planError: plan && "error" in plan ? plan.error : null,
-              plannedAs: !plan
-                ? null
-                : "plannedAs" in plan
-                  ? plan.plannedAs
-                  : plannedAsOf(ev),
             },
+            select: { id: true },
           }),
         left(INSTANCE_HEALTH_TX_BUDGET.timeout),
       );
       stored++;
+      if (wantsPlan) {
+        plannedNow.add(fingerprint);
+        // capturePlan answers a failure (the deadline included) as a reason, which is stored.
+        const plan = await capturePlan(ev, base, left(PLAN_TIMEOUT_MS));
+        try {
+          await asFleetForInstanceHealth(
+            base,
+            (db) =>
+              db.dbStatementTimeout.update({
+                where: { id: row.id },
+                data: {
+                  plan: "plan" in plan ? plan.plan : null,
+                  planError: "error" in plan ? plan.error : null,
+                  plannedAs:
+                    "plannedAs" in plan ? plan.plannedAs : plannedAsOf(ev),
+                },
+              }),
+            left(INSTANCE_HEALTH_TX_BUDGET.timeout),
+          );
+        } catch (err) {
+          // The occurrence is stored; the next one of this statement asks for its plan again.
+          logger.warn(
+            { err },
+            "database screen: a timeout's plan was not stored",
+          );
+        }
+      }
     } catch (err) {
       // The call's time ran out under this event: it and the rest wait for the next tick, and that
       // is not a failure of the event.

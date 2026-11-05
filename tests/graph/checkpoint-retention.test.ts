@@ -394,6 +394,52 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     expect(await resumed(long)).toEqual(before);
   }, 60_000);
 
+  // The writes and blobs are checked against every checkpoint their thread still has, so they wait
+  // until a batch has left the thread its newest checkpoint: with thousands of old checkpoints that
+  // check would grow with their count, past the batch's cut.
+  test("writes and blobs wait while the batch's threads still have old checkpoints", async () => {
+    const id = thread();
+    const cps = Array.from(
+      { length: 10 },
+      (_, i) => `c${String(i).padStart(2, "0")}`,
+    );
+    await seedRows(id, {
+      checkpoints: cps.map(
+        (c, i) =>
+          ["", c, i ? (cps[i - 1] ?? null) : null, { messages: String(i) }] as [
+            string,
+            string,
+            string | null,
+            Record<string, string>,
+          ],
+      ),
+      blobs: cps.map(
+        (_, i) => ["", "messages", String(i)] as [string, string, string],
+      ),
+      writes: cps.map((c) => ["", c, "messages"] as [string, string, string]),
+    });
+    const opts = { rows: 3, graceMs: 0, scope: only(id), base: appDb };
+    const first = await retainCheckpointBatch(cp, "", opts);
+    expect(first.deleted).toEqual({
+      checkpoints: 3,
+      checkpoint_writes: 0,
+      checkpoint_blobs: 0,
+    });
+    expect(first.next).toBe("");
+    let after: string | null = "";
+    while (after !== null) {
+      const res = await retainCheckpointBatch(cp, after, opts);
+      if (res.deleted.checkpoint_writes > 0 || res.deleted.checkpoint_blobs > 0)
+        expect((await counts([id])).checkpoints).toBe(1);
+      after = res.next;
+    }
+    expect(await rowsOf(id)).toEqual({
+      checkpoints: ["/c09"],
+      blobs: ["/messages/9"],
+      writes: ["/c09/messages"],
+    });
+  });
+
   // The stored-bytes bound: with a budget smaller than any row, each statement still takes its first
   // row, and only that one, so a thread of large blobs goes one row at a time instead of one statement
   // running past the batch's cut.

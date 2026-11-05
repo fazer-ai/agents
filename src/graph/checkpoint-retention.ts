@@ -246,6 +246,11 @@ export async function retainCheckpointBatch(
       result.bytes += got.bytes;
       for (const id of got.threads) touched.add(id);
       if (got.more) bounded = true;
+      // The writes and blobs are checked against every checkpoint their thread still has, so while
+      // old checkpoints are left that check grows with their count (a thread of thousands would make
+      // it quadratic and run past the batch's cut, rolling the checkpoints back with it). They wait
+      // until the batch's threads are down to their newest checkpoints, which a later batch reaches.
+      if (table === "checkpoints" && got.more) break;
     }
     result.threads = [...touched];
     // A statement that reached its bound left rows of these threads: the next batch walks them again.

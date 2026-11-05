@@ -53,13 +53,14 @@ export function poolShares(): PoolShare[] {
       url: config.databaseUrl ?? "",
       note: "instance health sampler",
     },
-    // The checkpoint reconciler's lock connection (src/graph/checkpoint-reconcile.ts), on the
-    // checkpointer's server, on the replica whose scheduler runs it.
+    // The lock connections of the checkpoint reconciler and of the checkpoint retention pass
+    // (src/graph/checkpoint-reconcile.ts, src/graph/checkpoint-retention.ts), one each, on the
+    // checkpointer's server, on the replica whose scheduler runs them: the two passes may overlap.
     {
       env: "SCHEDULER_WORKER_ENABLED",
-      size: config.schedulerWorker.enabled ? 1 : 0,
+      size: config.schedulerWorker.enabled ? 2 : 0,
       url: config.langgraphDatabaseUrl ?? "",
-      note: "checkpoint reconciler lock",
+      note: "checkpoint reconciler and retention locks",
     },
   ];
 }

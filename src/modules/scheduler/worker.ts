@@ -31,7 +31,7 @@ import {
   completeJob,
   failJob,
   jobCancelledOnPurpose,
-  jobRetriesAfterFailure,
+  MAX_ATTEMPTS,
   REAPED_DEATH_ERROR,
   type ReapedJob,
   reapStaleJobs,
@@ -285,7 +285,8 @@ export async function announceReaped(
     recordJobOutcome(job.kind, "failed");
     if (job.status === "DEAD") {
       await dispatchDeadLetter(job, REAPED_DEATH_ERROR, base);
-    } else if (JOB_NEVER_DEAD[job.kind] && !jobRetriesAfterFailure(job)) {
+      // `attempts` here already counts this reaped claim, so the budget is spent at MAX_ATTEMPTS.
+    } else if (JOB_NEVER_DEAD[job.kind] && job.attempts >= MAX_ATTEMPTS) {
       announceJobStillFailing(job, REAPED_DEATH_ERROR, base);
     }
   }

@@ -33,7 +33,7 @@ import { runningJobIds } from "./running";
 // tenant scope, so RLS still fences the work. `attempts` is cleared by any completed pass, so
 // MAX_ATTEMPTS bounds consecutive failures; the reaper pushes crash loops to DEAD. See `Rearm`.
 
-const MAX_ATTEMPTS = 5;
+export const MAX_ATTEMPTS = 5;
 
 // The kinds the reaper must not dead-letter either: a crash loop of a never-dead row goes back to
 // PENDING like any other attempt, and the worker announces it once past the budget.

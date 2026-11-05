@@ -191,14 +191,14 @@ describe.skipIf(!dbUp)("a never-dead sweep", () => {
 
   test("the reaper does not dead-letter a crash loop of a never-dead kind, and announces it", async () => {
     const stale = new Date(Date.now() - 60 * 60_000);
-    const make = (kind: SchedulerJobKind, dedupeKey: string) =>
+    const make = (kind: SchedulerJobKind, dedupeKey: string, attempts = 4) =>
       suDb.schedulerJob.create({
         data: {
           tenantId,
           kind,
           dedupeKey,
           status: "CLAIMED",
-          attempts: 4,
+          attempts,
           runAt: stale,
           claimedAt: stale,
         },
@@ -207,14 +207,20 @@ describe.skipIf(!dbUp)("a never-dead sweep", () => {
     await clearFlowLog(suDb, { tenantId });
     const sweep = await make("FOLLOWUP_SWEEP", "reaped-sweep");
     const other = await make("FOLLOWUP", "reaped-followup");
+    // Its fourth failure: the budget of five is not spent, so the reaper says nothing about it.
+    const early = await make("FOLLOWUP_SWEEP", "reaped-sweep-early", 3);
     const reaped = await reapStaleJobs(60_000, appDb, new Date(), tenantId);
     await announceReaped(reaped, appDb);
     const status = async (id: bigint) =>
       (await suDb.schedulerJob.findUniqueOrThrow({ where: { id } })).status;
     expect(await status(sweep.id)).toBe("PENDING");
     expect(await status(other.id)).toBe("DEAD");
+    expect(await status(early.id)).toBe("PENDING");
     const lines = await deadLetterLines("FOLLOWUP_SWEEP");
     expect(lines.length).toBe(1);
+    expect(
+      (lines[0]?.detail as Record<string, unknown> | undefined)?.jobId,
+    ).toBe(String(sweep.id));
     expect(
       (lines[0]?.detail as Record<string, unknown> | undefined)?.retrying,
     ).toBe(true);

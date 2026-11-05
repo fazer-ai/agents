@@ -345,15 +345,17 @@ export function snapshot(now: number = Date.now()): {
 export async function readDatabaseSignals(
   base: PrismaClient = instanceHealthPrisma,
 ): Promise<DatabaseReading> {
+  // Every age subtracts from `now() AT TIME ZONE 'UTC'`: the columns are UTC timestamps without a zone,
+  // and `now() - <timestamp>` reads them in the session's zone, off by its offset outside UTC.
   return asFleetForInstanceHealth(base, async (db) => {
     const kinds = await db.$queryRaw<{ kind: string; age_ms: number }[]>`
       SELECT kind::text AS kind,
-             (extract(epoch FROM now() - min(run_at)) * 1000)::float8 AS age_ms
+             (extract(epoch FROM (now() AT TIME ZONE 'UTC') - min(run_at)) * 1000)::float8 AS age_ms
         FROM scheduler_jobs
        WHERE status = 'PENDING' AND run_at <= now()
        GROUP BY kind`;
     const [pending] = await db.$queryRaw<{ age_ms: number | null }[]>`
-      SELECT (extract(epoch FROM now() - min(received_at)) * 1000)::float8 AS age_ms
+      SELECT (extract(epoch FROM (now() AT TIME ZONE 'UTC') - min(received_at)) * 1000)::float8 AS age_ms
         FROM chatwoot_webhook_deliveries
        WHERE status = 'PENDING'`;
     const [debounce] = await db.$queryRaw<{ n: number }[]>`
@@ -361,16 +363,17 @@ export async function readDatabaseSignals(
         FROM scheduler_jobs
        WHERE kind = 'DEBOUNCE' AND status = 'PENDING' AND run_at <= now()`;
     // The pass's own completion stamp (../followups/handlers.ts writes `completedAt` on every pass that
-    // finishes); a row from before the stamp existed counts from its last write when that write was
-    // not a failure, else from its creation. A DEAD row is never completing.
+    // finishes); a row from before the stamp existed counts from its last write when its budget is
+    // whole (a completed pass clears it, and both a failure and a reaped claim spend it), else from its
+    // creation. A DEAD row is never completing.
     const sweeps = await db.$queryRaw<
       { tenant_id: string; slug: string; since_ms: number }[]
     >`
       SELECT j.tenant_id::text AS tenant_id, t.slug,
-             (extract(epoch FROM now() - COALESCE(
+             (extract(epoch FROM (now() AT TIME ZONE 'UTC') - COALESCE(
                 CASE WHEN jsonb_typeof(j.payload->'completedAt') = 'number'
                      THEN to_timestamp((j.payload->>'completedAt')::float8 / 1000) AT TIME ZONE 'UTC' END,
-                CASE WHEN j.last_error IS NULL AND j.status <> 'DEAD' THEN j.updated_at END,
+                CASE WHEN j.attempts = 0 AND j.status <> 'DEAD' THEN j.updated_at END,
                 j.created_at)) * 1000)::float8 AS since_ms
         FROM scheduler_jobs j
         JOIN tenants t ON t.id = j.tenant_id

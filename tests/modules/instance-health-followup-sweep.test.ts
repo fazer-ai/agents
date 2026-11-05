@@ -42,12 +42,10 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const MINUTE = 60_000;
-const ids: Record<"fresh" | "failing" | "legacy" | "legacyFailing", bigint> = {
-  fresh: 0n,
-  failing: 0n,
-  legacy: 0n,
-  legacyFailing: 0n,
-};
+const ids: Record<
+  "fresh" | "failing" | "legacy" | "legacyFailing" | "legacyReaped",
+  bigint
+> = { fresh: 0n, failing: 0n, legacy: 0n, legacyFailing: 0n, legacyReaped: 0n };
 
 describe.skipIf(!dbUp)("the follow-up sweep signal", () => {
   beforeAll(async () => {
@@ -57,6 +55,7 @@ describe.skipIf(!dbUp)("the follow-up sweep signal", () => {
       "failing",
       "legacy",
       "legacyFailing",
+      "legacyReaped",
     ] as const) {
       const t = await suDb.tenant.create({
         data: {
@@ -103,6 +102,14 @@ describe.skipIf(!dbUp)("the follow-up sweep signal", () => {
               now() AT TIME ZONE 'UTC', 7, 'statement timeout',
               (now() - interval '3 hours') AT TIME ZONE 'UTC',
               (now() - interval '1 minute') AT TIME ZONE 'UTC')`;
+    // A row from before the stamp whose last write was the reaper: it spends the budget and leaves no
+    // error, so it is not a completed pass either.
+    await suDb.$executeRaw`
+      INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, payload, status, run_at, attempts, created_at, updated_at)
+      VALUES (${ids.legacyReaped}, 'FOLLOWUP_SWEEP', 'sweep', '{}'::jsonb, 'PENDING',
+              now() AT TIME ZONE 'UTC', 2,
+              (now() - interval '3 hours') AT TIME ZONE 'UTC',
+              (now() - interval '1 minute') AT TIME ZONE 'UTC')`;
   });
 
   afterAll(async () => {
@@ -127,6 +134,28 @@ describe.skipIf(!dbUp)("the follow-up sweep signal", () => {
     expect(since(ids.legacy)).toBeGreaterThanOrEqual(5 * MINUTE);
     expect(since(ids.legacy)).toBeLessThan(6 * MINUTE);
     expect(since(ids.legacyFailing)).toBeGreaterThanOrEqual(180 * MINUTE);
+    expect(since(ids.legacyReaped)).toBeGreaterThanOrEqual(180 * MINUTE);
+  });
+
+  test("the age does not move with the session's time zone", async () => {
+    // A session nine hours ahead of UTC: a timestamp without zone read as local would add nine hours
+    // to a pass completed half a minute ago.
+    const tokyo = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: appUrl as string,
+        options: "-c timezone=Asia/Tokyo",
+      }),
+    });
+    try {
+      const reading = await readDatabaseSignals(tokyo);
+      const fresh = reading.followUpSweeps?.find(
+        (f) => f.tenantId === String(ids.fresh),
+      );
+      expect(fresh?.sinceCompletedMs ?? -1).toBeGreaterThanOrEqual(30_000);
+      expect(fresh?.sinceCompletedMs ?? -1).toBeLessThan(MINUTE);
+    } finally {
+      await tokyo.$disconnect();
+    }
   });
 
   test("the signal is the worst tenant, and the read says which tenants are above the threshold", async () => {

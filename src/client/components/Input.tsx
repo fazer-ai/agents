@@ -12,7 +12,21 @@ type BaseInputProps = Omit<
   errorMessage?: string;
   helperText?: string;
   wrapperClassName?: string;
+  /**
+   * The value is a secret that is not the user's sign-in password (a setup token, an API key):
+   * password managers must neither offer a saved password for it nor offer to save it as one.
+   */
+  secret?: boolean;
 };
+
+// The opt-outs 1Password, LastPass, Bitwarden and Dashlane read, in that order. `autocomplete="off"`
+// alone does not stop them on a masked field.
+const PASSWORD_MANAGER_IGNORE = {
+  "data-1p-ignore": "",
+  "data-lpignore": "true",
+  "data-bwignore": "",
+  "data-form-type": "other",
+} as const;
 
 type PasswordToggleInputProps = BaseInputProps & {
   showPasswordToggle: true;
@@ -37,6 +51,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       showPasswordToggle,
       type,
       autoComplete,
+      secret,
       ...props
     },
     ref,
@@ -66,12 +81,15 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             // message goes unannounced. Anything a caller may legitimately
             // override is folded into the computation instead of racing it.
             {...props}
+            {...(secret ? PASSWORD_MANAGER_IGNORE : undefined)}
             ref={ref}
             type={showPasswordToggle && showPassword ? "text" : type}
             autoComplete={
-              showPasswordToggle
-                ? (autoComplete ?? "new-password")
-                : autoComplete
+              secret
+                ? "off"
+                : showPasswordToggle
+                  ? (autoComplete ?? "new-password")
+                  : autoComplete
             }
             aria-invalid={hasError || undefined}
             id={props.id ?? field.controlId}

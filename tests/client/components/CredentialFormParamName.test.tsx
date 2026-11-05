@@ -8,6 +8,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   cleanup,
   fireEvent,
@@ -155,4 +156,28 @@ describe("CredentialForm never sends a param name a kind cannot use", () => {
     await waitFor(() => expect(posts().length).toBe(1));
     expect(posts()[0]?.body.paramName).toBe("Authorization");
   });
+
+  // Both forms the value takes: the single value box and the masked field of a multi-field type.
+  for (const kind of ["header", "google_oauth"]) {
+    test(`a ${kind} secret is masked but is not a password field for password managers`, () => {
+      render(
+        <TooltipProvider>
+          <ToastProvider>
+            <CredentialForm
+              mode="create"
+              initialKind={kind}
+              onSaved={() => {}}
+              onCancel={() => {}}
+            />
+          </ToastProvider>
+        </TooltipProvider>,
+      );
+      const el = secretInput();
+      expect(el.getAttribute("autocomplete")).toBe("off");
+      expect(el.getAttribute("data-1p-ignore")).toBe("");
+      expect(el.getAttribute("data-lpignore")).toBe("true");
+      expect(el.getAttribute("data-bwignore")).toBe("");
+      expect(el.getAttribute("data-form-type")).toBe("other");
+    });
+  }
 });

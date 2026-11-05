@@ -270,8 +270,9 @@ export function SetupPage() {
               </label>
               <Input
                 id="token"
-                type="password"
-                showPasswordToggle
+                type="text"
+                secret
+                spellCheck={false}
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 required

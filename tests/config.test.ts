@@ -645,3 +645,19 @@ describe("the mail provider", () => {
     ).toContain("only available to the test suite");
   });
 });
+
+describe("database screen settings in the deploy composes", () => {
+  test("every deploy compose forwards the retention and preloads pg_stat_statements", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      expect(compose).toContain(
+        `- DB_STATS_RETENTION_DAYS=\${DB_STATS_RETENTION_DAYS:-}`,
+      );
+      expect(compose).toContain("shared_preload_libraries=pg_stat_statements");
+    }
+  });
+});

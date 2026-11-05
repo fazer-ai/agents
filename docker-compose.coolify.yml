@@ -65,6 +65,7 @@ services:
       - DB_TX_MAX_WAIT_MS=${DB_TX_MAX_WAIT_MS:-}
       - DB_TX_TIMEOUT_MS=${DB_TX_TIMEOUT_MS:-}
       - DB_LOCK_TIMEOUT_MS=${DB_LOCK_TIMEOUT_MS:-}
+      - DB_STATS_RETENTION_DAYS=${DB_STATS_RETENTION_DAYS:-}
       # The turn capacities: model permits and debounce turn slots (docs/deploy.md). Empty takes the
       # app default.
       - AGENT_MODEL_CONCURRENCY=${AGENT_MODEL_CONCURRENCY:-}

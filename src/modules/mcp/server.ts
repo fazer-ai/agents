@@ -2674,11 +2674,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "alert_channel_create",
       {
         description:
-          "Create a flow-log alert channel (discord or generic webhook). url_ref is a vault entry NAME holding the FULL token-bearing destination URL (resolved server-side; never passed raw). secret_ref optionally holds an HMAC signing secret (vault NAME). min_level is info/warn/error; stages restrict which flow stages alert; exclude_agent_ids never alert here (still logged). Previews and creates NOTHING unless dry_run is false.",
+          "Create a flow-log alert channel (discord or generic webhook). Destination: url (the full token-bearing URL, write-only: never returned or audited, shown masked) or url_ref (a vault entry NAME holding it), exactly one. secret_ref optionally holds an HMAC signing secret (vault NAME). min_level is info/warn/error; stages restrict which flow stages alert; exclude_agent_ids never alert here (still logged). Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           name: z.string(),
           type: z.enum(["discord", "webhook"]),
-          url_ref: z.string(),
+          url: z.string().optional(),
+          url_ref: z.string().optional(),
           min_level: z.enum(["info", "warn", "error"]).optional(),
           stages: z.array(z.string()).optional(),
           exclude_agent_ids: z.array(z.string()).max(200).optional(),
@@ -2691,7 +2692,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: {
           name: string;
           type: "discord" | "webhook";
-          url_ref: string;
+          url?: string;
+          url_ref?: string;
           min_level?: "info" | "warn" | "error";
           stages?: string[];
           exclude_agent_ids?: string[];
@@ -2709,11 +2711,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "alert_channel_update",
       {
         description:
-          "Update a flow-log alert channel. url_ref rotates the token-bearing URL (vault NAME; never raw, never in the diff). secret_ref is a vault NAME (null clears it). Previews and applies NOTHING unless dry_run is false.",
+          "Update a flow-log alert channel. url (write-only, shown masked) or url_ref (vault NAME), not both, rotates the destination. secret_ref is a vault NAME (null clears it). Previews and applies NOTHING unless dry_run is false.",
         inputSchema: {
           channel_id: z.string(),
           name: z.string().optional(),
           type: z.enum(["discord", "webhook"]).optional(),
+          url: z.string().optional(),
           url_ref: z.string().optional(),
           min_level: z.enum(["info", "warn", "error"]).optional(),
           stages: z.array(z.string()).optional(),
@@ -2728,6 +2731,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           channel_id: string;
           name?: string;
           type?: "discord" | "webhook";
+          url?: string;
           url_ref?: string;
           min_level?: "info" | "warn" | "error";
           stages?: string[];
@@ -3978,7 +3982,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "instance_alert_channel_list",
       {
         description:
-          "List the instance's alert channels (not a tenant's): url masked, secret never shown; a channel with urlMasked null is waiting for its URL in the console. SUPER_ADMIN only.",
+          "List the instance's alert channels (not a tenant's): url masked, secret never shown; a channel with urlMasked null has no URL yet (set it with instance_alert_channel_update or in the console). SUPER_ADMIN only.",
         inputSchema: {},
       },
       async () => writeContent(await instanceAlertChannelList(principal)),
@@ -3988,19 +3992,14 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "instance_alert_channel_create",
       {
         description:
-          "Create an instance alert channel (Discord or webhook) WITHOUT its URL or signing secret, which never pass through MCP: it is created disabled, and the answer's fillAt is a console link where the operator sets the URL, the optional secret, and enables it. Hand that link to the user. Previews and creates NOTHING unless dry_run is false. SUPER_ADMIN only.",
+          "Create an instance alert channel (Discord or webhook). url (destination) and secret (optional HMAC signing secret) are write-only: never returned or audited, the URL shown masked. With url it is created enabled unless enabled is false; without, disabled, and fillAt is a console link to set the URL. Previews and creates NOTHING unless dry_run is false. SUPER_ADMIN only.",
         inputSchema: {
           name: z.string(),
           type: z.enum(["discord", "webhook"]),
           signals: z.array(z.string()).optional(),
-          // Declared only to be refused: an undeclared argument would be dropped silently and the
-          // channel created as if the URL had been taken. No `secret` here: no tool declares a
-          // secret argument outside docs/mcp.md's exceptions, and the description already says
-          // it is set in the console.
-          url: z
-            .unknown()
-            .optional()
-            .describe("Not accepted: the URL is set in the console (fillAt)."),
+          url: z.string().optional(),
+          secret: z.string().optional(),
+          enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -4008,7 +4007,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         name: string;
         type: "discord" | "webhook";
         signals?: string[];
-        url?: unknown;
+        url?: string;
+        secret?: string;
+        enabled?: boolean;
         dry_run?: boolean;
       }) => writeContent(await instanceAlertChannelCreate(principal, args)),
     );
@@ -4017,11 +4018,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "instance_alert_channel_update",
       {
         description:
-          "Rename, enable/disable, or change the signal allowlist (empty = all signals) of an instance alert channel. Previews and applies NOTHING unless dry_run is false. SUPER_ADMIN only.",
+          "Rename, enable/disable, change the signal allowlist (empty = all signals), or set url and secret (null clears it; both write-only, shown masked) of an instance alert channel. Previews and applies NOTHING unless dry_run is false. SUPER_ADMIN only.",
         inputSchema: {
           id: z.string(),
           name: z.string().optional(),
           signals: z.array(z.string()).optional(),
+          url: z.string().optional(),
+          secret: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
@@ -4030,6 +4033,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         id: string;
         name?: string;
         signals?: string[];
+        url?: string;
+        secret?: string | null;
         enabled?: boolean;
         dry_run?: boolean;
       }) => writeContent(await instanceAlertChannelUpdate(principal, args)),

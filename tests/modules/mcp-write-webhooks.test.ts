@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { listCatalog } from "@/modules/integrations/service";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   alertChannelCreate,
   alertChannelTest,
+  alertChannelUpdate,
   integrationCreate,
   integrationUpdate,
   webhookCreate,
@@ -252,6 +253,191 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
       globalThis.fetch = real;
     }
   }
+
+  // NOTE: ── the destination URL passed raw, write-only ──
+  //
+  // A Discord webhook URL embeds the bot token, so every answer the tool gives (preview, apply,
+  // refusal, test) and every audit row is searched for the token itself.
+
+  const RAW_TOKEN = "rawURLtoken1696";
+
+  async function auditText(tenantId: bigint): Promise<string> {
+    const rows = await suDb.auditLog.findMany({ where: { tenantId } });
+    return JSON.stringify(rows, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+  }
+
+  test("alert_channel_create takes the URL raw, stores it encrypted, and no answer or audit row carries it", async () => {
+    const p = principal({ tenantId: tenantA });
+    const url = outboundUrl(`/api/webhooks/1696/${RAW_TOKEN}`);
+    const preview = await alertChannelCreate(
+      p,
+      { name: "raw-url", type: "discord", url },
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(true);
+    expect(JSON.stringify(preview)).not.toContain(RAW_TOKEN);
+    if (preview.ok) {
+      const shown = preview.data.preview as Record<string, unknown>;
+      expect(shown.urlMasked).toBe("https://203.0.113.10/…");
+    }
+    expect(
+      await suDb.alertChannel.count({
+        where: { tenantId: tenantA, name: "raw-url" },
+      }),
+    ).toBe(0);
+
+    const applied = await alertChannelCreate(
+      p,
+      { name: "raw-url", type: "discord", url, dry_run: false },
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(true);
+    expect(JSON.stringify(applied)).not.toContain(RAW_TOKEN);
+    const row = await suDb.alertChannel.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "raw-url" },
+    });
+    expect(row.url).not.toContain(RAW_TOKEN);
+    expect(decryptJson<string>(row.url)).toBe(url);
+    expect(await auditText(tenantA)).toContain("alert_channel.create");
+    expect(await auditText(tenantA)).not.toContain(RAW_TOKEN);
+
+    const tested = await withStubbedFetch(
+      () => new Response(null, { status: 204 }),
+      async (sent) => {
+        const r = await alertChannelTest(
+          p,
+          { channel_id: String(row.id) },
+          { base: appDb },
+        );
+        expect(sent).toEqual([url]);
+        return r;
+      },
+    );
+    expect(tested.ok).toBe(true);
+    expect(JSON.stringify(tested)).not.toContain(RAW_TOKEN);
+  });
+
+  test("alert_channel_create refuses url together with url_ref, and neither, without writing", async () => {
+    const p = principal({ tenantId: tenantA });
+    const url = outboundUrl(`/api/webhooks/1696/${RAW_TOKEN}`);
+    const both = await alertChannelCreate(
+      p,
+      {
+        name: "both",
+        type: "discord",
+        url,
+        url_ref: "discord-url",
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(both.ok).toBe(false);
+    expect(JSON.stringify(both)).not.toContain(RAW_TOKEN);
+    const neither = await alertChannelCreate(
+      p,
+      { name: "neither", type: "discord", dry_run: false },
+      { base: appDb },
+    );
+    expect(neither.ok).toBe(false);
+    expect(
+      await suDb.alertChannel.count({
+        where: { tenantId: tenantA, name: { in: ["both", "neither"] } },
+      }),
+    ).toBe(0);
+  });
+
+  test("a refused raw URL is not echoed back", async () => {
+    const r = await alertChannelCreate(
+      principal({ tenantId: tenantA }),
+      {
+        name: "ftp",
+        type: "webhook",
+        url: `ftp://203.0.113.10/${RAW_TOKEN}`,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).not.toContain(RAW_TOKEN);
+  });
+
+  test("alert_channel_update rotates the URL raw: the preview applies nothing, the apply moves the destination, nothing carries it", async () => {
+    const p = principal({ tenantId: tenantA });
+    const created = await alertChannelCreate(
+      p,
+      {
+        name: "rotate-raw",
+        type: "discord",
+        url_ref: "discord-url",
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(created.ok).toBe(true);
+    const row = await suDb.alertChannel.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "rotate-raw" },
+    });
+    const next = outboundUrl(`/api/webhooks/1696/new${RAW_TOKEN}`, 11);
+
+    const preview = await alertChannelUpdate(
+      p,
+      { channel_id: String(row.id), url: next },
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(true);
+    expect(JSON.stringify(preview)).not.toContain(RAW_TOKEN);
+    if (preview.ok) {
+      expect(preview.data.urlRotated).toBe(true);
+      expect(preview.data.urlMasked).toBe("https://203.0.113.11/…");
+    }
+    const unchanged = await suDb.alertChannel.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(unchanged.url).toBe(row.url);
+
+    const both = await alertChannelUpdate(
+      p,
+      {
+        channel_id: String(row.id),
+        url: next,
+        url_ref: "discord-url",
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(both.ok).toBe(false);
+    expect(
+      (await suDb.alertChannel.findUniqueOrThrow({ where: { id: row.id } }))
+        .url,
+    ).toBe(row.url);
+
+    const applied = await alertChannelUpdate(
+      p,
+      { channel_id: String(row.id), url: next, dry_run: false },
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(true);
+    expect(JSON.stringify(applied)).not.toContain(RAW_TOKEN);
+    const after = await suDb.alertChannel.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(decryptJson<string>(after.url)).toBe(next);
+    expect(await auditText(tenantA)).toContain("alert_channel.update");
+    expect(await auditText(tenantA)).not.toContain(RAW_TOKEN);
+
+    await withStubbedFetch(
+      () => new Response(null, { status: 204 }),
+      async (sent) => {
+        await alertChannelTest(
+          p,
+          { channel_id: String(row.id) },
+          { base: appDb },
+        );
+        expect(sent).toEqual([next]);
+      },
+    );
+  });
 
   test("alert_channel_test sends on the call and returns the outcome", async () => {
     const p = principal({ tenantId: tenantA });

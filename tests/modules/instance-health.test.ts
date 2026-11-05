@@ -39,6 +39,7 @@ import {
 } from "@/modules/instance-health/worker";
 import {
   instanceAlertChannelCreate,
+  instanceAlertChannelTest,
   instanceAlertChannelUpdate,
   instanceHealthGet,
   instanceThresholdSet,
@@ -1542,21 +1543,7 @@ describe.skipIf(!dbUp)("the MCP tools", () => {
     jti: "j",
   };
 
-  test("a channel created over MCP carries no URL or secret, stays off, and is filled from the link (catches a secret routed through the transcript)", async () => {
-    // A URL handed to the tool is refused, not dropped: the channel is not created as if it had
-    // been taken.
-    const refused = await instanceAlertChannelCreate(
-      fleetToken,
-      {
-        name: "ops",
-        type: "webhook",
-        url: "https://hooks.example/x",
-        dry_run: false,
-      },
-      { base: appDb },
-    );
-    expect(refused.ok).toBe(false);
-    expect(await listInstanceAlertChannels(appDb)).toEqual([]);
+  test("a channel created over MCP without a URL stays off and is filled from the link", async () => {
     const preview = await instanceAlertChannelCreate(
       fleetToken,
       { name: "ops", type: "webhook" },
@@ -1627,6 +1614,181 @@ describe.skipIf(!dbUp)("the MCP tools", () => {
     );
     expect(filled.urlMasked).not.toBeNull();
     expect(filled.enabled).toBe(true);
+  });
+
+  const RAW_TOKEN = "rawInstanceToken1696";
+  const RAW_SECRET = "signing-value-1696";
+
+  async function fleetAuditText(since: Date): Promise<string> {
+    const rows = await suDb.auditLog.findMany({
+      where: { tenantId: null, createdAt: { gte: since } },
+    });
+    return JSON.stringify(rows, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+  }
+
+  async function withStubbedFetch<T>(
+    fn: (sent: { url: string; headers: Headers }[]) => Promise<T>,
+  ): Promise<T> {
+    const sent: { url: string; headers: Headers }[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      sent.push({ url: String(url), headers: new Headers(init?.headers) });
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    try {
+      return await fn(sent);
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  test("a channel created over MCP with its URL and secret is on, tests at once, and no answer or audit row carries either", async () => {
+    const since = new Date();
+    const url = outboundUrl(`/api/webhooks/1696/${RAW_TOKEN}`);
+    const preview = await instanceAlertChannelCreate(
+      fleetToken,
+      { name: "ops", type: "webhook", url, secret: RAW_SECRET },
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(true);
+    expect(JSON.stringify(preview)).not.toContain(RAW_TOKEN);
+    expect(JSON.stringify(preview)).not.toContain(RAW_SECRET);
+    if (preview.ok) {
+      const shown = preview.data.wouldCreate as Record<string, unknown>;
+      expect(shown.urlMasked).toBe("https://203.0.113.10/…");
+      expect(shown.enabled).toBe(true);
+      expect(shown.hasSecret).toBe(true);
+    }
+    expect(await listInstanceAlertChannels(appDb)).toEqual([]);
+
+    const res = await instanceAlertChannelCreate(
+      fleetToken,
+      { name: "ops", type: "webhook", url, secret: RAW_SECRET, dry_run: false },
+      { base: appDb },
+    );
+    if (!res.ok) throw new Error(res.error);
+    expect(JSON.stringify(res)).not.toContain(RAW_TOKEN);
+    expect(JSON.stringify(res)).not.toContain(RAW_SECRET);
+    expect(res.data.fillAt).toBeUndefined();
+    const channel = res.data.channel as {
+      id: string;
+      enabled: boolean;
+      hasSecret: boolean;
+    };
+    expect(channel.enabled).toBe(true);
+    expect(channel.hasSecret).toBe(true);
+    const row = await suDb.instanceAlertChannel.findUniqueOrThrow({
+      where: { id: BigInt(channel.id) },
+    });
+    expect(decryptJson<string>(row.url as string)).toBe(url);
+    expect(decryptJson<string>(row.secret as string)).toBe(RAW_SECRET);
+    const audit = await fleetAuditText(since);
+    expect(audit).toContain("instance_alert_channel.create");
+    expect(audit).not.toContain(RAW_TOKEN);
+    expect(audit).not.toContain(RAW_SECRET);
+
+    const tested = await withStubbedFetch(async (sent) => {
+      const r = await instanceAlertChannelTest(
+        fleetToken,
+        { id: channel.id },
+        { base: appDb },
+      );
+      expect(sent.map((s) => s.url)).toEqual([url]);
+      return r;
+    });
+    if (!tested.ok) throw new Error(tested.error);
+    const result = tested.data.result as { ok: boolean; signed: boolean };
+    expect(result.ok).toBe(true);
+    expect(result.signed).toBe(true);
+    expect(JSON.stringify(tested)).not.toContain(RAW_TOKEN);
+  });
+
+  test("a create over MCP refuses a secret or enabled without a URL, and a URL the guard refuses, without echoing it", async () => {
+    for (const args of [
+      { secret: RAW_SECRET },
+      { enabled: true },
+      { url: `ftp://203.0.113.10/${RAW_TOKEN}` },
+    ]) {
+      for (const dry_run of [undefined, false]) {
+        const r = await instanceAlertChannelCreate(
+          fleetToken,
+          { name: "ops", type: "webhook", ...args, dry_run },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(false);
+        expect(JSON.stringify(r)).not.toContain(RAW_TOKEN);
+        expect(JSON.stringify(r)).not.toContain(RAW_SECRET);
+      }
+    }
+    expect(await listInstanceAlertChannels(appDb)).toEqual([]);
+  });
+
+  test("an update over MCP fills a pending channel's URL and secret and enables it, the preview applying nothing", async () => {
+    const since = new Date();
+    const pending = await instanceAlertChannelCreate(
+      fleetToken,
+      { name: "ops", type: "discord", dry_run: false },
+      { base: appDb },
+    );
+    if (!pending.ok) throw new Error(pending.error);
+    const id = (pending.data.channel as { id: string }).id;
+    const url = outboundUrl(`/api/webhooks/1696/${RAW_TOKEN}`, 12);
+    const preview = await instanceAlertChannelUpdate(
+      fleetToken,
+      { id, url, enabled: true },
+      { base: appDb },
+    );
+    if (!preview.ok) throw new Error(preview.error);
+    expect(JSON.stringify(preview)).not.toContain(RAW_TOKEN);
+    const after = preview.data.after as Record<string, unknown>;
+    expect(after.urlMasked).toBe("https://203.0.113.12/…");
+    expect(after.enabled).toBe(true);
+    expect(after.url).toBeUndefined();
+    const still = await suDb.instanceAlertChannel.findUniqueOrThrow({
+      where: { id: BigInt(id) },
+    });
+    expect(still.url).toBeNull();
+    expect(still.enabled).toBe(false);
+
+    const applied = await instanceAlertChannelUpdate(
+      fleetToken,
+      { id, url, secret: RAW_SECRET, enabled: true, dry_run: false },
+      { base: appDb },
+    );
+    if (!applied.ok) throw new Error(applied.error);
+    expect(JSON.stringify(applied)).not.toContain(RAW_TOKEN);
+    expect(JSON.stringify(applied)).not.toContain(RAW_SECRET);
+    const row = await suDb.instanceAlertChannel.findUniqueOrThrow({
+      where: { id: BigInt(id) },
+    });
+    expect(decryptJson<string>(row.url as string)).toBe(url);
+    expect(row.enabled).toBe(true);
+    const audit = await fleetAuditText(since);
+    expect(audit).toContain("instance_alert_channel.update");
+    expect(audit).not.toContain(RAW_TOKEN);
+    expect(audit).not.toContain(RAW_SECRET);
+
+    await withStubbedFetch(async (sent) => {
+      const r = await instanceAlertChannelTest(
+        fleetToken,
+        { id },
+        { base: appDb },
+      );
+      expect(r.ok).toBe(true);
+      expect(sent.map((s) => s.url)).toEqual([url]);
+    });
+
+    const cleared = await instanceAlertChannelUpdate(
+      fleetToken,
+      { id, secret: null, dry_run: false },
+      { base: appDb },
+    );
+    if (!cleared.ok) throw new Error(cleared.error);
+    expect((cleared.data.channel as { hasSecret: boolean }).hasSecret).toBe(
+      false,
+    );
   });
 
   test("a tenant token is refused (catches the fleet's load answered to a tenant)", async () => {

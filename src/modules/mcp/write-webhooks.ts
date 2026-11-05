@@ -1,7 +1,11 @@
-import type { InboundAuthStrategy } from "@/../generated/prisma/client";
+import type {
+  InboundAuthStrategy,
+  PrismaClient,
+} from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { runScopedOn } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { redactEndpoint } from "@/modules/audit/projection";
 import { sendAlertChannelTest } from "@/modules/flowlog/channel-test";
 import {
   assertAlertChannelWritable,
@@ -312,10 +316,38 @@ export async function webhookTest(
 
 // ── alert channels ──
 
+// Where a channel's destination comes from: the raw URL (write-only, like `deployment_connect`'s
+// admin token, docs/mcp.md) or the NAME of a vault entry holding it. Exactly one on create; at most
+// one on update.
+type UrlSource = { raw?: string; ref?: string };
+
+function urlSourceOf(
+  args: { url?: string; url_ref?: string },
+  required = true,
+): UrlSource | WriteResult {
+  if (args.url !== undefined && args.url_ref !== undefined) {
+    return err("pass either url or url_ref, not both");
+  }
+  if (required && args.url === undefined && args.url_ref === undefined) {
+    return err("url or url_ref is required");
+  }
+  return { raw: args.url, ref: args.url_ref };
+}
+
+async function urlValueOf(
+  ctx: TenantContext,
+  source: UrlSource,
+  base: PrismaClient,
+): Promise<{ value: string } | { fail: WriteResult }> {
+  if (source.raw !== undefined) return { value: source.raw };
+  return resolveSecretValue(ctx, source.ref as string, base);
+}
+
 export interface AlertChannelCreateArgs {
   name: string;
   type: "discord" | "webhook";
-  url_ref: string;
+  url?: string;
+  url_ref?: string;
   min_level?: "info" | "warn" | "error";
   stages?: string[];
   exclude_agent_ids?: string[];
@@ -332,9 +364,13 @@ export async function alertChannelCreate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  // Validate the URL credential exists (the token-bearing URL is stored as a vault secret).
-  const urlRefCheck = await resolveSecretRef(ctx, args.url_ref, base);
-  if ("fail" in urlRefCheck) return urlRefCheck.fail;
+  const source = urlSourceOf(args);
+  if ("ok" in source) return source;
+  if (source.ref !== undefined) {
+    // The URL credential exists (a token-bearing URL kept as a vault secret).
+    const urlRefCheck = await resolveSecretRef(ctx, source.ref, base);
+    if ("fail" in urlRefCheck) return urlRefCheck.fail;
+  }
   let secretRef: string | null | undefined;
   if (args.secret_ref) {
     const resolved = await resolveSecretRef(ctx, args.secret_ref, base);
@@ -345,7 +381,7 @@ export async function alertChannelCreate(
     // The core's own two questions. The URL is RESOLVED here, as the apply does, because the
     // destination is the value behind `url_ref`, and vetting the ref instead would approve
     // `not-a-url` or a loopback address. Only the verdict is returned, never the value.
-    const urlValue = await resolveSecretValue(ctx, args.url_ref, base);
+    const urlValue = await urlValueOf(ctx, source, base);
     if ("fail" in urlValue) return urlValue.fail;
     try {
       await assertAlertChannelWritable({
@@ -364,7 +400,9 @@ export async function alertChannelCreate(
       preview: {
         name: args.name,
         type: args.type,
-        urlRef: args.url_ref,
+        ...(source.ref !== undefined
+          ? { urlRef: source.ref }
+          : { urlMasked: redactEndpoint(urlValue.value) }),
         minLevel: args.min_level ?? "error",
         stages: args.stages ?? [],
         excludeAgentIds: args.exclude_agent_ids ?? [],
@@ -373,7 +411,7 @@ export async function alertChannelCreate(
       },
     });
   }
-  const url = await resolveSecretValue(ctx, args.url_ref, base);
+  const url = await urlValueOf(ctx, source, base);
   if ("fail" in url) return url.fail;
   try {
     const created = await createAlertChannel(
@@ -400,6 +438,7 @@ export interface AlertChannelUpdateArgs {
   channel_id: string;
   name?: string;
   type?: "discord" | "webhook";
+  url?: string;
   url_ref?: string;
   min_level?: "info" | "warn" | "error";
   stages?: string[];
@@ -430,8 +469,10 @@ export async function alertChannelUpdate(
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.channel_id, "channel_id");
   if (typeof id !== "bigint") return id;
-  if (args.url_ref !== undefined) {
-    const refCheck = await resolveSecretRef(ctx, args.url_ref, base);
+  const source = urlSourceOf(args, false);
+  if ("ok" in source) return source;
+  if (source.ref !== undefined) {
+    const refCheck = await resolveSecretRef(ctx, source.ref, base);
     if ("fail" in refCheck) return refCheck.fail;
   }
   let secretRef: string | null | undefined;
@@ -453,7 +494,7 @@ export async function alertChannelUpdate(
   if (args.exclude_agent_ids !== undefined)
     nonSecret.excludeAgentIds = args.exclude_agent_ids;
   if (args.enabled !== undefined) nonSecret.enabled = args.enabled;
-  const urlRotated = args.url_ref !== undefined;
+  const urlRotated = source.raw !== undefined || source.ref !== undefined;
   const secretRotated = args.secret_ref !== undefined;
   if (Object.keys(nonSecret).length === 0 && !urlRotated && !secretRotated) {
     return err("no updatable fields provided");
@@ -473,8 +514,8 @@ export async function alertChannelUpdate(
       // Same pair as on create, on the patch: the stage list, and the VALUE behind a rotated
       // `url_ref`. Resolved only when the patch rotates it, so a rename reads no secret.
       let urlValue: string | undefined;
-      if (urlRotated && args.url_ref !== undefined) {
-        const resolved = await resolveSecretValue(ctx, args.url_ref, base);
+      if (urlRotated) {
+        const resolved = await urlValueOf(ctx, source, base);
         if ("fail" in resolved) return resolved.fail;
         urlValue = resolved.value;
       }
@@ -495,12 +536,15 @@ export async function alertChannelUpdate(
         target,
         diff: diffFields(beforeProj, afterProj),
         urlRotated,
+        ...(urlValue !== undefined && {
+          urlMasked: redactEndpoint(urlValue),
+        }),
         secretRotated,
       });
     }
     const patch: AlertChannelPatch = { ...nonSecret };
-    if (urlRotated && args.url_ref !== undefined) {
-      const url = await resolveSecretValue(ctx, args.url_ref, base);
+    if (urlRotated) {
+      const url = await urlValueOf(ctx, source, base);
       if ("fail" in url) return url.fail;
       patch.url = url.value;
     }

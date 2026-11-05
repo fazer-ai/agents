@@ -218,14 +218,22 @@ export type InstanceAlertChannelCreate = z.infer<
   typeof instanceAlertChannelCreateSchema
 >;
 
+// The checks a create makes before the network one, shared with the MCP preview.
+export function checkInstanceAlertChannelCreate(
+  input: InstanceAlertChannelCreate,
+): InstanceAlertChannelCreate {
+  const parsed = parseInput(instanceAlertChannelCreateSchema, input);
+  return { ...parsed, signals: assertSignals(parsed.signals ?? []) };
+}
+
 export async function createInstanceAlertChannel(
   ctx: TenantContext,
   input: InstanceAlertChannelCreate,
   base: PrismaClient = basePrisma,
 ): Promise<InstanceAlertChannelDto> {
-  const parsed = parseInput(instanceAlertChannelCreateSchema, input);
+  const parsed = checkInstanceAlertChannelCreate(input);
   await assertSafeOutboundUrl(parsed.url);
-  const signals = assertSignals(parsed.signals ?? []);
+  const signals = parsed.signals ?? [];
   const row = await asSuperAdminOn(base, async (db) => {
     const created = await db.instanceAlertChannel.create({
       data: {
@@ -268,9 +276,9 @@ export function checkInstanceAlertChannelPending(
   return { ...parsed, signals: assertSignals(parsed.signals ?? []) };
 }
 
-// A channel with no URL yet, disabled, for a caller that must not carry the URL or the signing
-// secret (an MCP argument travels through the model's transcript): the operator fills both in the
-// console from the link the tool hands back, the vault's fill pattern.
+// A channel with no URL yet, disabled, for a caller that does not hold the URL: the operator fills
+// it and the optional signing secret in the console from the link the tool hands back, the vault's
+// fill pattern.
 export async function createPendingInstanceAlertChannel(
   ctx: TenantContext,
   input: InstanceAlertChannelPending,

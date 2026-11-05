@@ -46,6 +46,7 @@ function filterScopes(requested: string[], role: UserRole): McpScope[] {
     if (!(MCP_SCOPES as readonly string[]).includes(s)) continue;
     if (s === "mcp:admin" && role !== "SUPER_ADMIN") continue;
     if (s === "mcp:write" && !roleAtLeast(role, "TENANT_ADMIN")) continue;
+    if (s === "mcp:editor" && !roleAtLeast(role, "EDITOR")) continue;
     out.push(s as McpScope);
   }
   return out;
@@ -163,7 +164,7 @@ export const mcpOAuthController = new Elysia({
         scope: t.Optional(
           t.String({
             description:
-              'Space-separated requested scopes (e.g. "mcp:read mcp:write"); intersected with the supported set.',
+              'Space-separated requested scopes (e.g. "mcp:read mcp:editor"); intersected with the supported set.',
           }),
         ),
         grant_types: t.Optional(

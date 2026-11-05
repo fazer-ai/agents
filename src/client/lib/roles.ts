@@ -3,4 +3,4 @@
 // bundles into the browser cleanly.
 
 export type { UserRole as ClientRole } from "@/../generated/prisma/client";
-export { isAdminRole, roleAtLeast } from "@/lib/roles";
+export { canEditAgentsRole, isAdminRole, roleAtLeast } from "@/lib/roles";

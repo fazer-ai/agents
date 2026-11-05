@@ -31,6 +31,7 @@ import {
   useToast,
 } from "@/client/components";
 import { MonitoringBadge } from "@/client/components/MonitoringBadge";
+import { useAuth } from "@/client/contexts/AuthContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -55,6 +56,9 @@ type AgentKind = "text" | "voice";
 
 export function AgentsPage() {
   const { t, i18n } = useTranslation();
+  const { user } = useAuth();
+  // AGENT cannot reach this route. Only EDITOR needs the lifecycle actions removed here.
+  const isAdmin = user?.role !== "EDITOR";
   const { showToast } = useToast();
   const navigate = useNavigate();
   const createModal = useModalController();
@@ -70,7 +74,7 @@ export function AgentsPage() {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<AgentKind>("text");
   const refusal = useFieldRefusal(
-    createModal.isOpen ? CREATE_AGENT_FIELDS : [],
+    createModal.isOpen && isAdmin ? CREATE_AGENT_FIELDS : [],
   );
   const nameRef = useRef(name);
   nameRef.current = name;
@@ -227,28 +231,30 @@ export function AgentsPage() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            ref={fileInput}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={onImportFile}
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={importing}
-            onClick={() => fileInput.current?.click()}
-          >
-            <Upload className="h-4 w-4" aria-hidden="true" />
-            {t("agents.import", "Import")}
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            {t("agents.new", "New agent")}
-          </Button>
-        </div>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInput}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={onImportFile}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={importing}
+              onClick={() => fileInput.current?.click()}
+            >
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              {t("agents.import", "Import")}
+            </Button>
+            <Button size="sm" onClick={openCreate}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              {t("agents.new", "New agent")}
+            </Button>
+          </div>
+        )}
       </header>
 
       {showToolbar && (
@@ -314,10 +320,12 @@ export function AgentsPage() {
               "Create your first agent and give it a prompt, a model and tools.",
             )}
             action={
-              <Button size="sm" onClick={openCreate}>
-                <Plus className="h-4 w-4" aria-hidden="true" />
-                {t("agents.new", "New agent")}
-              </Button>
+              isAdmin ? (
+                <Button size="sm" onClick={openCreate}>
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  {t("agents.new", "New agent")}
+                </Button>
+              ) : undefined
             }
           />
         }
@@ -446,81 +454,87 @@ export function AgentsPage() {
         )}
       </DataBoundary>
 
-      <Modal
-        modal={createModal}
-        title={t("agents.createTitle", "New agent")}
-        unsavedChanges={name.trim() !== ""}
-        footer={
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="secondary"
-              onClick={() => createModal.close()}
-              disabled={creating}
+      {isAdmin && (
+        <Modal
+          modal={createModal}
+          title={t("agents.createTitle", "New agent")}
+          unsavedChanges={name.trim() !== ""}
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => createModal.close()}
+                disabled={creating}
+              >
+                {t("common.cancel", "Cancel")}
+              </Button>
+              <Button
+                onClick={create}
+                loading={creating}
+                disabled={!name.trim()}
+              >
+                {t("common.create", "Create")}
+              </Button>
+            </div>
+          }
+        >
+          <div className="flex flex-col gap-4">
+            <FormField
+              label={t("agents.kind", "What it answers")}
+              description={t(
+                "agents.kindHint",
+                "The type is set at creation. For the other one, create another agent.",
+              )}
             >
-              {t("common.cancel", "Cancel")}
-            </Button>
-            <Button onClick={create} loading={creating} disabled={!name.trim()}>
-              {t("common.create", "Create")}
-            </Button>
+              <ChoiceCards
+                value={kind}
+                onChange={setKind}
+                aria-label={t("agents.kind", "What it answers")}
+                className="sm:grid-cols-2"
+                options={[
+                  {
+                    value: "text",
+                    icon: MessageSquare,
+                    title: t("agents.kindText", "Messages"),
+                    hint: t(
+                      "agents.kindTextHint",
+                      "Answers conversations by text, and by voice note when audio replies are on.",
+                    ),
+                    testId: "kind-text",
+                  },
+                  {
+                    value: "voice",
+                    icon: Phone,
+                    title: t("agents.kindVoice", "WhatsApp calls"),
+                    hint: t(
+                      "agents.kindVoiceHint",
+                      "Talks by voice with whoever calls your WhatsApp. You will need a key from a voice provider.",
+                    ),
+                    testId: "kind-voice",
+                  },
+                ]}
+              />
+            </FormField>
+            <FormField
+              label={t("agents.name", "Name")}
+              required
+              description={t(
+                "agents.createHint",
+                "You'll configure the prompt, model and tools next.",
+              )}
+              error={refusal.at("name", name.trim())}
+            >
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") create();
+                }}
+              />
+            </FormField>
           </div>
-        }
-      >
-        <div className="flex flex-col gap-4">
-          <FormField
-            label={t("agents.kind", "What it answers")}
-            description={t(
-              "agents.kindHint",
-              "The type is set at creation. For the other one, create another agent.",
-            )}
-          >
-            <ChoiceCards
-              value={kind}
-              onChange={setKind}
-              aria-label={t("agents.kind", "What it answers")}
-              className="sm:grid-cols-2"
-              options={[
-                {
-                  value: "text",
-                  icon: MessageSquare,
-                  title: t("agents.kindText", "Messages"),
-                  hint: t(
-                    "agents.kindTextHint",
-                    "Answers conversations by text, and by voice note when audio replies are on.",
-                  ),
-                  testId: "kind-text",
-                },
-                {
-                  value: "voice",
-                  icon: Phone,
-                  title: t("agents.kindVoice", "WhatsApp calls"),
-                  hint: t(
-                    "agents.kindVoiceHint",
-                    "Talks by voice with whoever calls your WhatsApp. You will need a key from a voice provider.",
-                  ),
-                  testId: "kind-voice",
-                },
-              ]}
-            />
-          </FormField>
-          <FormField
-            label={t("agents.name", "Name")}
-            required
-            description={t(
-              "agents.createHint",
-              "You'll configure the prompt, model and tools next.",
-            )}
-            error={refusal.at("name", name.trim())}
-          >
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") create();
-              }}
-            />
-          </FormField>
-        </div>
-      </Modal>
+        </Modal>
+      )}
     </PageContainer>
   );
 }

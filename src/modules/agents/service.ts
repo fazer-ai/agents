@@ -27,6 +27,7 @@ import { normalizeToolName } from "@/graph/tools/toolName";
 import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
+  ForbiddenError,
   NotFoundError,
   quotingReason,
   TenantTargetRequiredError,
@@ -34,7 +35,12 @@ import {
 } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { isForeignKeyViolation } from "@/lib/pg-error";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import {
+  roleAtLeast,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import {
   agentUpdateAudit,
   auditSafe,
@@ -2005,6 +2011,92 @@ export const agentUpdateSchema = z
 
 export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 
+const EDITOR_PROTECTED_MODEL_FIELDS = [
+  "provider",
+  "credentialRef",
+  "baseURL",
+] as const;
+
+function editorScopeError(field: string): AppError {
+  return new AppError(
+    "editors cannot change agent activation, resource bindings, credentials, or endpoints",
+    403,
+    "errors.editorAgentScope",
+    undefined,
+    field,
+  );
+}
+
+function changedProtectedSettingsPath(
+  next: unknown,
+  stored: unknown,
+  path: string[] = [],
+): string | null {
+  if (!next || typeof next !== "object" || Array.isArray(next)) return null;
+  const nextBag = next as Record<string, unknown>;
+  const storedBag =
+    stored && typeof stored === "object" && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
+  for (const [key, value] of Object.entries(nextBag)) {
+    const here = [...path, key];
+    const protectsEndpoint =
+      (key === "url" || key === "endpoint") &&
+      (Object.hasOwn(nextBag, "credentialRef") ||
+        Object.hasOwn(storedBag, "credentialRef"));
+    if (
+      (key === "provider" ||
+        key === "credentialRef" ||
+        key === "baseURL" ||
+        protectsEndpoint) &&
+      !isDeepStrictEqual(value, storedBag[key])
+    ) {
+      return here.join(".");
+    }
+    const nested = changedProtectedSettingsPath(value, storedBag[key], here);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+export function assertAgentUpdateAllowedForRole(
+  ctx: TenantContext,
+  patch: AgentUpdate,
+  withGrants: boolean,
+  stored?: { modelConfig?: unknown; settings?: unknown },
+): void {
+  if (!roleAtLeast(ctx.role, "EDITOR")) throw new ForbiddenError();
+  if (roleAtLeast(ctx.role, "TENANT_ADMIN")) return;
+  if (withGrants) throw editorScopeError("grants");
+  for (const field of [
+    "enabled",
+    "mode",
+    "businessHoursId",
+    "followUpHoursId",
+  ] as const) {
+    if (patch[field] !== undefined) throw editorScopeError(field);
+  }
+  if (!stored) return;
+  if (patch.modelConfig !== undefined) {
+    const current =
+      stored.modelConfig &&
+      typeof stored.modelConfig === "object" &&
+      !Array.isArray(stored.modelConfig)
+        ? (stored.modelConfig as Record<string, unknown>)
+        : {};
+    for (const field of EDITOR_PROTECTED_MODEL_FIELDS) {
+      if (
+        Object.hasOwn(patch.modelConfig, field) &&
+        !isDeepStrictEqual(patch.modelConfig[field], current[field])
+      ) {
+        throw editorScopeError(`modelConfig.${field}`);
+      }
+    }
+  }
+  const changed = changedProtectedSettingsPath(patch.settings, stored.settings);
+  if (changed) throw editorScopeError(`settings.${changed}`);
+}
+
 // Everything `updateAgent` decides about its PATCH before any database is involved, shared with the
 // MCP preview so it asks what the apply asks. The two schedule ids come back parsed, so the caller
 // cannot disagree about which row was asked for. `withGrants`: the write also replaces the grant
@@ -2123,6 +2215,7 @@ export async function updateAgentAndGrants(
   base: PrismaClient = basePrisma,
   opts: AgentUpdateOpts = {},
 ): Promise<{ agent: AgentDto; toolSelection: ToolSelectionView | null }> {
+  assertAgentUpdateAllowedForRole(ctx, patch, input !== null);
   const grants = input ? normalizeGrants(input) : null;
   const tenantId = grants ? requireTenant(ctx) : null;
   const {
@@ -2198,6 +2291,10 @@ export async function updateAgentAndGrants(
     const beforeRow = await db.agent.findUnique({
       where: { id },
       select: AGENT_SELECT,
+    });
+    assertAgentUpdateAllowedForRole(ctx, patch, grants !== null, {
+      modelConfig: before?.model_config,
+      settings: before?.settings,
     });
     // NOTE: The optimistic-concurrency check comes FIRST, on the locked row. A stale editor resends
     // the settings it loaded, so if the other writer edited a capped field our copy of it is an edit

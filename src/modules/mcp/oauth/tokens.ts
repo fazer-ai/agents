@@ -27,7 +27,12 @@ const ISSUER = "fazerai:mcp";
 const LEGACY_ISSUER = "secretaria-v4:mcp";
 const ACCESS_TTL_S = 15 * 60;
 
-export const MCP_SCOPES = ["mcp:read", "mcp:write", "mcp:admin"] as const;
+export const MCP_SCOPES = [
+  "mcp:read",
+  "mcp:editor",
+  "mcp:write",
+  "mcp:admin",
+] as const;
 export type McpScope = (typeof MCP_SCOPES)[number];
 
 function secretKey(): Uint8Array {
@@ -163,9 +168,11 @@ export function hasScope(verified: VerifiedToken, scope: McpScope): boolean {
 export function scopesForRole(role: UserRole): McpScope[] {
   switch (role) {
     case "SUPER_ADMIN":
-      return ["mcp:read", "mcp:write", "mcp:admin"];
+      return ["mcp:read", "mcp:editor", "mcp:write", "mcp:admin"];
     case "TENANT_ADMIN":
-      return ["mcp:read", "mcp:write"];
+      return ["mcp:read", "mcp:editor", "mcp:write"];
+    case "EDITOR":
+      return ["mcp:read", "mcp:editor"];
     default:
       return ["mcp:read"];
   }

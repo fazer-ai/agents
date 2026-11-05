@@ -100,6 +100,8 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "mcp.admin.clientNamePlaceholder",
   "nav.dashboards",
   "nav.github",
+  // The role's product name is Editor in both supported languages.
+  "role.editor",
   // "item" is the same word in both languages, so the SINGULAR of this counter coincides while its
   // plural ("items" / "itens") does not. The pair is the evidence: a waiver over the whole key would
   // hide a real gap in the form that actually differs.
@@ -922,7 +924,7 @@ describe("both languages answer, and answer differently", () => {
       CLIENT_IDENTICAL_BY_DESIGN,
       // A brand name reads the same in both languages, like every `vault.secretType.*` waived above.
       // Plus the Dashboards feature's name, in the menu and on its page, in both editions.
-      hasProOnlyKeys ? 113 : 111,
+      hasProOnlyKeys ? 114 : 112,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

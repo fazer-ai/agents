@@ -145,6 +145,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.unknownProvider', 'Unknown {{capability}} provider: {{provider}}.')
 // translate('errors.unsupportedAudioType', 'Unsupported audio type')
 // translate('errors.visionCredentialMissing', 'Vision credential not found')
+// translate('errors.editorAgentScope', 'Editors cannot change agent activation, resource bindings, credentials, or endpoints.')
 // translate('errors.visionFailed', 'Image/document extraction failed')
 // translate('errors.visionNotConfigured', 'Image/document reading is not configured')
 // translate('errors.spendCeilingReached', 'The playground token ceiling for this month has been reached. Raise it in Settings or wait for the next month.')
@@ -416,7 +417,7 @@ export const agentsController = new Elysia({
         "Returns a paginated list of agents for the tenant.",
       ),
       response: errors(400, 401, 403, 404, 422),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       query: t.Object({
         q: t.Optional(
           t.String({
@@ -478,7 +479,7 @@ export const agentsController = new Elysia({
         "Returns a single agent by id. `agent.settings` is the bag as stored, which is what a PATCH sends back. `effective.limits` is what the runtime enforces: the stored execution limits with every absent or `null` field read as its default (`maxToolCalls` 10, `maxHistoryTokens` null = no ceiling, `retrySilence` true, `maxTurnsPerHour` 60, `maxProactivePerDay` 10; a stored `0` on the last two means no limit). It is read-only: do not send it back.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -506,7 +507,7 @@ export const agentsController = new Elysia({
         "Counts the guardrail analyses that could not run for this agent in the recent window, with the most recent one and the error it carried. A check counted here judged nothing: the screening let the message through by default (`onFailure: pass`), or held it and asked for a hand-over under `onFailure: hold`. It does not follow that the turn went out unscreened: the other direction may still have screened it, and a split output analysis can carry an error from one half and a violation from the other.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -533,7 +534,7 @@ export const agentsController = new Elysia({
         'The configuration warnings the agent editor shows, computed server-side over the SAVED agent: a feature switched on with no credential, a credential referenced but never filled, a credential the vault no longer holds, two settings that cancel each other out, and text past the cap its reader keeps. Each issue carries a `severity` — `blocking` (the agent does not answer, or answers without a protection whose switch reads "on"), `degraded` (it answers, and a feature that is on does not run) or `advisory` (nothing is off; the operator has a choice to make) — plus the same sentence the console shows, in the language of Accept-Language. `unchecked` names the live readings this call did not take (Chatwoot, guardrail health), because both of those fail as an empty result that reads exactly like a clean one — an empty `unchecked` is what makes a clean answer trustworthy. Shape: `{ agentId, agentName, healthy, counts, issues[], unchecked[] }`, where `healthy` is true when no blocking and no degraded issue is live.',
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -558,7 +559,7 @@ export const agentsController = new Elysia({
         'An ESTIMATE, in tokens, of what every model call of the saved agent sends before the first line of history: its instructions, what the runtime appends to them (the knowledge-base grounding rules, the MCP server block) and each granted tool\'s schema, largest first. A heuristic count that can run low against what a provider bills. What only a conversation supplies (contact attributes, appointments, other-inbox context, per-turn notices) is not in it, so it is a floor, not the size of a call. An agent that observes with the decisions engine never sends this prompt and answers `{ engine: "decisions" }` with no numbers. Shape: `{ engine: "llm", instructions, instructionsAdded, instructionsAddedBy{ grounding, mcp }, tools[{ name, category, estimatedTokens }], total }`.',
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -584,7 +585,7 @@ export const agentsController = new Elysia({
         "The same estimate as `GET /v1/agents/{id}/call-floor`, measured with the given grants (and settings, when sent) in place of the saved ones, so an editor can show what saving them would send. Nothing is written. The grants are validated as `PUT /v1/agents/{id}/tool-selections` validates them; a grant pointing at something this tenant does not have counts as absent, as it would at runtime.",
       ),
       response: errors(400, 401, 403, 404, 422),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -705,7 +706,7 @@ export const agentsController = new Elysia({
         'The agent\'s bound inboxes whose Chatwoot inbox-level out-of-office reply is configured (working hours enabled AND a message set), read live from Chatwoot. Chatwoot\'s schedule is keyed on the day of the week alone, so it cannot express the dated closures this product\'s business hours can: the two calendars disagree on holidays by construction. An inbox on an unreachable Chatwoot account is omitted rather than reported, so an empty list means "nothing found", not "nothing to find".',
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -827,7 +828,7 @@ export const agentsController = new Elysia({
         "Partially updates an existing agent. With `grants`, the agent's whole tool grant set is replaced in the same transaction: either every part of the write is applied or none is.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1075,7 +1076,7 @@ export const agentsController = new Elysia({
         "Returns the agent's current tool grants across all sources.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1115,7 +1116,7 @@ export const agentsController = new Elysia({
         "Runs one chat turn against the agent in the playground, with no Chatwoot side effects.",
       ),
       response: errors(400, 401, 403, 404, 422, 429, 500, 502),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1144,7 +1145,7 @@ export const agentsController = new Elysia({
         "Returns the agent's tools (name, description, category, auto-simulated flag) for the simulate-a-return UI.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1182,7 +1183,7 @@ export const agentsController = new Elysia({
         "Simulates the proactive follow-up nudge on the current playground thread, with no Chatwoot post.",
       ),
       response: errors(400, 401, 403, 404, 422, 429, 500, 502),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1215,7 +1216,7 @@ export const agentsController = new Elysia({
         "Transcribes an uploaded voice note only (step 1 of 2), returning the transcription.",
       ),
       response: errors(400, 401, 403, 404, 422),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1270,7 +1271,7 @@ export const agentsController = new Elysia({
         "Runs a turn on an uploaded voice note (step 2 of 2), returning the transcription and the reply.",
       ),
       response: errors(400, 401, 403, 404, 422, 429, 500, 502),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1341,7 +1342,7 @@ export const agentsController = new Elysia({
         "Extracts content from an uploaded image or document only (step 1 of 2), returning the kind and content.",
       ),
       response: errors(400, 401, 403, 404, 422, 429, 500, 502),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1406,7 +1407,7 @@ export const agentsController = new Elysia({
         "Runs a turn on an uploaded image or document (step 2 of 2), returning the extraction and the reply.",
       ),
       response: errors(400, 401, 403, 404, 422, 429, 500, 502),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1487,7 +1488,7 @@ export const agentsController = new Elysia({
         "Streams a persisted playground blob (recorded audio, TTS reply, or uploaded file) for in-app playback.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1514,7 +1515,7 @@ export const agentsController = new Elysia({
         "Returns the agent's playground sessions, reconstructed from the checkpointer.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1546,7 +1547,7 @@ export const agentsController = new Elysia({
         "Returns the reconstructed turns of a single playground session.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1575,7 +1576,7 @@ export const agentsController = new Elysia({
         "Returns a fresh playground thread id for a session about to start. Nothing is stored until a turn runs on it.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1604,7 +1605,7 @@ export const agentsController = new Elysia({
         "Returns what a playground session has spent so far, summed from the usage ledger.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1633,7 +1634,7 @@ export const agentsController = new Elysia({
         "Deletes a single playground session and its checkpointed history.",
       ),
       response: errors(400, 401, 403, 404),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
@@ -1672,7 +1673,7 @@ export const agentsController = new Elysia({
         "Lists the available models for a model provider, using a vault credential reference.",
       ),
       response: errors(400, 401, 403, 404, 422),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       body: t.Object({
         provider: t.String({
           minLength: 1,
@@ -1733,7 +1734,7 @@ export const agentsController = new Elysia({
         "Lists the voices or models for a text-to-speech provider. OpenAI returns a curated set; ElevenLabs is fetched live with the vault credential.",
       ),
       response: errors(400, 401, 403, 404, 422),
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       body: t.Object({
         provider: t.String({
           minLength: 1,

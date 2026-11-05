@@ -52,7 +52,10 @@ import { IntegrationsPanel } from "@/client/pages/resources/IntegrationsPanel";
 import { KnowledgePanel } from "@/client/pages/resources/KnowledgePanel";
 import { McpPanel } from "@/client/pages/resources/McpPanel";
 import { OccurrencesPanel } from "@/client/pages/resources/OccurrencesPanel";
-import { ResourcesLayout } from "@/client/pages/resources/ResourcesLayout";
+import {
+  ResourcesIndex,
+  ResourcesLayout,
+} from "@/client/pages/resources/ResourcesLayout";
 import { ToolsPanel } from "@/client/pages/resources/ToolsPanel";
 import { VaultPanel } from "@/client/pages/resources/VaultPanel";
 import { SetupPage } from "@/client/pages/SetupPage";
@@ -140,7 +143,7 @@ export function App() {
                                 <Route
                                   path="/agents"
                                   element={
-                                    <ProtectedRoute requireAdmin>
+                                    <ProtectedRoute requireRole="EDITOR">
                                       <AgentsPage />
                                     </ProtectedRoute>
                                   }
@@ -153,7 +156,7 @@ export function App() {
                                   <Route
                                     path=":tab"
                                     element={
-                                      <ProtectedRoute requireAdmin>
+                                      <ProtectedRoute requireRole="EDITOR">
                                         <AgentEditorPage />
                                       </ProtectedRoute>
                                     }
@@ -162,15 +165,12 @@ export function App() {
                                 <Route
                                   path="/resources"
                                   element={
-                                    <ProtectedRoute requireAdmin>
+                                    <ProtectedRoute requireRole="EDITOR">
                                       <ResourcesLayout />
                                     </ProtectedRoute>
                                   }
                                 >
-                                  <Route
-                                    index
-                                    element={<Navigate to="tools" replace />}
-                                  />
+                                  <Route index element={<ResourcesIndex />} />
                                   <Route
                                     path="tools"
                                     element={<ToolsPanel />}

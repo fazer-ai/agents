@@ -23,7 +23,7 @@ import { auditMutationOn } from "@/modules/audit/service";
 
 // Roles a tenant admin may assign: never SUPER_ADMIN, which /setup, `bun set-admin` and a fleet
 // administrator's `addSuperAdmin` mint.
-export type ManageableRole = "AGENT" | "TENANT_ADMIN";
+export type ManageableRole = "AGENT" | "EDITOR" | "TENANT_ADMIN";
 
 // A person seen through ONE membership. In the fleet view every membership is a row of its own and
 // a SUPER_ADMIN is a row with no tenant; `id` is the PERSON, so two rows can share it.

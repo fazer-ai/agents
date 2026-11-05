@@ -73,6 +73,35 @@ async function typeModel(id: string) {
 }
 
 describe("the editor of a voice agent", () => {
+  test("an editor sees authoring controls without lifecycle or resource bindings", async () => {
+    const stub = stubEditorApi(
+      {
+        kind: "text",
+        enabled: true,
+        mode: "production",
+        modelConfig: { provider: "openai", model: "gpt-4.1-mini" },
+      },
+      { userRole: "EDITOR" },
+    );
+    await renderEditor(stub, "general");
+    await waitFor(() => {
+      expect(tabNames()).not.toContain("Tools");
+    });
+    expect(tabNames()).not.toContain("Knowledge");
+    expect(tabNames()).not.toContain("Channels");
+    expect(screen.queryByRole("button", { name: "Clone" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Export" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete agent" })).toBeNull();
+    expect(
+      (screen.getByRole("switch", { name: "Enabled" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("combobox", { name: "Provider" }) as HTMLSelectElement)
+        .disabled,
+    ).toBe(true);
+  });
+
   test("draws the tabs of an agent that takes calls", async () => {
     await open();
     expect(tabNames()).toEqual([

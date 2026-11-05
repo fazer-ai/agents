@@ -140,6 +140,13 @@ export function useKnowledgeManager(opts: {
   // Show the per-document edit + delete buttons in the documents modal. Off by default (read-only
   // surfaces); the Knowledge resources page and the agent editor's Knowledge tab opt in.
   allowDocumentEdits?: boolean;
+  // Show controls that configure or synchronize the base's external source. Defaults to the
+  // document permission for existing callers, while restricted roles can keep content writable
+  // without gaining control over the base itself.
+  allowSourceEdits?: boolean;
+  // Show source details at all. Existing management surfaces keep them by default; a content-only
+  // role can work on documents without receiving the source configuration.
+  showSource?: boolean;
 }): KnowledgeManager {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -1501,10 +1508,12 @@ export function useKnowledgeManager(opts: {
         }
       >
         <div className="flex flex-col gap-3">
-          {docsModal.payload && (
+          {docsModal.payload && opts.showSource !== false && (
             <KnowledgeSourceSection
               baseId={docsModal.payload.id}
-              canManage={opts.allowDocumentEdits === true}
+              canManage={
+                opts.allowSourceEdits ?? opts.allowDocumentEdits === true
+              }
               onSourceChange={(has, ran) => {
                 const before = docsSourceKnown.current;
                 docsSourceKnown.current = { has, ran };

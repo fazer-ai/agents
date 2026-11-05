@@ -33,8 +33,13 @@ const su9400: TenantContext = {
 };
 
 describe("scopesForRole + mcpPrincipalFromApiKey", () => {
-  test("an API-key (TENANT_ADMIN) gets mcp:read + mcp:write, never mcp:admin", () => {
-    expect(scopesForRole("TENANT_ADMIN")).toEqual(["mcp:read", "mcp:write"]);
+  test("roles receive only the MCP scopes allowed by their rank", () => {
+    expect(scopesForRole("TENANT_ADMIN")).toEqual([
+      "mcp:read",
+      "mcp:editor",
+      "mcp:write",
+    ]);
+    expect(scopesForRole("EDITOR")).toEqual(["mcp:read", "mcp:editor"]);
     expect(scopesForRole("AGENT")).toEqual(["mcp:read"]);
     expect(scopesForRole("SUPER_ADMIN")).toContain("mcp:admin");
   });
@@ -50,7 +55,7 @@ describe("scopesForRole + mcpPrincipalFromApiKey", () => {
     expect(principal.tenantId).toBe(5n);
     expect(principal.userId).toBe(3n);
     expect(principal.role).toBe("TENANT_ADMIN");
-    expect(principal.scopes).toEqual(["mcp:read", "mcp:write"]);
+    expect(principal.scopes).toEqual(["mcp:read", "mcp:editor", "mcp:write"]);
     expect(principal.scopes).not.toContain("mcp:admin");
     expect(principal.clientId).toBe("api-key");
     expect(principal.jti).toBe("api-key:9");
@@ -324,7 +329,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     ).rejects.toThrow();
   });
 
-  test("MCP-via-API-key seam: a verified API key maps to a read+write MCP principal", async () => {
+  test("MCP-via-API-key seam: a verified API key maps to a tenant-admin MCP principal", async () => {
     const { token } = await createApiKey(
       { tenantId: tenantA, userId: 1n, role: "TENANT_ADMIN" },
       { displayName: "mcp client key" },
@@ -335,7 +340,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     if (!apiPrincipal) return;
     const mcp = mcpPrincipalFromApiKey(apiPrincipal);
     expect(mcp.tenantId).toBe(tenantA);
-    expect(mcp.scopes).toEqual(["mcp:read", "mcp:write"]);
+    expect(mcp.scopes).toEqual(["mcp:read", "mcp:editor", "mcp:write"]);
     // A revoked key no longer verifies → the MCP transport would 401 (su bypasses RLS to revoke).
     await su?.apiKey.update({
       where: { id: apiPrincipal.apiKeyId },

@@ -17,7 +17,8 @@ import { handleMcpRequest } from "@/modules/mcp/server";
 // The MCP transport endpoint. Authenticated by its OWN OAuth Bearer token (NOT the app cookie) —
 // verifyAccessToken re-resolves the principal on every request. As an ALTERNATIVE (OAuth stays the
 // default, discoverable path), a per-tenant API key (Bearer fazerai_…) is also accepted: it maps to an
-// MCP principal scoped mcp:read+mcp:write (never mcp:admin). A missing/invalid token returns 401 with
+// MCP principal scoped by its granted read/editor/write scopes (never mcp:admin). A missing/invalid
+// token returns 401 with
 // the RFC 9728 resource-metadata pointer so a client can discover the OAuth server.
 // This path is exempt from the global per-IP rate limit (isMcpTransport in middlewares/rateLimit);
 // per-token throttling is single-replica for the MVP.

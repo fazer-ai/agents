@@ -26,6 +26,7 @@
     "allTenantsShort": "All",
     "cannotDeleteSelf": "You cannot delete yourself",
     "cannotDemoteSelf": "Cannot demote yourself",
+    "changeRole": "Change role",
     "createdAt": "Created",
     "createTenant": "Create tenant",
     "deleteUser": "Delete user",
@@ -34,15 +35,12 @@
     "deleteUserError": "Could not delete the user.",
     "deleteUserWarning": "This permanently deletes {{email}} and revokes their access. It cannot be undone.",
     "demote": "Demote",
-    "demoteTooltip": "Demote to agent",
     "email": "Email",
     "filterByTenant": "Filter by tenant",
     "inviteUser": "Invite user",
     "lastLogin": "Last Login",
     "name": "Name",
     "noUsers": "No users found",
-    "promote": "Promote",
-    "promoteTooltip": "Promote to tenant admin",
     "removeSuperAdmin": "Remove super admin",
     "removeSuperAdminKeeps": "{{email}} stops administering the whole installation and keeps the access they already have:",
     "removeSuperAdminNoTenant": "{{email}} stops administering the whole installation. They belong to no tenant yet, so choose where they stay and with which role.",
@@ -3397,6 +3395,7 @@
       "pending": "The embedding credential was never filled in. Fill it under Components, then index again."
     },
     "emptyDesc": "Create one and ingest your FAQs, docs or product info.",
+    "emptyEditorDesc": "Ask a tenant administrator to create a knowledge base.",
     "emptyTitle": "No knowledge bases yet",
     "fileHint": "PDF, DOCX, TXT, MD, CSV",
     "fileLabel": "File",
@@ -3848,6 +3847,7 @@
       "redirectTo": "Redirects to",
       "scope": {
         "mcpAdmin": "Global administration (visual identity)",
+        "mcpEditor": "Edit agents and knowledge-base content on your behalf",
         "mcpRead": "Read your data (conversations, agents, settings)",
         "mcpWrite": "Change agent settings on your behalf"
       },
@@ -4436,6 +4436,7 @@
   },
   "role": {
     "agent": "Agent",
+    "editor": "Editor",
     "superAdmin": "Super admin",
     "tenantAdmin": "Tenant admin"
   },

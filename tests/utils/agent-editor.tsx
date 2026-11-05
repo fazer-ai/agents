@@ -69,7 +69,11 @@ export interface EditorStub {
 
 export function stubEditorApi(
   seed: EditorAgent,
-  opts: { catalog?: Record<string, unknown>; grants?: unknown[] } = {},
+  opts: {
+    catalog?: Record<string, unknown>;
+    grants?: unknown[];
+    userRole?: string;
+  } = {},
 ): EditorStub {
   // NOTE: every editor opens in a fresh tab: what another file left in storage (a tenant, a remembered
   // choice) would otherwise change what this one renders.
@@ -139,7 +143,19 @@ export function stubEditorApi(
       stub.writes.push({ method, path, body });
     const answered = stub.override?.(method, path, body);
     if (answered) return await answered;
-    if (path === "/api/auth/me") return json({ user: null });
+    if (path === "/api/auth/me") {
+      return json({
+        user: opts.userRole
+          ? {
+              id: "7",
+              email: "editor@example.com",
+              name: "Editor",
+              role: opts.userRole,
+              tenantId: "1",
+            }
+          : null,
+      });
+    }
     if (path === `/api/v1/agents/${id}/tool-selections`) {
       if (method === "PUT") replaceGrants(body.grants);
       return json(selection());

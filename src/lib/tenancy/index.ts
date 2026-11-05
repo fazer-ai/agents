@@ -8,7 +8,7 @@ import type { TenantContext } from "./context";
 
 // NOTE: re-exported so `@/lib/tenancy` stays the one server-side entry point; the rank
 // itself lives in the pure `@/lib/roles` shared with the client and CLI.
-export { isAdminRole, roleAtLeast } from "@/lib/roles";
+export { canEditAgentsRole, isAdminRole, roleAtLeast } from "@/lib/roles";
 export type { ScopedDb, TenantContext } from "./context";
 export {
   getTenantContext,

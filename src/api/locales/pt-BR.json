@@ -128,6 +128,7 @@
     "documentWhereBlock": "o bloco \"{{id}}\"",
     "documentWouldBeBlank": "Este documento sairia em branco: com os valores informados, nenhum bloco imprime nada.",
     "documentWouldBeBlankNoLetterhead": "Este documento sairia em branco: o timbre da empresa que ele imprimia não está mais configurado.",
+    "editorAgentScope": "Editores não podem alterar a ativação do agente, vínculos com recursos, credenciais ou endpoints.",
     "emailDomainNotAllowed": "Domínio de email não permitido",
     "emailInUse": "Email já está em uso",
     "embeddingEmpty": "A credencial de embedding está vazia.",

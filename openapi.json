@@ -3739,6 +3739,7 @@
                     "type": "string",
                     "enum": [
                       "AGENT",
+                      "EDITOR",
                       "TENANT_ADMIN"
                     ]
                   },
@@ -3764,6 +3765,7 @@
                     "type": "string",
                     "enum": [
                       "AGENT",
+                      "EDITOR",
                       "TENANT_ADMIN"
                     ]
                   },
@@ -3789,6 +3791,7 @@
                     "type": "string",
                     "enum": [
                       "AGENT",
+                      "EDITOR",
                       "TENANT_ADMIN"
                     ]
                   },
@@ -4588,6 +4591,7 @@
                     "type": "string",
                     "enum": [
                       "AGENT",
+                      "EDITOR",
                       "TENANT_ADMIN"
                     ]
                   },
@@ -4616,6 +4620,7 @@
                     "type": "string",
                     "enum": [
                       "AGENT",
+                      "EDITOR",
                       "TENANT_ADMIN"
                     ]
                   },
@@ -4644,6 +4649,7 @@
                     "type": "string",
                     "enum": [
                       "AGENT",
+                      "EDITOR",
                       "TENANT_ADMIN"
                     ]
                   },
@@ -55482,7 +55488,7 @@
                     "type": "string"
                   },
                   "scope": {
-                    "description": "Space-separated requested scopes (e.g. \"mcp:read mcp:write\"); intersected with the supported set.",
+                    "description": "Space-separated requested scopes (e.g. \"mcp:read mcp:editor\"); intersected with the supported set.",
                     "type": "string"
                   },
                   "grant_types": {
@@ -55528,7 +55534,7 @@
                     "type": "string"
                   },
                   "scope": {
-                    "description": "Space-separated requested scopes (e.g. \"mcp:read mcp:write\"); intersected with the supported set.",
+                    "description": "Space-separated requested scopes (e.g. \"mcp:read mcp:editor\"); intersected with the supported set.",
                     "type": "string"
                   },
                   "grant_types": {
@@ -55574,7 +55580,7 @@
                     "type": "string"
                   },
                   "scope": {
-                    "description": "Space-separated requested scopes (e.g. \"mcp:read mcp:write\"); intersected with the supported set.",
+                    "description": "Space-separated requested scopes (e.g. \"mcp:read mcp:editor\"); intersected with the supported set.",
                     "type": "string"
                   },
                   "grant_types": {

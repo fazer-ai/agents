@@ -1,4 +1,4 @@
-// Single source of truth for the role hierarchy: SUPER_ADMIN > TENANT_ADMIN > AGENT.
+// Single source of truth for the role hierarchy: SUPER_ADMIN > TENANT_ADMIN > EDITOR > AGENT.
 // Pure (only a type-only import, erased in the browser bundle) so server code, the React
 // client, and CLI scripts can all share it. Adding a new role here is the only place its
 // rank is defined; every gate compares by rank, never by an ad-hoc `!== "AGENT"`.
@@ -7,8 +7,9 @@ import type { UserRole } from "@/../generated/prisma/client";
 
 export const ROLE_RANK: Record<UserRole, number> = {
   AGENT: 1,
-  TENANT_ADMIN: 2,
-  SUPER_ADMIN: 3,
+  EDITOR: 2,
+  TENANT_ADMIN: 3,
+  SUPER_ADMIN: 4,
 };
 
 // Accepts a loose string (JWT/treaty values arrive as strings); an unknown role
@@ -23,4 +24,10 @@ export function roleAtLeast(
 // "admin" means any elevated role (tenant admin or fleet super admin).
 export function isAdminRole(role: string | null | undefined): boolean {
   return roleAtLeast(role, "TENANT_ADMIN");
+}
+
+// An editor manages existing agents and knowledge-base contents. Tenant administrators and fleet
+// administrators inherit that reach through the role hierarchy.
+export function canEditAgentsRole(role: string | null | undefined): boolean {
+  return roleAtLeast(role, "EDITOR");
 }

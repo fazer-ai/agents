@@ -15,6 +15,7 @@ import {
   assertAgentNotObserving,
   assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
+  assertAgentUpdateAllowedForRole,
   assertCredentialRefsUsable,
   assertDecisionActionArgsUsable,
   assertSchedulesExist,
@@ -72,6 +73,7 @@ import { dialableBaseUrl, readVaultRefFacts } from "@/modules/vault/service";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   diffFields,
+  editorGate,
   err,
   gate,
   ok,
@@ -209,7 +211,7 @@ export async function agentUpdate(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
@@ -236,6 +238,10 @@ export async function agentUpdate(
 
   try {
     const current = await getAgent(ctx, id, base);
+    assertAgentUpdateAllowedForRole(ctx, patch, false, {
+      modelConfig: current.modelConfig,
+      settings: current.settings,
+    });
     const keys = Object.keys(patch) as (keyof AgentUpdate)[];
     const beforeProj: Record<string, unknown> = {};
     const afterProj: Record<string, unknown> = {};

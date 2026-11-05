@@ -91,9 +91,9 @@ export function requireSessionUser(row: PersonRow): AuthUser {
   return user;
 }
 
-// Whether the person holds an administrative role anywhere: SUPER_ADMIN, or TENANT_ADMIN in at least
-// one tenant. Read where an account's power, not one membership's, is what matters (the Google-link
-// block in google.service.ts).
+// Whether the person holds an elevated role anywhere: SUPER_ADMIN, TENANT_ADMIN or EDITOR in at
+// least one tenant. Read where an account's power, not one membership's, is what matters (the
+// Google-link block in google.service.ts).
 export function isAdminAnywhere(row: {
   isSuperAdmin: boolean;
   memberships: readonly { role: UserRole }[];

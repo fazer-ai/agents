@@ -472,7 +472,7 @@ export const knowledgeController = new Elysia({
       };
     },
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Add text document",
         "Add a plain-text document to a knowledge base for embedding.",
@@ -520,7 +520,7 @@ export const knowledgeController = new Elysia({
       };
     },
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Upload document file",
         "Upload a file (e.g. PDF, DOCX, TXT), extract its text, and ingest it into a knowledge base.",
@@ -589,7 +589,7 @@ export const knowledgeController = new Elysia({
       };
     },
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Update document",
         "Edit a document's title and/or text. Changing either re-ingests and re-embeds it: the title is part of every chunk's vector.",
@@ -622,7 +622,7 @@ export const knowledgeController = new Elysia({
       return { instance: instanceIdentity, success: true };
     },
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Delete document",
         "Delete a document and its embeddings from the knowledge base.",
@@ -640,7 +640,7 @@ export const knowledgeController = new Elysia({
       return { instance: instanceIdentity, success: true };
     },
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Retry document ingestion",
         "Re-run ingestion and embedding for a document that previously failed.",
@@ -666,7 +666,7 @@ export const knowledgeController = new Elysia({
       return { instance: instanceIdentity, ...result };
     },
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Index pending knowledge-base documents",
         "Queue ingestion + embedding for every not-yet-indexed (UNINDEXED) document in the base, e.g. after importing an agent that bundled its documents. Pass includeFailed=true to also re-queue FAILED documents (bulk recovery), and includeIndexed=true to re-embed the documents already indexed too (a base indexed before document titles went into the vectors gets them this way). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and `blocked` explains why (the documents keep their status).",
@@ -816,7 +816,7 @@ export const knowledgeController = new Elysia({
       }),
     }),
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Requeue discarded suggestion",
         "Send a suggestion the reviewer discarded to the pending list, for a person to decide.",
@@ -840,7 +840,7 @@ export const knowledgeController = new Elysia({
       }),
     }),
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Edit pending approval",
         "Edit the title, content, or rationale of a pending knowledge-base suggestion before approving it.",
@@ -873,7 +873,7 @@ export const knowledgeController = new Elysia({
       }),
     }),
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Approve suggestion",
         "Approve a pending suggestion, committing the entry into its knowledge base. When the suggestion reviewer named a document to replace, approving replaces that document unless asNew is true; a replacement that can no longer be made answers outcome replace-unavailable and claims nothing.",
@@ -905,7 +905,7 @@ export const knowledgeController = new Elysia({
       }),
     }),
     {
-      requireRole: "TENANT_ADMIN",
+      requireRole: "EDITOR",
       detail: doc(
         "Reject suggestion",
         "Reject a pending suggestion so it is not added to the knowledge base. An optional reason is kept on the item and shown to the suggestion reviewer of later proposals; the audit line records the decision only.",

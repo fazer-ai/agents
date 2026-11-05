@@ -277,9 +277,12 @@ export const adminController = new Elysia({
         id: t.String({ description: "Target user id (BigInt string)." }),
       }),
       body: t.Object({
-        role: t.Union([t.Literal("AGENT"), t.Literal("TENANT_ADMIN")], {
-          description: "New role to assign to the user.",
-        }),
+        role: t.Union(
+          [t.Literal("AGENT"), t.Literal("EDITOR"), t.Literal("TENANT_ADMIN")],
+          {
+            description: "New role to assign to the user.",
+          },
+        ),
         tenantId: t.Optional(
           t.String({
             description:
@@ -448,7 +451,7 @@ export const adminController = new Elysia({
   )
   // Invite a user into a tenant. A SUPER_ADMIN targets one explicitly via body.tenantId (400 if
   // missing); a TENANT_ADMIN is FORCED to its own tenant (body.tenantId ignored). Role is
-  // AGENT|TENANT_ADMIN only.
+  // AGENT|EDITOR|TENANT_ADMIN only.
   .post(
     "/invitations",
     async ({ body, set, getAuthUser }) => {
@@ -503,9 +506,12 @@ export const adminController = new Elysia({
           maxLength: 254,
           description: "Email address to invite.",
         }),
-        role: t.Union([t.Literal("AGENT"), t.Literal("TENANT_ADMIN")], {
-          description: "Role granted to the invitee.",
-        }),
+        role: t.Union(
+          [t.Literal("AGENT"), t.Literal("EDITOR"), t.Literal("TENANT_ADMIN")],
+          {
+            description: "Role granted to the invitee.",
+          },
+        ),
         tenantId: t.Optional(
           t.String({
             description:

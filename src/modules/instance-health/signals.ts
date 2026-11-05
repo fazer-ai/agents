@@ -41,6 +41,8 @@ const LANE_DEFAULT_MS: Record<SchedulerLane, number> = {
   compaction: 600_000,
 };
 
+export const FOLLOWUP_SWEEP_SIGNAL = "followup_sweep_stalled_ms";
+
 export function schedulerQueueSignal(lane: SchedulerLane): string {
   return `scheduler_queue_age_ms:${lane}`;
 }
@@ -137,6 +139,17 @@ export const SIGNALS: readonly SignalDef[] = [
     name: "chatwoot_pending_oldest_ms",
     unit: "ms",
     defaultThreshold: 60_000,
+    defaultDurationSeconds: 0,
+    source: "database",
+  },
+  // How long the tenant whose follow-up sweep is furthest behind has gone without completing a pass
+  // (the per-tenant figures ride beside it, `followUpSweeps`). The sweep runs every minute, so ten
+  // minutes is ten passes missed: a sweep that died or keeps failing stops every follow-up of its
+  // tenant, which a production tenant once went seven hours without anybody seeing.
+  {
+    name: FOLLOWUP_SWEEP_SIGNAL,
+    unit: "ms",
+    defaultThreshold: 600_000,
     defaultDurationSeconds: 0,
     source: "database",
   },

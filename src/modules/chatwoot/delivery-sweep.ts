@@ -607,10 +607,14 @@ export async function sweepStrandedDeliveries(
   // message fills the oldest-first batch, and with the read budget settling only some of them per
   // pass, the message would wait pass after pass before its recovery is even armed.
   const stateEvents = [...CONVERSATION_STATE_EVENTS];
+  // As the fleet, with the tenant as an explicit filter: under the tenant policy `status` (an enum,
+  // not LEAKPROOF) stays above the security barrier, so the partial index of the open rows cannot be
+  // proven to apply and the read walks every row of the table (docs/tenancy.md).
   const strandedOf = (readBack: boolean) =>
-    runScopedOn(base, sysCtx(tenantId), (db) =>
+    asSuperAdminOn(base, (db) =>
       db.chatwootWebhookDelivery.findMany({
         where: {
+          tenantId,
           status: { in: ["PENDING", "PROCESSING"] },
           OR: [
             { claimedAt: { not: null, lt: cutoff } },

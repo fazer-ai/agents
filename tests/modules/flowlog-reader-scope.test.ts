@@ -226,6 +226,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // NOTE: Two reads, tenant-wide on purpose: their subject is HOW MANY lines a lost follow-up sequence wrote
   // (one) and a one-step ladder re-run wrote (none); each case empties this file's tenant first.
   "tests/modules/followup-sweep-later-step.test.ts": 2,
+  "tests/modules/followup-sweep-snoozed-isolated.test.ts": 1,
   "tests/modules/guardrail-health.test.ts": 1,
   "tests/modules/guardrail-observe.test.ts": 1,
   "tests/modules/guardrail-on-failure.test.ts": 1,
@@ -257,6 +258,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // NOTE: One reader, tenant-wide on purpose: its subject is HOW MANY lines a discarded outcome wrote, and
   // each case empties this file's tenant first.
   "tests/modules/scheduler-discard-announced.test.ts": 1,
+  "tests/modules/scheduler-never-dead.test.ts": 1,
   "tests/modules/snoozed-followup.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,

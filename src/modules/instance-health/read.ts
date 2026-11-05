@@ -12,6 +12,7 @@ import {
   snapshot,
 } from "./sampler";
 import {
+  FOLLOWUP_SWEEP_SIGNAL,
   schedulerDoneSignal,
   schedulerFailedSignal,
   schedulerStalledSignal,
@@ -54,6 +55,17 @@ export interface InstanceHealthDto {
   // overdue its oldest due job is (null with none due), how long that due work has gone without a
   // completion, and the reading of the three together.
   schedulerThroughput: Record<string, KindThroughputDto>;
+  // Every tenant's follow-up sweep, furthest behind first: how long since its last completed pass, and
+  // whether that is above the `followup_sweep_stalled_ms` threshold (the signal's value is the worst
+  // of these). Empty until the database half has answered.
+  followUpSweeps: FollowUpSweepDto[];
+}
+
+export interface FollowUpSweepDto {
+  tenantId: string;
+  tenantSlug: string;
+  sinceCompletedMs: number;
+  aboveThreshold: boolean;
 }
 
 export type KindThroughputState = "idle" | "draining" | "stuck" | "unknown";
@@ -118,6 +130,7 @@ export async function readInstanceHealth(
   const snap = snapshot(now);
   const firing = new Set(firingSignals());
   const byKey = new Map(thresholds.map((t) => [t.signal, t]));
+  const sweepLimit = byKey.get(FOLLOWUP_SWEEP_SIGNAL);
   return {
     sampleIntervalMs: SAMPLE_INTERVAL_MS,
     historyMs: HISTORY_MS,
@@ -144,6 +157,15 @@ export async function readInstanceHealth(
       ]),
     ),
     pools: snap.pools,
+    followUpSweeps: snap.followUpSweeps
+      .map((f) => ({
+        tenantId: f.tenantId,
+        tenantSlug: f.tenantSlug,
+        sinceCompletedMs: Math.round(f.sinceCompletedMs),
+        aboveThreshold:
+          sweepLimit !== undefined && f.sinceCompletedMs > sweepLimit.threshold,
+      }))
+      .sort((a, b) => b.sinceCompletedMs - a.sinceCompletedMs),
     schedulerThroughput: Object.fromEntries(
       THROUGHPUT_KINDS.map((kind) => {
         const value = (signal: string) =>

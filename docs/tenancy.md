@@ -89,6 +89,23 @@ yields NULL, which is not TRUE either). The `users`, `tenant_users` and `mcp_oau
 isolation there is by explicit `tenant_id` filtering + the `authorize()` gate (see
 [`admin.service.ts`](../src/api/features/admin/admin.service.ts)).
 
+### A scoped read cannot index an enum column
+
+Under `tenant_isolation` Postgres evaluates a user predicate below the policy only when every function
+in it is `LEAKPROOF`, and enum equality (`enum_eq`) is not. So in a scoped transaction `kind = 'X'` or
+`status = 'PENDING'` stays above the security barrier, as a `Filter`, and never reaches an index:
+`(tenant_id, kind, dedupe_key)` is walked across every kind of the tenant, and a partial index on
+`status` is not provably usable. `bigint` and `text` equality are leakproof and do reach the index, and
+the fleet role (`fleet_super_admin`, `USING (true)`) has no barrier to stay above. Measured on a
+production tenant (issue #1700): the snoozed follow-up selection took 43 ms as a superuser and
+8,429 ms as the app role, and the stranded-delivery drain 16 s with 6.9M rows removed by filter.
+
+Two consequences. Measure a scoped query **as the app role with `app.tenant_id` set**, never as the
+database owner, which bypasses the policy and shows the fast plan. And an index a scoped read depends
+on must not need the enum column: `scheduler_jobs (tenant_id, dedupe_key)` exists for this, and a
+system sweep that filters by an enum runs as the fleet with the tenant as an explicit filter
+(`drainStoredChatwootDeliveries`). `tests/modules/scoped-index-plans.test.ts` holds both.
+
 ## Roles & first-run
 
 `UserRole` is `SUPER_ADMIN | TENANT_ADMIN | AGENT`.

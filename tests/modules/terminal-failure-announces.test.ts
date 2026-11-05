@@ -254,7 +254,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
-      dedupeKey: "dk-356-exhaust",
+      dedupeKey: "dk-356-end",
       runAt: past(),
       base: appDb,
     });
@@ -284,7 +284,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(detail.unit).toBe("job");
     expect(detail.kind).toBe("WEBHOOK_RETRY");
     expect(detail.jobId).toBe(String(id));
-    expect(detail.dedupeKey).toBe("dk-356-exhaust");
+    expect(detail.dedupeKey).toBe("dk-356-end");
     expect(line.errorMessage).toContain("handler blew up");
   });
 
@@ -293,7 +293,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     const id = await enqueueJob({
       rearm: "same-work",
       tenantId,
-      kind: "FLOWLOG_SWEEP",
+      kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-356-reap",
       runAt: past(),
       base: appDb,
@@ -317,7 +317,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       unknown
     >;
     expect(detail.unit).toBe("job");
-    expect(detail.kind).toBe("FLOWLOG_SWEEP");
+    expect(detail.kind).toBe("WEBHOOK_RETRY");
     expect((rows[0] as (typeof rows)[number]).errorMessage).toContain(
       "the claim never finished",
     );
@@ -362,7 +362,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     const id = await enqueueJob({
       rearm: "same-work",
       tenantId,
-      kind: "FLOWLOG_SWEEP",
+      kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-356-rearmed",
       runAt: past(),
       base: appDb,
@@ -380,7 +380,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       appDb,
       new Date(),
       tenantId,
-      "FLOWLOG_SWEEP",
+      "WEBHOOK_RETRY",
     );
     expect(reaped.find((r) => r.id === id)?.status).toBe("DEAD");
     // The re-arm: `upsertJobRow` keys on (tenant, kind, dedupeKey), so a sweep arming this work
@@ -400,7 +400,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       const id = await enqueueJob({
         rearm: "same-work",
         tenantId,
-        kind: "HEARTBEAT",
+        kind: "WEBHOOK_RETRY",
         dedupeKey: `dk-356-batch-${k}`,
         runAt: past(),
         base: appDb,
@@ -416,7 +416,13 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       ids.push(id);
     }
     const reaped = (
-      await reapStaleJobs(5 * 60_000, appDb, new Date(), tenantId, "HEARTBEAT")
+      await reapStaleJobs(
+        5 * 60_000,
+        appDb,
+        new Date(),
+        tenantId,
+        "WEBHOOK_RETRY",
+      )
     ).filter((r) => ids.includes(r.id));
     expect(reaped).toHaveLength(2);
 
@@ -465,7 +471,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       rearm: "same-work",
       tenantId,
       kind: "INGEST_MESSAGE",
-      dedupeKey: "dk-356-generation",
+      dedupeKey: "dk-356-gen",
       runAt: past(),
       base: appDb,
     });

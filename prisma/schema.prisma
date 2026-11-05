@@ -2535,6 +2535,9 @@ model SchedulerJob {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, kind, dedupeKey])
+  // The lookup the scoped reads can use: under RLS `kind` (an enum) never reaches the unique index
+  // above, so a read by dedupe key walks every kind of the tenant (issue #1700).
+  @@index([tenantId, dedupeKey])
   @@index([status, runAt])
   @@map("scheduler_jobs")
 }

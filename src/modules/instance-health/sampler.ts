@@ -18,6 +18,7 @@ import { evaluateSample, judge } from "./evaluator";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { ingressLagP95 } from "./ingress";
 import {
+  FOLLOWUP_SWEEP_SIGNAL,
   POOL_NAMES,
   poolWaitersSignal,
   SIGNALS,
@@ -50,9 +51,18 @@ export interface SignalSnapshot {
   history: SamplePoint[];
 }
 
+// One tenant's follow-up sweep: how long since its last completed pass, in ms.
+export interface FollowUpSweepReading {
+  tenantId: string;
+  tenantSlug: string;
+  sinceCompletedMs: number;
+}
+
 export interface DatabaseReading {
   // Age in ms of the oldest due PENDING job, per kind; a kind with none is absent.
   kindAges: Partial<Record<SchedulerJobKind, number>>;
+  // Every tenant's follow-up sweep row. Absent in a test that does not exercise it.
+  followUpSweeps?: FollowUpSweepReading[];
   chatwootPendingOldestMs: number;
   // Debounce flushes due and not yet claimed.
   debounceWaiters?: number;
@@ -84,6 +94,7 @@ interface SamplerState {
   // The newest point per signal, kept past the hour the chart holds.
   last: Map<string, SamplePoint>;
   kindAges: Partial<Record<SchedulerJobKind, number>>;
+  followUpSweeps: FollowUpSweepReading[];
   // Each pool's last reading, for the card that shows in use, idle and the oldest wait.
   pools: Record<string, Omit<PoolStat, "name">>;
   ticks: number;
@@ -106,6 +117,7 @@ function state(): SamplerState {
     series: new Map(),
     last: new Map(),
     kindAges: {},
+    followUpSweeps: [],
     pools: {},
     ticks: 0,
     running: false,
@@ -121,6 +133,7 @@ export function resetSamplerState(): void {
   s.series = new Map();
   s.last = new Map();
   s.kindAges = {};
+  s.followUpSweeps = [];
   s.pools = {};
   s.running = false;
   s.databaseDue = false;
@@ -232,7 +245,12 @@ async function sampleDatabase(
     try {
       const db = await sources.readDatabase();
       s.kindAges = db.kindAges;
+      s.followUpSweeps = db.followUpSweeps ?? [];
       values.chatwoot_pending_oldest_ms = db.chatwootPendingOldestMs;
+      values[FOLLOWUP_SWEEP_SIGNAL] = Math.max(
+        0,
+        ...s.followUpSweeps.map((f) => f.sinceCompletedMs),
+      );
       values.debounce_waiters = db.debounceWaiters ?? 0;
       const lanes = laneAgesOf(db.kindAges);
       for (const [lane, age] of Object.entries(lanes)) {
@@ -296,6 +314,7 @@ export function tick(sources: SamplerSources): Promise<void> | null {
 export function snapshot(now: number = Date.now()): {
   signals: SignalSnapshot[];
   schedulerKinds: Partial<Record<SchedulerJobKind, number>>;
+  followUpSweeps: FollowUpSweepReading[];
   pools: Record<string, Omit<PoolStat, "name">>;
   firstTickAt: number | null;
 } {
@@ -317,6 +336,7 @@ export function snapshot(now: number = Date.now()): {
       };
     }),
     schedulerKinds: { ...s.kindAges },
+    followUpSweeps: [...s.followUpSweeps],
     pools: { ...s.pools },
     firstTickAt: s.firstTickAt,
   };
@@ -340,12 +360,32 @@ export async function readDatabaseSignals(
       SELECT count(*)::int AS n
         FROM scheduler_jobs
        WHERE kind = 'DEBOUNCE' AND status = 'PENDING' AND run_at <= now()`;
+    // The pass's own completion stamp (../followups/handlers.ts writes `completedAt` on every pass that
+    // finishes); a row from before the stamp existed counts from its last write when that write was
+    // not a failure, else from its creation. A DEAD row is never completing.
+    const sweeps = await db.$queryRaw<
+      { tenant_id: string; slug: string; since_ms: number }[]
+    >`
+      SELECT j.tenant_id::text AS tenant_id, t.slug,
+             (extract(epoch FROM now() - COALESCE(
+                CASE WHEN jsonb_typeof(j.payload->'completedAt') = 'number'
+                     THEN to_timestamp((j.payload->>'completedAt')::float8 / 1000) AT TIME ZONE 'UTC' END,
+                CASE WHEN j.last_error IS NULL AND j.status <> 'DEAD' THEN j.updated_at END,
+                j.created_at)) * 1000)::float8 AS since_ms
+        FROM scheduler_jobs j
+        JOIN tenants t ON t.id = j.tenant_id
+       WHERE j.kind = 'FOLLOWUP_SWEEP'`;
     const kindAges: Partial<Record<SchedulerJobKind, number>> = {};
     for (const k of kinds) {
       kindAges[k.kind as SchedulerJobKind] = Math.max(0, Number(k.age_ms));
     }
     return {
       kindAges,
+      followUpSweeps: sweeps.map((r) => ({
+        tenantId: r.tenant_id,
+        tenantSlug: r.slug,
+        sinceCompletedMs: Math.max(0, Number(r.since_ms)),
+      })),
       chatwootPendingOldestMs: Math.max(0, Number(pending?.age_ms ?? 0)),
       debounceWaiters: Number(debounce?.n ?? 0),
     };

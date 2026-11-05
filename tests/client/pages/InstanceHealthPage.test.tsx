@@ -88,6 +88,8 @@ const EXTRA = {
 let withExtra = false;
 // One kind deleted on DONE, with its three signals and its reading.
 let withKind = false;
+// The follow-up sweep signal, with one tenant above its threshold and one below.
+let withSweep = false;
 let puts: { path: string; body: unknown }[] = [];
 const kindSignal = (
   signal: string,
@@ -209,6 +211,7 @@ beforeEach(() => {
   channelPending = false;
   withExtra = false;
   withKind = false;
+  withSweep = false;
   kindReading = DRAINING;
   kindRateFiring = false;
   kindStallStale = false;
@@ -304,6 +307,41 @@ beforeEach(() => {
                 ? { ...x, value: null, at: null, stale: true, history: [] }
                 : x,
             ),
+          },
+        });
+      }
+      if (withSweep) {
+        return json({
+          ...HEALTH,
+          health: {
+            ...HEALTH.health,
+            followUpSweeps: [
+              {
+                tenantId: "2",
+                tenantSlug: "stuck-tenant",
+                sinceCompletedMs: 7_200_000,
+                aboveThreshold: true,
+              },
+              {
+                tenantId: "1",
+                tenantSlug: "fresh-tenant",
+                sinceCompletedMs: 30_000,
+                aboveThreshold: false,
+              },
+            ],
+            signals: [
+              ...signals,
+              {
+                ...kindSignal(
+                  "followup_sweep_stalled_ms",
+                  "ms",
+                  7_200_000,
+                  600_000,
+                  true,
+                ),
+                firing: true,
+              },
+            ],
           },
         });
       }
@@ -777,6 +815,31 @@ describe("instance health screen", () => {
       Boolean(screen.queryByText(/^HEARTBEAT 7\.1 min · FOLLOWUP \S+ min$/)),
     ).toBe(true);
     expect(Boolean(screen.queryByText(/DEBOUNCE/))).toBe(false);
+  });
+
+  test("the follow-up sweep card names each tenant and marks the one above the threshold (catches a dead sweep shown without its tenant)", async () => {
+    withSweep = true;
+    render(
+      <MemoryRouter initialEntries={["/admin/instance-health"]}>
+        <ThemeProvider>
+          <TooltipProvider>
+            <ToastProvider>
+              <NavGuardProvider>
+                <InstanceHealthPage pollMs={20} />
+              </NavGuardProvider>
+            </ToastProvider>
+          </TooltipProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText("Follow-up sweep without a completed pass");
+    expect(
+      Boolean(
+        screen.queryByText(
+          "stuck-tenant 120.0 min (above) · fresh-tenant 30.0 s",
+        ),
+      ),
+    ).toBe(true);
   });
 
   test("a rate's threshold is labelled per minute, not in milliseconds (catches an editor that misstates what the number controls)", async () => {

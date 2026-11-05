@@ -37,6 +37,7 @@ import {
   readSelectionState,
   selectOpenMessages,
 } from "@/modules/debounce/watermark";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
@@ -44,6 +45,7 @@ import {
   isFollowUpLive,
   ourSideHasSpoken,
 } from "@/modules/followups/eligibility";
+import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import {
   type ClaimedJob,
   enqueueJob,
@@ -103,9 +105,15 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-async function sweepHandler(
+// Test seam: the snoozed selection, so a test can make it fail on its own.
+export interface SweepSeams {
+  sweepSnoozed?: typeof sweepSnoozedFollowUps;
+}
+
+export async function followUpSweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
+  seams: SweepSeams = {},
 ): Promise<JobResult> {
   const tenantId = job.tenantId;
 
@@ -126,7 +134,18 @@ async function sweepHandler(
   const snoozedAgentIds = agents
     .filter((a) => readSnoozedFollowUpConfig(a.settings).enabled)
     .map((a) => a.id);
-  await sweepSnoozedFollowUps(base, tenantId, snoozedAgentIds);
+  // Its own transaction and its own failure: a snoozed selection that times out on every pass must
+  // not take the inactivity follow-ups of every inbox down with it.
+  const snoozedFailures = await sweepSnoozedOrCount(
+    job,
+    base,
+    tenantId,
+    snoozedAgentIds,
+    seams.sweepSnoozed ?? sweepSnoozedFollowUps,
+  );
+  // What the next pass reads: when this one completed (the instance health signal, ../instance-health),
+  // and how many passes in a row the snoozed selection has failed.
+  const passPayload = { completedAt: Date.now(), snoozedFailures };
   // The sweep only ever STARTS a sequence (step 0), so its cutoff is the minimum FIRST-step delay
   // across enabled agents. Later steps are scheduled precisely by the handler, not the sweep.
   const enabledDelays = configs
@@ -138,6 +157,7 @@ async function sweepHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
+      payload: passPayload,
     };
   }
   const cutoffMin = Math.min(...enabledDelays);
@@ -159,38 +179,92 @@ async function sweepHandler(
       ({ cfg }) => cfg.enabled && !appointmentPauseApplies(cfg, cfg.steps[0]),
     )
     .map(({ id }) => id);
-  // -1 stands in for the empty set. Prisma.join refuses an empty list, and an agent id is a
-  // positive bigint, so the sentinel can never match a row — `<> ALL` then holds for everyone,
-  // which is what "nobody is exempt" has to mean.
-  const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
-    unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
-  )}]::bigint[]`;
   // Only agents whose follow-up is ON are swept: `follow_up_armed_at` is never cleared on the
   // way OFF, so the SQL alone would keep re-arming dropped jobs into the LIMIT. Same `cfg.enabled`
   // as the cutoff above; never empty here, thanks to the early return.
   const followUpAgentIds = configs
     .filter(({ cfg }) => cfg.enabled)
     .map(({ id }) => id);
-  const followUpIdsSql = Prisma.sql`ARRAY[${Prisma.join(followUpAgentIds)}]::bigint[]`;
 
   // Column-to-column comparison (lastInboundAt > lastFollowUpAt) requires raw SQL;
   // Prisma's query builder cannot express it. The filter mirrors the handler's watermark gate
   // so ineligible conversations are excluded before even enqueuing a FOLLOWUP job. The JOIN onto
   // the inbox's agent also drops conversations whose agent is in TEST mode but not yet activated
   // with /teste (isTestSilenced) — a silenced conversation must never get a proactive follow-up.
-  const threads = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    (db) =>
-      db.$queryRaw<
-        Array<{
-          thread_id: string;
-          agent_updated_at: Date;
-          hours_updated_at: Date | null;
-          other_episode: boolean;
-          episode: string;
-        }>
-      >`
+  const threads = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.$queryRaw<
+      Array<{
+        thread_id: string;
+        agent_updated_at: Date;
+        hours_updated_at: Date | null;
+        other_episode: boolean;
+        episode: string;
+      }>
+    >(
+      followUpSweepSelectionSql({
+        tenantId,
+        followUpAgentIds,
+        unfencedAgentIds,
+        cutoff,
+        now,
+      }),
+    ),
+  );
+  for (const t of threads) {
+    // NOTE: Never over a CLAIMED row. Step 0 stays eligible until it stamps, after its
+    // model call, and a pass inside that window superseded the run: its reschedule to the next step
+    // was discarded and the ladder never reached the step that labels and resolves. The run in
+    // flight IS the episode this arm would start.
+    await enqueueJobUnlessClaimed({
+      tenantId,
+      kind: "FOLLOWUP",
+      dedupeKey: `followup:${t.thread_id}`,
+      runAt: new Date(),
+      // NOTE: A CLOCK arms this: a re-arm of the same episode keeps its retry budget, or a failing
+      // follow-up would get fresh attempts every minute forever. A row of an earlier episode is new
+      // work, or its spent budget would dead-letter this episode on the first transient failure.
+      rearm: t.other_episode ? "new-work" : "same-work",
+      payload: { threadId: t.thread_id, episode: t.episode },
+      // NOTE: Nor over a run its handler deferred on purpose (backoff, business hours, cadence), or
+      // it would run every minute. Only a STEP-0 deferral of THIS episode, and only while the
+      // configuration version it was computed from still holds; anything else is re-armed.
+      leaveLaterRun: (row) =>
+        isDeferralOfThisEpisode(
+          row,
+          t.episode,
+          followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
+        ),
+      // NOTE: The sweep's own eligibility, asked again at the write: the batch is read before any of
+      // it is armed, and a step 0 that ran meanwhile stamped the episode (ended or moved it on).
+      stillWanted: (db) => episodeStillUnstamped(db, tenantId, t.thread_id),
+      base,
+    });
+  }
+  return {
+    outcome: "reschedule",
+    runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
+    payload: passPayload,
+  };
+}
+
+// The main sweep's selection, as the statement it runs, so a test can read the plan the database
+// gives it under the tenant policy (tests/modules/scoped-index-plans.test.ts).
+export function followUpSweepSelectionSql(args: {
+  tenantId: bigint;
+  followUpAgentIds: bigint[];
+  unfencedAgentIds: bigint[];
+  cutoff: Date;
+  now: Date;
+}): Prisma.Sql {
+  const { tenantId, followUpAgentIds, unfencedAgentIds, cutoff, now } = args;
+  // -1 stands in for the empty set. Prisma.join refuses an empty list, and an agent id is a
+  // positive bigint, so the sentinel can never match a row — `<> ALL` then holds for everyone,
+  // which is what "nobody is exempt" has to mean.
+  const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
+    unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
+  )}]::bigint[]`;
+  const followUpIdsSql = Prisma.sql`ARRAY[${Prisma.join(followUpAgentIds)}]::bigint[]`;
+  return Prisma.sql`
       SELECT c.thread_id,
              a.updated_at AS agent_updated_at,
              h.updated_at AS hours_updated_at,
@@ -287,6 +361,9 @@ async function sweepHandler(
                        = (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
                    ELSE j.updated_at >= GREATEST(c.last_inbound_at, c.last_replied_at)
                  END
+          -- A correlated lookup by the (tenant_id, dedupe_key) index, not an anti-join over every job
+          -- of the tenant (see the same fence in ./snoozed.ts).
+          OFFSET 0
         )
         -- Activation fence: only conversations that became LIVE after follow-up was armed for this
         -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition and re-stamped
@@ -359,42 +436,50 @@ async function sweepHandler(
           )
         )
       LIMIT 500
-    `,
-  );
-  for (const t of threads) {
-    // NOTE: Never over a CLAIMED row. Step 0 stays eligible until it stamps, after its
-    // model call, and a pass inside that window superseded the run: its reschedule to the next step
-    // was discarded and the ladder never reached the step that labels and resolves. The run in
-    // flight IS the episode this arm would start.
-    await enqueueJobUnlessClaimed({
-      tenantId,
-      kind: "FOLLOWUP",
-      dedupeKey: `followup:${t.thread_id}`,
-      runAt: new Date(),
-      // NOTE: A CLOCK arms this: a re-arm of the same episode keeps its retry budget, or a failing
-      // follow-up would get fresh attempts every minute forever. A row of an earlier episode is new
-      // work, or its spent budget would dead-letter this episode on the first transient failure.
-      rearm: t.other_episode ? "new-work" : "same-work",
-      payload: { threadId: t.thread_id, episode: t.episode },
-      // NOTE: Nor over a run its handler deferred on purpose (backoff, business hours, cadence), or
-      // it would run every minute. Only a STEP-0 deferral of THIS episode, and only while the
-      // configuration version it was computed from still holds; anything else is re-armed.
-      leaveLaterRun: (row) =>
-        isDeferralOfThisEpisode(
-          row,
-          t.episode,
-          followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
-        ),
-      // NOTE: The sweep's own eligibility, asked again at the write: the batch is read before any of
-      // it is armed, and a step 0 that ran meanwhile stamped the episode (ended or moved it on).
-      stillWanted: (db) => episodeStillUnstamped(db, tenantId, t.thread_id),
-      base,
-    });
+  `;
+}
+
+// Passes in a row whose snoozed selection failed before it is announced, as a job's retry budget is.
+const SNOOZED_FAILURES_ANNOUNCED = 5;
+
+// Runs the snoozed selection and returns how many passes in a row it has now failed (0 on success).
+// A failure is logged every time and announced on the dead-letter stage once it has repeated
+// SNOOZED_FAILURES_ANNOUNCED times, at the level of the follow-ups it stops arming.
+async function sweepSnoozedOrCount(
+  job: ClaimedJob,
+  base: PrismaClient,
+  tenantId: bigint,
+  agentIds: bigint[],
+  sweepSnoozed: typeof sweepSnoozedFollowUps,
+): Promise<number> {
+  try {
+    await sweepSnoozed(base, tenantId, agentIds);
+    return 0;
+  } catch (err) {
+    const before = job.payload.snoozedFailures;
+    const failures = (typeof before === "number" ? before : 0) + 1;
+    const error = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { err, tenantId: String(tenantId), failures },
+      "followUpSweep: the snoozed selection failed; inactivity follow-ups still run this pass",
+    );
+    if (failures >= SNOOZED_FAILURES_ANNOUNCED) {
+      emitDeadLetter({
+        tenantId,
+        unit: "job",
+        level: JOB_DEATH_LEVEL.SNOOZED_FOLLOWUP,
+        error: `FOLLOWUP_SWEEP keeps failing to select snoozed conversations: no new snoozed follow-up will be armed for this tenant until it succeeds. Cause: ${error}`,
+        detail: {
+          kind: "FOLLOWUP_SWEEP",
+          jobId: String(job.id),
+          part: "snoozed",
+          retrying: true,
+        },
+        base,
+      });
+    }
+    return failures;
   }
-  return {
-    outcome: "reschedule",
-    runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
-  };
 }
 
 // The sweep's "not yet followed up in this episode", read from the conversation row. The same
@@ -1292,7 +1377,9 @@ export async function followUpHandler(
 let registered = false;
 export function registerFollowUpHandlers(): void {
   if (registered) return;
-  registerJobHandler("FOLLOWUP_SWEEP", sweepHandler);
+  registerJobHandler("FOLLOWUP_SWEEP", (job, base) =>
+    followUpSweepHandler(job, base),
+  );
   // NOTE: wrapped, because the handler's third parameter is a test seam and not the JobContext.
   registerJobHandler("FOLLOWUP", (job, base, ctx) =>
     followUpHandler(job, base, undefined, ctx),

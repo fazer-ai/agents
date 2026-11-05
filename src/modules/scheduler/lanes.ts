@@ -533,6 +533,96 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   SNOOZED_FOLLOWUP: "error",
 };
 
+// What a kind's death costs, in the words the operator reads on the dead-letter line and in its
+// alert, ahead of the raw error: a bare "statement timeout" reads as noise while a tenant's follow-ups
+// have stopped. Exhaustive, so a new kind does not compile until someone writes what losing it means.
+export const JOB_DEATH_CONSEQUENCE: Record<SchedulerJobKind, string> = {
+  FOLLOWUP: "this conversation's inactivity follow-up will not be sent",
+  FOLLOWUP_SWEEP:
+    "no new follow-up will be armed for this tenant until the sweep runs again",
+  WEBHOOK_RETRY: "a subscriber's outbound webhook events stop being retried",
+  DEBOUNCE: "a customer's message burst will not be answered",
+  RAG_INGEST: "a knowledge document stays unindexed with no way to retry it",
+  HEARTBEAT: "outbound webhook heartbeats stop",
+  FLOWLOG_SWEEP: "flow log retention stops and the table grows without bound",
+  APPOINTMENT_REMINDER: "the customer will not be reminded of the appointment",
+  REDIRECT_FOLLOWUP: "the channel redirect follow-up will not be sent",
+  MEMORY_COMPACT: "this attendance's memory summary is lost",
+  OTHER_INBOX_SUMMARY:
+    "the other-inbox summary stays empty until the next turn arms it again",
+  INGEST_MESSAGE: "a customer message will never reach the agent",
+  INGEST_FALLBACK: "a customer message will never reach the agent",
+  DELIVERY_SWEEP: "stranded Chatwoot deliveries stop being recovered",
+  RECONCILE_SWEEP: "conversation state stops being reconciled with Chatwoot",
+  DELIVERY_RECOVERY: "the automatic second attempt at a delivery is gone",
+  TAKEOVER_RECOVERY:
+    "a conversation a person answered may stay pending on the bot",
+  HUMAN_REPLY_RECOVERY: "the second attempt at appending a human reply is gone",
+  SPEND_CEILING_POLL:
+    "the spend ceiling keeps deciding on the last figure it polled",
+  OCCURRENCE_ROUND: "an occurrence monitor round did not run",
+  OCCURRENCE_SWEEP: "occurrence monitors stop being swept",
+  OBSERVE: "a conversation's labels were not refreshed",
+  MEDIA_TEXT_FALLBACK:
+    "the text standing in for a lost customer reply was lost too",
+  KNOWLEDGE_SOURCE_SYNC: "the knowledge source keeps its last synced content",
+  INBOUND_SWEEP: "stranded inbound events stop being retried",
+  INBOUND_REDISPATCH: "an accepted inbound event will never be processed",
+  NOTHING_TO_ANSWER: "a pending conversation stays with nobody on it",
+  SUGGESTION_REVIEW: "the suggestion goes to the pending list unreviewed",
+  CLIENT_ANON_SWEEP: "expired anonymous client sessions stop being cleared",
+  DOCUMENT_APPROVAL_EXPIRY: "an overdue approval request keeps its old status",
+  DOCUMENT_APPROVAL_OUTCOME:
+    "the customer will not be told the approval decision",
+  SNOOZED_FOLLOWUP: "this snoozed conversation's follow-up will not be sent",
+};
+
+// Kinds that must never stay DEAD: one row per tenant that reschedules itself forever, whose death
+// stops a whole class of work for the tenant and that only a restart could revive, and then with the
+// budget already spent. Past the budget such a row backs off and keeps announcing each
+// failure instead (./service.ts `failJob`, ./worker.ts). True for every kind armed as one fixed
+// dedupe key per tenant (or per monitor) with `rearm: "same-work"` that reschedules itself on every
+// pass; false for a unit of work, which must still die or it retries without end, and for a sweep that
+// spends a provider per run (OCCURRENCE_ROUND), whose retry every few minutes would bill forever.
+export const JOB_NEVER_DEAD: Record<SchedulerJobKind, boolean> = {
+  FOLLOWUP: false,
+  FOLLOWUP_SWEEP: true,
+  WEBHOOK_RETRY: false,
+  DEBOUNCE: false,
+  RAG_INGEST: false,
+  HEARTBEAT: true,
+  FLOWLOG_SWEEP: true,
+  APPOINTMENT_REMINDER: false,
+  REDIRECT_FOLLOWUP: false,
+  MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
+  INGEST_MESSAGE: false,
+  INGEST_FALLBACK: false,
+  DELIVERY_SWEEP: true,
+  RECONCILE_SWEEP: true,
+  DELIVERY_RECOVERY: false,
+  TAKEOVER_RECOVERY: false,
+  HUMAN_REPLY_RECOVERY: false,
+  SPEND_CEILING_POLL: true,
+  OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: true,
+  OBSERVE: false,
+  MEDIA_TEXT_FALLBACK: false,
+  KNOWLEDGE_SOURCE_SYNC: false,
+  INBOUND_SWEEP: true,
+  INBOUND_REDISPATCH: false,
+  NOTHING_TO_ANSWER: false,
+  SUGGESTION_REVIEW: false,
+  CLIENT_ANON_SWEEP: true,
+  DOCUMENT_APPROVAL_EXPIRY: false,
+  DOCUMENT_APPROVAL_OUTCOME: false,
+  SNOOZED_FOLLOWUP: false,
+};
+
+// The longest a never-dead kind waits between attempts once past its budget: long enough not to
+// hammer whatever is failing, short enough that the work resumes within minutes of the cause going.
+export const NEVER_DEAD_MAX_BACKOFF_MS = 5 * 60_000;
+
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
 // job gets four backoffs, each between half and all of `base * 2^attempt`: 37 seconds in all at the
 // 2s base, enough for a blip. The recovery family uses one minute (about 18 minutes in all): each is

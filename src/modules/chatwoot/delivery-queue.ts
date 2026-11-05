@@ -7,7 +7,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { withKeyedQueue } from "@/lib/locks";
 import { runInPoolClass } from "@/lib/pool-class";
 import { isDraining, trackWork } from "@/lib/shutdown";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { asSuperAdminOn } from "@/lib/tenancy";
 import { normalizeChatwootEvent } from "./normalize";
 import { handToRecovery, processRecordedChatwootDelivery } from "./webhook";
 
@@ -230,10 +230,6 @@ export function queueOverflowHandoff(handoff: () => Promise<unknown>): boolean {
   return true;
 }
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 export interface DrainStoredParams {
   base?: PrismaClient;
   // One tenant (the sweep's pass) or every tenant (boot).
@@ -259,10 +255,14 @@ export async function drainStoredChatwootDeliveries(
   );
   const ceiling = new Date(now - STORED_DELIVERY_MAX_AGE_MS);
   const batch = params.batch ?? DRAIN_BATCH;
+  // As the fleet, with the tenant as an explicit filter, and never under the tenant policy: there
+  // `status = 'PENDING'` (an enum, not LEAKPROOF) stays above the security barrier, so no index can use
+  // it, and the strands read walked the primary key over every row (16 s on 6.9M rows, measured in
+  // production). Every row read here carries its own tenantId into what it hands on.
+  const scope =
+    params.tenantId === undefined ? {} : { tenantId: params.tenantId };
   const run = <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) =>
-    params.tenantId === undefined
-      ? asSuperAdminOn(base, fn)
-      : runScopedOn(base, sysCtx(params.tenantId), fn);
+    asSuperAdminOn(base, fn);
 
   // The body leaves every row that will not be processed from it: one that left PENDING by a road that
   // does not clear it, and one past the ceiling. Both statements read the partial index of the rows
@@ -270,6 +270,7 @@ export async function drainStoredChatwootDeliveries(
   const { count: cleared } = await run((db) =>
     db.chatwootWebhookDelivery.updateMany({
       where: {
+        ...scope,
         payload: { not: null },
         OR: [{ status: { not: "PENDING" } }, { receivedAt: { lte: ceiling } }],
       },
@@ -285,6 +286,7 @@ export async function drainStoredChatwootDeliveries(
   const strands = await run((db) =>
     db.chatwootWebhookDelivery.findMany({
       where: {
+        ...scope,
         status: "PENDING",
         payload: null,
         conversationId: { not: null },
@@ -333,6 +335,7 @@ export async function drainStoredChatwootDeliveries(
       ? { conversationId: { not: null }, inboundMessageId: { not: null } }
       : { OR: [{ conversationId: null }, { inboundMessageId: null }] };
   const pending = (lane: AdmissionLane, id: Prisma.BigIntFilter) => ({
+    ...scope,
     status: "PENDING" as const,
     payload: { not: null },
     receivedAt: { lte: youngest },

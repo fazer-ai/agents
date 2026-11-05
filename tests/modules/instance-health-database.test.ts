@@ -34,6 +34,7 @@ import {
 import {
   capturePlan,
   flushStatementTimeouts,
+  plannableBody,
   statementFingerprint,
   unplannableReason,
 } from "@/modules/instance-health/database/timeouts";
@@ -1054,6 +1055,42 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     );
     expect(unplannableReason("VACUUM conversations")).not.toBeNull();
     expect(unplannableReason("SELECT 1;")).toBeNull();
+  });
+
+  test("a semicolon inside a comment or a quoted text does not make a second statement", () => {
+    // The shape of the follow-up sweep: one SELECT whose comment carries a `;`.
+    const sweep =
+      "SELECT id -- parseStartMs in JS; the rest stays in SQL\n  FROM conversations /* a; b /* nested; */ */ WHERE note = 'a;b' AND tag = \"x;y\" AND body = $q$c;d$q$;";
+    expect(plannableBody(sweep)).toEqual({
+      body: sweep.slice(0, -1),
+    });
+    expect(unplannableReason("-- leading note\nSELECT 1")).toBeNull();
+    expect(unplannableReason("SELECT E'it\\'s'; DELETE FROM x")).toBe(
+      "more than one statement",
+    );
+    expect(unplannableReason("SELECT 1; -- done")).toBeNull();
+    expect(unplannableReason("SELECT 'open")).toBe(
+      "an unterminated comment or quote",
+    );
+    // A keyword inside a comment does not make a statement plannable.
+    expect(unplannableReason("/* SELECT */ VACUUM x")).not.toBeNull();
+  });
+
+  test("a statement with a semicolon in its comment is planned like any other", async () => {
+    const planned = await capturePlan(
+      {
+        sql: 'SELECT "id" FROM "agents" -- the start time is parsed in JS; not here\n WHERE "name" = $1;',
+        tenantId: "1",
+        fleet: false,
+      },
+      appDb,
+    );
+    expect("plan" in planned ? planned.plan : planned.error).toContain(
+      "agents",
+    );
+    expect("plannedAs" in planned ? planned.plannedAs : "").toBe(
+      "application role, tenant 1",
+    );
   });
 
   test("three timeouts of one statement are three records and one plan", async () => {

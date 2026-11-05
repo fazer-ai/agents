@@ -40,16 +40,92 @@ export function statementFingerprint(sql: string): string {
     .slice(0, 32);
 }
 
-// Why a statement cannot be planned, or null when it can. Only one statement, and only the kinds
-// EXPLAIN plans: the text comes from this process's own driver, but a plan is still run on the
-// sampler's connection, so anything else is refused rather than trusted.
-export function unplannableReason(sql: string): string | null {
-  const body = sql.trim().replace(/;\s*$/, "");
-  if (body.includes(";")) return "more than one statement";
-  if (!/^(SELECT|WITH|UPDATE|INSERT|DELETE)\b/i.test(body)) {
-    return "not a SELECT, WITH, INSERT, UPDATE or DELETE";
+// The statement with its comments and quoted text blanked out, the same length, so a `;` or a keyword
+// is only ever read where Postgres would read it: never inside `-- …`, `/* … */` (nested), '…'
+// (with '' and E'\\' escapes), "…" or $tag$…$tag$. Null when a comment or a quote is left open.
+export function sqlCode(sql: string): string | null {
+  const out = sql.split("");
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    const next = sql[i + 1];
+    if (c === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      const stop = end === -1 ? sql.length : end;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "/" && next === "*") {
+      let depth = 1;
+      let k = i + 2;
+      while (k < sql.length && depth > 0) {
+        if (sql[k] === "/" && sql[k + 1] === "*") {
+          depth++;
+          k += 2;
+        } else if (sql[k] === "*" && sql[k + 1] === "/") {
+          depth--;
+          k += 2;
+        } else k++;
+      }
+      if (depth > 0) return null;
+      blank(i, k);
+      i = k;
+    } else if (c === "'" || c === '"') {
+      const escapes = c === "'" && /[eE]/.test(sql[i - 1] ?? "");
+      let k = i + 1;
+      let closed = false;
+      while (k < sql.length) {
+        if (escapes && sql[k] === "\\") k += 2;
+        else if (sql[k] === c && sql[k + 1] === c) k += 2;
+        else if (sql[k] === c) {
+          closed = true;
+          k++;
+          break;
+        } else k++;
+      }
+      if (!closed) return null;
+      blank(i, k);
+      i = k;
+    } else if (c === "$") {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (!tag) {
+        i++;
+        continue;
+      }
+      const end = sql.indexOf(tag[0], i + tag[0].length);
+      if (end === -1) return null;
+      blank(i, end + tag[0].length);
+      i = end + tag[0].length;
+    } else i++;
   }
-  return null;
+  return out.join("");
+}
+
+// What EXPLAIN is given: the one statement, without the `;` that may end it (and whatever comment
+// follows that `;`), or why it cannot be planned. Only one statement, and only the kinds EXPLAIN
+// plans: the text comes from this process's own driver, but a plan is still run on the sampler's
+// connection, so anything else is refused rather than trusted.
+export function plannableBody(
+  sql: string,
+): { body: string } | { error: string } {
+  const code = sqlCode(sql);
+  if (code === null) return { error: "an unterminated comment or quote" };
+  let end = code.trimEnd().length;
+  if (code[end - 1] === ";") end--;
+  if (code.slice(0, end).includes(";")) {
+    return { error: "more than one statement" };
+  }
+  if (!/^\s*(SELECT|WITH|UPDATE|INSERT|DELETE)\b/i.test(code)) {
+    return { error: "not a SELECT, WITH, INSERT, UPDATE or DELETE" };
+  }
+  return { body: sql.slice(0, end).trim() };
+}
+
+export function unplannableReason(sql: string): string | null {
+  const planned = plannableBody(sql);
+  return "error" in planned ? planned.error : null;
 }
 
 export function plannedAsOf(ev: {
@@ -69,8 +145,8 @@ export async function capturePlan(
   base: PrismaClient = instanceHealthPrisma,
   budget: TxBudget = PLAN_BUDGET,
 ): Promise<{ plan: string; plannedAs: string } | { error: string }> {
-  const refused = unplannableReason(ev.sql);
-  if (refused) return { error: refused };
+  const planned = plannableBody(ev.sql);
+  if ("error" in planned) return planned;
   // The plan is taken on the application database; a checkpointer on another one would explain a
   // statement against relations that are not there, or that are someone else's.
   if (
@@ -82,7 +158,7 @@ export async function capturePlan(
         "ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken",
     };
   }
-  const body = ev.sql.trim().replace(/;\s*$/, "");
+  const { body } = planned;
   // "Planned as" is read back from the transaction that planned, not restated from the event: the
   // record says which role and tenant Postgres actually applied.
   const explain = async (db: ScopedDb) => {

@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -243,6 +243,50 @@ export interface DrainStoredParams {
   deps?: RuntimeDeps;
 }
 
+interface DrainStrand {
+  id: bigint;
+  tenantId: bigint;
+  chatwootInstanceId: bigint;
+  event: string;
+  conversationId: number | null;
+  inboundMessageId: number | null;
+}
+
+// The strands read, written as SQL so `status = 'PENDING'` is a literal: the partial index of the open
+// rows (`chatwoot_webhook_deliveries_sweep_idx`, `WHERE status IN ('PENDING','PROCESSING')`) is usable
+// only when the planner can prove its predicate, and a parameter cast to the enum, which is what the
+// client sends, proves nothing even outside the tenant policy. Exported for the plan test.
+export function drainStrandsSql(p: {
+  tenantId: bigint | undefined;
+  youngest: Date;
+  ceiling: Date;
+  held: bigint[];
+  batch: number;
+}): Prisma.Sql {
+  const tenant =
+    p.tenantId === undefined
+      ? Prisma.empty
+      : Prisma.sql`AND tenant_id = ${p.tenantId}`;
+  const notHeld =
+    p.held.length > 0
+      ? Prisma.sql`AND id NOT IN (${Prisma.join(p.held)})`
+      : Prisma.empty;
+  return Prisma.sql`
+    SELECT id, tenant_id AS "tenantId", chatwoot_instance_id AS "chatwootInstanceId", event,
+           conversation_id AS "conversationId", inbound_message_id AS "inboundMessageId"
+      FROM chatwoot_webhook_deliveries
+     WHERE status = 'PENDING'
+       AND payload IS NULL
+       AND conversation_id IS NOT NULL
+       AND inbound_message_id IS NOT NULL
+       AND received_at <= ${p.youngest}
+       AND received_at > ${p.ceiling}
+       ${tenant}
+       ${notHeld}
+     ORDER BY received_at, id
+     LIMIT ${p.batch}`;
+}
+
 // One pass over the rows nothing here holds: customer messages to the recovery, stored events into the
 // queue from their body, and the bodies that will not be processed cleared.
 export async function drainStoredChatwootDeliveries(
@@ -284,27 +328,15 @@ export async function drainStoredChatwootDeliveries(
   // attempt that threw before its claim. Read by the sweep's partial index of PENDING rows.
   let recovered = 0;
   const strands = await run((db) =>
-    db.chatwootWebhookDelivery.findMany({
-      where: {
-        ...scope,
-        status: "PENDING",
-        payload: null,
-        conversationId: { not: null },
-        inboundMessageId: { not: null },
-        receivedAt: { lte: youngest, gt: ceiling },
-        ...(held.length > 0 ? { id: { notIn: held } } : {}),
-      },
-      orderBy: { id: "asc" },
-      take: batch,
-      select: {
-        id: true,
-        tenantId: true,
-        chatwootInstanceId: true,
-        event: true,
-        conversationId: true,
-        inboundMessageId: true,
-      },
-    }),
+    db.$queryRaw<DrainStrand[]>(
+      drainStrandsSql({
+        tenantId: params.tenantId,
+        youngest,
+        ceiling,
+        held,
+        batch,
+      }),
+    ),
   );
   for (const row of strands) {
     const handed = await handToRecovery(base, {

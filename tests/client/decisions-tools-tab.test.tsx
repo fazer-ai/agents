@@ -158,7 +158,9 @@ function stubAuth() {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/auth/me")) {
-      return json({ user: { id: "1", email: "a@b.c", role: "ADMIN" } });
+      return json({
+        user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" },
+      });
     }
     return json({ accounts: [], agents: [], teams: [] });
   }) as typeof fetch;

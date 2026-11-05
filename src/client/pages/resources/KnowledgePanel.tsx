@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button, Card, DataBoundary, EmptyState } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { isAdminRole } from "@/client/lib/roles";
 import { KnowledgeApprovals } from "./KnowledgeApprovals";
 import { useResourcesContext } from "./ResourcesContext";
 import { type Base, useKnowledgeManager } from "./useKnowledgeManager";
@@ -11,7 +12,7 @@ import { type Base, useKnowledgeManager } from "./useKnowledgeManager";
 export function KnowledgePanel() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const isAdmin = user?.role !== "EDITOR";
+  const isAdmin = isAdminRole(user?.role);
   const { setApprovalsCount } = useResourcesContext();
   const [bases, setBases] = useState<Base[]>([]);
   const [loading, setLoading] = useState(true);

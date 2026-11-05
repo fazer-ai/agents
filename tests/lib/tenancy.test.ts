@@ -36,6 +36,7 @@ describe("role hierarchy", () => {
     expect(isAdminRole("TENANT_ADMIN")).toBe(true);
     expect(isAdminRole("EDITOR")).toBe(false);
     expect(isAdminRole("AGENT")).toBe(false);
+    expect(isAdminRole("ADMIN")).toBe(false);
     expect(isAdminRole(null)).toBe(false);
   });
 

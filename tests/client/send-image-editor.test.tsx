@@ -246,7 +246,7 @@ function renderCard(opts: {
 }) {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const body = String(input).includes("/api/auth/me")
-      ? { user: { id: "1", email: "a@b.c", role: "ADMIN" } }
+      ? { user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" } }
       : {};
     return new Response(JSON.stringify(body), {
       status: 200,

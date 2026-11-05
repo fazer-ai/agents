@@ -3,6 +3,7 @@ import type { AuthUser } from "@/api/lib/auth";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
 import { emailEquals } from "@/lib/email-match";
+import { roleAtLeast } from "@/lib/roles";
 import { asSuperAdmin, runScoped } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 
@@ -98,7 +99,10 @@ export function isAdminAnywhere(row: {
   isSuperAdmin: boolean;
   memberships: readonly { role: UserRole }[];
 }): boolean {
-  return row.isSuperAdmin || row.memberships.some((m) => m.role !== "AGENT");
+  return (
+    row.isSuperAdmin ||
+    row.memberships.some((membership) => roleAtLeast(membership.role, "EDITOR"))
+  );
 }
 
 export async function getUserByEmail(email: string) {

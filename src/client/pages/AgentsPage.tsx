@@ -36,6 +36,7 @@ import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { providerLabel } from "@/client/lib/providerLabels";
+import { isAdminRole } from "@/client/lib/roles";
 import { formatDateTime, formatRelativeTime } from "@/client/lib/utils";
 import { CALL_LLMS, readCallsConfig } from "@/modules/voice-call/settings";
 
@@ -57,8 +58,7 @@ type AgentKind = "text" | "voice";
 export function AgentsPage() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
-  // AGENT cannot reach this route. Only EDITOR needs the lifecycle actions removed here.
-  const isAdmin = user?.role !== "EDITOR";
+  const isAdmin = isAdminRole(user?.role);
   const { showToast } = useToast();
   const navigate = useNavigate();
   const createModal = useModalController();

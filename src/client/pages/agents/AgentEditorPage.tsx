@@ -75,6 +75,7 @@ import {
   settlesRefusal,
 } from "@/client/lib/fieldRefusal";
 import { importWarningMessage } from "@/client/lib/importWarningMessage";
+import { isAdminRole } from "@/client/lib/roles";
 import { serverNowDate } from "@/client/lib/serverClock";
 import { afterTrapRelease } from "@/client/lib/unsavedGuard";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
@@ -853,9 +854,7 @@ export function AgentEditorPage() {
 function AgentEditor() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
-  // The route already excludes AGENT. Keep the editor component's restriction specific to the new
-  // role so direct component tests and future elevated roles retain the administrator surface.
-  const canAdminister = user?.role !== "EDITOR";
+  const canAdminister = isAdminRole(user?.role);
   const { showToast } = useToast();
   const navigate = useNavigate();
   const { id = "", tab: tabParam } = useParams();

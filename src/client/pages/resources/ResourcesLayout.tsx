@@ -16,6 +16,7 @@ import { Navigate, NavLink, Outlet, useLocation } from "react-router";
 import { PageContainer } from "@/client/components";
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { isAdminRole } from "@/client/lib/roles";
 import { cn } from "@/client/lib/utils";
 import { ResourcesContext } from "./ResourcesContext";
 
@@ -70,7 +71,7 @@ export function ResourcesLayout() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const location = useLocation();
-  const isAdmin = user?.role !== "EDITOR";
+  const isAdmin = isAdminRole(user?.role);
   // The pending-suggestions count is owned by the shared ApprovalsProvider (it also feeds the sidebar
   // badge), so the Knowledge tab badge and the approval queue stay in sync with it.
   const {
@@ -150,7 +151,7 @@ export function ResourcesIndex() {
   const { user } = useAuth();
   return (
     <Navigate
-      to={user?.role === "EDITOR" ? "/resources/knowledge" : "/resources/tools"}
+      to={isAdminRole(user?.role) ? "/resources/tools" : "/resources/knowledge"}
       replace
     />
   );

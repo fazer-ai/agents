@@ -517,9 +517,8 @@ const BARE_SLICES: Record<
   // The tabs whose header row is read in one batch: a list of tabs, never text.
   // The database screen's top lists: arrays of statement and table rows, capped at a count.
   "src/modules/instance-health/database/read.ts": [4, "array"],
-  // A statement's fingerprint: a sha256 hex digest; and the statement cut before its closing `;`,
-  // found by scanning the same text, so every cut lands on an ASCII `;` or after trailing whitespace.
-  "src/modules/instance-health/database/timeouts.ts": [3, "ascii"],
+  // A statement's fingerprint: a sha256 hex digest, so the cut cannot land inside a surrogate pair.
+  "src/modules/instance-health/database/timeouts.ts": [1, "ascii"],
   "src/modules/integrations/google-sheets.service.ts": [1, "array"],
   // The rows a find scans: a list of rows. Cell text is cut through `clipText`.
   "src/modules/integrations/toolpacks/google-sheets.ts": [1, "array"],

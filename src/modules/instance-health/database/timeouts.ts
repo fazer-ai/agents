@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
+import { postgresCodeOf } from "@/lib/pg-error";
 import {
   drainStatementTimeouts,
   requeueStatementTimeouts,
@@ -40,96 +41,23 @@ export function statementFingerprint(sql: string): string {
     .slice(0, 32);
 }
 
-// The statement with its comments and quoted text blanked out, the same length, so a `;` or a keyword
-// is only ever read where Postgres would read it: never inside `-- …`, `/* … */` (nested), '…'
-// (with '' and E'\\' escapes), "…" or $tag$…$tag$. Null when a comment or a quote is left open.
-const QUOTED = "\u0001";
+// The bind of the single-statement check below supplies one value, so it fails with this SQLSTATE
+// (protocol_violation, "bind message supplies 1 parameters, but prepared statement requires N")
+// whenever the statement has another number of parameters: the parse, which is the check, passed.
+const BIND_COUNT_SQLSTATE = "08P01";
 
-export function sqlCode(sql: string): string | null {
-  const out = sql.split("");
-  // A comment is whitespace to Postgres; a quoted span is a token, so it is masked with a character
-  // that is neither whitespace nor `;` (the statement's end is never read before it).
-  const blank = (from: number, to: number, mask = " ") => {
-    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = mask;
-  };
-  let i = 0;
-  while (i < sql.length) {
-    const c = sql[i];
-    const next = sql[i + 1];
-    if (c === "-" && next === "-") {
-      const end = sql.indexOf("\n", i);
-      const stop = end === -1 ? sql.length : end;
-      blank(i, stop);
-      i = stop;
-    } else if (c === "/" && next === "*") {
-      let depth = 1;
-      let k = i + 2;
-      while (k < sql.length && depth > 0) {
-        if (sql[k] === "/" && sql[k + 1] === "*") {
-          depth++;
-          k += 2;
-        } else if (sql[k] === "*" && sql[k + 1] === "/") {
-          depth--;
-          k += 2;
-        } else k++;
-      }
-      if (depth > 0) return null;
-      blank(i, k);
-      i = k;
-    } else if (c === "'" || c === '"') {
-      const escapes = c === "'" && /[eE]/.test(sql[i - 1] ?? "");
-      let k = i + 1;
-      let closed = false;
-      while (k < sql.length) {
-        if (escapes && sql[k] === "\\") k += 2;
-        else if (sql[k] === c && sql[k + 1] === c) k += 2;
-        else if (sql[k] === c) {
-          closed = true;
-          k++;
-          break;
-        } else k++;
-      }
-      if (!closed) return null;
-      blank(i, k, QUOTED);
-      i = k;
-    } else if (c === "$") {
-      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
-      if (!tag) {
-        i++;
-        continue;
-      }
-      const end = sql.indexOf(tag[0], i + tag[0].length);
-      if (end === -1) return null;
-      blank(i, end + tag[0].length, QUOTED);
-      i = end + tag[0].length;
-    } else i++;
+// Whether Postgres reads `text` as ONE statement, asked of Postgres: sent through the extended
+// protocol (a bound value forces it), a second command is refused at Parse ("cannot insert multiple
+// commands into a prepared statement", 42601) by the server's own parser, which knows comments,
+// quoted text and dollar quotes. What EXPLAIN does not accept fails there too. The bind then either
+// fails on the parameter count or runs an EXPLAIN without ANALYZE, which executes nothing. Its own
+// transaction: the bind's error aborts the one it runs in.
+async function checkOneStatement(db: ScopedDb, text: string): Promise<void> {
+  try {
+    await db.$queryRawUnsafe(text, null);
+  } catch (err) {
+    if (postgresCodeOf(err) !== BIND_COUNT_SQLSTATE) throw err;
   }
-  return out.join("");
-}
-
-// What EXPLAIN is given: the one statement, without the `;` that may end it (and whatever comment
-// follows that `;`), or why it cannot be planned. Only one statement, and only the kinds EXPLAIN
-// plans: the text comes from this process's own driver, but a plan is still run on the sampler's
-// connection, so anything else is refused rather than trusted.
-export function plannableBody(
-  sql: string,
-): { body: string } | { error: string } {
-  const code = sqlCode(sql);
-  if (code === null) return { error: "an unterminated comment or quote" };
-  let end = code.trimEnd().length;
-  if (code[end - 1] === ";") end--;
-  if (code.slice(0, end).includes(";")) {
-    return { error: "more than one statement" };
-  }
-  if (!/^\s*(SELECT|WITH|UPDATE|INSERT|DELETE)\b/i.test(code)) {
-    return { error: "not a SELECT, WITH, INSERT, UPDATE or DELETE" };
-  }
-  return { body: sql.slice(0, end).trim() };
-}
-
-export function unplannableReason(sql: string): string | null {
-  const planned = plannableBody(sql);
-  return "error" in planned ? planned.error : null;
 }
 
 export function plannedAsOf(ev: {
@@ -149,8 +77,6 @@ export async function capturePlan(
   base: PrismaClient = instanceHealthPrisma,
   budget: TxBudget = PLAN_BUDGET,
 ): Promise<{ plan: string; plannedAs: string } | { error: string }> {
-  const planned = plannableBody(ev.sql);
-  if ("error" in planned) return planned;
   // The plan is taken on the application database; a checkpointer on another one would explain a
   // statement against relations that are not there, or that are someone else's.
   if (
@@ -162,7 +88,7 @@ export async function capturePlan(
         "ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken",
     };
   }
-  const { body } = planned;
+  const text = `EXPLAIN (GENERIC_PLAN) ${ev.sql}`;
   // "Planned as" is read back from the transaction that planned, not restated from the event: the
   // record says which role and tenant Postgres actually applied.
   const explain = async (db: ScopedDb) => {
@@ -173,9 +99,9 @@ export async function capturePlan(
       throw new Error("EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16 or later");
     }
     await db.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
-    const rows = await db.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(
-      `EXPLAIN (GENERIC_PLAN) ${body}`,
-    );
+    // Without values, so the parameters stay `$N` and the plan is the generic one; the text was
+    // already read as one statement by the server in the check before.
+    const rows = await db.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(text);
     const [scope] = await db.$queryRaw<
       { tenant: string | null; acting: boolean }[]
     >`SELECT NULLIF(current_setting('app.tenant_id', true), '') AS tenant,
@@ -191,12 +117,17 @@ export async function capturePlan(
   try {
     // The scope the statement's transaction was opened under (src/lib/db-scope.ts).
     const tenantId = parseDbId(ev.tenantId);
-    const planned = ev.fleet
-      ? await fleetWithin(base, budget, explain)
-      : tenantId !== null
-        ? await scopedWithin(base, tenantId, budget, explain)
-        : await plainWithin(base, budget, explain);
-    return planned;
+    const inScope = <T>(fn: (db: ScopedDb) => Promise<T>) =>
+      ev.fleet
+        ? fleetWithin(base, budget, fn)
+        : tenantId !== null
+          ? scopedWithin(base, tenantId, budget, fn)
+          : plainWithin(base, budget, fn);
+    await inScope(async (db) => {
+      await db.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
+      await checkOneStatement(db, text);
+    });
+    return await inScope(explain);
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

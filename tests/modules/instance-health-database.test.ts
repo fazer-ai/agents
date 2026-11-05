@@ -1,12 +1,13 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import {
   drainStatementTimeouts,
   resetStatementTimeouts,
 } from "@/lib/pool-stats";
 import { asSuperAdminOn, DeadlinePassedError } from "@/lib/tenancy";
+import { registerFollowUpHandlers } from "@/modules/followups/handlers";
 import { fleetWithin } from "@/modules/instance-health/database/budget";
 import {
   isOwnStatement,
@@ -34,9 +35,7 @@ import {
 import {
   capturePlan,
   flushStatementTimeouts,
-  plannableBody,
   statementFingerprint,
-  unplannableReason,
 } from "@/modules/instance-health/database/timeouts";
 import {
   setSignalDetail,
@@ -48,7 +47,10 @@ import {
   type SamplerSources,
   sampleOnce,
 } from "@/modules/instance-health/sampler";
+import { getJobHandler } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // The database screen against a real database (docs/logs.md, "Database"): the deltas a snapshot writes
 // (with resets), the window sums over them, the plan captured under the scope a statement ran in, one plan per
@@ -1049,62 +1051,136 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect(await suDb.dbStatSnapshotRun.count()).toBe(1);
   });
 
-  test("what is not one plannable statement is refused before anything runs", () => {
-    expect(unplannableReason("SELECT 1; DROP TABLE x")).toBe(
-      "more than one statement",
-    );
-    expect(unplannableReason("VACUUM conversations")).not.toBeNull();
-    expect(unplannableReason("SELECT 1;")).toBeNull();
-  });
-
-  test("a semicolon inside a comment or a quoted text does not make a second statement", () => {
-    // The shape of the follow-up sweep: one SELECT whose comment carries a `;`.
-    const sweep =
-      "SELECT id -- parseStartMs in JS; the rest stays in SQL\n  FROM conversations /* a; b /* nested; */ */ WHERE note = 'a;b' AND tag = \"x;y\" AND body = $q$c;d$q$;";
-    expect(plannableBody(sweep)).toEqual({
-      body: sweep.slice(0, -1),
-    });
-    expect(unplannableReason("-- leading note\nSELECT 1")).toBeNull();
-    expect(unplannableReason("SELECT E'it\\'s'; DELETE FROM x")).toBe(
-      "more than one statement",
-    );
-    expect(unplannableReason("SELECT 1; -- done")).toBeNull();
-    // A statement that ends in a quoted token keeps it: the quote is a token, not whitespace.
-    expect(plannableBody('SELECT * FROM "agents"')).toEqual({
-      body: 'SELECT * FROM "agents"',
-    });
+  test("whether a text is one statement is the server's call: comments, quotes and dollar quotes pass, two statements do not", async () => {
+    const plan = async (sql: string) => {
+      const out = await capturePlan(
+        { sql, tenantId: "1", fleet: false },
+        appDb,
+      );
+      return "plan" in out ? `plan: ${out.plan}` : `error: ${out.error}`;
+    };
+    // A `;` inside a string literal, a quoted identifier and a dollar-quoted body.
     expect(
-      plannableBody("UPDATE x SET a = 1 RETURNING \"id\", 'done';  -- end"),
-    ).toEqual({ body: "UPDATE x SET a = 1 RETURNING \"id\", 'done'" });
-    expect(plannableBody("SELECT $$a;b$$")).toEqual({ body: "SELECT $$a;b$$" });
-    expect(unplannableReason("SELECT 'open")).toBe(
-      "an unterminated comment or quote",
-    );
-    // A keyword inside a comment does not make a statement plannable.
-    expect(unplannableReason("/* SELECT */ VACUUM x")).not.toBeNull();
+      await plan(
+        `SELECT id, 'a;b' AS "x;y", $q$c;d$q$ AS z FROM "agents" WHERE "name" = $1`,
+      ),
+    ).toContain("plan: ");
+    // Ending in a quoted identifier with no `;`, and ending in `;` plus a comment.
+    expect(await plan('SELECT "id" FROM "agents"')).toContain("agents");
+    expect(await plan("SELECT 1; -- done")).toContain("plan: ");
+    // Two statements: refused by the server's parser before anything runs.
+    expect(
+      await plan('SELECT 1; DELETE FROM "agents" WHERE "name" = $1'),
+    ).toContain("cannot insert multiple commands");
+    // What EXPLAIN does not take is the server's syntax error, and nothing ran.
+    expect(await plan("VACUUM conversations")).toContain("error: ");
   });
 
-  test("a statement with a semicolon in its comment is planned like any other", async () => {
-    const planned = await capturePlan(
-      {
-        sql: 'SELECT "id" FROM "agents" -- the start time is parsed in JS; not here\n WHERE "name" = $1;',
-        tenantId: "1",
-        fleet: false,
-      },
-      appDb,
-    );
-    expect("plan" in planned ? planned.plan : planned.error).toContain(
-      "agents",
-    );
-    expect("plannedAs" in planned ? planned.plannedAs : "").toBe(
-      "application role, tenant 1",
-    );
-    // Ending in a quoted identifier, with no `;`: the identifier stays in what EXPLAIN gets.
-    const quoted = await capturePlan(
-      { sql: 'SELECT "id" FROM "agents"', tenantId: "1", fleet: false },
-      appDb,
-    );
-    expect("plan" in quoted ? quoted.plan : quoted.error).toContain("agents");
+  test("the follow-up sweep's own query, whose comment carries a `;`, is planned", async () => {
+    // The query as the sweep sends it, captured from the handler itself: every `$queryRaw` of its
+    // scoped transactions is recorded, and the one on `follow_up_armed_at` is the sweep's.
+    const t = await suDb.tenant.create({
+      data: { name: "DB1701", slug: `db1701-${process.pid}` },
+    });
+    try {
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId: t.id,
+        accountId: 5,
+      });
+      const agent = await suDb.agent.create({
+        data: {
+          tenantId: t.id,
+          name: "Atendente",
+          systemPrompt: "x",
+          followUpArmedAt: new Date(Date.now() - 86_400_000),
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+          settings: {
+            followUp: {
+              enabled: true,
+              steps: [
+                { delayValue: 1, delayUnit: "minutes", instructions: "a" },
+              ],
+            },
+          },
+        },
+      });
+      await suDb.inbox.create({
+        data: {
+          tenantId: t.id,
+          chatwootInstanceId: inst.id,
+          chatwootInboxId: 17_011,
+          name: "Suporte",
+          agentId: agent.id,
+          channelType: "Channel::Api",
+        },
+      });
+      const seen: string[] = [];
+      const record = <D extends object>(tx: D): D =>
+        new Proxy(tx, {
+          get(target, prop, receiver) {
+            const v = Reflect.get(target, prop, receiver);
+            if (prop !== "$queryRaw") return v;
+            return (strings: TemplateStringsArray, ...values: unknown[]) => {
+              seen.push(Prisma.sql(strings, ...values).text);
+              return (v as (...a: unknown[]) => unknown).call(
+                target,
+                strings,
+                ...values,
+              );
+            };
+          },
+        });
+      const wrap = (client: PrismaClient): PrismaClient =>
+        new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "$extends") {
+              return (ext: never) => wrap(target.$extends(ext) as never);
+            }
+            if (prop === "$transaction") {
+              return (fn: (tx: unknown) => Promise<unknown>, opts: unknown) =>
+                target.$transaction(
+                  (tx) => fn(record(tx as object)),
+                  opts as never,
+                );
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      registerFollowUpHandlers();
+      const sweep = getJobHandler("FOLLOWUP_SWEEP");
+      const jobId = await burnSchedulerJobId(suDb);
+      await sweep?.(
+        {
+          id: jobId,
+          tenantId: t.id,
+          kind: "FOLLOWUP_SWEEP",
+          payload: {},
+          attempts: 0,
+          claimSeq: 0,
+        },
+        wrap(appDb),
+      );
+      const sql = seen.find((q) => q.includes("follow_up_armed_at"));
+      expect(sql).toContain("parseStartMs in JS;");
+      const out = await capturePlan(
+        { sql: sql as string, tenantId: String(t.id), fleet: false },
+        appDb,
+      );
+      expect("plan" in out ? out.plan : out.error).toContain("conversations");
+    } finally {
+      for (const table of [
+        "scheduler_jobs",
+        "inboxes",
+        "agents",
+        "chatwoot_instances",
+        "chatwoot_deployments",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${t.id}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${t.id}`);
+    }
   });
 
   test("three timeouts of one statement are three records and one plan", async () => {

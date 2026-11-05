@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { followUpSweepHandler } from "@/modules/followups/handlers";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -151,6 +152,27 @@ describe.skipIf(!dbUp)("the snoozed selection fails on its own", () => {
       },
     });
     expect(armed).toBe(1);
+  });
+
+  test("the failure log does not carry a credential the error echoed", async () => {
+    // Assembled at run time so no scanner reads the fixture as a real key.
+    const key = ["sk", "A1b2C3d4E5f6G7h8J9k0"].join("-");
+    const warn = spyOn(logger, "warn");
+    try {
+      await followUpSweepHandler(job({}), appDb, {
+        sweepSnoozed: async () => {
+          throw new Error(`upstream echoed ${key}`);
+        },
+      });
+      // An Error stringifies to `{}`; the logger writes its message and stack, so they are read here too.
+      const logged = JSON.stringify(warn.mock.calls, (_k, v) =>
+        v instanceof Error ? { message: v.message, stack: v.stack } : v,
+      );
+      expect(logged).toContain("the snoozed selection failed");
+      expect(logged).not.toContain(key);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("the failures in a row are announced once they reach five, and a success clears them", async () => {

@@ -7,6 +7,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { type PoolClass, runInPoolClass } from "@/lib/pool-class";
 import { failsUntilAccountFixed } from "@/lib/provider-failure";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
@@ -319,7 +320,9 @@ async function fail(
         kind: job.kind,
         jobId: String(job.id),
         attempt: job.attempts + 1,
-        error,
+        // A handler's error can echo a credential (a provider's body, an Authorization header), and
+        // the logger redacts nothing on its own.
+        error: sanitizeErrorMessage(error),
       },
       "scheduler: job failed",
     );

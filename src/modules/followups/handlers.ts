@@ -5,6 +5,7 @@ import { isTurnInFlight } from "@/graph/inflight";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -460,7 +461,11 @@ async function sweepSnoozedOrCount(
     const failures = (typeof before === "number" ? before : 0) + 1;
     const error = err instanceof Error ? err.message : String(err);
     logger.warn(
-      { err, tenantId: String(tenantId), failures },
+      {
+        error: sanitizeErrorMessage(err),
+        tenantId: String(tenantId),
+        failures,
+      },
       "followUpSweep: the snoozed selection failed; inactivity follow-ups still run this pass",
     );
     if (failures >= SNOOZED_FAILURES_ANNOUNCED) {

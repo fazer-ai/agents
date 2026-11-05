@@ -384,6 +384,8 @@ const GUARD_CALLS: Record<string, number> = {
   // The body of an alert and of a rate alert, each a line posted to the channel.
   "src/modules/flowlog/alerts.ts": 2,
   "src/modules/flowlog/service.ts": 2,
+  // The snoozed selection's failure, before it reaches the log.
+  "src/modules/followups/handlers.ts": 1,
   // A step's model call that failed, and a step whose model could not be resolved, before either
   // reason reaches `occurrence_runs.detail.skipped`.
   "src/modules/occurrences/model.ts": 2,
@@ -396,6 +398,8 @@ const GUARD_CALLS: Record<string, number> = {
   // The third reads it back: a run past its deadline takes its row back only while the row still
   // carries the failure that deadline wrote, compared in the form `failJob` stored it.
   "src/modules/scheduler/service.ts": 3,
+  // A job's failure, before it reaches the log.
+  "src/modules/scheduler/worker.ts": 1,
   // The ledger read's error text, before it reaches `poll_error`.
   "src/modules/spend-ceiling/poll.ts": 1,
   // The line the retry loop writes for a retry it announced and could not start.

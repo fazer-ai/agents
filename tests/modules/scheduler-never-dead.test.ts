@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import {
   JOB_DEATH_CONSEQUENCE,
   JOB_NEVER_DEAD,
@@ -187,6 +188,33 @@ describe.skipIf(!dbUp)("a never-dead sweep", () => {
     expect(lines[0]?.errorMessage).toBe(
       `FOLLOWUP died: ${JOB_DEATH_CONSEQUENCE.FOLLOWUP}. Cause: ${BOOM}`,
     );
+  });
+
+  test("the failure log does not carry a credential the handler's error echoed", async () => {
+    // Assembled at run time so no scanner reads the fixture as a real key.
+    const key = ["sk", "A1b2C3d4E5f6G7h8J9k0"].join("-");
+    await enqueueJob({
+      tenantId,
+      kind: "FOLLOWUP_SWEEP",
+      dedupeKey: "sweep-log",
+      runAt: new Date(),
+      rearm: "same-work",
+      base: appDb,
+    });
+    const warn = spyOn(logger, "warn");
+    try {
+      await runOnce("FOLLOWUP_SWEEP", "sweep-log", async () => {
+        throw new Error(`provider said 401 for ${key}`);
+      });
+      // An Error stringifies to `{}`; the logger writes its message and stack, so they are read here too.
+      const logged = JSON.stringify(warn.mock.calls, (_k, v) =>
+        v instanceof Error ? { message: v.message, stack: v.stack } : v,
+      );
+      expect(logged).toContain("scheduler: job failed");
+      expect(logged).not.toContain(key);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("the reaper does not dead-letter a crash loop of a never-dead kind, and announces it", async () => {

@@ -5,6 +5,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import logger from "@/api/lib/logger";
 import { AppError } from "@/lib/errors";
 import { ChatAnthropicCacheSplit } from "./anthropic-cache-split";
+import { thinkingBindingFetch } from "./anthropic-thinking-binding";
 import { toGeminiTools } from "./gemini-tools";
 import type { ModelConfig } from "./model-config";
 import {
@@ -265,15 +266,19 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
       // type accepts `timeout` and the built instance leaves it undefined.
       const clientOptions = {
         ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
-        // Anthropic caches only what the request marks (./prompt-cache).
-        ...(cache ? { fetch: promptCacheFetch(cache, "anthropic") } : {}),
+        // Anthropic caches only what the request marks (./prompt-cache), and a replayed thinking
+        // block bound to an older prefix is dropped instead of failing the turn
+        // (./anthropic-thinking-binding).
+        fetch: thinkingBindingFetch(
+          cache ? promptCacheFetch(cache, "anthropic") : undefined,
+        ),
       };
       // The subclass keeps the 1-hour cache writes apart in the usage (./anthropic-cache-split).
       return new ChatAnthropicCacheSplit({
         model,
         apiKey,
         ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
-        ...(Object.keys(clientOptions).length > 0 ? { clientOptions } : {}),
+        clientOptions,
       });
     }
     case "google": {

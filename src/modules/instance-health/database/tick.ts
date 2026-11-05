@@ -40,11 +40,15 @@ export async function databaseScreenTick(
   } catch (err) {
     logger.warn({ err }, "database screen: statement timeouts not stored");
   }
+  // A failed read must not look like a fresh value: it is rethrown after the rest of the tick ran,
+  // so the sampler records no point and the signal ages to stale (docs/logs.md, instance health).
+  let failure: unknown = null;
   let took = false;
   try {
     took = await snapshotIfDue(base, now);
   } catch (err) {
     logger.warn({ err }, "database screen: snapshot failed");
+    failure = err;
   }
   if (took || s.drift === null) {
     // Unknown until this process's first snapshot, which after a restart can be minutes away: the
@@ -60,6 +64,9 @@ export async function databaseScreenTick(
         );
       } catch (err) {
         logger.warn({ err }, "database screen: drift not computed");
+        // Recomputed on the next tick instead of serving the last value as if it were new.
+        s.drift = null;
+        failure ??= err;
       }
     } else {
       // Nothing to measure without the extension: the signal reads 0 and names nothing.
@@ -67,5 +74,6 @@ export async function databaseScreenTick(
       setSignalDetail(DRIFT_SIGNAL, null);
     }
   }
+  if (failure !== null) throw failure;
   return s.drift ?? 0;
 }

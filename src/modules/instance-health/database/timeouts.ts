@@ -133,6 +133,9 @@ export async function capturePlan(
 // of events, and one EXPLAIN (up to PLAN_TIMEOUT_MS). What does not fit waits for the next tick.
 export const FLUSH_MAX_EVENTS = 50;
 const FLUSH_MAX_PLANS = 1;
+// Ticks an event may fail to be stored before it is given up on.
+const MAX_STORE_ATTEMPTS = 3;
+const failedAttempts = new WeakMap<StatementTimeoutEvent, number>();
 
 // Stores what this process captured since the last call, and plans the first occurrence of each
 // statement in the window. An event whose plan does not fit this call goes back to the queue, with
@@ -148,7 +151,7 @@ export async function flushStatementTimeouts(
   const deferred: StatementTimeoutEvent[] = [];
   const deferredPrints = new Set<string>();
   let stored = 0;
-  for (const ev of events) {
+  for (const [i, ev] of events.entries()) {
     const fingerprint = statementFingerprint(ev.sql);
     if (deferredPrints.has(fingerprint)) {
       deferred.push(ev);
@@ -199,10 +202,18 @@ export async function flushStatementTimeouts(
       );
       stored++;
     } catch (err) {
+      // Most likely the database itself is in trouble, which is when this evidence matters: this
+      // event and the rest of the batch go back to the queue instead of each paying its own failure.
+      // An event that keeps failing is dropped after a few ticks, so it cannot wedge the queue.
+      const attempts = (failedAttempts.get(ev) ?? 0) + 1;
+      failedAttempts.set(ev, attempts);
       logger.warn(
-        { err },
+        { err, attempts },
         "database screen: a statement timeout was not stored",
       );
+      if (attempts < MAX_STORE_ATTEMPTS) deferred.push(ev);
+      deferred.push(...events.slice(i + 1));
+      break;
     }
   }
   requeueStatementTimeouts(deferred);

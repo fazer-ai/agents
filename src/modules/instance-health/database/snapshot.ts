@@ -156,6 +156,22 @@ export function rowsToWrite(input: {
 
 // Whether pg_stat_statements can be read here, and the entries of this database if so. A missing or
 // unloaded extension is a state, not an error: the screen shows how to enable it.
+// pg_stat_statements shows another role's statements (text and queryid) only to a member of
+// pg_read_all_stats that HAS its privileges. Bootstrap grants the membership, but a NOINHERIT role
+// (the runtime role on Postgres 15 and older, where bootstrap makes it NOINHERIT for the fleet role)
+// holds it without its privileges, and the fleet path's statements would vanish from the screen.
+// Such a member takes the role for this read-only transaction only; nothing else runs under it.
+export async function takeStatsRole(
+  tx: Pick<PrismaClient, "$queryRaw" | "$executeRawUnsafe">,
+): Promise<void> {
+  const [r] = await tx.$queryRaw<{ member: boolean; usage: boolean }[]>`
+    SELECT pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') AS member,
+           pg_has_role(current_user, 'pg_read_all_stats', 'USAGE') AS usage`;
+  if (r?.member && !r.usage) {
+    await tx.$executeRawUnsafe("SET LOCAL ROLE pg_read_all_stats");
+  }
+}
+
 export async function readStatements(
   base: PrismaClient,
 ): Promise<
@@ -172,26 +188,30 @@ export async function readStatements(
   const since = ext.version >= 170000 ? "stats_since" : "NULL::timestamptz";
   const top = ext.version >= 140000 ? "AND toplevel" : "";
   try {
-    const rows = await base.$queryRawUnsafe<
-      {
-        userid: bigint;
-        dbid: bigint;
-        queryid: bigint;
-        query: string | null;
-        calls: bigint;
-        total_exec_time: number;
-        rows: bigint;
-        stats_since: Date | null;
-      }[]
-    >(
-      `SELECT userid::bigint AS userid, dbid::bigint AS dbid, queryid, query, calls,
+    const rows = await base.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
+      await takeStatsRole(tx);
+      return tx.$queryRawUnsafe<
+        {
+          userid: bigint;
+          dbid: bigint;
+          queryid: bigint;
+          query: string | null;
+          calls: bigint;
+          total_exec_time: number;
+          rows: bigint;
+          stats_since: Date | null;
+        }[]
+      >(
+        `SELECT userid::bigint AS userid, dbid::bigint AS dbid, queryid, query, calls,
               total_exec_time, rows, ${since} AS stats_since
          FROM pg_stat_statements
         WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
           AND queryid IS NOT NULL ${top}
         ORDER BY total_exec_time DESC
         LIMIT ${MAX_ENTRIES}`,
-    );
+      );
+    });
     return {
       availability: { available: true },
       entries: rows.map((r) => ({

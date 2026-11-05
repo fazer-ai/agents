@@ -22,6 +22,8 @@ const TOP = 50;
 const SPARK_BUCKETS = 24;
 // Every table of the schema (a hundred or so): a seeded test table is as much a table as the largest.
 const TABLES_TOP = 500;
+// How many timed-out statements the screen lists, the most recent first.
+const TIMEOUT_GROUPS = 100;
 
 // How to switch the extension on, said the same way on every surface that shows it.
 export const ENABLE_STATEMENTS = [
@@ -336,57 +338,61 @@ export async function readDatabaseScreen(
         };
       }
 
-      const timeoutRows = await db.dbStatementTimeout.findMany({
-        where: { occurredAt: { gte: from, lte: to } },
-        orderBy: { occurredAt: "desc" },
-        take: 2_000,
-      });
-      const groups = new Map<string, TimeoutDto>();
-      for (const r of timeoutRows) {
-        const g = groups.get(r.fingerprint);
-        if (!g) {
-          groups.set(r.fingerprint, {
-            fingerprint: r.fingerprint,
-            statement: r.statement,
-            occurrences: 1,
-            lastAt: r.occurredAt.toISOString(),
-            label: r.label,
-            tenantId: r.scopeTenantId === null ? null : String(r.scopeTenantId),
-            fleet: r.fleet,
-            budgetMs: r.budgetMs,
-            plan: r.plan,
-            planError: r.planError,
-            plannedAs: r.plannedAs,
-            plannedAt:
-              r.plan || r.planError ? r.occurredAt.toISOString() : null,
-          });
-          continue;
-        }
-        g.occurrences++;
-        if (!g.plan && !g.planError && (r.plan || r.planError)) {
-          g.plan = r.plan;
-          g.planError = r.planError;
-          g.plannedAs = r.plannedAs;
-          g.plannedAt = r.occurredAt.toISOString();
-        }
-      }
-      // Plans older than the window still describe the statement: take the newest one.
-      for (const g of groups.values()) {
-        if (g.plan || g.planError) continue;
-        const planned = await db.dbStatementTimeout.findFirst({
-          where: {
-            fingerprint: g.fingerprint,
-            OR: [{ plan: { not: null } }, { planError: { not: null } }],
-          },
-          orderBy: { occurredAt: "desc" },
-        });
-        if (planned) {
-          g.plan = planned.plan;
-          g.planError = planned.planError;
-          g.plannedAs = planned.plannedAs;
-          g.plannedAt = planned.occurredAt.toISOString();
-        }
-      }
+      // Counted over the whole window first, then limited to the statements that failed most
+      // recently: a storm of one statement neither undercounts itself nor hides the others. Each
+      // group shows its newest occurrence's scope and the newest plan of that statement, which can
+      // predate the window and still describes it.
+      const timeoutRows = await db.$queryRaw<
+        {
+          fingerprint: string;
+          n: number;
+          last_at: Date;
+          statement: string;
+          label: string | null;
+          scope_tenant_id: bigint | null;
+          fleet: boolean;
+          budget_ms: number | null;
+          plan: string | null;
+          plan_error: string | null;
+          planned_as: string | null;
+          planned_at: Date | null;
+        }[]
+      >`WITH g AS (
+          SELECT fingerprint, count(*)::int AS n, max(occurred_at) AS last_at
+            FROM db_statement_timeouts
+           WHERE occurred_at >= ${from} AND occurred_at <= ${to}
+           GROUP BY fingerprint
+           ORDER BY last_at DESC
+           LIMIT ${TIMEOUT_GROUPS})
+        SELECT g.fingerprint, g.n, g.last_at, l.statement, l.label, l.scope_tenant_id, l.fleet,
+               l.budget_ms, p.plan, p.plan_error, p.planned_as, p.occurred_at AS planned_at
+          FROM g
+          CROSS JOIN LATERAL (
+            SELECT t.statement, t.label, t.scope_tenant_id, t.fleet, t.budget_ms
+              FROM db_statement_timeouts t
+             WHERE t.fingerprint = g.fingerprint AND t.occurred_at = g.last_at
+             ORDER BY t.id DESC LIMIT 1) l
+          LEFT JOIN LATERAL (
+            SELECT t.plan, t.plan_error, t.planned_as, t.occurred_at
+              FROM db_statement_timeouts t
+             WHERE t.fingerprint = g.fingerprint
+               AND (t.plan IS NOT NULL OR t.plan_error IS NOT NULL)
+             ORDER BY t.occurred_at DESC LIMIT 1) p ON true
+         ORDER BY g.last_at DESC`;
+      const timeouts: TimeoutDto[] = timeoutRows.map((r) => ({
+        fingerprint: r.fingerprint,
+        statement: r.statement,
+        occurrences: r.n,
+        lastAt: r.last_at.toISOString(),
+        label: r.label,
+        tenantId: r.scope_tenant_id === null ? null : String(r.scope_tenant_id),
+        fleet: r.fleet,
+        budgetMs: r.budget_ms,
+        plan: r.plan,
+        planError: r.plan_error,
+        plannedAs: r.planned_as,
+        plannedAt: r.planned_at?.toISOString() ?? null,
+      }));
 
       const tableRows = await db.$queryRaw<
         {
@@ -437,7 +443,7 @@ export async function readDatabaseScreen(
       return {
         window,
         statements,
-        timeouts: [...groups.values()],
+        timeouts,
         tables: [...tables]
           .sort((a, b) => b.totalBytes - a.totalBytes)
           .slice(0, TABLES_TOP),

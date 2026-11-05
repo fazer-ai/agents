@@ -18,6 +18,7 @@ import {
   rowsToWrite,
   type StatementEntry,
   snapshotIfDue,
+  takeStatsRole,
 } from "@/modules/instance-health/database/snapshot";
 import {
   DRIFT_SIGNAL,
@@ -162,6 +163,19 @@ describe("the two signals and what their alert says", () => {
     );
     expect(summary).toContain("job:FOLLOWUP_SWEEP");
     expect(summary).toContain("SELECT c.thread_id FROM conversations c");
+  });
+
+  test("a database screen that fails to read records no point, so the drift signal ages instead of reading fresh", async () => {
+    resetSamplerState();
+    const values = await sampleOnce(
+      sources({
+        databaseScreen: async () => {
+          throw new Error("connection refused");
+        },
+      }),
+      { database: true },
+    );
+    expect("statement_mean_budget_pct" in values).toBe(false);
   });
 
   test("with no recent timeout the alert carries no stale name", async () => {
@@ -569,6 +583,104 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       orderBy: { occurredAt: "asc" },
     });
     expect(rows.map((r) => r.plan !== null)).toEqual([true, false]);
+  });
+
+  test("a tick whose snapshot cannot be read throws instead of returning the last value", async () => {
+    const down = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: "postgresql://nobody:nothing@127.0.0.1:1/none",
+      }),
+    });
+    try {
+      resetSnapshotState();
+      resetDatabaseTickState();
+      await expect(databaseScreenTick(Date.now(), down)).rejects.toThrow();
+    } finally {
+      await down.$disconnect();
+    }
+  });
+
+  test("timeouts that cannot be stored go back to the queue, and one that keeps failing is dropped after three ticks", async () => {
+    resetStatementTimeouts();
+    const down = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: "postgresql://nobody:nothing@127.0.0.1:1/none",
+      }),
+    });
+    const ev = (i: number) => ({
+      at: Date.now() + i,
+      sql: `SELECT ${i}`,
+      label: null,
+      tenantId: null,
+      fleet: false,
+      budgetMs: 1000,
+    });
+    const first = ev(1);
+    const second = ev(2);
+    try {
+      expect(await flushStatementTimeouts(down, [first, second])).toBe(0);
+      expect(drainStatementTimeouts()).toEqual([first, second]);
+      await flushStatementTimeouts(down, [first, second]);
+      drainStatementTimeouts();
+      await flushStatementTimeouts(down, [first, second]);
+      // The first failed three times; the second was never tried, so it stays.
+      expect(drainStatementTimeouts()).toEqual([second]);
+    } finally {
+      await down.$disconnect();
+    }
+  });
+
+  test("timeout counts cover the whole window, so a storm of one statement hides no other", async () => {
+    const now = Date.now();
+    const storm = statementFingerprint("SELECT storm");
+    await suDb.dbStatementTimeout.createMany({
+      data: Array.from({ length: 2100 }, (_, i) => ({
+        occurredAt: new Date(now - i * 100),
+        fingerprint: storm,
+        statement: "SELECT storm",
+        fleet: false,
+      })),
+    });
+    await suDb.dbStatementTimeout.create({
+      data: {
+        occurredAt: new Date(now - 50 * MIN),
+        fingerprint: statementFingerprint("SELECT earlier"),
+        statement: "SELECT earlier",
+        fleet: false,
+      },
+    });
+    const screen = await readDatabaseScreen("1h", appDb, now);
+    const counts = Object.fromEntries(
+      screen.timeouts.map((t) => [t.statement, t.occurrences]),
+    );
+    expect(counts).toEqual({ "SELECT storm": 2100, "SELECT earlier": 1 });
+  });
+
+  test("a NOINHERIT member of pg_read_all_stats reads statistics under that role, and only then", async () => {
+    const roles = await suDb
+      .$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          "CREATE ROLE stats_probe_noinherit NOINHERIT",
+        );
+        await tx.$executeRawUnsafe("CREATE ROLE stats_probe_inherit INHERIT");
+        await tx.$executeRawUnsafe(
+          "GRANT pg_read_all_stats TO stats_probe_noinherit, stats_probe_inherit",
+        );
+        const seen: string[] = [];
+        for (const role of ["stats_probe_noinherit", "stats_probe_inherit"]) {
+          await tx.$executeRawUnsafe(`SET LOCAL ROLE ${role}`);
+          await takeStatsRole(tx as unknown as PrismaClient);
+          const [r] = await tx.$queryRaw<
+            { u: string }[]
+          >`SELECT current_user::text AS u`;
+          seen.push(r?.u ?? "");
+          await tx.$executeRawUnsafe("RESET ROLE");
+        }
+        // Rolled back: the probe roles never outlive the test.
+        throw Object.assign(new Error("rollback"), { seen });
+      })
+      .catch((e: { seen?: string[] }) => e.seen);
+    expect(roles).toEqual(["pg_read_all_stats", "stats_probe_inherit"]);
   });
 
   test("what is not one plannable statement is refused before anything runs", () => {

@@ -1,4 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -58,7 +59,9 @@ export async function instanceDatabaseGet(
   args: { window?: WindowKey },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
-  const base = deps.base ?? basePrisma;
+  // Off the main pool, like GET /v1/instance-health/database: a 7d aggregate must not hold a
+  // connection a live turn needs (docs/dashboard.md).
+  const base = deps.base ?? metricsPrisma;
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
   try {

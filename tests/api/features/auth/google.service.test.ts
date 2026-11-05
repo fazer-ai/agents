@@ -53,7 +53,7 @@ const {
   GoogleEmailNotVerifiedError,
   GoogleEmailDomainNotAllowedError,
   GoogleIdMismatchError,
-  GoogleAdminLinkBlockedError,
+  GoogleElevatedAccountLinkBlockedError,
   GoogleRegistrationDisabledError,
 } = await import("@/api/features/auth/google.service");
 
@@ -207,7 +207,7 @@ describe("google.service", () => {
       expect(result.id).toBe(mockUser.id);
     });
 
-    test("blocks Google linking on a pre-created ADMIN that has never logged in", async () => {
+    test("blocks Google linking on an elevated account that has never logged in", async () => {
       mockFindUnique.mockResolvedValueOnce(null);
       mockFindFirst.mockResolvedValueOnce({
         ...mockUser,
@@ -216,7 +216,7 @@ describe("google.service", () => {
       });
 
       await expect(upsertGoogleUser(baseProfile)).rejects.toBeInstanceOf(
-        GoogleAdminLinkBlockedError,
+        GoogleElevatedAccountLinkBlockedError,
       );
 
       expect(mockUpdateMany).not.toHaveBeenCalled();
@@ -224,7 +224,7 @@ describe("google.service", () => {
       expect(mockCreate).not.toHaveBeenCalled();
     });
 
-    test("allows Google linking for ADMIN that has completed at least one login", async () => {
+    test("allows Google linking for an elevated account that has completed at least one login", async () => {
       mockFindUnique.mockResolvedValueOnce(null);
       mockFindFirst.mockResolvedValueOnce({
         ...mockUser,

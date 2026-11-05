@@ -24,7 +24,7 @@ const {
   hashPassword,
   verifyPassword,
   isEmailDomainAllowed,
-  isAdminAnywhere,
+  hasElevatedRoleAnywhere,
   getSignupRoleForEmail,
   getUserHasPassword,
   changeUserPassword,
@@ -38,25 +38,25 @@ describe("auth.service", () => {
     resetPrismaMocks();
   });
 
-  describe("isAdminAnywhere", () => {
+  describe("hasElevatedRoleAnywhere", () => {
     test("recognizes editors and administrators without elevating agents", () => {
-      expect(isAdminAnywhere({ isSuperAdmin: true, memberships: [] })).toBe(
-        true,
-      );
       expect(
-        isAdminAnywhere({
+        hasElevatedRoleAnywhere({ isSuperAdmin: true, memberships: [] }),
+      ).toBe(true);
+      expect(
+        hasElevatedRoleAnywhere({
           isSuperAdmin: false,
           memberships: [{ role: "TENANT_ADMIN" }],
         }),
       ).toBe(true);
       expect(
-        isAdminAnywhere({
+        hasElevatedRoleAnywhere({
           isSuperAdmin: false,
           memberships: [{ role: "EDITOR" }],
         }),
       ).toBe(true);
       expect(
-        isAdminAnywhere({
+        hasElevatedRoleAnywhere({
           isSuperAdmin: false,
           memberships: [{ role: "AGENT" }],
         }),

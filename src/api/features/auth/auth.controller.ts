@@ -23,7 +23,7 @@ import {
   verifyPassword,
 } from "@/api/features/auth/auth.service";
 import {
-  GoogleAdminLinkBlockedError,
+  GoogleElevatedAccountLinkBlockedError,
   GoogleEmailDomainNotAllowedError,
   GoogleEmailNotVerifiedError,
   GoogleIdMismatchError,
@@ -798,13 +798,13 @@ const googleAuthController = baseAuthController.post(
         };
       }
       // NOTE: GoogleEmailNotVerifiedError, GoogleIdMismatchError,
-      // GoogleAdminLinkBlockedError, NoMembershipError, and jose's JWT/JWS verification failures
+      // GoogleElevatedAccountLinkBlockedError, NoMembershipError, and jose's JWT/JWS verification failures
       // all map to a generic 401 so we don't leak whether an account exists,
       // how it is linked, or that it has elevated privileges.
       if (
         error instanceof GoogleEmailNotVerifiedError ||
         error instanceof GoogleIdMismatchError ||
-        error instanceof GoogleAdminLinkBlockedError ||
+        error instanceof GoogleElevatedAccountLinkBlockedError ||
         error instanceof NoMembershipError ||
         error instanceof jose.errors.JOSEError
       ) {

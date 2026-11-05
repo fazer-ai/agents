@@ -309,6 +309,44 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     expect(totals?.bytes).toBeGreaterThan(0);
   });
 
+  // Under async durability a step's writes can be stored before its checkpoint is: they name an id
+  // greater than every committed checkpoint, and they stay until that checkpoint lands and after.
+  test("the writes of a checkpoint not stored yet stay, and still belong to it once it is", async () => {
+    const id = thread();
+    await seedRows(id, {
+      checkpoints: [
+        ["", "c1", null, { messages: "1" }],
+        ["", "c2", "c1", { messages: "2" }],
+      ],
+      blobs: [
+        ["", "messages", "1"],
+        ["", "messages", "2"],
+      ],
+      writes: [
+        ["", "c1", "messages"],
+        ["", "c3", "__interrupt__"],
+        ["", "c3", "messages"],
+      ],
+    });
+    await pass([id]);
+    expect(await rowsOf(id)).toEqual({
+      checkpoints: ["/c2"],
+      blobs: ["/messages/2"],
+      writes: ["/c3/__interrupt__", "/c3/messages"],
+    });
+    await seedRows(id, {
+      checkpoints: [["", "c3", "c2", { messages: "3" }]],
+      blobs: [["", "messages", "3"]],
+      writes: [],
+    });
+    await pass([id]);
+    expect(await rowsOf(id)).toEqual({
+      checkpoints: ["/c3"],
+      blobs: ["/messages/3"],
+      writes: ["/c3/__interrupt__", "/c3/messages"],
+    });
+  });
+
   // A checkpoint of format v<4 reads the pending sends from its parent's TASKS writes, with no need of
   // the parent's row: what the saver hands back is the same before and after the pass.
   test("a legacy checkpoint resumes with the sends it reads from its parent", async () => {

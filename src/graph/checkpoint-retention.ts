@@ -89,10 +89,16 @@ export const RETAIN_SQL: Record<CheckpointTable, string> = {
   ),
   // A write is kept while a checkpoint of its namespace is it, and a TASKS write also while one names
   // it as its parent: a v<4 checkpoint reads its pending sends from there, with no need of the parent's
-  // row.
+  // row. And only a write of a checkpoint older than the newest one goes: under the graph's async
+  // durability a step's writes can be stored before the checkpoint they belong to is, and that
+  // checkpoint's id is greater than every committed one (ids grow with time), so the writes of a
+  // checkpoint still on its way are never taken for leftovers.
   checkpoint_writes: retainSql(
     "checkpoint_writes",
-    `NOT EXISTS (
+    `x.checkpoint_id < (
+       SELECT max(k.checkpoint_id) FROM langgraph.checkpoints k
+        WHERE k.thread_id = x.thread_id AND k.checkpoint_ns = x.checkpoint_ns)
+     AND NOT EXISTS (
        SELECT 1 FROM langgraph.checkpoints c
         WHERE c.thread_id = x.thread_id AND c.checkpoint_ns = x.checkpoint_ns
           AND (c.checkpoint_id = x.checkpoint_id

@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import config from "@/config";
@@ -165,6 +165,14 @@ export async function statementColumns(
   return new Set(cols.map((c) => c.attname));
 }
 
+// The schemas whose tables the screen shows: the application's, and the checkpointer's own
+// (`langgraph`, src/graph/checkpointer.ts), where `checkpoint_blobs` can be the largest table there
+// is. A table outside `public` is named with its schema, so the two never share a name.
+// Both read a statistics view aliased `s`.
+export const SCREEN_SCHEMAS = Prisma.sql`('public', 'langgraph')`;
+export const TABLE_NAME = Prisma.sql`CASE WHEN s.schemaname = 'public' THEN s.relname::text
+  ELSE s.schemaname || '.' || s.relname END`;
+
 export async function readStatements(
   base: PrismaClient,
   budget: TxBudget,
@@ -279,10 +287,11 @@ export async function snapshotIfDue(
           live: bigint;
           dead: bigint;
         }[]
-      >`SELECT c.relname AS table_name, pg_total_relation_size(c.oid) AS total_bytes,
+      >`SELECT ${TABLE_NAME} AS table_name,
+             pg_total_relation_size(c.oid) AS total_bytes,
              s.n_live_tup AS live, s.n_dead_tup AS dead
         FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
-       WHERE s.schemaname = 'public'`,
+       WHERE s.schemaname IN ${SCREEN_SCHEMAS}`,
   );
 
   const entries = "entries" in read ? read.entries : null;

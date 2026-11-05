@@ -7,7 +7,9 @@ import { budgetUntil, fleetWithin, plainWithin } from "./budget";
 import {
   availabilityOfError,
   lastAvailability,
+  SCREEN_SCHEMAS,
   type StatementsAvailability,
+  TABLE_NAME,
 } from "./snapshot";
 
 // What the "Database" screen, its REST route and its MCP tool read (docs/logs.md, "Database"). Every
@@ -422,14 +424,16 @@ export async function readDatabaseScreen(
         idx_scan: bigint | null;
         first_bytes: bigint | null;
       }[]
-    >`SELECT c.relname AS table_name, pg_total_relation_size(c.oid) AS total_bytes,
+    >`SELECT t.table_name, pg_total_relation_size(c.oid) AS total_bytes,
              s.n_live_tup AS live, s.n_dead_tup AS dead,
              s.last_autovacuum, s.last_autoanalyze, s.seq_scan, s.idx_scan,
              (SELECT ts.total_bytes FROM db_table_snapshots ts
-               WHERE ts.table_name = c.relname AND ts.taken_at >= ${from}
+               WHERE ts.table_name = t.table_name AND ts.taken_at >= ${from}
                ORDER BY ts.taken_at ASC LIMIT 1) AS first_bytes
         FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
-       WHERE s.schemaname = 'public'`;
+        CROSS JOIN LATERAL (
+          SELECT ${TABLE_NAME} AS table_name) t
+       WHERE s.schemaname IN ${SCREEN_SCHEMAS}`;
     const tables: TableHealthDto[] = tableRows.map((r) => ({
       table: r.table_name,
       totalBytes: Number(r.total_bytes),
@@ -447,11 +451,11 @@ export async function readDatabaseScreen(
 
     const unused = await db.$queryRaw<
       { table_name: string; index_name: string; bytes: bigint }[]
-    >`SELECT s.relname AS table_name, s.indexrelname AS index_name,
-             pg_relation_size(s.indexrelid) AS bytes
+    >`SELECT ${TABLE_NAME} AS table_name,
+             s.indexrelname AS index_name, pg_relation_size(s.indexrelid) AS bytes
         FROM pg_stat_user_indexes s
         JOIN pg_index i ON i.indexrelid = s.indexrelid
-       WHERE s.schemaname = 'public' AND s.idx_scan = 0
+       WHERE s.schemaname IN ${SCREEN_SCHEMAS} AND s.idx_scan = 0
          AND NOT i.indisunique AND NOT i.indisprimary
        ORDER BY pg_relation_size(s.indexrelid) DESC
        LIMIT 50`;

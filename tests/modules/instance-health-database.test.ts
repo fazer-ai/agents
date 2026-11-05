@@ -521,6 +521,37 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect(await suDb.dbTableSnapshot.count()).toBeGreaterThan(0);
   });
 
+  test("the checkpointer's own schema is on the screen, its tables named with the schema", async () => {
+    // A table of its own in `langgraph` (created when missing), so the test does not depend on the
+    // checkpointer having run here, and dropped after.
+    const probe = `screen_probe_${process.pid}`;
+    await suDb.$executeRawUnsafe("CREATE SCHEMA IF NOT EXISTS langgraph");
+    await suDb.$executeRawUnsafe(
+      `CREATE TABLE langgraph.${probe} (id int PRIMARY KEY, note text)`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE INDEX ${probe}_note_idx ON langgraph.${probe} (note)`,
+    );
+    try {
+      // Statistics views are fed asynchronously; reading them in this session sees the table.
+      expect(await snapshotIfDue(appDb, Date.now(), { force: true })).toBe(
+        true,
+      );
+      const stored = await suDb.dbTableSnapshot.findMany({
+        where: { tableName: `langgraph.${probe}` },
+      });
+      expect(stored).toHaveLength(1);
+      const screen = await readDatabaseScreen("1h", appDb);
+      expect(screen.tables.map((t) => t.table)).toContain(`langgraph.${probe}`);
+      expect(screen.tables.map((t) => t.table)).toContain("conversations");
+      expect(screen.unusedIndexes.map((u) => u.table)).toContain(
+        `langgraph.${probe}`,
+      );
+    } finally {
+      await suDb.$executeRawUnsafe(`DROP TABLE langgraph.${probe}`);
+    }
+  });
+
   test("a snapshot is not taken again before five minutes have passed", async () => {
     const now = Date.now();
     expect(await snapshotIfDue(appDb, now, { force: true })).toBe(true);

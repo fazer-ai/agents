@@ -148,6 +148,8 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/turn-attempt-residue.test.ts": 1,
   // NOTE: How many window-note lines a run of notes wrote, on the file's own tenant.
   "tests/modules/window-note-alert.test.ts": 1,
+  // NOTE: The dead_letter line of a retention thread skipped twice, read by the thread it names.
+  "tests/graph/checkpoint-retention.test.ts": 1,
   // NOTE: The clip line a code tool's call wrote, read by the turn that made it.
   "tests/graph/code-tool-clip.test.ts": 1,
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,

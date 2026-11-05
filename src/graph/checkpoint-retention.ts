@@ -9,6 +9,7 @@ import {
   NEWEST_CHECKPOINT_SQL,
   ownerlessThreads,
   reconcileWalkSql,
+  threadOwner,
   withinGrace,
 } from "@/graph/checkpoint-reconcile";
 import {
@@ -17,9 +18,11 @@ import {
   type CheckpointTable,
   checkpointTransaction,
   SWEEP_ROWS,
+  SweepDeadlineError,
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
 import { runInPoolClass } from "@/lib/pool-class";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 
 // The periodic pass that keeps, of every live thread, only what the saver resumes from. A thread keeps
 // every checkpoint it ever wrote, and every step writes a new version of the `messages` blob holding
@@ -40,8 +43,76 @@ export const RETENTION_BATCH_MS = 10_000;
 
 // How many stored bytes one statement deletes at most, beside the row bound: the blob of a long
 // conversation is hundreds of kilobytes, so a row bound alone would let one statement take gigabytes
-// of TOAST and run past the batch's cut, failing on the same thread at every pass.
-export const RETENTION_BATCH_BYTES = 32 * 1024 * 1024;
+// of TOAST and run past the batch's cut, failing on the same thread at every pass. Deleting TOAST
+// writes about as much WAL as it deletes (a full-page image per page touched after a checkpoint), so
+// this is also what one statement writes in one go, and it has to stay far below `max_wal_size`, or
+// each statement forces a checkpoint.
+export const RETENTION_BATCH_BYTES = 8 * 1024 * 1024;
+
+// The share of the WAL rate that would force a checkpoint the pass lets the whole instance write, and
+// the longest it waits after one batch. Half leaves the other half to the instance's own traffic, and
+// the pass counts that traffic too: it measures the instance's WAL, not its own.
+export const RETENTION_WAL_SHARE = 0.5;
+export const RETENTION_MAX_PAUSE_MS = 60_000;
+
+// What paces the pass: how many bytes of WAL a second the instance may write while it runs, and how
+// to read the instance's WAL position. `sleep` is the test's seam.
+export interface RetentionPacing {
+  budgetBytesPerSec: number;
+  readWal: () => Promise<number>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+// The budget from the server's own settings: Postgres requests a checkpoint once about
+// max_wal_size / (1 + checkpoint_completion_target) is written since the last one, and times one every
+// checkpoint_timeout, so writing faster than that ratio forces checkpoints. A tuned instance gets its
+// own budget.
+export async function serverWalPacing(
+  pool: Pick<Pool, "connect">,
+): Promise<RetentionPacing> {
+  const read = async <T>(sql: string): Promise<T | undefined> => {
+    const client = await pool.connect();
+    try {
+      return (await client.query(sql)).rows[0] as T | undefined;
+    } finally {
+      client.release();
+    }
+  };
+  const s = await read<{ max_wal: string; target: string; timeout: string }>(
+    `SELECT (SELECT setting FROM pg_settings WHERE name = 'max_wal_size') AS max_wal,
+            (SELECT setting FROM pg_settings WHERE name = 'checkpoint_completion_target') AS target,
+            (SELECT setting FROM pg_settings WHERE name = 'checkpoint_timeout') AS timeout`,
+  );
+  // max_wal_size is in megabytes and checkpoint_timeout in seconds, the units pg_settings reports.
+  const forced =
+    (Number(s?.max_wal) * 1024 * 1024) /
+    (1 + Number(s?.target)) /
+    Number(s?.timeout);
+  if (!Number.isFinite(forced) || forced <= 0)
+    throw new Error("checkpoint retention: unreadable WAL settings");
+  return {
+    budgetBytesPerSec: forced * RETENTION_WAL_SHARE,
+    readWal: async () =>
+      Number(
+        (
+          await read<{ b: number }>(
+            // The insert position, which moves as WAL is written; pg_current_wal_lsn moves only when
+            // the WAL buffers reach the disk.
+            "SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), '0/0')::float8 AS b",
+          )
+        )?.b,
+      ),
+  };
+}
+
+// The errors a smaller batch can get past: the batch's cut (statement timeout, or the deadline the
+// guard checks itself), a lock it waited on, and a deadlock it lost. Anything else (the connection,
+// a missing table) fails the pass as before.
+function retryable(err: unknown): boolean {
+  if (err instanceof SweepDeadlineError) return true;
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "57014" || code === "55P03" || code === "40P01";
+}
 
 // The rows of these threads ($1) the saver does not read, through the primary key in its order, $2
 // rows and $3 stored bytes at most per statement (every row weighs one byte at least; the first row
@@ -281,15 +352,40 @@ export async function retainCheckpointBatch(
   return result;
 }
 
-// A whole pass: the key of `checkpoints` walked once, batch after batch, pausing after each batch that
-// deleted something. Stops early, keeping what it did, when `shouldStop` answers true. Null when
-// another pass holds the lock. Background work, on the background pool.
+// The thread right after `after` in the key of `checkpoints`, the one a batch of one walks.
+async function threadAfter(
+  pool: Pick<Pool, "connect">,
+  after: string,
+): Promise<string | null> {
+  const rows = await checkpointTransaction(
+    pool,
+    undefined,
+    async (query) =>
+      (
+        (await query(reconcileWalkSql("checkpoints"), [after, 1])) as {
+          rows: { thread_id: string }[];
+        }
+      ).rows,
+  );
+  return rows[0]?.thread_id ?? null;
+}
+
+// A whole pass: the key of `checkpoints` walked once, batch after batch. A batch that fails with an
+// error a smaller batch can get past is taken again from the same cursor with half the threads, down
+// to one; a single thread that still fails is skipped and handed to `onSkip`, and the pass goes on,
+// so one stuck thread never leaves every thread after it unpruned. A batch that succeeds lets the size grow back. After a batch that deleted something
+// the pass waits `pauseMs`, or, with `pacing`, as long as the instance's WAL since the batch began
+// takes at the budget's rate (up to RETENTION_MAX_PAUSE_MS). Stops early, keeping what it did, when
+// `shouldStop` answers true. Null when another pass holds the lock. Background work, on the
+// background pool.
 const PASS_LOCK = "fazerai:checkpoint-retention";
 
 export function retainCheckpoints(
   pool: Pick<Pool, "connect">,
   opts: RetentionOptions & {
     pauseMs?: number;
+    pacing?: RetentionPacing;
+    onSkip?: (threadId: string, err: unknown) => void;
     shouldStop?: () => boolean;
     lockConnection?: () => Promise<LockConnection>;
     lockQueryMs?: number;
@@ -298,6 +394,20 @@ export function retainCheckpoints(
   return runInPoolClass("background", () =>
     holdingPassLock(PASS_LOCK, opts, async (beforeBatch) => {
       const pauseMs = opts.pauseMs ?? RETENTION_PAUSE_MS;
+      const fullProbes = opts.probes ?? RETENTION_PROBES;
+      const pacing = opts.pacing;
+      const sleep =
+        pacing?.sleep ??
+        ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      const readWal = async (): Promise<number | null> => {
+        if (!pacing) return null;
+        try {
+          const b = await pacing.readWal();
+          return Number.isFinite(b) ? b : null;
+        } catch {
+          return null;
+        }
+      };
       const threads = new Set<string>();
       const totals: RetentionTotals = {
         threads: 0,
@@ -307,16 +417,44 @@ export function retainCheckpoints(
         bytes: 0,
       };
       let cursor: string | null = "";
+      let probes = fullProbes;
       while (cursor !== null) {
         if (opts.shouldStop?.()) break;
         await beforeBatch();
-        const res = await retainCheckpointBatch(pool, cursor, opts);
+        const walBefore = await readWal();
+        const startedAt = Date.now();
+        let res: RetentionBatch;
+        try {
+          res = await retainCheckpointBatch(pool, cursor, { ...opts, probes });
+        } catch (err) {
+          if (!retryable(err)) throw err;
+          if (probes > 1) {
+            probes = Math.ceil(probes / 2);
+            continue;
+          }
+          const stuck = await threadAfter(pool, cursor);
+          if (stuck === null) throw err;
+          opts.onSkip?.(stuck, err);
+          cursor = stuck;
+          probes = fullProbes;
+          continue;
+        }
+        probes = Math.min(fullProbes, probes * 2);
         for (const table of RETAIN_ORDER) totals[table] += res.deleted[table];
         totals.bytes += res.bytes;
         for (const id of res.threads) threads.add(id);
         cursor = res.next;
-        if (res.threads.length > 0 && pauseMs > 0)
-          await new Promise((r) => setTimeout(r, pauseMs));
+        if (res.threads.length === 0) continue;
+        let wait = pauseMs;
+        const walAfter = await readWal();
+        if (pacing && walBefore !== null && walAfter !== null)
+          wait = Math.max(
+            wait,
+            ((walAfter - walBefore) / pacing.budgetBytesPerSec) * 1000 -
+              (Date.now() - startedAt),
+          );
+        wait = Math.min(wait, RETENTION_MAX_PAUSE_MS);
+        if (wait > 0) await sleep(wait);
       }
       totals.threads = threads.size;
       return totals;
@@ -324,18 +462,52 @@ export function retainCheckpoints(
   );
 }
 
-// The timer, on globalThis so `bun --hot` keeps one, and the pass in flight, so two never overlap.
+// The threads skipped by this pass that the previous pass skipped too, announced on `dead_letter`
+// (the stage alert channels subscribe to; a pino line reaches nobody) at `warn`, since the next pass
+// tries again and nothing was lost. One skip is usually a lock that went away; two in a row is a
+// thread the pass cannot prune, and every pass leaves it whole until someone looks.
+export function announceStuckThreads(
+  previous: ReadonlySet<string>,
+  current: readonly string[],
+  base?: PrismaClient,
+): string[] {
+  const stuck = current.filter((id) => previous.has(id));
+  for (const id of stuck) {
+    const tenantId = threadOwner(id)?.tenantId;
+    if (tenantId === undefined) continue;
+    emitDeadLetter({
+      tenantId,
+      unit: "checkpoint_retention",
+      level: "warn",
+      error:
+        "checkpoint retention: a thread failed two passes in a row and was left whole",
+      detail: { passes: 2 },
+      threadId: id,
+      base,
+    });
+  }
+  return stuck;
+}
+
+// The timer, on globalThis so `bun --hot` keeps one, the pass in flight, so two never overlap, and the
+// threads the last finished pass skipped.
 interface Holder {
   timer: ReturnType<typeof setTimeout> | null;
   running: boolean;
   stopped: boolean;
+  skipped: Set<string>;
 }
 
 const KEY = Symbol.for("fazerai.checkpointRetention");
 
 function holder(): Holder {
   const g = globalThis as unknown as Record<symbol, Holder>;
-  g[KEY] ??= { timer: null, running: false, stopped: false };
+  g[KEY] ??= {
+    timer: null,
+    running: false,
+    stopped: false,
+    skipped: new Set(),
+  };
   return g[KEY];
 }
 
@@ -345,14 +517,34 @@ async function runPass(): Promise<void> {
   h.running = true;
   const started = Date.now();
   try {
-    const totals = await retainCheckpoints(await getCheckpointPool(), {
+    const pool = await getCheckpointPool();
+    // Without readable WAL settings the pass falls back to its fixed pause, and says so.
+    const pacing = await serverWalPacing(pool).catch((err: unknown) => {
+      logger.warn(
+        { err },
+        "checkpoint retention: cannot read the WAL settings; pacing by the fixed pause",
+      );
+      return undefined;
+    });
+    const skipped: string[] = [];
+    const totals = await retainCheckpoints(pool, {
+      pacing,
+      onSkip: (threadId, err) => {
+        skipped.push(threadId);
+        logger.warn(
+          { threadId, code: (err as { code?: unknown } | null)?.code },
+          "checkpoint retention: a thread failed alone and was left whole for this pass",
+        );
+      },
       shouldStop: () => holder().stopped,
     });
     if (totals === null) return;
+    announceStuckThreads(h.skipped, skipped);
+    h.skipped = new Set(skipped);
     // Every pass logs its summary, the ones that deleted nothing too: it is how an operator sees the
     // pass is armed and what the last one did.
     logger.info(
-      { ...totals, ms: Date.now() - started },
+      { ...totals, skipped: skipped.length, ms: Date.now() - started },
       "checkpoint retention: deleted the checkpoints older than each thread's newest",
     );
   } catch (err) {

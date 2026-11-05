@@ -24,7 +24,8 @@ const OUT = "src/modules/pricing/model-prices.json";
 const VERSION_OUT = "src/modules/pricing/version.ts";
 
 // Unauthenticated, the commits API allows 60 requests an hour per IP, and a CI runner shares its IP
-// with strangers; the scheduled job (.github/workflows/refresh-model-prices.yml) hands its token in.
+// with strangers, so a GitHub token in GITHUB_TOKEN is used when there is one; without it the single
+// request this script makes fits the anonymous quota.
 const token = process.env.GITHUB_TOKEN;
 const commitsRes = await fetch(
   `https://api.github.com/repos/${REPO}/commits?path=${FILE}&per_page=1`,

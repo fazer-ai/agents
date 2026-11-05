@@ -54,7 +54,15 @@ export async function databaseScreenTick(
     // Unknown until this process's first snapshot, which after a restart can be minutes away: the
     // drift reads only the stored snapshots, so it is computed from them meanwhile instead of reading
     // 0 until then.
-    if (lastAvailability()?.available !== false) {
+    const availability = lastAvailability();
+    if (
+      availability?.available === false &&
+      availability.reason === "unreadable"
+    ) {
+      // The extension is there and the read failed: a failure like any other, not an absence.
+      s.drift = null;
+      failure ??= new Error("pg_stat_statements could not be read");
+    } else if (availability?.available !== false) {
       try {
         const { pct, query } = await slowestMeanShare(base, now);
         s.drift = pct;

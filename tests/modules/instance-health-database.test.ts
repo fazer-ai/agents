@@ -17,7 +17,9 @@ import {
   resetSnapshotState,
   rowsToWrite,
   type StatementEntry,
+  setLastAvailabilityForTest,
   snapshotIfDue,
+  statementColumns,
   takeStatsRole,
 } from "@/modules/instance-health/database/snapshot";
 import {
@@ -467,9 +469,23 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
   });
 
   test("without pg_stat_statements loaded, the screen explains how to enable it and the rest still answers", async () => {
-    const took = await snapshotIfDue(appDb, Date.now(), { force: true });
-    expect(took).toBe(true);
-    const screen = await readDatabaseScreen("1h", appDb);
+    // A server that preloads it (the shipped compose files) has it created by db:test:setup, so the
+    // absence is arranged here and undone after, whatever the server is.
+    const [ext] = await suDb.$queryRaw<{ present: boolean }[]>`
+      SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS present`;
+    await suDb.$executeRawUnsafe("DROP EXTENSION IF EXISTS pg_stat_statements");
+    let screen: Awaited<ReturnType<typeof readDatabaseScreen>>;
+    try {
+      const took = await snapshotIfDue(appDb, Date.now(), { force: true });
+      expect(took).toBe(true);
+      screen = await readDatabaseScreen("1h", appDb);
+    } finally {
+      if (ext?.present) {
+        await suDb.$executeRawUnsafe(
+          "CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
+        );
+      }
+    }
     expect(screen.statements.available).toBe(false);
     if (!screen.statements.available) {
       expect(screen.statements.enable).toContain(
@@ -681,6 +697,40 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       })
       .catch((e: { seen?: string[] }) => e.seen);
     expect(roles).toEqual(["pg_read_all_stats", "stats_probe_inherit"]);
+  });
+
+  test("an extension that is there but could not be read fails the tick instead of reading 0", async () => {
+    // A recent run, so the tick takes no snapshot of its own and reads the availability set here.
+    await suDb.dbStatSnapshotRun.create({
+      data: { takenAt: new Date(Date.now() - MIN), statementsAvailable: false },
+    });
+    resetSnapshotState();
+    resetDatabaseTickState();
+    setLastAvailabilityForTest({ available: false, reason: "unreadable" });
+    await expect(databaseScreenTick(Date.now(), appDb)).rejects.toThrow(
+      "could not be read",
+    );
+    // An extension that is simply absent still reads 0, which is a measurement.
+    resetDatabaseTickState();
+    setLastAvailabilityForTest({ available: false, reason: "not_loaded" });
+    expect(await databaseScreenTick(Date.now(), appDb)).toBe(0);
+  });
+
+  test("the version-dependent columns are read from the installed view, not from the server version", async () => {
+    const seen = await suDb
+      .$transaction(async (tx) => {
+        // A view shaped like pg_stat_statements 1.10: toplevel, no stats_since.
+        await tx.$executeRawUnsafe("CREATE SCHEMA pss_probe");
+        await tx.$executeRawUnsafe(
+          "CREATE VIEW pss_probe.pg_stat_statements AS SELECT true AS toplevel, 1::bigint AS calls",
+        );
+        await tx.$executeRawUnsafe("SET LOCAL search_path = pss_probe");
+        const cols = await statementColumns(tx as unknown as PrismaClient);
+        // Rolled back: the probe schema never outlives the test.
+        throw Object.assign(new Error("rollback"), { cols: [...cols].sort() });
+      })
+      .catch((e: { cols?: string[] }) => e.cols);
+    expect(seen).toEqual(["toplevel"]);
   });
 
   test("what is not one plannable statement is refused before anything runs", () => {

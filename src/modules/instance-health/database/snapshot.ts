@@ -72,6 +72,13 @@ export function resetSnapshotState(): void {
   s.availability = null;
 }
 
+// Test-only.
+export function setLastAvailabilityForTest(
+  availability: StatementsAvailability | null,
+): void {
+  state().availability = availability;
+}
+
 export function lastAvailability(): StatementsAvailability | null {
   return state().availability;
 }
@@ -172,6 +179,17 @@ export async function takeStatsRole(
   }
 }
 
+// Which of the version-dependent columns the installed pg_stat_statements view has.
+export async function statementColumns(
+  db: Pick<PrismaClient, "$queryRaw">,
+): Promise<Set<string>> {
+  const cols = await db.$queryRaw<{ attname: string }[]>`
+    SELECT attname::text AS attname FROM pg_attribute
+     WHERE attrelid = to_regclass('pg_stat_statements')
+       AND attname IN ('stats_since', 'toplevel') AND NOT attisdropped`;
+  return new Set(cols.map((c) => c.attname));
+}
+
 export async function readStatements(
   base: PrismaClient,
 ): Promise<
@@ -179,14 +197,17 @@ export async function readStatements(
   | { availability: Exclude<StatementsAvailability, { available: true }> }
 > {
   const [ext] = await base.$queryRaw<
-    { created: boolean; version: number }[]
-  >`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS created,
-           current_setting('server_version_num')::int AS version`;
+    { created: boolean }[]
+  >`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS created`;
   if (!ext?.created) {
     return { availability: { available: false, reason: "not_created" } };
   }
-  const since = ext.version >= 170000 ? "stats_since" : "NULL::timestamptz";
-  const top = ext.version >= 140000 ? "AND toplevel" : "";
+  // The columns come from the INSTALLED extension version, not the server's: a server upgraded with
+  // the extension left at an older version (CREATE EXTENSION IF NOT EXISTS never upgrades it) lacks
+  // `stats_since` even on Postgres 17.
+  const has = await statementColumns(base);
+  const since = has.has("stats_since") ? "stats_since" : "NULL::timestamptz";
+  const top = has.has("toplevel") ? "AND toplevel" : "";
   try {
     const rows = await base.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SET LOCAL transaction_read_only = on");

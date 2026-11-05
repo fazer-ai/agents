@@ -154,6 +154,19 @@ export function rowsToWrite(input: {
           entry: e,
           values: { calls: 0, totalExecMs: 0, rows: 0, statsSince },
         });
+      } else if (
+        statsSince === null &&
+        // Without stats_since (Postgres 16, or an older installed extension) the previous run's
+        // complete scan is what proves the entry was not there: it started counting after it.
+        input.presentAtPrevious !== null &&
+        !input.presentAtPrevious.has(k) &&
+        (!prev || prev.takenAt < p)
+      ) {
+        out.push({
+          takenAt: p,
+          entry: e,
+          values: { calls: 0, totalExecMs: 0, rows: 0, statsSince: null },
+        });
       }
     }
     out.push({ takenAt: input.takenAt, entry: e, values: now });
@@ -247,14 +260,21 @@ export async function readStatements(
       })),
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // 55000: "pg_stat_statements must be loaded via shared_preload_libraries".
-    if (/shared_preload_libraries/.test(message)) {
-      return { availability: { available: false, reason: "not_loaded" } };
-    }
-    logger.warn({ err }, "database screen: pg_stat_statements unreadable");
-    return { availability: { available: false, reason: "unreadable" } };
+    return { availability: availabilityOfError(err) };
   }
+}
+
+// What a failed read of pg_stat_statements means: not preloaded, or unreadable for another reason.
+export function availabilityOfError(
+  err: unknown,
+): Exclude<StatementsAvailability, { available: true }> {
+  const message = err instanceof Error ? err.message : String(err);
+  // 55000: "pg_stat_statements must be loaded via shared_preload_libraries".
+  if (/shared_preload_libraries/.test(message)) {
+    return { available: false, reason: "not_loaded" };
+  }
+  logger.warn({ err }, "database screen: pg_stat_statements unreadable");
+  return { available: false, reason: "unreadable" };
 }
 
 async function loadWritten(base: PrismaClient): Promise<Map<string, Written>> {
@@ -395,7 +415,11 @@ export async function snapshotIfDue(
         s.written.set(keyOf(w.entry), { ...w.values, takenAt });
       }
     }
-    s.presentAtPrevious = new Set(read.entries.map(keyOf));
+    // Only a complete scan proves an absence: one cut at MAX_ENTRIES leaves the rest unknown.
+    s.presentAtPrevious =
+      read.entries.length < MAX_ENTRIES
+        ? new Set(read.entries.map(keyOf))
+        : null;
   } else {
     s.presentAtPrevious = null;
   }

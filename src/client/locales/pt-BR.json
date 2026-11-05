@@ -1320,6 +1320,8 @@
     "statementsMissing": "As estatísticas de consultas precisam da extensão pg_stat_statements, que este banco não tem.",
     "statementsNotLoaded": "O pg_stat_statements está instalado, mas o servidor não o carrega.",
     "statementsTitle": "Estatísticas de consultas",
+    "statementsUnreadable": "O pg_stat_statements está instalado, mas a leitura falhou.",
+    "statementsUnreadableHelp": "O motivo está no log do servidor, em \"pg_stat_statements unreadable\". As seções abaixo continuam respondendo.",
     "subtitle": "No que o banco gasta tempo, os comandos que estouraram o orçamento e as tabelas por trás deles. Snapshots a cada 5 minutos, guardados por DB_STATS_RETENTION_DAYS dias.",
     "table": "Tabela",
     "tablesTitle": "Tabelas e índices",

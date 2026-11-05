@@ -161,6 +161,28 @@ function StatementsSection({
 }) {
   const { t } = useTranslation();
   const st = screen.statements;
+  if (!st.available && st.reason === "unreadable") {
+    // Installed and loaded, but the read failed (a permission, a timeout): not a setup to change.
+    return (
+      <div
+        data-testid="statements-unreadable"
+        className="border-error bg-error-soft space-y-2 rounded-lg border px-4 py-3 text-sm"
+      >
+        <p className="text-text-primary font-medium">
+          {t(
+            "database.statementsUnreadable",
+            "pg_stat_statements is installed, but reading it failed.",
+          )}
+        </p>
+        <p className="text-text-secondary">
+          {t(
+            "database.statementsUnreadableHelp",
+            'The reason is in the server log under "pg_stat_statements unreadable". The sections below still answer.',
+          )}
+        </p>
+      </div>
+    );
+  }
   if (!st.available) {
     return (
       <div className="border-warning bg-warning-soft space-y-2 rounded-lg border px-4 py-3 text-sm">

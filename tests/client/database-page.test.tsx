@@ -180,6 +180,20 @@ test("without the extension the screen shows how to enable it and still lists th
   expect(screen.queryByTestId("no-timeouts") !== null).toBe(true);
 });
 
+test("an installed extension that could not be read says so, without the setup instructions", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: { available: false, reason: "unreadable", enable: [] },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(screen.queryByTestId("statements-unreadable") !== null).toBe(true),
+  );
+  expect(screen.queryByTestId("enable-statements") !== null).toBe(false);
+  expect(screen.queryAllByTestId("table-row").length).toBe(1);
+});
+
 test("a tenant admin is sent away and the screen's API is never asked", async () => {
   const seen: string[] = [];
   stubApi("TENANT_ADMIN", () => ({}), seen);

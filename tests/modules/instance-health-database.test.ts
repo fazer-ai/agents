@@ -8,6 +8,7 @@ import {
 } from "@/lib/pool-stats";
 import { asSuperAdminOn } from "@/lib/tenancy";
 import {
+  probeAvailability,
   readDatabaseScreen,
   slowestMeanShare,
   statementTotals,
@@ -265,7 +266,7 @@ describe("rowsToWrite: what a snapshot run writes", () => {
     ]);
   });
 
-  test("an entry absent at the previous run gets no backfilled row at it", () => {
+  test("an entry absent from the previous complete scan was evicted and restarted: a zero row at it, never its old value", () => {
     const written = new Map([
       [
         "10:1:7",
@@ -279,7 +280,10 @@ describe("rowsToWrite: what a snapshot run writes", () => {
       previousRunAt: T0 + 5 * MIN,
       takenAt: T0 + 10 * MIN,
     });
-    expect(out.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
+    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
+      [T0 + 5 * MIN, 0],
+      [T0 + 10 * MIN, 9],
+    ]);
   });
 
   test("an entry reset after the previous run gets a zero row there even with an older baseline stored", () => {
@@ -307,6 +311,29 @@ describe("rowsToWrite: what a snapshot run writes", () => {
       [T0 + 5 * MIN, 0],
       [T0 + 10 * MIN, 4],
     ]);
+  });
+
+  test("without stats_since, a new entry absent from the previous complete scan gets a zero row there", () => {
+    const out = rowsToWrite({
+      entries: [entry(3)],
+      written: new Map(),
+      presentAtPrevious: new Set(["10:1:99"]),
+      previousRunAt: T0 + 5 * MIN,
+      takenAt: T0 + 10 * MIN,
+    });
+    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
+      [T0 + 5 * MIN, 0],
+      [T0 + 10 * MIN, 3],
+    ]);
+    // An unknown previous scan (a restart, or one cut at the cap) proves nothing: no zero row.
+    const unknown = rowsToWrite({
+      entries: [entry(3)],
+      written: new Map(),
+      presentAtPrevious: null,
+      previousRunAt: T0 + 5 * MIN,
+      takenAt: T0 + 10 * MIN,
+    });
+    expect(unknown.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
   });
 
   test("an entry that started after the previous run gets a zero row there, so its whole count lands", () => {
@@ -731,6 +758,25 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       })
       .catch((e: { cols?: string[] }) => e.cols);
     expect(seen).toEqual(["toplevel"]);
+  });
+
+  test("the availability probe runs under the request's deadline and answers within it", async () => {
+    // A deadline already spent: refused before any statement is sent, never a wait.
+    const spent = await probeAvailability(appDb, {
+      maxWait: 1,
+      timeout: 1,
+      deadline: Date.now() - 1,
+    });
+    expect(spent).toEqual({ available: false, reason: "unreadable" });
+    // With time left it answers what the server has: absent, not preloaded, or readable.
+    const live = await probeAvailability(appDb, {
+      maxWait: 5000,
+      timeout: 5000,
+      deadline: Date.now() + 5000,
+    });
+    expect(
+      live.available || ["not_created", "not_loaded"].includes(live.reason),
+    ).toBe(true);
   });
 
   test("what is not one plannable statement is refused before anything runs", () => {

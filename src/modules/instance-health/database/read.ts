@@ -1,10 +1,18 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
-import { asSuperAdminOn } from "@/lib/tenancy";
-import { metricsBudget } from "@/modules/analytics/budget";
+import {
+  asSuperAdminOn,
+  runWithinBudgetOn,
+  type TxBudget,
+} from "@/lib/tenancy";
+import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
 import { asFleetForInstanceHealth } from "../fleet-tx";
-import { lastAvailability, readStatements } from "./snapshot";
+import {
+  availabilityOfError,
+  lastAvailability,
+  type StatementsAvailability,
+} from "./snapshot";
 
 // What the "Database" screen, its REST route and its MCP tool read (docs/logs.md, "Database"). Every
 // figure about statements is a difference between snapshots inside the window, so it never mixes in
@@ -282,6 +290,28 @@ function toRow(
   };
 }
 
+// Probes pg_stat_statements in a transaction of its own (a server that does not preload it raises an
+// error, which would abort any transaction it ran in) under the request's budget, so a slow probe
+// cannot take the route past METRICS_TIMEOUT_MS before the screen's own read starts.
+export async function probeAvailability(
+  base: PrismaClient,
+  budget: TxBudget,
+): Promise<StatementsAvailability> {
+  try {
+    return await runWithinBudgetOn(base, budget, async (db) => {
+      const [ext] = await db.$queryRaw<{ created: boolean }[]>`
+        SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS created`;
+      if (!ext?.created) {
+        return { available: false, reason: "not_created" } as const;
+      }
+      await db.$queryRawUnsafe("SELECT 1 FROM pg_stat_statements LIMIT 1");
+      return { available: true } as const;
+    });
+  } catch (err) {
+    return availabilityOfError(err);
+  }
+}
+
 export async function readDatabaseScreen(
   window: WindowKey,
   base: PrismaClient = metricsPrisma,
@@ -289,10 +319,13 @@ export async function readDatabaseScreen(
 ): Promise<DatabaseScreenDto> {
   const from = new Date(now - WINDOWS[window]);
   const to = new Date(now);
+  // One deadline for the whole request, the probe included.
+  const deadline = metricsDeadline();
   // Whether the extension is readable now: the last snapshot's answer when there was one, else a
-  // read of its own (a fresh process, or one that does not sample).
-  let availability = lastAvailability();
-  if (!availability) availability = (await readStatements(base)).availability;
+  // probe of its own (a fresh process, or one that does not sample).
+  const availability =
+    lastAvailability() ??
+    (await probeAvailability(base, metricsBudget(deadline)));
 
   // A console read, on the metrics pool and within the metrics budget like the dashboards: a 7 day
   // window aggregates more than a scoped transaction's budget allows.
@@ -459,6 +492,6 @@ export async function readDatabaseScreen(
           .slice(0, 10),
       };
     },
-    metricsBudget(),
+    metricsBudget(deadline),
   );
 }

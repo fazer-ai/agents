@@ -1260,6 +1260,8 @@
     "statementsMissing": "Query statistics need the pg_stat_statements extension, which this database does not have.",
     "statementsNotLoaded": "pg_stat_statements is installed but the server does not load it.",
     "statementsTitle": "Query statistics",
+    "statementsUnreadable": "pg_stat_statements is installed, but reading it failed.",
+    "statementsUnreadableHelp": "The reason is in the server log under \"pg_stat_statements unreadable\". The sections below still answer.",
     "subtitle": "What the database spends its time on, the statements that hit their budget, and the tables behind them. Snapshots every 5 minutes, kept for DB_STATS_RETENTION_DAYS days.",
     "table": "Table",
     "tablesTitle": "Tables and indexes",

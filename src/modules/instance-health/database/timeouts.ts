@@ -159,7 +159,11 @@ export async function flushStatementTimeouts(
       break;
     }
     const fingerprint = statementFingerprint(ev.sql);
-    if (deferredPrints.has(fingerprint)) {
+    // A plan is per statement AND scope: the same SQL under another role or tenant is planned with
+    // another RLS predicate, so it is planned on its own.
+    const scopeTenantId = parseDbId(ev.tenantId);
+    const planKey = `${fingerprint}|${ev.fleet ? "fleet" : (scopeTenantId ?? "none")}`;
+    if (deferredPrints.has(planKey)) {
       deferred.push(ev);
       continue;
     }
@@ -168,16 +172,18 @@ export async function flushStatementTimeouts(
         db.dbStatementTimeout.findFirst({
           where: {
             fingerprint,
+            fleet: ev.fleet,
+            scopeTenantId,
             occurredAt: { gte: new Date(ev.at - PLAN_WINDOW_MS) },
             OR: [{ plan: { not: null } }, { planError: { not: null } }],
           },
           select: { id: true },
         }),
       );
-      const wantsPlan = !recent && !plannedNow.has(fingerprint);
+      const wantsPlan = !recent && !plannedNow.has(planKey);
       if (wantsPlan && plannedNow.size >= maxPlans) {
         deferred.push(ev);
-        deferredPrints.add(fingerprint);
+        deferredPrints.add(planKey);
         continue;
       }
       // Stored first, the plan after: a plan that uses up the call's time must not keep the
@@ -189,7 +195,7 @@ export async function flushStatementTimeouts(
             fingerprint,
             statement: clipText(normalizeStatement(ev.sql), STATEMENT_MAX),
             label: ev.label,
-            scopeTenantId: parseDbId(ev.tenantId),
+            scopeTenantId,
             fleet: ev.fleet,
             budgetMs: ev.budgetMs,
           },
@@ -198,7 +204,7 @@ export async function flushStatementTimeouts(
       );
       stored++;
       if (wantsPlan) {
-        plannedNow.add(fingerprint);
+        plannedNow.add(planKey);
         // capturePlan answers a failure (the deadline included) as a reason, which is stored.
         const plan = await capturePlan(ev, base, left(PLAN_TIMEOUT_MS));
         try {

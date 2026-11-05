@@ -343,8 +343,9 @@ export async function readDatabaseScreen(
 
     // Counted over the whole window first, then limited to the statements that failed most
     // recently: a storm of one statement neither undercounts itself nor hides the others. Each
-    // group shows its newest occurrence's scope and the newest plan of that statement, which can
-    // predate the window and still describes it.
+    // group shows its newest occurrence's scope and the newest plan of that statement taken under
+    // THAT scope (the same role and tenant), which can predate the window and still describes it: a
+    // plan from another scope carries another RLS predicate and is never shown in its place.
     const timeoutRows = await db.$queryRaw<
       {
         fingerprint: string;
@@ -379,6 +380,8 @@ export async function readDatabaseScreen(
             SELECT t.plan, t.plan_error, t.planned_as, t.occurred_at
               FROM db_statement_timeouts t
              WHERE t.fingerprint = g.fingerprint
+               AND t.fleet = l.fleet
+               AND t.scope_tenant_id IS NOT DISTINCT FROM l.scope_tenant_id
                AND (t.plan IS NOT NULL OR t.plan_error IS NOT NULL)
              ORDER BY t.occurred_at DESC LIMIT 1) p ON true
          ORDER BY g.last_at DESC`;

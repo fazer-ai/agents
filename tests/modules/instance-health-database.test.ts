@@ -1082,4 +1082,55 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect(group?.plannedAs).toBe("application role, tenant 1");
     expect(group?.plan).toContain("current_setting('app.tenant_id'");
   });
+
+  test("the same statement under another scope gets its own plan, and the screen never shows one scope's plan for another", async () => {
+    const sql = 'SELECT "id" FROM "agents" WHERE "system_prompt" = $1';
+    const at = Date.now();
+    const ev = (i: number, fleet: boolean) => ({
+      at: at + i,
+      sql,
+      label: "job:FOLLOWUP_SWEEP",
+      tenantId: fleet ? null : "1",
+      fleet,
+      budgetMs: 5000,
+    });
+    // First under the fleet role, then under a tenant, each in its own tick.
+    expect(await flushStatementTimeouts(appDb, [ev(0, true)])).toBe(1);
+    expect(await flushStatementTimeouts(appDb, [ev(1, false)])).toBe(1);
+    const rows = await suDb.dbStatementTimeout.findMany({
+      where: { fingerprint: statementFingerprint(sql) },
+      orderBy: { occurredAt: "asc" },
+    });
+    expect(rows.map((r) => r.plannedAs)).toEqual([
+      "fleet role",
+      "application role, tenant 1",
+    ]);
+    const screen = await readDatabaseScreen("1h", appDb);
+    const group = screen.timeouts.find(
+      (g) => g.fingerprint === statementFingerprint(sql),
+    );
+    // The newest occurrence is the tenant's, and so is the plan beside it, with its RLS predicate.
+    expect(group?.tenantId).toBe("1");
+    expect(group?.plannedAs).toBe("application role, tenant 1");
+    expect(group?.plan).toContain("current_setting('app.tenant_id'");
+
+    // A newer occurrence under a tenant whose plan is not taken yet shows no plan, not another's.
+    await suDb.dbStatementTimeout.create({
+      data: {
+        occurredAt: new Date(at + 2),
+        fingerprint: statementFingerprint(sql),
+        statement: rows[0]?.statement ?? sql,
+        label: "job:FOLLOWUP_SWEEP",
+        scopeTenantId: 2n,
+        fleet: false,
+        budgetMs: 5000,
+      },
+    });
+    const later = (await readDatabaseScreen("1h", appDb)).timeouts.find(
+      (g) => g.fingerprint === statementFingerprint(sql),
+    );
+    expect(later?.tenantId).toBe("2");
+    expect(later?.plan).toBeNull();
+    expect(later?.plannedAs).toBeNull();
+  });
 });

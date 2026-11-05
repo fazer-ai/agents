@@ -5,6 +5,7 @@ import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import { parseDbId } from "@/lib/db-id";
 import {
   drainStatementTimeouts,
+  requeueStatementTimeouts,
   type StatementTimeoutEvent,
 } from "@/lib/pool-stats";
 import {
@@ -127,17 +128,32 @@ export async function capturePlan(
   }
 }
 
+// What one sampler tick spends here. The flush runs inside the database half, before the sample is
+// evaluated, so a storm of distinct timeouts must not hold the instance alerts back: a bounded batch
+// of events, and one EXPLAIN (up to PLAN_TIMEOUT_MS). What does not fit waits for the next tick.
+export const FLUSH_MAX_EVENTS = 50;
+const FLUSH_MAX_PLANS = 1;
+
 // Stores what this process captured since the last call, and plans the first occurrence of each
-// statement in the window. Returns how many were stored.
+// statement in the window. An event whose plan does not fit this call goes back to the queue, with
+// every later event of the same statement, so the first occurrence is still the one planned.
+// Returns how many were stored.
 export async function flushStatementTimeouts(
   base: PrismaClient = instanceHealthPrisma,
-  events: StatementTimeoutEvent[] = drainStatementTimeouts(),
+  events: StatementTimeoutEvent[] = drainStatementTimeouts(FLUSH_MAX_EVENTS),
+  maxPlans: number = FLUSH_MAX_PLANS,
 ): Promise<number> {
   if (events.length === 0) return 0;
   const plannedNow = new Set<string>();
+  const deferred: StatementTimeoutEvent[] = [];
+  const deferredPrints = new Set<string>();
   let stored = 0;
   for (const ev of events) {
     const fingerprint = statementFingerprint(ev.sql);
+    if (deferredPrints.has(fingerprint)) {
+      deferred.push(ev);
+      continue;
+    }
     try {
       const recent = await asFleetForInstanceHealth(base, (db) =>
         db.dbStatementTimeout.findFirst({
@@ -150,6 +166,11 @@ export async function flushStatementTimeouts(
         }),
       );
       const wantsPlan = !recent && !plannedNow.has(fingerprint);
+      if (wantsPlan && plannedNow.size >= maxPlans) {
+        deferred.push(ev);
+        deferredPrints.add(fingerprint);
+        continue;
+      }
       let plan: { plan: string; plannedAs: string } | { error: string } | null =
         null;
       if (wantsPlan) {
@@ -184,5 +205,6 @@ export async function flushStatementTimeouts(
       );
     }
   }
+  requeueStatementTimeouts(deferred);
   return stored;
 }

@@ -8,6 +8,8 @@ import {
   instrumentPool,
   lastStatementTimeout,
   lockTimeoutsPerMinute,
+  recordStatementTimeout,
+  requeueStatementTimeouts,
   resetLockTimeouts,
   resetStatementTimeouts,
   statementTimeoutsPerMinute,
@@ -138,6 +140,27 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
     expect(ev?.budgetMs).toBe(40);
   });
 
+  test("a rollback to a savepoint keeps the transaction's scope", async () => {
+    const client = await (pool as Pool).connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('statement_timeout', $2, true)",
+        ["5", "40"],
+      );
+      await client.query("SAVEPOINT s1");
+      await expect(client.query("SELECT 1/0")).rejects.toThrow();
+      await client.query("ROLLBACK TO SAVEPOINT s1");
+      await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    const [ev] = drainStatementTimeouts();
+    expect(ev?.tenantId).toBe("5");
+    expect(ev?.budgetMs).toBe(40);
+  });
+
   test("a statement that fails for another reason records nothing", async () => {
     await expect((pool as Pool).query("SELECT 1/0")).rejects.toThrow();
     expect(drainStatementTimeouts()).toEqual([]);
@@ -152,5 +175,26 @@ describe("the label of a request is its route pattern", () => {
       .get("/v1/things/:id", () => currentWorkLabel() ?? "none");
     const res = await app.handle(new Request("http://localhost/v1/things/123"));
     expect(await res.text()).toBe("GET /v1/things/:id");
+  });
+});
+
+describe("the queue a flush drains", () => {
+  const ev = (at: number) => ({
+    at,
+    sql: "SELECT 1",
+    label: null,
+    tenantId: null,
+    fleet: false,
+    budgetMs: null,
+  });
+
+  test("a bounded drain leaves the rest, and what is put back goes ahead of what arrived since", () => {
+    resetStatementTimeouts();
+    for (const at of [1, 2, 3]) recordStatementTimeout(ev(at));
+    const taken = drainStatementTimeouts(2);
+    expect(taken.map((e) => e.at)).toEqual([1, 2]);
+    recordStatementTimeout(ev(4));
+    requeueStatementTimeouts(taken.slice(1));
+    expect(drainStatementTimeouts().map((e) => e.at)).toEqual([2, 3, 4]);
   });
 });

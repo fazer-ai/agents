@@ -127,11 +127,24 @@ export function lastStatementTimeout(
 }
 
 // Hands over what is waiting to be stored, and forgets it.
-export function drainStatementTimeouts(): StatementTimeoutEvent[] {
+// At most `max` of them, oldest first; the rest stay queued for the next call.
+export function drainStatementTimeouts(
+  max: number = Number.POSITIVE_INFINITY,
+): StatementTimeoutEvent[] {
   const r = registry();
-  const out = r.pendingTimeouts;
-  r.pendingTimeouts = [];
-  return out;
+  return r.pendingTimeouts.splice(0, max);
+}
+
+// Puts back, ahead of what arrived since, the events a flush took and did not get to. Same cap as
+// the queue: under a storm the oldest are the ones dropped.
+export function requeueStatementTimeouts(
+  events: StatementTimeoutEvent[],
+): void {
+  if (events.length === 0) return;
+  const r = registry();
+  r.pendingTimeouts = [...events, ...r.pendingTimeouts].slice(
+    -MAX_PENDING_TIMEOUTS,
+  );
 }
 
 // The text and values of a `client.query(...)` call, in either of pg's shapes: (text, values) or
@@ -157,7 +170,10 @@ function statementOf(args: unknown[]): {
 }
 
 const TX_START = /^\s*(BEGIN|START\s+TRANSACTION)\b/i;
-const TX_END = /^\s*(COMMIT|ROLLBACK|END|ABORT)\b/i;
+// `ROLLBACK TO [SAVEPOINT]` undoes back to a savepoint and leaves the transaction, and the scope it
+// set, in force: only a full ROLLBACK ends it.
+const TX_END =
+  /^\s*(COMMIT|END|ABORT|ROLLBACK(?!\s+(?:(?:WORK|TRANSACTION)\s+)?TO\b))\b/i;
 const SET_CONFIG =
   /set_config\(\s*'([a-z_.]+)'\s*,\s*([^,]+?)\s*,\s*(?:true|false)\s*\)/gi;
 

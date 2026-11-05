@@ -2,6 +2,10 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import {
+  drainStatementTimeouts,
+  resetStatementTimeouts,
+} from "@/lib/pool-stats";
 import { asSuperAdminOn } from "@/lib/tenancy";
 import {
   readDatabaseScreen,
@@ -262,6 +266,33 @@ describe("rowsToWrite: what a snapshot run writes", () => {
     expect(out.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
   });
 
+  test("an entry reset after the previous run gets a zero row there even with an older baseline stored", () => {
+    // Its baseline is from long before the window; it was evicted and came back after the last run.
+    const written = new Map([
+      [
+        "10:1:7",
+        {
+          calls: 50,
+          totalExecMs: 100,
+          rows: 50,
+          statsSince: T0 - 60 * MIN,
+          takenAt: T0 - 50 * MIN,
+        },
+      ],
+    ]);
+    const out = rowsToWrite({
+      entries: [entry(4, new Date(T0 + 7 * MIN))],
+      written,
+      presentAtPrevious: new Set(),
+      previousRunAt: T0 + 5 * MIN,
+      takenAt: T0 + 10 * MIN,
+    });
+    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
+      [T0 + 5 * MIN, 0],
+      [T0 + 10 * MIN, 4],
+    ]);
+  });
+
   test("an entry that started after the previous run gets a zero row there, so its whole count lands", () => {
     const out = rowsToWrite({
       entries: [entry(4, new Date(T0 + 7 * MIN))],
@@ -511,6 +542,33 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect("plannedAs" in result ? result.plannedAs : result.error).toBe(
       "fleet role",
     );
+  });
+
+  test("a flush plans one statement per call and leaves the next one queued with its first occurrence", async () => {
+    resetStatementTimeouts();
+    const at = Date.now();
+    const ev = (sql: string, i: number) => ({
+      at: at + i,
+      sql,
+      label: "job:FOLLOWUP_SWEEP",
+      tenantId: "1",
+      fleet: false,
+      budgetMs: 5000,
+    });
+    const a = 'SELECT "id" FROM "agents" WHERE "kind" = $1';
+    const b = 'SELECT "id" FROM "agents" WHERE "mode" = $1';
+    expect(
+      await flushStatementTimeouts(appDb, [ev(a, 0), ev(b, 1), ev(b, 2)], 1),
+    ).toBe(1);
+    // Both occurrences of the second statement wait for the next call, the first one first.
+    const queued = drainStatementTimeouts();
+    expect(queued.map((e) => e.at)).toEqual([at + 1, at + 2]);
+    expect(await flushStatementTimeouts(appDb, queued, 1)).toBe(2);
+    const rows = await suDb.dbStatementTimeout.findMany({
+      where: { fingerprint: statementFingerprint(b) },
+      orderBy: { occurredAt: "asc" },
+    });
+    expect(rows.map((r) => r.plan !== null)).toEqual([true, false]);
   });
 
   test("what is not one plannable statement is refused before anything runs", () => {

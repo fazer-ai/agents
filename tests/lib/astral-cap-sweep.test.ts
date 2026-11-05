@@ -430,6 +430,8 @@ const BARE_SLICES: Record<
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [3, "array + index"],
+  // The queue of statement timeouts waiting to be stored, capped at a count of events.
+  "src/lib/pool-stats.ts": [1, "array"],
   "src/lib/redact.ts": [1, "array"],
   "src/lib/session-zone.ts": [2, "index"],
   "src/lib/ssrf.ts": [1, "index"],

@@ -134,7 +134,14 @@ export function rowsToWrite(input: {
           prev.statsSince === statsSince)
       ) {
         out.push({ takenAt: p, entry: e, values: { ...prev } });
-      } else if (!prev && statsSince !== null && statsSince > p) {
+      } else if (
+        statsSince !== null &&
+        statsSince > p &&
+        // Reset or evicted after the previous run: the counters start from zero there. Also when an
+        // older baseline exists, since it can sit outside the window being read; one written AT
+        // the previous run already is that baseline.
+        (!prev || (prev.takenAt < p && prev.statsSince !== statsSince))
+      ) {
         out.push({
           takenAt: p,
           entry: e,

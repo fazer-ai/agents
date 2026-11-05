@@ -480,12 +480,22 @@ export function DatabasePage({
   const [screen, setScreen] = useState<Screen | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // A refresh that failed after figures were shown: they stay, marked as possibly out of date.
+  const [stale, setStale] = useState(false);
   // A slow answer for a window the user already left never replaces the newer one.
   const sent = useRef(0);
+  const shown = useRef(false);
 
   const load = useCallback(async (w: WindowKey, initial: boolean) => {
     const id = ++sent.current;
-    if (initial) setLoading(true);
+    if (initial) {
+      setLoading(true);
+      shown.current = false;
+    }
+    const failed = () => {
+      if (shown.current) setStale(true);
+      else setError(true);
+    };
     try {
       const { data, error: err } = await api.api.v1[
         "instance-health"
@@ -494,15 +504,19 @@ export function DatabasePage({
       });
       if (id !== sent.current) return;
       if (err || !data) {
-        if (initial) setError(true);
+        failed();
         return;
       }
       setError(false);
+      setStale(false);
+      shown.current = true;
       setScreen(data.database as Screen);
     } catch {
-      if (id === sent.current && initial) setError(true);
+      if (id === sent.current) failed();
     } finally {
-      if (id === sent.current && initial) setLoading(false);
+      // Whichever request is the newest settles the loading state, however it was started: an
+      // initial read overtaken by a refresh would otherwise leave the skeleton up for good.
+      if (id === sent.current) setLoading(false);
     }
   }, []);
 
@@ -562,6 +576,18 @@ export function DatabasePage({
       >
         {screen && (
           <>
+            {stale && (
+              <p
+                data-testid="refresh-stale"
+                role="status"
+                className="border-warning bg-warning-soft text-text-primary rounded-lg border px-4 py-2 text-sm"
+              >
+                {t(
+                  "database.refreshFailed",
+                  "The last refresh failed: these figures may be out of date. It tries again every minute.",
+                )}
+              </p>
+            )}
             <Card className="space-y-3" data-testid="section-statements">
               <h3 className="text-text-primary text-sm font-semibold">
                 {t("database.statementsTitle", "Query statistics")}

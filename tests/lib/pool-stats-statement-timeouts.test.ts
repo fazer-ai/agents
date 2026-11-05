@@ -72,6 +72,7 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
     expect(ev?.tenantId).toBe("42");
     expect(ev?.budgetMs).toBe(50);
     expect(ev?.fleet).toBe(false);
+    expect(ev?.pool).toBe("test-statement-timeouts");
     expect(statementTimeoutsPerMinute()).toBe(1);
     expect(lastStatementTimeout()?.label).toBe("job:FOLLOWUP_SWEEP");
     // Counted apart from the lock timeouts, which mean something else.

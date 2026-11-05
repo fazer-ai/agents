@@ -36,6 +36,9 @@ export interface StatementTimeoutEvent {
   tenantId: string | null;
   fleet: boolean;
   budgetMs: number | null;
+  // The instrumented pool it ran on ("main", "checkpointer", ...): the checkpointer can point at
+  // another database, where the statement's relations do not exist.
+  pool?: string;
 }
 
 interface ClientScope {
@@ -213,7 +216,12 @@ function trackScope(scope: ClientScope, text: string, values: unknown[]): void {
 
 function noteError(
   err: unknown,
-  statement: { text: string | null; label: string | null; scope: ClientScope },
+  statement: {
+    text: string | null;
+    label: string | null;
+    scope: ClientScope;
+    pool: string;
+  },
 ): void {
   const code = (err as { code?: unknown } | null)?.code;
   if (code === LOCK_TIMEOUT_SQLSTATE) recordLockTimeout();
@@ -223,13 +231,14 @@ function noteError(
       sql: statement.text,
       label: statement.label,
       ...statement.scope,
+      pool: statement.pool,
     });
   }
 }
 
 // Watches a client's statements for 55P03 and 57014, once per client, without changing what the
 // caller gets: the rejection still reaches it, and a callback still receives its error.
-function watchClient(client: PoolClient): void {
+function watchClient(client: PoolClient, pool: string): void {
   const c = client as PoolClient & {
     [WATCHED]?: true;
     [SCOPE]?: ClientScope;
@@ -245,7 +254,12 @@ function watchClient(client: PoolClient): void {
     const { text, values } = statementOf(args);
     if (text) trackScope(scope, text, values);
     // Read now, in the caller's context: the rejection settles on another continuation.
-    const statement = { text, label: currentWorkLabel(), scope: { ...scope } };
+    const statement = {
+      text,
+      label: currentWorkLabel(),
+      scope: { ...scope },
+      pool,
+    };
     const last = args[args.length - 1];
     if (typeof last === "function") {
       args[args.length - 1] = (err: unknown, ...rest: unknown[]) => {
@@ -288,7 +302,7 @@ export function instrumentPool<P extends Pool>(name: string, pool: P): P {
       return connect(
         (err: unknown, client: PoolClient | undefined, ...rest: unknown[]) => {
           done();
-          if (client) watchClient(client);
+          if (client) watchClient(client, name);
           return (cb as (...a: unknown[]) => unknown)(err, client, ...rest);
         },
       );
@@ -296,7 +310,7 @@ export function instrumentPool<P extends Pool>(name: string, pool: P): P {
     const out = connect() as Promise<PoolClient>;
     out.then((client) => {
       done();
-      watchClient(client);
+      watchClient(client, name);
     }, done);
     return out;
   };

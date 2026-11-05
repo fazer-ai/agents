@@ -87,14 +87,17 @@ function stubApi(
   }) as typeof fetch;
 }
 
-function renderPage() {
+function renderPage(refreshMs?: number) {
   render(
     <MemoryRouter initialEntries={["/admin/database"]}>
       <ThemeProvider>
         <ToastProvider>
           <AuthProvider>
             <Routes>
-              <Route path="/admin/database" element={<DatabasePage />} />
+              <Route
+                path="/admin/database"
+                element={<DatabasePage refreshMs={refreshMs} />}
+              />
               <Route path="/admin/users" element={<p>users page</p>} />
             </Routes>
           </AuthProvider>
@@ -192,6 +195,93 @@ test("an installed extension that could not be read says so, without the setup i
   );
   expect(screen.queryByTestId("enable-statements") !== null).toBe(false);
   expect(screen.queryAllByTestId("table-row").length).toBe(1);
+});
+
+test("a refresh that overtakes a slow first read still ends the loading state", async () => {
+  let calls = 0;
+  let release: () => void = () => {};
+  const refreshSent = new Promise<void>((r) => {
+    release = r;
+  });
+  const realStub = (role: string) => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/auth/me") {
+        return new Response(
+          JSON.stringify({ user: { id: "1", email: "a@b.c", role } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      calls++;
+      // The first read answers only after the refresh has been sent: slower than the interval.
+      if (calls === 1) await refreshSent;
+      else release();
+      const body = {
+        database: {
+          ...BASE,
+          window: "1h",
+          statements: {
+            available: true,
+            snapshots: 1,
+            lastSnapshotAt: null,
+            byTotal: [MANY_CHEAP],
+            byMean: [MANY_CHEAP],
+          },
+        },
+      };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+  };
+  realStub("SUPER_ADMIN");
+  renderPage(30);
+  await waitFor(() => expect(queries().length).toBe(1), { timeout: 2000 });
+});
+
+test("a refresh that fails after figures were shown keeps them and says they may be out of date", async () => {
+  let calls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/auth/me") {
+      return new Response(
+        JSON.stringify({
+          user: { id: "1", email: "a@b.c", role: "SUPER_ADMIN" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    calls++;
+    if (calls > 1) {
+      return new Response(JSON.stringify({ error: "down" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        database: {
+          ...BASE,
+          window: "1h",
+          statements: {
+            available: true,
+            snapshots: 1,
+            lastSnapshotAt: null,
+            byTotal: [MANY_CHEAP],
+            byMean: [MANY_CHEAP],
+          },
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  renderPage(40);
+  await waitFor(
+    () => expect(screen.queryByTestId("refresh-stale") !== null).toBe(true),
+    { timeout: 2000 },
+  );
+  expect(queries().length).toBe(1);
 });
 
 test("a tenant admin is sent away and the screen's API is never asked", async () => {

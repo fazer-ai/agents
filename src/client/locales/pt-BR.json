@@ -1302,6 +1302,7 @@
     "planError": "Sem plano: {{error}}",
     "query": "Consulta",
     "ranBy": "rodado por {{label}}",
+    "refreshFailed": "A última atualização falhou: estes números podem estar desatualizados. Nova tentativa a cada minuto.",
     "rows": "Linhas",
     "scopeFleet": "papel da frota",
     "scopeNone": "sem escopo de tenant",

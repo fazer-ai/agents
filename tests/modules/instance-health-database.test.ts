@@ -779,6 +779,49 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     ).toBe(true);
   });
 
+  test("a checkpointer timeout is not planned when the checkpointer has a database of its own", async () => {
+    const saved = config.langgraphDatabaseUrl;
+    (
+      config as { langgraphDatabaseUrl: string | undefined }
+    ).langgraphDatabaseUrl = "postgresql://elsewhere/langgraph";
+    try {
+      const other = await capturePlan(
+        {
+          sql: "SELECT checkpoint FROM checkpoints WHERE thread_id = $1",
+          tenantId: null,
+          fleet: false,
+          pool: "checkpointer",
+        },
+        appDb,
+      );
+      expect("error" in other ? other.error : "").toContain("checkpointer");
+    } finally {
+      (
+        config as { langgraphDatabaseUrl: string | undefined }
+      ).langgraphDatabaseUrl = saved;
+    }
+    // Sharing the application database, it is planned like any other statement.
+    (
+      config as { langgraphDatabaseUrl: string | undefined }
+    ).langgraphDatabaseUrl = config.databaseUrl;
+    try {
+      const same = await capturePlan(
+        {
+          sql: 'SELECT "id" FROM "agents" LIMIT $1',
+          tenantId: "1",
+          fleet: false,
+          pool: "checkpointer",
+        },
+        appDb,
+      );
+      expect("plan" in same).toBe(true);
+    } finally {
+      (
+        config as { langgraphDatabaseUrl: string | undefined }
+      ).langgraphDatabaseUrl = saved;
+    }
+  });
+
   test("what is not one plannable statement is refused before anything runs", () => {
     expect(unplannableReason("SELECT 1; DROP TABLE x")).toBe(
       "more than one statement",

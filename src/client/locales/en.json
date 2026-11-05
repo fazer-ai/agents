@@ -1244,6 +1244,7 @@
     "planError": "No plan: {{error}}",
     "query": "Query",
     "ranBy": "ran by {{label}}",
+    "refreshFailed": "The last refresh failed: these figures may be out of date. It tries again every minute.",
     "rows": "Rows",
     "scopeFleet": "fleet role",
     "scopeNone": "no tenant scope",

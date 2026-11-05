@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
+import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import {
   drainStatementTimeouts,
@@ -69,11 +70,22 @@ export function plannedAsOf(ev: {
 // the statement carried is needed or stored, and the plan is the one Postgres builds for the
 // statement's shape. Read-only, under the captured scope.
 export async function capturePlan(
-  ev: Pick<StatementTimeoutEvent, "sql" | "tenantId" | "fleet">,
+  ev: Pick<StatementTimeoutEvent, "sql" | "tenantId" | "fleet" | "pool">,
   base: PrismaClient = instanceHealthPrisma,
 ): Promise<{ plan: string; plannedAs: string } | { error: string }> {
   const refused = unplannableReason(ev.sql);
   if (refused) return { error: refused };
+  // The plan is taken on the application database; a checkpointer on another one would explain a
+  // statement against relations that are not there, or that are someone else's.
+  if (
+    ev.pool === "checkpointer" &&
+    config.langgraphDatabaseUrl !== config.databaseUrl
+  ) {
+    return {
+      error:
+        "ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken",
+    };
+  }
   const body = ev.sql.trim().replace(/;\s*$/, "");
   // "Planned as" is read back from the transaction that planned, not restated from the event: the
   // record says which role and tenant Postgres actually applied.

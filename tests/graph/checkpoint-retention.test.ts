@@ -28,6 +28,7 @@ import {
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A LIVE THREAD KEEPS ONLY WHAT THE SAVER RESUMES FROM. Threads are written two ways: straight
@@ -600,6 +601,54 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     ]);
     expect([a, b].filter((r) => r === null)).toHaveLength(1);
     expect((await counts([id])).checkpoints).toBe(1);
+  }, 60_000);
+
+  // A thread deleted whole (`deleteThread`, on a reset or a playground session) locks its blobs, then
+  // its checkpoints. A batch holds one table's rows at a time, so a deletion that holds the blobs while
+  // the batch waits on them still gets the checkpoints, and both finish.
+  test("a thread deleted whole while a batch prunes it does not deadlock either one", async () => {
+    const id = thread();
+    for (let i = 0; i < 6; i++) await turn(id, i);
+    const holder = await cp.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SET LOCAL lock_timeout = '5s'");
+      await holder.query(
+        "SELECT 1 FROM langgraph.checkpoint_blobs WHERE thread_id = $1 FOR UPDATE",
+        [id],
+      );
+      const batch = retainCheckpointBatch(cp, "", {
+        graceMs: 0,
+        scope: only(id),
+        base: appDb,
+      });
+      // Until the batch is waiting on the blobs this transaction holds.
+      await until("the batch to wait on the held blobs", async () => {
+        const waiting = await cp.query(
+          `SELECT 1 FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+              AND query LIKE '%DELETE FROM langgraph.checkpoint_blobs%'`,
+        );
+        return (waiting.rowCount ?? 0) > 0;
+      });
+      await holder.query(
+        "SELECT 1 FROM langgraph.checkpoints WHERE thread_id = $1 FOR UPDATE",
+        [id],
+      );
+      for (const t of ["checkpoint_blobs", "checkpoints", "checkpoint_writes"])
+        await holder.query(`DELETE FROM langgraph.${t} WHERE thread_id = $1`, [
+          id,
+        ]);
+      await holder.query("COMMIT");
+      await batch;
+    } finally {
+      holder.release();
+    }
+    expect(await counts([id])).toEqual({
+      checkpoints: 0,
+      checkpoint_writes: 0,
+      checkpoint_blobs: 0,
+    });
   }, 60_000);
 
   // The batch's deletes run with sequential scans off: on a small table the planner would rather read

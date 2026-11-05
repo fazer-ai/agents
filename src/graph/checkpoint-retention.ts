@@ -234,41 +234,51 @@ export async function retainCheckpointBatch(
     next,
   };
   if (owned.length === 0) return result;
-  return checkpointTransaction(pool, guard, async (query) => {
-    // Every statement below has a path through the primary key, and the pass is housekeeping that
-    // must not read a whole table: on a small one the planner would rather scan it all, which is the
-    // read this pass exists not to make. Local to this transaction.
-    await query("SET LOCAL enable_seqscan = off", []);
-    const newest = (
-      (await query(NEWEST_CHECKPOINT_SQL, [owned])) as {
-        rows: { thread_id: string; ts: string | null }[];
-      }
-    ).rows;
-    // A thread with no checkpoint has no row here and nothing to resume from; its leftovers are the
-    // reconciler's or a teardown's, never this pass's.
-    const due = newest
-      .filter((r) => !withinGrace(r.ts, graceMs))
-      .map((r) => r.thread_id);
-    if (due.length === 0) return result;
-    const touched = new Set<string>();
-    let bounded = false;
-    for (const table of RETAIN_ORDER) {
-      const got = await retainRows(query, table, due, rows, budget);
-      result.deleted[table] = got.n;
-      result.bytes += got.bytes;
-      for (const id of got.threads) touched.add(id);
-      if (got.more) bounded = true;
-      // The writes and blobs are checked against every checkpoint their thread still has, so while
-      // old checkpoints are left that check grows with their count (a thread of thousands would make
-      // it quadratic and run past the batch's cut, rolling the checkpoints back with it). They wait
-      // until the batch's threads are down to their newest checkpoints, which a later batch reaches.
-      if (table === "checkpoints" && got.more) break;
-    }
-    result.threads = [...touched];
-    // A statement that reached its bound left rows of these threads: the next batch walks them again.
-    if (bounded) result.next = after;
-    return result;
-  });
+  // Every statement below has a path through the primary key, and the pass is housekeeping that must
+  // not read a whole table: on a small one the planner would rather scan it all. Local to each
+  // transaction.
+  const indexed = <T>(fn: (query: Bounded) => Promise<T>) =>
+    checkpointTransaction(pool, guard, async (query) => {
+      await query("SET LOCAL enable_seqscan = off", []);
+      return fn(query);
+    });
+  const newest = await indexed(
+    async (query) =>
+      (
+        (await query(NEWEST_CHECKPOINT_SQL, [owned])) as {
+          rows: { thread_id: string; ts: string | null }[];
+        }
+      ).rows,
+  );
+  // A thread with no checkpoint has no row here and nothing to resume from; its leftovers are the
+  // reconciler's or a teardown's, never this pass's.
+  const due = newest
+    .filter((r) => !withinGrace(r.ts, graceMs))
+    .map((r) => r.thread_id);
+  if (due.length === 0) return result;
+  const touched = new Set<string>();
+  let bounded = false;
+  // One transaction per table: a thread deleted whole (`deleteThread`, on a reset or a playground
+  // session) locks its tables in another order, and a transaction holding one table's rows while
+  // waiting on another's would deadlock with it. Each condition is read again when its statement runs,
+  // so a batch stopped between tables leaves rows a later one takes, never a thread missing its state.
+  for (const table of RETAIN_ORDER) {
+    const got = await indexed((query) =>
+      retainRows(query, table, due, rows, budget),
+    );
+    result.deleted[table] = got.n;
+    result.bytes += got.bytes;
+    for (const id of got.threads) touched.add(id);
+    if (got.more) bounded = true;
+    // The writes and blobs are checked against every checkpoint their thread still has, so while old
+    // checkpoints are left that check grows with their count (quadratic on a thread of thousands).
+    // They wait until the batch's threads are down to their newest checkpoints, a later batch.
+    if (table === "checkpoints" && got.more) break;
+  }
+  result.threads = [...touched];
+  // A statement that reached its bound left rows of these threads: the next batch walks them again.
+  if (bounded) result.next = after;
+  return result;
 }
 
 // A whole pass: the key of `checkpoints` walked once, batch after batch, pausing after each batch that

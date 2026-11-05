@@ -8,6 +8,10 @@ import {
   startCheckpointReconciler,
   stopCheckpointReconciler,
 } from "@/graph/checkpoint-reconcile";
+import {
+  startCheckpointRetention,
+  stopCheckpointRetention,
+} from "@/graph/checkpoint-retention";
 import { assertConnectionBudget } from "@/lib/db-budget";
 import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
@@ -243,6 +247,9 @@ if (config.schedulerWorker.enabled) {
   // teardown sweeps only what exists while it runs, and a turn that writes after it leaves rows
   // nothing points at.
   startCheckpointReconciler();
+  // NOTE: The pass that keeps, of every live thread, only the checkpoint the saver resumes from: a
+  // thread keeps every checkpoint it wrote, each with a copy of the whole conversation.
+  startCheckpointRetention();
   // NOTE: Every account whose occurrence monitor is on gets its round back.
   void ensureAllOccurrenceRounds().catch((error) =>
     logger.warn({ error }, "Failed to arm occurrence rounds"),
@@ -309,6 +316,7 @@ installShutdownHandlers({
     stopAlertWorker();
     stopDeadClaimSweep();
     stopCheckpointReconciler();
+    stopCheckpointRetention();
     stopInstanceHealthSampler();
   },
   boundMs: config.shutdown.drainMs,

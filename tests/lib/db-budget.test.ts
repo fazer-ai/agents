@@ -46,14 +46,14 @@ describe("connection budget", () => {
     }
   });
 
-  test("the checkpoint reconciler's lock connection counts on the checkpointer's server, where the scheduler runs", () => {
+  test("the checkpoint reconciler's and retention pass's lock connections count on the checkpointer's server, where the scheduler runs", () => {
     const saved = config.schedulerWorker.enabled;
     try {
       config.schedulerWorker.enabled = true;
       const share = poolShares().find(
         (p) => p.env === "SCHEDULER_WORKER_ENABLED",
       );
-      expect(share?.size).toBe(1);
+      expect(share?.size).toBe(2);
       expect(share?.url).toBe(config.langgraphDatabaseUrl ?? "");
       config.schedulerWorker.enabled = false;
       expect(

@@ -31,6 +31,9 @@ const {
   CHECKPOINT_RECONCILE_INTERVAL_MS,
   CHECKPOINT_RECONCILE_FIRST_DELAY_MS,
   CHECKPOINT_RECONCILE_GRACE_MS,
+  CHECKPOINT_RETENTION_INTERVAL_MS,
+  CHECKPOINT_RETENTION_FIRST_DELAY_MS,
+  CHECKPOINT_RETENTION_GRACE_MS,
   OBSERVE_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_ENABLED,
   COMPACTION_WORKER_ENABLED,
@@ -723,6 +726,32 @@ const config = {
       "CHECKPOINT_RECONCILE_GRACE_MS",
       60 * 60 * 1000,
       "It is how old a thread's newest checkpoint must be before the thread can be deleted for having no owner.",
+      MAX_DURATION_MS,
+    ),
+  },
+  // NOTE: The pass that keeps, of every live thread, only the checkpoint the saver resumes from
+  // (src/graph/checkpoint-retention.ts): the older checkpoints, their writes and the blob versions only
+  // they named are deleted. It rides with the scheduler worker, like the reconciler. Operational knobs.
+  checkpointRetention: {
+    intervalMs: parseIntSetting(
+      CHECKPOINT_RETENTION_INTERVAL_MS,
+      "CHECKPOINT_RETENTION_INTERVAL_MS",
+      6 * 60 * 60 * 1000,
+      "It is how often the checkpoints older than each thread's newest are deleted.",
+      MAX_DURATION_MS,
+    ),
+    firstDelayMs: parseIntSetting(
+      CHECKPOINT_RETENTION_FIRST_DELAY_MS,
+      "CHECKPOINT_RETENTION_FIRST_DELAY_MS",
+      20 * 60 * 1000,
+      "It is how long after the boot the first pass over old checkpoints runs.",
+      MAX_DURATION_MS,
+    ),
+    graceMs: parseIntSetting(
+      CHECKPOINT_RETENTION_GRACE_MS,
+      "CHECKPOINT_RETENTION_GRACE_MS",
+      60 * 60 * 1000,
+      "It is how old a thread's newest checkpoint must be before its older checkpoints can be deleted.",
       MAX_DURATION_MS,
     ),
   },

@@ -336,6 +336,46 @@ async function connectLock(): Promise<LockConnection> {
   return client;
 }
 
+// Holds `lockName` for the whole of `run`, on a connection of its own outside the checkpointer's pool
+// (the reasons are at PASS_LOCK), and hands `run` the check each batch makes first. Null when another
+// pass holds the lock. Shared with the retention pass (checkpoint-retention.ts), under its own name.
+export async function holdingPassLock<T>(
+  lockName: string,
+  opts: {
+    lockConnection?: () => Promise<LockConnection>;
+    lockQueryMs?: number;
+  },
+  run: (beforeBatch: () => Promise<void>) => Promise<T>,
+): Promise<T | null> {
+  const lock = await (opts.lockConnection ?? connectLock)();
+  // A connection that stops answering after it opened would hold the pass, and every pass after
+  // it, forever: each query on it has a deadline, past which the pass fails and the connection is
+  // dropped.
+  const ask = (sql: string, params?: unknown[]) =>
+    bounded(
+      lock.query<{ ok: boolean }>(sql, params),
+      opts.lockQueryMs ?? LOCK_QUERY_MS,
+    );
+  try {
+    const got = await ask("SELECT pg_try_advisory_lock(hashtext($1)) AS ok", [
+      lockName,
+    ]);
+    if (!got.rows[0]?.ok) return null;
+    // The lock lives as long as its connection: one the server closed (an idle session timeout, a
+    // restart) has released it, and another pass may already hold it. Each batch asks first, and
+    // a connection that does not answer ends the pass before it deletes anything more.
+    return await run(async () => {
+      await ask("SELECT 1");
+    });
+  } finally {
+    // Closing the connection releases the lock. A connection that no longer answers may not
+    // close either, so the wait for it is bounded too.
+    await bounded(lock.end(), opts.lockQueryMs ?? LOCK_QUERY_MS).catch(
+      () => {},
+    );
+  }
+}
+
 // A whole pass: every table's key walked once, batch after batch, pausing after each batch that
 // deleted something. Stops early, keeping what it did, when `shouldStop` answers true. Null when
 // another pass holds the lock. Background work, on the background pool: the owner reads must not
@@ -349,38 +389,11 @@ export function reconcileCheckpoints(
     lockQueryMs?: number;
   } = {},
 ): Promise<ReconcileTotals | null> {
-  return runInPoolClass("background", async () => {
-    const lock = await (opts.lockConnection ?? connectLock)();
-    // A connection that stops answering after it opened would hold the pass, and every pass after
-    // it, forever: each query on it has a deadline, past which the pass fails and the connection is
-    // dropped.
-    const ask = (sql: string, params?: unknown[]) =>
-      bounded(
-        lock.query<{ ok: boolean }>(sql, params),
-        opts.lockQueryMs ?? LOCK_QUERY_MS,
-      );
-    try {
-      const got = await ask("SELECT pg_try_advisory_lock(hashtext($1)) AS ok", [
-        PASS_LOCK,
-      ]);
-      if (!got.rows[0]?.ok) return null;
-      // The lock lives as long as its connection: one the server closed (an idle session timeout, a
-      // restart) has released it, and another pass may already hold it. Each batch asks first, and
-      // a connection that does not answer ends the pass before it deletes anything more.
-      return await reconcileAll(pool, {
-        ...opts,
-        beforeBatch: async () => {
-          await ask("SELECT 1");
-        },
-      });
-    } finally {
-      // Closing the connection releases the lock. A connection that no longer answers may not
-      // close either, so the wait for it is bounded too.
-      await bounded(lock.end(), opts.lockQueryMs ?? LOCK_QUERY_MS).catch(
-        () => {},
-      );
-    }
-  });
+  return runInPoolClass("background", () =>
+    holdingPassLock(PASS_LOCK, opts, (beforeBatch) =>
+      reconcileAll(pool, { ...opts, beforeBatch }),
+    ),
+  );
 }
 
 async function reconcileAll(

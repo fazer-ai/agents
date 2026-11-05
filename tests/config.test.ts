@@ -324,6 +324,25 @@ describe("checkpoint reconciler settings in the deploy composes", () => {
   });
 });
 
+describe("checkpoint retention settings in the deploy composes", () => {
+  test("every deploy compose forwards the three, empty taking the app default", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      for (const name of [
+        "CHECKPOINT_RETENTION_FIRST_DELAY_MS",
+        "CHECKPOINT_RETENTION_INTERVAL_MS",
+        "CHECKPOINT_RETENTION_GRACE_MS",
+      ]) {
+        expect(compose).toContain(`- ${name}=\${${name}:-}`);
+      }
+    }
+  });
+});
+
 // Each pool has its own size and every budget its own knob; the checkpointer keeps following
 // DB_POOL_MAX until it is set, which is what an upgrade without new variables must open.
 describe("database pools and budgets", () => {

@@ -602,8 +602,42 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     expect((await counts([id])).checkpoints).toBe(1);
   }, 60_000);
 
-  // Every statement reaches its rows through the primary key, at any size: the walk is one probe per
-  // thread, and each delete looks up its threads by the key's leading column.
+  // The batch's deletes run with sequential scans off: on a small table the planner would rather read
+  // it whole, which is the read the pass must not make.
+  test("a batch deletes with sequential scans off, before its first statement", async () => {
+    const id = thread();
+    for (let i = 0; i < 3; i++) await turn(id, i);
+    const sent: string[] = [];
+    const recording = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return (sql: string, params?: unknown[]) => {
+                sent.push(sql);
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    await retainCheckpointBatch(recording, "", {
+      graceMs: 0,
+      scope: only(id),
+      base: appDb,
+    });
+    const off = sent.indexOf("SET LOCAL enable_seqscan = off");
+    const firstDelete = sent.findIndex((q) => q.includes("DELETE FROM"));
+    expect(off).toBeGreaterThan(-1);
+    expect(firstDelete).toBeGreaterThan(off);
+    expect((await counts([id])).checkpoints).toBe(1);
+  });
+
+  // Every statement reaches its rows through the primary key, at any size, for a batch of the size a
+  // pass takes: the walk is one probe per thread, and each delete and each lookup of `checkpoints`
+  // names the batch's threads by the key's leading column.
   test("the deletes read through the primary key, never a table scan", async () => {
     const base = `${goneTenant}:9`;
     const ids = Array.from({ length: 3_000 }, (_, i) => `${base}:${i}`);
@@ -629,18 +663,28 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     await cp.query(
       "ANALYZE langgraph.checkpoints, langgraph.checkpoint_blobs, langgraph.checkpoint_writes",
     );
-    for (const t of CHECKPOINT_TABLES) {
-      const plan = (
-        await cp.query(`EXPLAIN ${RETAIN_SQL[t]}`, [
-          [ids[1], ids[2]],
-          5000,
-          32 * 1024 * 1024,
-        ])
-      ).rows
-        .map((r) => r["QUERY PLAN"])
-        .join("\n");
-      expect(plan).not.toContain("Seq Scan");
-      expect(plan).toMatch(/Index/);
+    // As the batch runs them: in a transaction with sequential scans off, where a Seq Scan in the plan
+    // means the statement has no path through an index at all.
+    const client = await cp.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL enable_seqscan = off");
+      for (const t of CHECKPOINT_TABLES) {
+        const plan = (
+          await client.query(`EXPLAIN ${RETAIN_SQL[t]}`, [
+            ids.slice(0, 100),
+            5000,
+            32 * 1024 * 1024,
+          ])
+        ).rows
+          .map((r) => r["QUERY PLAN"])
+          .join("\n");
+        expect(plan).not.toContain("Seq Scan");
+        expect(plan).toMatch(/Index/);
+      }
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
     }
   }, 120_000);
 });

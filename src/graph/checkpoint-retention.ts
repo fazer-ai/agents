@@ -43,14 +43,13 @@ export const RETENTION_BATCH_MS = 10_000;
 // of TOAST and run past the batch's cut, failing on the same thread at every pass.
 export const RETENTION_BATCH_BYTES = 32 * 1024 * 1024;
 
-// Which rows of these threads ($1) nothing reads any more, picked through the primary key in its
-// order, $2 rows and $3 stored bytes at most per statement (every row weighs at least one byte, an
-// empty channel's blob included; the first row always goes, so a row bigger than the budget does too), and deleted by their own address; `more` says the bound left some.
-// Every condition is read against what is in the table when the statement runs, not against a list
-// decided earlier, so a checkpoint a turn writes while the pass runs is the newest one and keeps what
-// it names: a put writes its blobs and its checkpoint in one transaction, and pending writes are
-// written against a checkpoint already committed. The newest is the greatest `checkpoint_id` under the
-// column's collation, which is how the saver's `ORDER BY checkpoint_id DESC LIMIT 1` picks it.
+// The rows of these threads ($1) the saver does not read, through the primary key in its order, $2
+// rows and $3 stored bytes at most per statement (every row weighs one byte at least; the first row
+// always goes), deleted by their own address; `more` says a bound left some. Conditions are read when
+// the statement runs, so a checkpoint a turn writes meanwhile is the newest and keeps what it names.
+// The newest is the greatest `checkpoint_id` under the column's collation, as the saver picks it.
+// Each lookup of `checkpoints` runs per row through the key's prefix: `OFFSET 0` keeps the planner from
+// making it an anti-join, which on the JSON it cannot index hashes the whole table.
 function retainSql(
   table: CheckpointTable,
   dead: string,
@@ -101,8 +100,11 @@ export const RETAIN_SQL: Record<CheckpointTable, string> = {
      AND NOT EXISTS (
        SELECT 1 FROM langgraph.checkpoints c
         WHERE c.thread_id = x.thread_id AND c.checkpoint_ns = x.checkpoint_ns
-          AND (c.checkpoint_id = x.checkpoint_id
-               OR (c.parent_checkpoint_id = x.checkpoint_id AND x.channel = '${TASKS}')))`,
+          AND c.checkpoint_id = x.checkpoint_id OFFSET 0)
+     AND NOT (x.channel = '${TASKS}' AND EXISTS (
+       SELECT 1 FROM langgraph.checkpoints c
+        WHERE c.thread_id = x.thread_id AND c.checkpoint_ns = x.checkpoint_ns
+          AND c.parent_checkpoint_id = x.checkpoint_id OFFSET 0))`,
     "x.thread_id, x.checkpoint_ns, x.checkpoint_id, x.task_id, x.idx",
     blobSize,
   ),
@@ -112,7 +114,7 @@ export const RETAIN_SQL: Record<CheckpointTable, string> = {
     `NOT EXISTS (
        SELECT 1 FROM langgraph.checkpoints c
         WHERE c.thread_id = x.thread_id AND c.checkpoint_ns = x.checkpoint_ns
-          AND c.checkpoint -> 'channel_versions' ->> x.channel = x.version)`,
+          AND c.checkpoint -> 'channel_versions' ->> x.channel = x.version OFFSET 0)`,
     "x.thread_id, x.checkpoint_ns, x.channel, x.version",
     blobSize,
   ),
@@ -233,6 +235,10 @@ export async function retainCheckpointBatch(
   };
   if (owned.length === 0) return result;
   return checkpointTransaction(pool, guard, async (query) => {
+    // Every statement below has a path through the primary key, and the pass is housekeeping that
+    // must not read a whole table: on a small one the planner would rather scan it all, which is the
+    // read this pass exists not to make. Local to this transaction.
+    await query("SET LOCAL enable_seqscan = off", []);
     const newest = (
       (await query(NEWEST_CHECKPOINT_SQL, [owned])) as {
         rows: { thread_id: string; ts: string | null }[];

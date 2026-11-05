@@ -1069,6 +1069,14 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       "more than one statement",
     );
     expect(unplannableReason("SELECT 1; -- done")).toBeNull();
+    // A statement that ends in a quoted token keeps it: the quote is a token, not whitespace.
+    expect(plannableBody('SELECT * FROM "agents"')).toEqual({
+      body: 'SELECT * FROM "agents"',
+    });
+    expect(
+      plannableBody("UPDATE x SET a = 1 RETURNING \"id\", 'done';  -- end"),
+    ).toEqual({ body: "UPDATE x SET a = 1 RETURNING \"id\", 'done'" });
+    expect(plannableBody("SELECT $$a;b$$")).toEqual({ body: "SELECT $$a;b$$" });
     expect(unplannableReason("SELECT 'open")).toBe(
       "an unterminated comment or quote",
     );
@@ -1091,6 +1099,12 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect("plannedAs" in planned ? planned.plannedAs : "").toBe(
       "application role, tenant 1",
     );
+    // Ending in a quoted identifier, with no `;`: the identifier stays in what EXPLAIN gets.
+    const quoted = await capturePlan(
+      { sql: 'SELECT "id" FROM "agents"', tenantId: "1", fleet: false },
+      appDb,
+    );
+    expect("plan" in quoted ? quoted.plan : quoted.error).toContain("agents");
   });
 
   test("three timeouts of one statement are three records and one plan", async () => {

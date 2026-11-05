@@ -43,10 +43,14 @@ export function statementFingerprint(sql: string): string {
 // The statement with its comments and quoted text blanked out, the same length, so a `;` or a keyword
 // is only ever read where Postgres would read it: never inside `-- …`, `/* … */` (nested), '…'
 // (with '' and E'\\' escapes), "…" or $tag$…$tag$. Null when a comment or a quote is left open.
+const QUOTED = "\u0001";
+
 export function sqlCode(sql: string): string | null {
   const out = sql.split("");
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  // A comment is whitespace to Postgres; a quoted span is a token, so it is masked with a character
+  // that is neither whitespace nor `;` (the statement's end is never read before it).
+  const blank = (from: number, to: number, mask = " ") => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = mask;
   };
   let i = 0;
   while (i < sql.length) {
@@ -86,7 +90,7 @@ export function sqlCode(sql: string): string | null {
         } else k++;
       }
       if (!closed) return null;
-      blank(i, k);
+      blank(i, k, QUOTED);
       i = k;
     } else if (c === "$") {
       const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
@@ -96,7 +100,7 @@ export function sqlCode(sql: string): string | null {
       }
       const end = sql.indexOf(tag[0], i + tag[0].length);
       if (end === -1) return null;
-      blank(i, end + tag[0].length);
+      blank(i, end + tag[0].length, QUOTED);
       i = end + tag[0].length;
     } else i++;
   }

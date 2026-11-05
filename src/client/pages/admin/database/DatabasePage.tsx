@@ -21,65 +21,12 @@ const WINDOW_KEYS = ["1h", "24h", "7d"] as const;
 type WindowKey = (typeof WINDOW_KEYS)[number];
 type Sort = "total" | "mean";
 
-interface StatementRow {
-  queryid: string;
-  userid: string;
-  query: string;
-  calls: number;
-  rows: number;
-  totalMs: number;
-  meanMs: number;
-  spark: (number | null)[];
-}
-
-interface TimeoutRow {
-  fingerprint: string;
-  statement: string;
-  occurrences: number;
-  lastAt: string;
-  label: string | null;
-  tenantId: string | null;
-  fleet: boolean;
-  budgetMs: number | null;
-  plan: string | null;
-  planError: string | null;
-  plannedAs: string | null;
-  plannedAt: string | null;
-}
-
-interface TableRow {
-  table: string;
-  totalBytes: number;
-  growthBytes: number | null;
-  liveTuples: number;
-  deadTuples: number;
-  lastAutovacuum: string | null;
-  lastAutoanalyze: string | null;
-  seqScans: number;
-  indexScans: number;
-}
-
-interface Screen {
-  window: WindowKey;
-  statements:
-    | {
-        available: true;
-        snapshots: number;
-        lastSnapshotAt: string | null;
-        byTotal: StatementRow[];
-        byMean: StatementRow[];
-      }
-    | {
-        available: false;
-        reason: string;
-        enable: readonly string[];
-        create?: string | null;
-      };
-  timeouts: TimeoutRow[];
-  tables: TableRow[];
-  unusedIndexes: { table: string; index: string; bytes: number }[];
-  seqScanHeavy: TableRow[];
-}
+// Every shape below is the endpoint's own (docs/eden-treaty.md): a field the server adds or renames
+// reaches this page at the next type check.
+type DatabaseResponse = Awaited<
+  ReturnType<(typeof api.api.v1)["instance-health"]["database"]["get"]>
+>["data"];
+type Screen = NonNullable<DatabaseResponse>["database"];
 
 const REFRESH_MS = 60_000;
 
@@ -531,7 +478,7 @@ export function DatabasePage({
       setError(false);
       setStale(false);
       shown.current = true;
-      setScreen(data.database as Screen);
+      setScreen(data.database);
     } catch {
       if (id === sent.current) failed();
     } finally {

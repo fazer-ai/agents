@@ -1,3 +1,4 @@
+import { AsyncResource } from "node:async_hooks";
 import type { Pool, PoolClient } from "pg";
 import { currentWorkLabel } from "@/lib/work-label";
 
@@ -311,12 +312,21 @@ export function instrumentPool<P extends Pool>(name: string, pool: P): P {
     const done = () => tracked.waits.delete(ticket);
     const cb = args[0];
     if (typeof cb === "function") {
+      // Bound to the caller's async context: when the request waits in the queue, `pg` calls back
+      // from whichever client released the connection, and `pool.query` (Prisma's path outside a
+      // transaction) would read THAT work's label for its statement.
       return connect(
-        (err: unknown, client: PoolClient | undefined, ...rest: unknown[]) => {
-          done();
-          if (client) watchClient(client, name);
-          return (cb as (...a: unknown[]) => unknown)(err, client, ...rest);
-        },
+        AsyncResource.bind(
+          (
+            err: unknown,
+            client: PoolClient | undefined,
+            ...rest: unknown[]
+          ) => {
+            done();
+            if (client) watchClient(client, name);
+            return (cb as (...a: unknown[]) => unknown)(err, client, ...rest);
+          },
+        ),
       );
     }
     const out = connect() as Promise<PoolClient>;

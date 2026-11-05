@@ -441,7 +441,13 @@ export async function snapshotIfDue(
     ? (s.lastRunAt as number)
     : null;
   s.lastRunAt = takenAt;
-  await pruneDatabaseScreen(base, now);
+  // The snapshot is committed: a failed cleanup is logged and retried with the next snapshot, and
+  // must not read as a failed snapshot (the drift would then keep serving its previous value).
+  try {
+    await pruneDatabaseScreen(base, now);
+  } catch (err) {
+    logger.warn({ err }, "database screen: retention prune failed");
+  }
   return true;
 }
 

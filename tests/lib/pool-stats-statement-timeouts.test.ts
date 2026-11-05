@@ -177,6 +177,47 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
     expect(ev?.budgetMs).toBe(45);
   });
 
+  test("a query that waited in the pool keeps the label of the work that sent it", async () => {
+    // One connection, with a budget on every statement, so the second query waits behind the first.
+    const tiny = instrumentPool(
+      "test-statement-timeouts-tiny",
+      new Pool({ connectionString: appUrl, max: 1, statement_timeout: 40 }),
+    );
+    try {
+      let release: () => void = () => {};
+      const holding = new Promise<void>((r) => {
+        release = r;
+      });
+      let held: () => void = () => {};
+      const isHeld = new Promise<void>((r) => {
+        held = r;
+      });
+      // Work B holds the only connection and releases it from its own context.
+      const b = runWithWorkLabel("job:B", async () => {
+        const client = await tiny.connect();
+        held();
+        await holding;
+        client.release();
+      });
+      await isHeld;
+      // Work A queues on the pool; pg hands it the connection from B's release.
+      const a = runWithWorkLabel("job:A", () =>
+        tiny.query("SELECT pg_sleep(1)").then(
+          () => "ran",
+          () => "timed out",
+        ),
+      );
+      release();
+      expect(await a).toBe("timed out");
+      await b;
+      const [ev] = drainStatementTimeouts();
+      expect(ev?.label).toBe("job:A");
+    } finally {
+      forgetPool("test-statement-timeouts-tiny");
+      await tiny.end();
+    }
+  });
+
   test("a statement that fails for another reason records nothing", async () => {
     await expect((pool as Pool).query("SELECT 1/0")).rejects.toThrow();
     expect(drainStatementTimeouts()).toEqual([]);

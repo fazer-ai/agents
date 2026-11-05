@@ -12,6 +12,7 @@ import {
 import {
   asSuperAdminOn,
   runScopedOn,
+  runWithinBudgetOn,
   type ScopedDb,
   type TxBudget,
 } from "@/lib/tenancy";
@@ -132,12 +133,9 @@ export async function capturePlan(
             explain,
             budget,
           )
-        : await base.$transaction(
-            async (tx) => {
-              await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(budget.timeout)}, true)`;
-              return explain(tx as unknown as ScopedDb);
-            },
-            { maxWait: budget.maxWait, timeout: budget.timeout },
+        : // No scope to set, the same deadline as the scoped branches.
+          await runWithinBudgetOn(base, budget, (tx) =>
+            explain(tx as unknown as ScopedDb),
           );
     return planned;
   } catch (err) {

@@ -989,6 +989,56 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     }
   });
 
+  test("a plan without a scope honours the deadline too", async () => {
+    const result = await capturePlan(
+      {
+        sql: 'SELECT "id" FROM "agents" LIMIT $1',
+        tenantId: null,
+        fleet: false,
+      },
+      appDb,
+      // Generous per-transaction numbers, a deadline already spent: the deadline is what decides.
+      { maxWait: 5_000, timeout: 5_000, deadline: Date.now() - 1 },
+    );
+    expect("error" in result).toBe(true);
+  });
+
+  test("a snapshot whose retention prune fails is still a snapshot taken", async () => {
+    // The prune's delete of old timeouts fails; everything else is the real client.
+    const failing = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop !== "$transaction") return Reflect.get(target, prop, receiver);
+        return (fn: (tx: unknown) => Promise<unknown>, opts: unknown) =>
+          target.$transaction(
+            (tx) =>
+              fn(
+                new Proxy(tx, {
+                  get(t, p, r) {
+                    const v = Reflect.get(t, p, r);
+                    if (p !== "dbStatementTimeout") return v;
+                    return new Proxy(v as object, {
+                      get(d, m, dr) {
+                        if (m === "deleteMany") {
+                          return async () => {
+                            throw new Error("prune refused");
+                          };
+                        }
+                        return Reflect.get(d, m, dr);
+                      },
+                    });
+                  },
+                }),
+              ),
+            opts as never,
+          );
+      },
+    }) as PrismaClient;
+    expect(await snapshotIfDue(failing, Date.now(), { force: true })).toBe(
+      true,
+    );
+    expect(await suDb.dbStatSnapshotRun.count()).toBe(1);
+  });
+
   test("what is not one plannable statement is refused before anything runs", () => {
     expect(unplannableReason("SELECT 1; DROP TABLE x")).toBe(
       "more than one statement",

@@ -16,7 +16,10 @@ import {
   type TxBudget,
 } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
-import { asFleetForInstanceHealth } from "../fleet-tx";
+import {
+  asFleetForInstanceHealth,
+  INSTANCE_HEALTH_TX_BUDGET,
+} from "../fleet-tx";
 
 // The statements that hit their `statement_timeout` (SQLSTATE 57014), stored with the scope they ran
 // under and, for the first occurrence of each statement in a window, the plan Postgres gives it
@@ -72,6 +75,7 @@ export function plannedAsOf(ev: {
 export async function capturePlan(
   ev: Pick<StatementTimeoutEvent, "sql" | "tenantId" | "fleet" | "pool">,
   base: PrismaClient = instanceHealthPrisma,
+  budget: TxBudget = PLAN_BUDGET,
 ): Promise<{ plan: string; plannedAs: string } | { error: string }> {
   const refused = unplannableReason(ev.sql);
   if (refused) return { error: refused };
@@ -115,7 +119,7 @@ export async function capturePlan(
     // The tenant id is the one the transaction itself set, read back from its `set_config`.
     const tenantId = parseDbId(ev.tenantId);
     const planned = ev.fleet
-      ? await asSuperAdminOn(base, explain, PLAN_BUDGET)
+      ? await asSuperAdminOn(base, explain, budget)
       : tenantId !== null
         ? await runScopedOn(
             base,
@@ -125,14 +129,14 @@ export async function capturePlan(
               role: "TENANT_ADMIN",
             },
             explain,
-            PLAN_BUDGET,
+            budget,
           )
         : await base.$transaction(
             async (tx) => {
-              await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(PLAN_TIMEOUT_MS)}, true)`;
+              await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(budget.timeout)}, true)`;
               return explain(tx as unknown as ScopedDb);
             },
-            { maxWait: PLAN_BUDGET.maxWait, timeout: PLAN_BUDGET.timeout },
+            { maxWait: budget.maxWait, timeout: budget.timeout },
           );
     return planned;
   } catch (err) {
@@ -163,6 +167,11 @@ export async function flushStatementTimeouts(
 ): Promise<number> {
   if (events.length === 0) return 0;
   const deadline = Date.now() + budgetMs;
+  // Every statement of this call shares the call's deadline, so one slow event cannot overrun it.
+  const left = (cap: number): TxBudget => {
+    const ms = Math.max(1, Math.min(cap, Math.ceil(deadline - Date.now())));
+    return { maxWait: ms, timeout: ms, deadline };
+  };
   const plannedNow = new Set<string>();
   const deferred: StatementTimeoutEvent[] = [];
   const deferredPrints = new Set<string>();
@@ -178,15 +187,18 @@ export async function flushStatementTimeouts(
       continue;
     }
     try {
-      const recent = await asFleetForInstanceHealth(base, (db) =>
-        db.dbStatementTimeout.findFirst({
-          where: {
-            fingerprint,
-            occurredAt: { gte: new Date(ev.at - PLAN_WINDOW_MS) },
-            OR: [{ plan: { not: null } }, { planError: { not: null } }],
-          },
-          select: { id: true },
-        }),
+      const recent = await asFleetForInstanceHealth(
+        base,
+        (db) =>
+          db.dbStatementTimeout.findFirst({
+            where: {
+              fingerprint,
+              occurredAt: { gte: new Date(ev.at - PLAN_WINDOW_MS) },
+              OR: [{ plan: { not: null } }, { planError: { not: null } }],
+            },
+            select: { id: true },
+          }),
+        left(INSTANCE_HEALTH_TX_BUDGET.timeout),
       );
       const wantsPlan = !recent && !plannedNow.has(fingerprint);
       if (wantsPlan && plannedNow.size >= maxPlans) {
@@ -198,30 +210,39 @@ export async function flushStatementTimeouts(
         null;
       if (wantsPlan) {
         plannedNow.add(fingerprint);
-        plan = await capturePlan(ev, base);
+        plan = await capturePlan(ev, base, left(PLAN_TIMEOUT_MS));
       }
-      await asFleetForInstanceHealth(base, (db) =>
-        db.dbStatementTimeout.create({
-          data: {
-            occurredAt: new Date(ev.at),
-            fingerprint,
-            statement: clipText(normalizeStatement(ev.sql), STATEMENT_MAX),
-            label: ev.label,
-            scopeTenantId: parseDbId(ev.tenantId),
-            fleet: ev.fleet,
-            budgetMs: ev.budgetMs,
-            plan: plan && "plan" in plan ? plan.plan : null,
-            planError: plan && "error" in plan ? plan.error : null,
-            plannedAs: !plan
-              ? null
-              : "plannedAs" in plan
-                ? plan.plannedAs
-                : plannedAsOf(ev),
-          },
-        }),
+      await asFleetForInstanceHealth(
+        base,
+        (db) =>
+          db.dbStatementTimeout.create({
+            data: {
+              occurredAt: new Date(ev.at),
+              fingerprint,
+              statement: clipText(normalizeStatement(ev.sql), STATEMENT_MAX),
+              label: ev.label,
+              scopeTenantId: parseDbId(ev.tenantId),
+              fleet: ev.fleet,
+              budgetMs: ev.budgetMs,
+              plan: plan && "plan" in plan ? plan.plan : null,
+              planError: plan && "error" in plan ? plan.error : null,
+              plannedAs: !plan
+                ? null
+                : "plannedAs" in plan
+                  ? plan.plannedAs
+                  : plannedAsOf(ev),
+            },
+          }),
+        left(INSTANCE_HEALTH_TX_BUDGET.timeout),
       );
       stored++;
     } catch (err) {
+      // The call's time ran out under this event: it and the rest wait for the next tick, and that
+      // is not a failure of the event.
+      if (Date.now() >= deadline) {
+        deferred.push(...events.slice(i));
+        break;
+      }
       // Most likely the database itself is in trouble, which is when this evidence matters: this
       // event and the rest of the batch go back to the queue instead of each paying its own failure.
       // An event that keeps failing is dropped after a few ticks, so it cannot wedge the queue.

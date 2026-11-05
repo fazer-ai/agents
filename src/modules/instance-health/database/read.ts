@@ -248,12 +248,16 @@ export async function slowestMeanShare(
   });
 }
 
+// The monitoring's own statements: the plans it takes, its reads of the statistics views, and every
+// statement on the screen's tables (snapshots, texts, runs, table sizes, timeouts). Opening the
+// screen or a slow snapshot must not raise the alarm about the workload it measures.
 export function isOwnStatement(query: string): boolean {
   return (
     /^\s*EXPLAIN\b/i.test(query) ||
-    /\bpg_stat_statements\b/.test(query) ||
-    /\bdb_statement_snapshots\b/.test(query) ||
-    /\bpg_stat_user_tables\b/.test(query)
+    /\bpg_stat_\w+/.test(query) ||
+    /\bdb_(?:statement_snapshots|statement_texts|statement_timeouts|stat_snapshot_runs|table_snapshots)\b/.test(
+      query,
+    )
   );
 }
 

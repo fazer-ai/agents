@@ -8,6 +8,7 @@ import {
 } from "@/lib/pool-stats";
 import { asSuperAdminOn } from "@/lib/tenancy";
 import {
+  isOwnStatement,
   probeAvailability,
   readDatabaseScreen,
   slowestMeanShare,
@@ -869,6 +870,45 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     // A budget already spent: nothing is attempted, everything waits for the next tick.
     expect(await flushStatementTimeouts(appDb, events, 1, 0)).toBe(0);
     expect(drainStatementTimeouts()).toEqual(events);
+  });
+
+  test("the flush's deadline reaches its statements: an event the time ran out under goes back, never counted as a failure", async () => {
+    resetStatementTimeouts();
+    const ev = {
+      at: Date.now(),
+      sql: 'SELECT "id" FROM "agents" WHERE "name" = $1',
+      label: null,
+      tenantId: "1",
+      fleet: false,
+      budgetMs: 1000,
+    };
+    // Three calls with a 1 ms budget: each runs out inside its statements, and the event is still
+    // queued after the third, which it would not be if each counted as a failed attempt.
+    for (let i = 0; i < 3; i++) {
+      expect(await flushStatementTimeouts(appDb, [ev], 1, 1)).toBe(0);
+      expect(drainStatementTimeouts()).toEqual([ev]);
+    }
+    expect(
+      await suDb.dbStatementTimeout.count({
+        where: { fingerprint: statementFingerprint(ev.sql) },
+      }),
+    ).toBe(0);
+  });
+
+  test("the monitoring's own statements never count for drift", () => {
+    for (const q of [
+      "EXPLAIN (GENERIC_PLAN) SELECT 1",
+      "SELECT fingerprint, count(*) FROM db_statement_timeouts GROUP BY fingerprint",
+      "SELECT userid, query FROM db_statement_texts WHERE true",
+      "INSERT INTO db_table_snapshots (table_name) VALUES ($1)",
+      "SELECT taken_at FROM db_stat_snapshot_runs",
+      "SELECT relname FROM pg_stat_user_indexes",
+    ]) {
+      expect(isOwnStatement(q)).toBe(true);
+    }
+    expect(
+      isOwnStatement('SELECT "id" FROM "conversations" WHERE "status" = $1'),
+    ).toBe(false);
   });
 
   test("what is not one plannable statement is refused before anything runs", () => {

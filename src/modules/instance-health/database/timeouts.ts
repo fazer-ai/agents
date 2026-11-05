@@ -144,6 +144,8 @@ export async function capturePlan(
 // evaluated, so a storm of distinct timeouts must not hold the instance alerts back: a bounded batch
 // of events, and one EXPLAIN (up to PLAN_TIMEOUT_MS). What does not fit waits for the next tick.
 export const FLUSH_MAX_EVENTS = 50;
+// And the time a call may spend on them, all together: past it, what is left goes back to the queue.
+const FLUSH_BUDGET_MS = 3_000;
 const FLUSH_MAX_PLANS = 1;
 // Ticks an event may fail to be stored before it is given up on.
 const MAX_STORE_ATTEMPTS = 3;
@@ -157,13 +159,19 @@ export async function flushStatementTimeouts(
   base: PrismaClient = instanceHealthPrisma,
   events: StatementTimeoutEvent[] = drainStatementTimeouts(FLUSH_MAX_EVENTS),
   maxPlans: number = FLUSH_MAX_PLANS,
+  budgetMs: number = FLUSH_BUDGET_MS,
 ): Promise<number> {
   if (events.length === 0) return 0;
+  const deadline = Date.now() + budgetMs;
   const plannedNow = new Set<string>();
   const deferred: StatementTimeoutEvent[] = [];
   const deferredPrints = new Set<string>();
   let stored = 0;
   for (const [i, ev] of events.entries()) {
+    if (Date.now() >= deadline) {
+      deferred.push(...events.slice(i));
+      break;
+    }
     const fingerprint = statementFingerprint(ev.sql);
     if (deferredPrints.has(fingerprint)) {
       deferred.push(ev);

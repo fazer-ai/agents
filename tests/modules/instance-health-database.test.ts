@@ -277,6 +277,7 @@ describe("rowsToWrite: what a snapshot run writes", () => {
       entries: [entry(9)],
       written,
       presentAtPrevious: new Set(),
+      previousComplete: true,
       previousRunAt: T0 + 5 * MIN,
       takenAt: T0 + 10 * MIN,
     });
@@ -318,6 +319,7 @@ describe("rowsToWrite: what a snapshot run writes", () => {
       entries: [entry(3)],
       written: new Map(),
       presentAtPrevious: new Set(["10:1:99"]),
+      previousComplete: true,
       previousRunAt: T0 + 5 * MIN,
       takenAt: T0 + 10 * MIN,
     });
@@ -334,6 +336,37 @@ describe("rowsToWrite: what a snapshot run writes", () => {
       takenAt: T0 + 10 * MIN,
     });
     expect(unknown.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
+  });
+
+  test("a capped scan still counts as presence: an entry seen at the previous run gets its baseline there", () => {
+    const written = new Map([
+      [
+        "10:1:7",
+        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
+      ],
+    ]);
+    const out = rowsToWrite({
+      entries: [entry(9)],
+      written,
+      presentAtPrevious: new Set(["10:1:7"]),
+      previousComplete: false,
+      previousRunAt: T0 + 65 * MIN,
+      takenAt: T0 + 70 * MIN,
+    });
+    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
+      [T0 + 65 * MIN, 5],
+      [T0 + 70 * MIN, 9],
+    ]);
+    // But an absence from a capped scan proves nothing: no zero row.
+    const absent = rowsToWrite({
+      entries: [entry(3)],
+      written: new Map(),
+      presentAtPrevious: new Set(["10:1:99"]),
+      previousComplete: false,
+      previousRunAt: T0 + 5 * MIN,
+      takenAt: T0 + 10 * MIN,
+    });
+    expect(absent.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
   });
 
   test("an entry that started after the previous run gets a zero row there, so its whole count lands", () => {
@@ -820,6 +853,22 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
         config as { langgraphDatabaseUrl: string | undefined }
       ).langgraphDatabaseUrl = saved;
     }
+  });
+
+  test("a flush stops at its time budget and puts the rest back", async () => {
+    resetStatementTimeouts();
+    const ev = (i: number) => ({
+      at: Date.now() + i,
+      sql: `SELECT ${i}`,
+      label: null,
+      tenantId: null,
+      fleet: false,
+      budgetMs: 1000,
+    });
+    const events = [ev(1), ev(2), ev(3)];
+    // A budget already spent: nothing is attempted, everything waits for the next tick.
+    expect(await flushStatementTimeouts(appDb, events, 1, 0)).toBe(0);
+    expect(drainStatementTimeouts()).toEqual(events);
   });
 
   test("what is not one plannable statement is refused before anything runs", () => {

@@ -43,6 +43,8 @@ interface SnapshotState {
   written: Map<string, Written> | null;
   // The entries present at the previous run, and when that run was.
   presentAtPrevious: Set<string> | null;
+  // Whether that set is the whole of pg_stat_statements: only a complete scan proves an absence.
+  previousComplete: boolean;
   previousRunAt: number | null;
   lastRunAt: number | null;
   availability: StatementsAvailability | null;
@@ -55,6 +57,7 @@ function state(): SnapshotState {
   g[KEY] ??= {
     written: null,
     presentAtPrevious: null,
+    previousComplete: false,
     previousRunAt: null,
     lastRunAt: null,
     availability: null,
@@ -67,6 +70,7 @@ export function resetSnapshotState(): void {
   const s = state();
   s.written = null;
   s.presentAtPrevious = null;
+  s.previousComplete = false;
   s.previousRunAt = null;
   s.lastRunAt = null;
   s.availability = null;
@@ -99,6 +103,9 @@ export function rowsToWrite(input: {
   entries: StatementEntry[];
   written: Map<string, Written>;
   presentAtPrevious: Set<string> | null;
+  // Whether presentAtPrevious is the whole view (fewer entries than the cap): an absence proves
+  // something only then, while a presence is true either way.
+  previousComplete?: boolean;
   previousRunAt: number | null;
   takenAt: number;
 }): {
@@ -158,6 +165,7 @@ export function rowsToWrite(input: {
         statsSince === null &&
         // Without stats_since (Postgres 16, or an older installed extension) the previous run's
         // complete scan is what proves the entry was not there: it started counting after it.
+        input.previousComplete === true &&
         input.presentAtPrevious !== null &&
         !input.presentAtPrevious.has(k) &&
         (!prev || prev.takenAt < p)
@@ -351,6 +359,7 @@ export async function snapshotIfDue(
       entries: read.entries,
       written: s.written,
       presentAtPrevious: s.presentAtPrevious,
+      previousComplete: s.previousComplete,
       previousRunAt,
       takenAt,
     });
@@ -415,13 +424,12 @@ export async function snapshotIfDue(
         s.written.set(keyOf(w.entry), { ...w.values, takenAt });
       }
     }
-    // Only a complete scan proves an absence: one cut at MAX_ENTRIES leaves the rest unknown.
-    s.presentAtPrevious =
-      read.entries.length < MAX_ENTRIES
-        ? new Set(read.entries.map(keyOf))
-        : null;
+    // What was seen is kept either way; only a complete scan also proves what was not.
+    s.presentAtPrevious = new Set(read.entries.map(keyOf));
+    s.previousComplete = read.entries.length < MAX_ENTRIES;
   } else {
     s.presentAtPrevious = null;
+    s.previousComplete = false;
   }
   s.previousRunAt = Number.isFinite(s.lastRunAt as number)
     ? (s.lastRunAt as number)

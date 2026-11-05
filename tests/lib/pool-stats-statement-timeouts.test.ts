@@ -162,6 +162,21 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
     expect(ev?.budgetMs).toBe(40);
   });
 
+  test("a budget set with SET LOCAL statement_timeout is recorded too", async () => {
+    const client = await (pool as Pool).connect();
+    try {
+      await client.query("BEGIN");
+      // The shape src/graph/checkpoint-sweep.ts sets its budget with.
+      await client.query("SET LOCAL statement_timeout = 45");
+      await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    const [ev] = drainStatementTimeouts();
+    expect(ev?.budgetMs).toBe(45);
+  });
+
   test("a statement that fails for another reason records nothing", async () => {
     await expect((pool as Pool).query("SELECT 1/0")).rejects.toThrow();
     expect(drainStatementTimeouts()).toEqual([]);

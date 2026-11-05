@@ -177,6 +177,8 @@ const TX_START = /^\s*(BEGIN|START\s+TRANSACTION)\b/i;
 // set, in force: only a full ROLLBACK ends it.
 const TX_END =
   /^\s*(COMMIT|END|ABORT|ROLLBACK(?!\s+(?:(?:WORK|TRANSACTION)\s+)?TO\b))\b/i;
+const SET_TIMEOUT =
+  /^\s*SET\s+(?:LOCAL\s+|SESSION\s+)?statement_timeout\s*(?:=|TO)\s*'?(\d+(?:\.\d+)?)\s*(ms|s|min)?'?\s*;?\s*$/i;
 const SET_CONFIG =
   /set_config\(\s*'([a-z_.]+)'\s*,\s*([^,]+?)\s*,\s*(?:true|false)\s*\)/gi;
 
@@ -199,6 +201,16 @@ function trackScope(scope: ClientScope, text: string, values: unknown[]): void {
     scope.tenantId = null;
     scope.fleet = false;
     scope.budgetMs = null;
+    return;
+  }
+  // `SET [LOCAL] statement_timeout = 2500` (the checkpointer's sweep sets its budget this way), in
+  // milliseconds unless a unit says otherwise.
+  const set = SET_TIMEOUT.exec(text);
+  if (set) {
+    const n = Number(set[1]);
+    const unit = (set[2] ?? "ms").toLowerCase();
+    const ms = unit === "s" ? n * 1000 : unit === "min" ? n * 60_000 : n;
+    scope.budgetMs = Number.isFinite(ms) && ms > 0 ? ms : null;
     return;
   }
   if (!text.includes("set_config")) return;

@@ -6,7 +6,8 @@ import {
   drainStatementTimeouts,
   resetStatementTimeouts,
 } from "@/lib/pool-stats";
-import { asSuperAdminOn } from "@/lib/tenancy";
+import { asSuperAdminOn, DeadlinePassedError } from "@/lib/tenancy";
+import { fleetWithin } from "@/modules/instance-health/database/budget";
 import {
   isOwnStatement,
   probeAvailability,
@@ -656,6 +657,52 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     await expect(databaseScreenTick(Date.now(), failing)).rejects.toThrow(
       "snapshot refused",
     );
+  });
+
+  test("a budget reused across transactions opens each one with what is left of its deadline", async () => {
+    // A budget made with five seconds to spare, reused after most of them went: the deadline is 150 ms
+    // away, the allowance it was made with is not.
+    const stale = { maxWait: 5000, timeout: 5000, deadline: Date.now() + 150 };
+    // A pool of one connection, held, so the next transaction can only wait for it.
+    const one = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl as string, max: 1 }),
+    });
+    try {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      let held: () => void = () => {};
+      const isHeld = new Promise<void>((r) => {
+        held = r;
+      });
+      const holder = one.$transaction(
+        async () => {
+          held();
+          await gate;
+        },
+        { timeout: 10_000 },
+      );
+      await isHeld;
+      const started = Date.now();
+      await expect(
+        fleetWithin(one, stale, (db) => db.$queryRaw`SELECT 1`),
+      ).rejects.toThrow();
+      // It gave up at the deadline, not after the five seconds the budget was made with.
+      expect(Date.now() - started).toBeLessThan(2000);
+      release();
+      await holder;
+      // Once the deadline is spent, nothing opens at all.
+      await expect(
+        fleetWithin(
+          one,
+          { ...stale, deadline: Date.now() - 1 },
+          (db) => db.$queryRaw`SELECT 1`,
+        ),
+      ).rejects.toBeInstanceOf(DeadlinePassedError);
+    } finally {
+      await one.$disconnect();
+    }
   });
 
   test("timeouts that cannot be stored go back to the queue, and one that keeps failing is dropped after three ticks", async () => {

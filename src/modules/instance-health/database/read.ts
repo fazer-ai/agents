@@ -1,13 +1,9 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
-import {
-  asSuperAdminOn,
-  runWithinBudgetOn,
-  type TxBudget,
-} from "@/lib/tenancy";
+import type { TxBudget } from "@/lib/tenancy";
 import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
-import { budgetUntil, fleetWithin } from "./budget";
+import { budgetUntil, fleetWithin, plainWithin } from "./budget";
 import {
   availabilityOfError,
   lastAvailability,
@@ -274,7 +270,7 @@ export async function probeAvailability(
   budget: TxBudget,
 ): Promise<StatementsAvailability> {
   try {
-    return await runWithinBudgetOn(base, budget, async (db) => {
+    return await plainWithin(base, budget, async (db) => {
       const [ext] = await db.$queryRaw<{ created: boolean }[]>`
         SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS created`;
       if (!ext?.created) {
@@ -305,68 +301,66 @@ export async function readDatabaseScreen(
 
   // A console read, on the metrics pool and within the metrics budget like the dashboards: a 7 day
   // window aggregates more than a scoped transaction's budget allows.
-  return asSuperAdminOn(
-    base,
-    async (db) => {
-      let statements: DatabaseScreenDto["statements"];
-      if (availability.available) {
-        const totals = await statementTotals(db, from, to);
-        const byTotal = [...totals]
-          .sort((a, b) => b.total_ms - a.total_ms)
-          .slice(0, TOP);
-        const byMean = [...totals]
-          .sort((a, b) => b.total_ms / b.calls - a.total_ms / a.calls)
-          .slice(0, TOP);
-        const shown = [
-          ...new Map(
-            [...byTotal, ...byMean].map((t) => [
-              `${t.userid}:${t.dbid}:${t.queryid}`,
-              t,
-            ]),
-          ).values(),
-        ];
-        const texts = await textsOf(db, shown);
-        const spark = await sparks(db, shown, from, to);
-        const runs = await db.dbStatSnapshotRun.findMany({
-          where: { takenAt: { gte: from, lte: to } },
-          orderBy: { takenAt: "desc" },
-          select: { takenAt: true },
-        });
-        statements = {
-          available: true,
-          snapshots: runs.length,
-          lastSnapshotAt: runs[0]?.takenAt.toISOString() ?? null,
-          byTotal: byTotal.map((t) => toRow(t, texts, spark)),
-          byMean: byMean.map((t) => toRow(t, texts, spark)),
-        };
-      } else {
-        statements = {
-          available: false,
-          reason: availability.reason,
-          enable: ENABLE_STATEMENTS,
-        };
-      }
+  return fleetWithin(base, metricsBudget(deadline), async (db) => {
+    let statements: DatabaseScreenDto["statements"];
+    if (availability.available) {
+      const totals = await statementTotals(db, from, to);
+      const byTotal = [...totals]
+        .sort((a, b) => b.total_ms - a.total_ms)
+        .slice(0, TOP);
+      const byMean = [...totals]
+        .sort((a, b) => b.total_ms / b.calls - a.total_ms / a.calls)
+        .slice(0, TOP);
+      const shown = [
+        ...new Map(
+          [...byTotal, ...byMean].map((t) => [
+            `${t.userid}:${t.dbid}:${t.queryid}`,
+            t,
+          ]),
+        ).values(),
+      ];
+      const texts = await textsOf(db, shown);
+      const spark = await sparks(db, shown, from, to);
+      const runs = await db.dbStatSnapshotRun.findMany({
+        where: { takenAt: { gte: from, lte: to } },
+        orderBy: { takenAt: "desc" },
+        select: { takenAt: true },
+      });
+      statements = {
+        available: true,
+        snapshots: runs.length,
+        lastSnapshotAt: runs[0]?.takenAt.toISOString() ?? null,
+        byTotal: byTotal.map((t) => toRow(t, texts, spark)),
+        byMean: byMean.map((t) => toRow(t, texts, spark)),
+      };
+    } else {
+      statements = {
+        available: false,
+        reason: availability.reason,
+        enable: ENABLE_STATEMENTS,
+      };
+    }
 
-      // Counted over the whole window first, then limited to the statements that failed most
-      // recently: a storm of one statement neither undercounts itself nor hides the others. Each
-      // group shows its newest occurrence's scope and the newest plan of that statement, which can
-      // predate the window and still describes it.
-      const timeoutRows = await db.$queryRaw<
-        {
-          fingerprint: string;
-          n: number;
-          last_at: Date;
-          statement: string;
-          label: string | null;
-          scope_tenant_id: bigint | null;
-          fleet: boolean;
-          budget_ms: number | null;
-          plan: string | null;
-          plan_error: string | null;
-          planned_as: string | null;
-          planned_at: Date | null;
-        }[]
-      >`WITH g AS (
+    // Counted over the whole window first, then limited to the statements that failed most
+    // recently: a storm of one statement neither undercounts itself nor hides the others. Each
+    // group shows its newest occurrence's scope and the newest plan of that statement, which can
+    // predate the window and still describes it.
+    const timeoutRows = await db.$queryRaw<
+      {
+        fingerprint: string;
+        n: number;
+        last_at: Date;
+        statement: string;
+        label: string | null;
+        scope_tenant_id: bigint | null;
+        fleet: boolean;
+        budget_ms: number | null;
+        plan: string | null;
+        plan_error: string | null;
+        planned_as: string | null;
+        planned_at: Date | null;
+      }[]
+    >`WITH g AS (
           SELECT fingerprint, count(*)::int AS n, max(occurred_at) AS last_at
             FROM db_statement_timeouts
            WHERE occurred_at >= ${from} AND occurred_at <= ${to}
@@ -388,34 +382,34 @@ export async function readDatabaseScreen(
                AND (t.plan IS NOT NULL OR t.plan_error IS NOT NULL)
              ORDER BY t.occurred_at DESC LIMIT 1) p ON true
          ORDER BY g.last_at DESC`;
-      const timeouts: TimeoutDto[] = timeoutRows.map((r) => ({
-        fingerprint: r.fingerprint,
-        statement: r.statement,
-        occurrences: r.n,
-        lastAt: r.last_at.toISOString(),
-        label: r.label,
-        tenantId: r.scope_tenant_id === null ? null : String(r.scope_tenant_id),
-        fleet: r.fleet,
-        budgetMs: r.budget_ms,
-        plan: r.plan,
-        planError: r.plan_error,
-        plannedAs: r.planned_as,
-        plannedAt: r.planned_at?.toISOString() ?? null,
-      }));
+    const timeouts: TimeoutDto[] = timeoutRows.map((r) => ({
+      fingerprint: r.fingerprint,
+      statement: r.statement,
+      occurrences: r.n,
+      lastAt: r.last_at.toISOString(),
+      label: r.label,
+      tenantId: r.scope_tenant_id === null ? null : String(r.scope_tenant_id),
+      fleet: r.fleet,
+      budgetMs: r.budget_ms,
+      plan: r.plan,
+      planError: r.plan_error,
+      plannedAs: r.planned_as,
+      plannedAt: r.planned_at?.toISOString() ?? null,
+    }));
 
-      const tableRows = await db.$queryRaw<
-        {
-          table_name: string;
-          total_bytes: bigint;
-          live: bigint;
-          dead: bigint;
-          last_autovacuum: Date | null;
-          last_autoanalyze: Date | null;
-          seq_scan: bigint;
-          idx_scan: bigint | null;
-          first_bytes: bigint | null;
-        }[]
-      >`SELECT c.relname AS table_name, pg_total_relation_size(c.oid) AS total_bytes,
+    const tableRows = await db.$queryRaw<
+      {
+        table_name: string;
+        total_bytes: bigint;
+        live: bigint;
+        dead: bigint;
+        last_autovacuum: Date | null;
+        last_autoanalyze: Date | null;
+        seq_scan: bigint;
+        idx_scan: bigint | null;
+        first_bytes: bigint | null;
+      }[]
+    >`SELECT c.relname AS table_name, pg_total_relation_size(c.oid) AS total_bytes,
              s.n_live_tup AS live, s.n_dead_tup AS dead,
              s.last_autovacuum, s.last_autoanalyze, s.seq_scan, s.idx_scan,
              (SELECT ts.total_bytes FROM db_table_snapshots ts
@@ -423,24 +417,24 @@ export async function readDatabaseScreen(
                ORDER BY ts.taken_at ASC LIMIT 1) AS first_bytes
         FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
        WHERE s.schemaname = 'public'`;
-      const tables: TableHealthDto[] = tableRows.map((r) => ({
-        table: r.table_name,
-        totalBytes: Number(r.total_bytes),
-        growthBytes:
-          r.first_bytes === null
-            ? null
-            : Number(r.total_bytes) - Number(r.first_bytes),
-        liveTuples: Number(r.live),
-        deadTuples: Number(r.dead),
-        lastAutovacuum: r.last_autovacuum?.toISOString() ?? null,
-        lastAutoanalyze: r.last_autoanalyze?.toISOString() ?? null,
-        seqScans: Number(r.seq_scan),
-        indexScans: Number(r.idx_scan ?? 0),
-      }));
+    const tables: TableHealthDto[] = tableRows.map((r) => ({
+      table: r.table_name,
+      totalBytes: Number(r.total_bytes),
+      growthBytes:
+        r.first_bytes === null
+          ? null
+          : Number(r.total_bytes) - Number(r.first_bytes),
+      liveTuples: Number(r.live),
+      deadTuples: Number(r.dead),
+      lastAutovacuum: r.last_autovacuum?.toISOString() ?? null,
+      lastAutoanalyze: r.last_autoanalyze?.toISOString() ?? null,
+      seqScans: Number(r.seq_scan),
+      indexScans: Number(r.idx_scan ?? 0),
+    }));
 
-      const unused = await db.$queryRaw<
-        { table_name: string; index_name: string; bytes: bigint }[]
-      >`SELECT s.relname AS table_name, s.indexrelname AS index_name,
+    const unused = await db.$queryRaw<
+      { table_name: string; index_name: string; bytes: bigint }[]
+    >`SELECT s.relname AS table_name, s.indexrelname AS index_name,
              pg_relation_size(s.indexrelid) AS bytes
         FROM pg_stat_user_indexes s
         JOIN pg_index i ON i.indexrelid = s.indexrelid
@@ -449,25 +443,23 @@ export async function readDatabaseScreen(
        ORDER BY pg_relation_size(s.indexrelid) DESC
        LIMIT 50`;
 
-      return {
-        window,
-        statements,
-        timeouts,
-        tables: [...tables]
-          .sort((a, b) => b.totalBytes - a.totalBytes)
-          .slice(0, TABLES_TOP),
-        unusedIndexes: unused.map((u) => ({
-          table: u.table_name,
-          index: u.index_name,
-          bytes: Number(u.bytes),
-        })),
-        // Where sequential scans cost the most: how many times the table was read whole, by its size.
-        seqScanHeavy: [...tables]
-          .filter((t) => t.seqScans > 0)
-          .sort((a, b) => b.seqScans * b.totalBytes - a.seqScans * a.totalBytes)
-          .slice(0, 10),
-      };
-    },
-    metricsBudget(deadline),
-  );
+    return {
+      window,
+      statements,
+      timeouts,
+      tables: [...tables]
+        .sort((a, b) => b.totalBytes - a.totalBytes)
+        .slice(0, TABLES_TOP),
+      unusedIndexes: unused.map((u) => ({
+        table: u.table_name,
+        index: u.index_name,
+        bytes: Number(u.bytes),
+      })),
+      // Where sequential scans cost the most: how many times the table was read whole, by its size.
+      seqScanHeavy: [...tables]
+        .filter((t) => t.seqScans > 0)
+        .sort((a, b) => b.seqScans * b.totalBytes - a.seqScans * a.totalBytes)
+        .slice(0, 10),
+    };
+  });
 }

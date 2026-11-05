@@ -157,7 +157,7 @@ const PROBES: Record<string, string> = {
   [P("db-screen-budgetless.ts")]:
     "declare function fleetWithin<T>(b: unknown, ...r: unknown[]): T;\ndeclare const base: { $queryRaw: (s: TemplateStringsArray) => unknown };\nexport const a = fleetWithin(base, (db: unknown) => db); // budget elsewhere\nexport const b = base.$queryRaw`SELECT 1`;\n",
   [P("db-screen-fleet-helper.ts")]:
-    "declare function asFleetForInstanceHealth<T>(...r: unknown[]): T;\ndeclare const budget: unknown;\nexport const a = asFleetForInstanceHealth(budget, () => 1);\n",
+    "declare function asFleetForInstanceHealth<T>(...r: unknown[]): T;\ndeclare function runScopedOn<T>(...r: unknown[]): T;\ndeclare const budget: unknown;\nexport const a = asFleetForInstanceHealth(budget, () => 1);\nexport const b = runScopedOn(budget, () => 1, budget);\n",
   [P("db-screen-budgeted.ts")]:
     "declare function fleetWithin<T>(...r: unknown[]): T;\ndeclare function plainWithin<T>(...r: unknown[]): T;\ndeclare function budgetUntil(d: number): unknown;\ndeclare function left(c: number): unknown;\ndeclare const base: unknown;\ndeclare const opts: { budget: unknown };\nexport const a = fleetWithin(base, budgetUntil(1), (db: unknown) => db);\nexport const b = plainWithin(base, left(2000), (db: unknown) => db);\nexport const c = fleetWithin(base, opts.budget, (db: unknown) => db);\n",
 
@@ -485,9 +485,9 @@ describe("require-model-call-deadline", () => {
 });
 
 describe("require-database-screen-budget", () => {
-  test("a transaction without a budget, the budgetless fleet helper and a statement on base are refused", () => {
+  test("a transaction without a budget, a tenancy helper called directly and a statement on base are refused", () => {
     expect(of(P("db-screen-budgetless.ts"), "dbBudget")).toBe(2);
-    expect(of(P("db-screen-fleet-helper.ts"), "dbBudget")).toBe(1);
+    expect(of(P("db-screen-fleet-helper.ts"), "dbBudget")).toBe(2);
   });
 
   test("a transaction handed a budget passes, built, carved or passed down", () => {

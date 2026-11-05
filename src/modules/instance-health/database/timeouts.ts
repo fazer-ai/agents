@@ -9,15 +9,9 @@ import {
   requeueStatementTimeouts,
   type StatementTimeoutEvent,
 } from "@/lib/pool-stats";
-import {
-  asSuperAdminOn,
-  runScopedOn,
-  runWithinBudgetOn,
-  type ScopedDb,
-  type TxBudget,
-} from "@/lib/tenancy";
+import type { ScopedDb, TxBudget } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
-import { budgetUntil, fleetWithin } from "./budget";
+import { budgetUntil, fleetWithin, plainWithin, scopedWithin } from "./budget";
 
 // The statements that hit their `statement_timeout` (SQLSTATE 57014), stored with the scope they ran
 // under and, for the first occurrence of each statement in a window, the plan Postgres gives it
@@ -115,25 +109,13 @@ export async function capturePlan(
     };
   };
   try {
-    // The tenant id is the one the transaction itself set, read back from its `set_config`.
+    // The scope the statement's transaction was opened under (src/lib/db-scope.ts).
     const tenantId = parseDbId(ev.tenantId);
     const planned = ev.fleet
-      ? await asSuperAdminOn(base, explain, budget)
+      ? await fleetWithin(base, budget, explain)
       : tenantId !== null
-        ? await runScopedOn(
-            base,
-            {
-              tenantId,
-              userId: null,
-              role: "TENANT_ADMIN",
-            },
-            explain,
-            budget,
-          )
-        : // No scope to set, the same deadline as the scoped branches.
-          await runWithinBudgetOn(base, budget, (tx) =>
-            explain(tx as unknown as ScopedDb),
-          );
+        ? await scopedWithin(base, tenantId, budget, explain)
+        : await plainWithin(base, budget, explain);
     return planned;
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };

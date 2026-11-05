@@ -1,4 +1,4 @@
--- The instance's database screen (docs/logs.md, "Database"): pg_stat_statements snapshots, table
+-- The instance's database screen (docs/logs.md, "Database"): pg_stat_statements deltas, table
 -- snapshots, and the statement timeouts the app captured with their plans. Like the instance alert
 -- tables these belong to the INSTANCE, not to a tenant: no tenant_id to match, RLS with the fleet
 -- policy ONLY, so the runtime role reads and writes them only after entering the fleet role.
@@ -13,9 +13,11 @@ CREATE TABLE "db_stat_snapshot_runs" (
     CONSTRAINT "db_stat_snapshot_runs_pkey" PRIMARY KEY ("taken_at")
 );
 
--- The cumulative counters of each pg_stat_statements entry that moved since the previous snapshot.
--- An entry that did not move keeps its previous row as its baseline, so it is not written again.
-CREATE TABLE "db_statement_snapshots" (
+-- What each pg_stat_statements entry did between two consecutive snapshots: the difference of its
+-- counters, taken by the sampler at write time (a reset or an eviction counts what the entry holds
+-- since then). Only entries that ran are written; a window is the sum of the rows inside it, so no
+-- row ever depends on another being kept.
+CREATE TABLE "db_statement_deltas" (
     "taken_at" TIMESTAMP(3) NOT NULL,
     "userid" BIGINT NOT NULL,
     "dbid" BIGINT NOT NULL,
@@ -23,14 +25,11 @@ CREATE TABLE "db_statement_snapshots" (
     "calls" BIGINT NOT NULL,
     "total_exec_ms" DOUBLE PRECISION NOT NULL,
     "rows" BIGINT NOT NULL,
-    -- pg_stat_statements.stats_since (Postgres 17): when the entry's counters started, so a reset or
-    -- an eviction between two snapshots is told apart from a quiet entry.
-    "stats_since" TIMESTAMP(3),
 
-    CONSTRAINT "db_statement_snapshots_pkey" PRIMARY KEY ("userid", "dbid", "queryid", "taken_at")
+    CONSTRAINT "db_statement_deltas_pkey" PRIMARY KEY ("userid", "dbid", "queryid", "taken_at")
 );
 
-CREATE INDEX "db_statement_snapshots_taken_at_idx" ON "db_statement_snapshots"("taken_at");
+CREATE INDEX "db_statement_deltas_taken_at_idx" ON "db_statement_deltas"("taken_at");
 
 -- The normalized text of each entry, once, instead of once per snapshot.
 CREATE TABLE "db_statement_texts" (
@@ -81,8 +80,8 @@ CREATE INDEX "db_statement_timeouts_fingerprint_occurred_at_idx" ON "db_statemen
 
 ALTER TABLE "db_stat_snapshot_runs" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "db_stat_snapshot_runs" FORCE ROW LEVEL SECURITY;
-ALTER TABLE "db_statement_snapshots" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "db_statement_snapshots" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "db_statement_deltas" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "db_statement_deltas" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "db_statement_texts" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "db_statement_texts" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "db_table_snapshots" ENABLE ROW LEVEL SECURITY;
@@ -91,7 +90,7 @@ ALTER TABLE "db_statement_timeouts" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "db_statement_timeouts" FORCE ROW LEVEL SECURITY;
 DO $$ BEGIN
   EXECUTE format('CREATE POLICY fleet_super_admin ON "db_stat_snapshot_runs" TO %I USING (true) WITH CHECK (true)', public.fazerai_fleet_role());
-  EXECUTE format('CREATE POLICY fleet_super_admin ON "db_statement_snapshots" TO %I USING (true) WITH CHECK (true)', public.fazerai_fleet_role());
+  EXECUTE format('CREATE POLICY fleet_super_admin ON "db_statement_deltas" TO %I USING (true) WITH CHECK (true)', public.fazerai_fleet_role());
   EXECUTE format('CREATE POLICY fleet_super_admin ON "db_statement_texts" TO %I USING (true) WITH CHECK (true)', public.fazerai_fleet_role());
   EXECUTE format('CREATE POLICY fleet_super_admin ON "db_table_snapshots" TO %I USING (true) WITH CHECK (true)', public.fazerai_fleet_role());
   EXECUTE format('CREATE POLICY fleet_super_admin ON "db_statement_timeouts" TO %I USING (true) WITH CHECK (true)', public.fazerai_fleet_role());

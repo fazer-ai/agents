@@ -15,10 +15,11 @@ import {
   statementTotals,
 } from "@/modules/instance-health/database/read";
 import {
-  BASELINE_REFRESH_MS,
+  type Counters,
+  deltasOf,
+  lastAvailability,
   pruneDatabaseScreen,
   resetSnapshotState,
-  rowsToWrite,
   type StatementEntry,
   setLastAvailabilityForTest,
   snapshotIfDue,
@@ -28,7 +29,6 @@ import {
 import {
   DRIFT_SIGNAL,
   databaseScreenTick,
-  resetDatabaseTickState,
 } from "@/modules/instance-health/database/tick";
 import {
   capturePlan,
@@ -48,10 +48,10 @@ import {
 } from "@/modules/instance-health/sampler";
 import { dbProbeFailed } from "@/tests/db-gate";
 
-// The database screen against a real database (docs/logs.md, "Database"): the window arithmetic over
-// snapshots (with resets), the plan captured under the scope a statement ran in, one plan per
+// The database screen against a real database (docs/logs.md, "Database"): the deltas a snapshot writes
+// (with resets), the window sums over them, the plan captured under the scope a statement ran in, one plan per
 // statement per window, retention, and a database without pg_stat_statements. The extension is not
-// loaded on the test server, so the snapshots are seeded the way the sampler writes them. The tables
+// loaded on the test server, so the deltas are seeded the way the sampler writes them. The tables
 // are the instance's and only this file writes them, so each test starts from empty.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -81,7 +81,7 @@ const T0 = Date.UTC(2026, 10, 4, 12, 0, 0);
 const MIN = 60_000;
 
 async function wipe(): Promise<void> {
-  await suDb.$executeRaw`DELETE FROM db_statement_snapshots`;
+  await suDb.$executeRaw`DELETE FROM db_statement_deltas`;
   await suDb.$executeRaw`DELETE FROM db_statement_texts`;
   await suDb.$executeRaw`DELETE FROM db_stat_snapshot_runs`;
   await suDb.$executeRaw`DELETE FROM db_table_snapshots`;
@@ -90,18 +90,18 @@ async function wipe(): Promise<void> {
 
 async function seed(
   queryid: bigint,
+  // Deltas, as the sampler writes them: what the entry did in the interval ending at `at`.
   points: {
     at: number;
     calls: number;
     total: number;
     rows?: number;
-    since?: number;
   }[],
   query = `SELECT $1 /* q${queryid} */`,
   userid = 10n,
 ): Promise<void> {
   for (const p of points) {
-    await suDb.dbStatementSnapshot.create({
+    await suDb.dbStatementDelta.create({
       data: {
         takenAt: new Date(p.at),
         userid,
@@ -110,7 +110,6 @@ async function seed(
         calls: BigInt(p.calls),
         totalExecMs: p.total,
         rows: BigInt(p.rows ?? p.calls),
-        statsSince: p.since === undefined ? null : new Date(p.since),
       },
     });
   }
@@ -216,194 +215,123 @@ describe("the two signals and what their alert says", () => {
   });
 });
 
-describe("rowsToWrite: what a snapshot run writes", () => {
+describe("deltasOf: what a snapshot run writes", () => {
   const entry = (
     calls: number,
     statsSince: Date | null = null,
+    queryid = 7n,
   ): StatementEntry => ({
     userid: 10n,
     dbid: 1n,
-    queryid: 7n,
+    queryid,
     query: "SELECT 1",
     calls,
     totalExecMs: calls * 2,
     rows: calls,
     statsSince,
   });
-
-  test("an entry that did not move is not written again", () => {
-    const written = new Map([
-      [
-        "10:1:7",
-        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
-      ],
+  const counters = (calls: number, statsSince: number | null = null) =>
+    new Map<string, Counters>([
+      ["10:1:7", { calls, totalExecMs: calls * 2, rows: calls, statsSince }],
     ]);
-    const out = rowsToWrite({
-      entries: [entry(5)],
-      written,
-      presentAtPrevious: new Set(["10:1:7"]),
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
-    });
-    expect(out).toEqual([]);
+  const calls = (out: ReturnType<typeof deltasOf>) =>
+    out.map((d) => d.delta.calls);
+
+  test("an entry seen before writes the difference, and one that did not run writes nothing", () => {
+    expect(
+      calls(
+        deltasOf({
+          entries: [entry(1030)],
+          previous: counters(1000),
+          previousComplete: true,
+        }),
+      ),
+    ).toEqual([30]);
+    expect(
+      deltasOf({
+        entries: [entry(1000)],
+        previous: counters(1000),
+        previousComplete: true,
+      }),
+    ).toEqual([]);
   });
 
-  test("a quiet entry's baseline is written again after twelve hours, so retention never prunes the last one", () => {
-    const written = new Map([
-      [
-        "10:1:7",
-        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
-      ],
-    ]);
-    const later = T0 + BASELINE_REFRESH_MS;
-    const out = rowsToWrite({
-      entries: [entry(5)],
-      written,
-      presentAtPrevious: new Set(["10:1:7"]),
-      previousRunAt: later - 5 * MIN,
-      takenAt: later,
-    });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [later - 5 * MIN, 5],
-      [later, 5],
-    ]);
+  test("a counter that went down is a reset: what the entry holds is what it did since", () => {
+    expect(
+      calls(
+        deltasOf({
+          entries: [entry(10)],
+          previous: counters(510),
+          previousComplete: true,
+        }),
+      ),
+    ).toEqual([10]);
   });
 
-  test("an entry that moves after a quiet stretch gets its unchanged value at the previous run too", () => {
-    const written = new Map([
-      [
-        "10:1:7",
-        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
-      ],
-    ]);
-    const out = rowsToWrite({
-      entries: [entry(9)],
-      written,
-      presentAtPrevious: new Set(["10:1:7"]),
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
-    });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [T0 + 5 * MIN, 5],
-      [T0 + 10 * MIN, 9],
-    ]);
-  });
-
-  test("an entry absent from the previous complete scan was evicted and restarted: a zero row at it, never its old value", () => {
-    const written = new Map([
-      [
-        "10:1:7",
-        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
-      ],
-    ]);
-    const out = rowsToWrite({
-      entries: [entry(9)],
-      written,
-      presentAtPrevious: new Set(),
+  test("fewer calls is a reset even when the time and the rows did not go down", () => {
+    const out = deltasOf({
+      entries: [{ ...entry(10), totalExecMs: 5000, rows: 5 }],
+      previous: new Map<string, Counters>([
+        [
+          "10:1:7",
+          { calls: 510, totalExecMs: 1020, rows: 5, statsSince: null },
+        ],
+      ]),
       previousComplete: true,
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
     });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [T0 + 5 * MIN, 0],
-      [T0 + 10 * MIN, 9],
+    expect(out.map((d) => d.delta)).toEqual([
+      { calls: 10, totalExecMs: 5000, rows: 5 },
     ]);
   });
 
-  test("an entry reset after the previous run gets a zero row there even with an older baseline stored", () => {
-    // Its baseline is from long before the window; it was evicted and came back after the last run.
-    const written = new Map([
-      [
-        "10:1:7",
-        {
-          calls: 50,
-          totalExecMs: 100,
-          rows: 50,
-          statsSince: T0 - 60 * MIN,
-          takenAt: T0 - 50 * MIN,
-        },
-      ],
-    ]);
-    const out = rowsToWrite({
-      entries: [entry(4, new Date(T0 + 7 * MIN))],
-      written,
-      presentAtPrevious: new Set(),
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
-    });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [T0 + 5 * MIN, 0],
-      [T0 + 10 * MIN, 4],
-    ]);
+  test("a moved stats_since is a reset even when the counters happen to be higher", () => {
+    expect(
+      calls(
+        deltasOf({
+          entries: [entry(8, new Date(T0 + 2 * MIN))],
+          previous: counters(3, T0 - 60 * MIN),
+          previousComplete: true,
+        }),
+      ),
+    ).toEqual([8]);
   });
 
-  test("without stats_since, a new entry absent from the previous complete scan gets a zero row there", () => {
-    const out = rowsToWrite({
-      entries: [entry(3)],
-      written: new Map(),
-      presentAtPrevious: new Set(["10:1:99"]),
+  test("an entry the previous complete read did not have started since: all it holds counts", () => {
+    expect(
+      calls(
+        deltasOf({
+          entries: [entry(4, null, 99n)],
+          previous: counters(1000),
+          previousComplete: true,
+        }),
+      ),
+    ).toEqual([4]);
+  });
+
+  test("an entry missing from a read cut at the cap proves nothing: it writes no row yet", () => {
+    expect(
+      deltasOf({
+        entries: [entry(4, null, 99n)],
+        previous: counters(1000),
+        previousComplete: false,
+      }),
+    ).toEqual([]);
+  });
+
+  test("no difference is ever negative", () => {
+    const out = deltasOf({
+      entries: [entry(5), entry(3, null, 99n)],
+      previous: new Map<string, Counters>([
+        ["10:1:7", { calls: 5, totalExecMs: 20, rows: 5, statsSince: null }],
+        ["10:1:99", { calls: 9, totalExecMs: 1, rows: 9, statsSince: null }],
+      ]),
       previousComplete: true,
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
     });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [T0 + 5 * MIN, 0],
-      [T0 + 10 * MIN, 3],
-    ]);
-    // An unknown previous scan (a restart, or one cut at the cap) proves nothing: no zero row.
-    const unknown = rowsToWrite({
-      entries: [entry(3)],
-      written: new Map(),
-      presentAtPrevious: null,
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
-    });
-    expect(unknown.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
-  });
-
-  test("a capped scan still counts as presence: an entry seen at the previous run gets its baseline there", () => {
-    const written = new Map([
-      [
-        "10:1:7",
-        { calls: 5, totalExecMs: 10, rows: 5, statsSince: null, takenAt: T0 },
-      ],
-    ]);
-    const out = rowsToWrite({
-      entries: [entry(9)],
-      written,
-      presentAtPrevious: new Set(["10:1:7"]),
-      previousComplete: false,
-      previousRunAt: T0 + 65 * MIN,
-      takenAt: T0 + 70 * MIN,
-    });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [T0 + 65 * MIN, 5],
-      [T0 + 70 * MIN, 9],
-    ]);
-    // But an absence from a capped scan proves nothing: no zero row.
-    const absent = rowsToWrite({
-      entries: [entry(3)],
-      written: new Map(),
-      presentAtPrevious: new Set(["10:1:99"]),
-      previousComplete: false,
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
-    });
-    expect(absent.map((w) => w.takenAt)).toEqual([T0 + 10 * MIN]);
-  });
-
-  test("an entry that started after the previous run gets a zero row there, so its whole count lands", () => {
-    const out = rowsToWrite({
-      entries: [entry(4, new Date(T0 + 7 * MIN))],
-      written: new Map(),
-      presentAtPrevious: new Set(),
-      previousRunAt: T0 + 5 * MIN,
-      takenAt: T0 + 10 * MIN,
-    });
-    expect(out.map((w) => [w.takenAt, w.values.calls])).toEqual([
-      [T0 + 5 * MIN, 0],
-      [T0 + 10 * MIN, 4],
-    ]);
+    for (const d of out) {
+      expect(d.delta.calls).toBeGreaterThanOrEqual(0);
+      expect(d.delta.totalExecMs).toBeGreaterThanOrEqual(0);
+      expect(d.delta.rows).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 
@@ -413,11 +341,11 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     resetSnapshotState();
   });
 
-  test("a window counts the difference between its snapshots, not the lifetime total", async () => {
+  test("a window is the sum of the deltas inside it, and nothing before it", async () => {
     await seed(1n, [
       { at: T0, calls: 1000, total: 1000 },
-      { at: T0 + 5 * MIN, calls: 1010, total: 1020 },
-      { at: T0 + 10 * MIN, calls: 1030, total: 1060 },
+      { at: T0 + 5 * MIN, calls: 10, total: 20 },
+      { at: T0 + 10 * MIN, calls: 20, total: 40 },
     ]);
     const [t] = await asSuperAdminOn(appDb, (db) =>
       statementTotals(db, new Date(T0), new Date(T0 + 10 * MIN)),
@@ -426,31 +354,28 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect(t?.total_ms).toBe(60);
   });
 
-  test("a counter that went down restarts the series instead of going negative", async () => {
-    await seed(2n, [
-      { at: T0, calls: 500, total: 5000 },
-      { at: T0 + 5 * MIN, calls: 510, total: 5100 },
-      // pg_stat_statements_reset() between these two: what the later one holds is since then.
-      { at: T0 + 10 * MIN, calls: 10, total: 30 },
-      { at: T0 + 15 * MIN, calls: 14, total: 50 },
-    ]);
-    const [t] = await asSuperAdminOn(appDb, (db) =>
-      statementTotals(db, new Date(T0), new Date(T0 + 15 * MIN)),
-    );
-    expect(t?.calls).toBe(10 + 10 + 4);
-    expect(t?.total_ms).toBe(100 + 30 + 20);
-  });
-
-  test("a newer stats_since is a reset even when the counters happen to be higher", async () => {
-    await seed(3n, [
-      { at: T0, calls: 3, total: 3, since: T0 - 60 * MIN },
-      // Evicted and back, and climbed past the old count before the next snapshot.
-      { at: T0 + 5 * MIN, calls: 8, total: 16, since: T0 + 2 * MIN },
-    ]);
-    const [t] = await asSuperAdminOn(appDb, (db) =>
-      statementTotals(db, new Date(T0), new Date(T0 + 5 * MIN)),
-    );
-    expect(t?.calls).toBe(8);
+  test("the first snapshot after a start writes no deltas, and the next writes what ran between them", async () => {
+    resetSnapshotState();
+    const t = Date.now();
+    expect(await snapshotIfDue(appDb, t, { force: true })).toBe(true);
+    // Whatever the counters held before this process started is not attributed to any interval.
+    expect(await suDb.dbStatementDelta.count()).toBe(0);
+    // The marker is an identifier: pg_stat_statements replaces literals with placeholders.
+    const marker = "SELECT $1::int AS delta_probe";
+    for (let i = 0; i < 3; i++) await appDb.$queryRawUnsafe(marker, i);
+    expect(await snapshotIfDue(appDb, t + 1, { force: true })).toBe(true);
+    const availability = lastAvailability();
+    const probe = await suDb.$queryRaw<{ calls: bigint }[]>`
+      SELECT d.calls FROM db_statement_deltas d
+        JOIN db_statement_texts x USING (userid, dbid, queryid)
+       WHERE x.query LIKE '%delta_probe%'`;
+    if (availability?.available) {
+      // The second read's difference holds the three calls made between the two snapshots.
+      expect(probe.map((r) => Number(r.calls))).toEqual([3]);
+    } else {
+      // Without the extension there is nothing to difference, and nothing is invented.
+      expect(probe).toEqual([]);
+    }
   });
 
   test("the screen's rows never carry a negative figure, in any window", async () => {
@@ -458,7 +383,7 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     await seed(4n, [
       { at: now - 20 * MIN, calls: 900, total: 900 },
       { at: now - 10 * MIN, calls: 2, total: 1 },
-      { at: now - 5 * MIN, calls: 12, total: 21 },
+      { at: now - 5 * MIN, calls: 10, total: 20 },
     ]);
     await suDb.dbStatSnapshotRun.createMany({
       data: [20, 10, 5].map((m) => ({
@@ -491,8 +416,8 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     await seed(
       5n,
       [
-        { at: now - 30 * MIN, calls: 10, total: 1000 },
-        { at: now - 5 * MIN, calls: 20, total: 4000 },
+        { at: now - 30 * MIN, calls: 4, total: 1200 },
+        { at: now - 5 * MIN, calls: 6, total: 1800 },
       ],
       "SELECT c.thread_id FROM conversations c WHERE c.status = $1",
       appRole,
@@ -501,7 +426,7 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       6n,
       [
         { at: now - 30 * MIN, calls: 1000, total: 1000 },
-        { at: now - 5 * MIN, calls: 3000, total: 3000 },
+        { at: now - 5 * MIN, calls: 2000, total: 2000 },
       ],
       undefined,
       appRole,
@@ -510,27 +435,27 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     await seed(
       7n,
       [
-        { at: now - 30 * MIN, calls: 1, total: 0 },
-        { at: now - 5 * MIN, calls: 2, total: 4000 },
+        { at: now - 30 * MIN, calls: 1, total: 4000 },
+        { at: now - 5 * MIN, calls: 1, total: 4000 },
       ],
       "SELECT pg_sleep($1)",
       appRole + 999_999n,
     );
     const { pct, query } = await slowestMeanShare(appDb, now, 500);
-    // (4000 - 1000) / (20 - 10) = 300 ms, 60% of a 500 ms budget.
+    // (1200 + 1800) / (4 + 6) = 300 ms, 60% of a 500 ms budget.
     expect(pct).toBeCloseTo(60, 5);
     expect(query).toContain("SELECT c.thread_id FROM conversations");
   });
 
-  test("after a restart the drift comes from the stored snapshots, before this process takes its first", async () => {
+  test("after a restart the drift comes from the stored deltas, before this process takes its first snapshot", async () => {
     const now = Date.now();
     const [app] = await appDb.$queryRaw<{ oid: bigint }[]>`
       SELECT oid::bigint AS oid FROM pg_roles WHERE rolname = session_user`;
     await seed(
       8n,
       [
-        { at: now - 20 * MIN, calls: 10, total: 100 },
-        { at: now - 2 * MIN, calls: 20, total: 6100 },
+        { at: now - 20 * MIN, calls: 4, total: 2400 },
+        { at: now - 2 * MIN, calls: 6, total: 3600 },
       ],
       "SELECT c.id FROM conversations c WHERE c.contact_id = $1",
       app?.oid ?? 0n,
@@ -539,10 +464,9 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     await suDb.dbStatSnapshotRun.create({
       data: { takenAt: new Date(now - 2 * MIN), statementsAvailable: true },
     });
-    resetDatabaseTickState();
     setSignalDetail(DRIFT_SIGNAL, null);
     const value = await databaseScreenTick(now, appDb);
-    // (6100 - 100) / (20 - 10) = 600 ms, as a share of DB_TX_TIMEOUT_MS.
+    // (2400 + 3600) / (4 + 6) = 600 ms, as a share of DB_TX_TIMEOUT_MS.
     expect(Math.round(value)).toBe(
       Math.round((600 / config.dbTx.timeoutMs) * 100),
     );
@@ -610,7 +534,7 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       })),
     });
     await pruneDatabaseScreen(appDb, now, 7);
-    const left = await suDb.dbStatementSnapshot.findMany();
+    const left = await suDb.dbStatementDelta.findMany();
     expect(
       left.map((r) => Math.round((now - r.takenAt.getTime()) / day)),
     ).toEqual([6]);
@@ -692,11 +616,46 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     });
     try {
       resetSnapshotState();
-      resetDatabaseTickState();
       await expect(databaseScreenTick(Date.now(), down)).rejects.toThrow();
     } finally {
       await down.$disconnect();
     }
+  });
+
+  test("a tick whose snapshot fails to write throws, even when the drift could still be computed", async () => {
+    // Only the snapshot's run row is refused; every read, the drift's included, still works.
+    const failing = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop !== "$transaction") return Reflect.get(target, prop, receiver);
+        return (fn: (tx: unknown) => Promise<unknown>, opts: unknown) =>
+          target.$transaction(
+            (tx) =>
+              fn(
+                new Proxy(tx, {
+                  get(t, p, r) {
+                    const v = Reflect.get(t, p, r);
+                    if (p !== "dbStatSnapshotRun") return v;
+                    return new Proxy(v as object, {
+                      get(d, m, dr) {
+                        if (m === "create") {
+                          return async () => {
+                            throw new Error("snapshot refused");
+                          };
+                        }
+                        return Reflect.get(d, m, dr);
+                      },
+                    });
+                  },
+                }),
+              ),
+            opts as never,
+          );
+      },
+    }) as PrismaClient;
+    resetSnapshotState();
+    await expect(databaseScreenTick(Date.now(), failing)).rejects.toThrow(
+      "snapshot refused",
+    );
   });
 
   test("timeouts that cannot be stored go back to the queue, and one that keeps failing is dropped after three ticks", async () => {
@@ -788,13 +747,11 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       data: { takenAt: new Date(Date.now() - MIN), statementsAvailable: false },
     });
     resetSnapshotState();
-    resetDatabaseTickState();
     setLastAvailabilityForTest({ available: false, reason: "unreadable" });
     await expect(databaseScreenTick(Date.now(), appDb)).rejects.toThrow(
       "could not be read",
     );
     // An extension that is simply absent still reads 0, which is a measurement.
-    resetDatabaseTickState();
     setLastAvailabilityForTest({ available: false, reason: "not_loaded" });
     expect(await databaseScreenTick(Date.now(), appDb)).toBe(0);
   });

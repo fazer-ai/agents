@@ -1,5 +1,6 @@
 import { AsyncResource } from "node:async_hooks";
 import type { Pool, PoolClient } from "pg";
+import { currentDbScope } from "@/lib/db-scope";
 import { currentWorkLabel } from "@/lib/work-label";
 
 // What each database pool is doing, for the instance health sampler (docs/logs.md, instance alerts):
@@ -26,8 +27,8 @@ interface Tracked {
 }
 
 // A statement that hit its `statement_timeout`, as this process sent it: the SQL text (parameters
-// stay `$N`; the values are never kept), the work that ran it, and the scope of its transaction as
-// the statements before it in that transaction set it (src/lib/tenancy/multi-tenant.ts): the tenant,
+// stay `$N`; the values are never kept), the work that ran it, and the scope its transaction was
+// opened under (src/lib/db-scope.ts, entered by src/lib/tenancy/multi-tenant.ts): the tenant,
 // whether it ran as the fleet role, and the budget. Read by the database screen (docs/logs.md,
 // "Database"), which stores it and captures its plan under that same scope.
 export interface StatementTimeoutEvent {
@@ -42,12 +43,6 @@ export interface StatementTimeoutEvent {
   pool?: string;
 }
 
-interface ClientScope {
-  tenantId: string | null;
-  fleet: boolean;
-  budgetMs: number | null;
-}
-
 interface Registry {
   pools: Map<string, Tracked>;
   lockTimeouts: number[];
@@ -59,7 +54,6 @@ interface Registry {
 
 const KEY = Symbol.for("fazerai.poolStats");
 const WATCHED = Symbol.for("fazerai.poolStats.watched");
-const SCOPE = Symbol.for("fazerai.poolStats.scope");
 const MAX_PENDING_TIMEOUTS = 500;
 
 function registry(): Registry {
@@ -151,80 +145,16 @@ export function requeueStatementTimeouts(
   );
 }
 
-// The text and values of a `client.query(...)` call, in either of pg's shapes: (text, values) or
+// The text of a `client.query(...)` call, in either of pg's shapes: (text, values) or
 // ({ text, values }).
-function statementOf(args: unknown[]): {
-  text: string | null;
-  values: unknown[];
-} {
+function textOf(args: unknown[]): string | null {
   const first = args[0];
-  if (typeof first === "string") {
-    return { text: first, values: Array.isArray(args[1]) ? args[1] : [] };
-  }
+  if (typeof first === "string") return first;
   if (first && typeof first === "object") {
-    const q = first as { text?: unknown; values?: unknown };
-    const values = Array.isArray(q.values)
-      ? q.values
-      : Array.isArray(args[1])
-        ? (args[1] as unknown[])
-        : [];
-    return { text: typeof q.text === "string" ? q.text : null, values };
+    const q = first as { text?: unknown };
+    return typeof q.text === "string" ? q.text : null;
   }
-  return { text: null, values: [] };
-}
-
-const TX_START = /^\s*(BEGIN|START\s+TRANSACTION)\b/i;
-// `ROLLBACK TO [SAVEPOINT]` undoes back to a savepoint and leaves the transaction, and the scope it
-// set, in force: only a full ROLLBACK ends it.
-const TX_END =
-  /^\s*(COMMIT|END|ABORT|ROLLBACK(?!\s+(?:(?:WORK|TRANSACTION)\s+)?TO\b))\b/i;
-const SET_TIMEOUT =
-  /^\s*SET\s+(?:LOCAL\s+|SESSION\s+)?statement_timeout\s*(?:=|TO)\s*'?(\d+(?:\.\d+)?)\s*(ms|s|min)?'?\s*;?\s*$/i;
-const SET_CONFIG =
-  /set_config\(\s*'([a-z_.]+)'\s*,\s*([^,]+?)\s*,\s*(?:true|false)\s*\)/gi;
-
-function argValue(arg: string, values: unknown[]): string | null {
-  const param = /^\$(\d+)$/.exec(arg);
-  if (param) {
-    const v = values[Number(param[1]) - 1];
-    return v === undefined || v === null ? null : String(v);
-  }
-  const literal = /^'(.*)'$/.exec(arg);
-  return literal ? (literal[1] as string) : null;
-}
-
-// Follows what a transaction's own statements set (src/lib/tenancy/multi-tenant.ts opens every scoped
-// transaction with `set_config('app.tenant_id', …)`, the fleet path with `set_config('role', …)`, both
-// with `set_config('statement_timeout', …)`), so a statement that times out is recorded with the
-// scope it ran under. Cleared when a transaction starts and when it ends.
-function trackScope(scope: ClientScope, text: string, values: unknown[]): void {
-  if (TX_START.test(text) || TX_END.test(text)) {
-    scope.tenantId = null;
-    scope.fleet = false;
-    scope.budgetMs = null;
-    return;
-  }
-  // `SET [LOCAL] statement_timeout = 2500` (the checkpointer's sweep sets its budget this way), in
-  // milliseconds unless a unit says otherwise.
-  const set = SET_TIMEOUT.exec(text);
-  if (set) {
-    const n = Number(set[1]);
-    const unit = (set[2] ?? "ms").toLowerCase();
-    const ms = unit === "s" ? n * 1000 : unit === "min" ? n * 60_000 : n;
-    scope.budgetMs = Number.isFinite(ms) && ms > 0 ? ms : null;
-    return;
-  }
-  if (!text.includes("set_config")) return;
-  for (const m of text.matchAll(SET_CONFIG)) {
-    const name = m[1] as string;
-    const arg = (m[2] as string).trim();
-    if (name === "app.tenant_id") scope.tenantId = argValue(arg, values);
-    else if (name === "role") scope.fleet = true;
-    else if (name === "statement_timeout") {
-      const v = Number(argValue(arg, values));
-      scope.budgetMs = Number.isFinite(v) && v > 0 ? v : null;
-    }
-  }
+  return null;
 }
 
 function noteError(
@@ -232,7 +162,7 @@ function noteError(
   statement: {
     text: string | null;
     label: string | null;
-    scope: ClientScope;
+    scope: ReturnType<typeof currentDbScope>;
     pool: string;
   },
 ): void {
@@ -252,25 +182,19 @@ function noteError(
 // Watches a client's statements for 55P03 and 57014, once per client, without changing what the
 // caller gets: the rejection still reaches it, and a callback still receives its error.
 function watchClient(client: PoolClient, pool: string): void {
-  const c = client as PoolClient & {
-    [WATCHED]?: true;
-    [SCOPE]?: ClientScope;
-  };
+  const c = client as PoolClient & { [WATCHED]?: true };
   if (c[WATCHED]) return;
   c[WATCHED] = true;
-  const scope: ClientScope = { tenantId: null, fleet: false, budgetMs: null };
-  c[SCOPE] = scope;
   const query = c.query.bind(c) as (...args: unknown[]) => unknown;
   (c as unknown as { query: (...args: unknown[]) => unknown }).query = (
     ...args: unknown[]
   ) => {
-    const { text, values } = statementOf(args);
-    if (text) trackScope(scope, text, values);
+    const text = textOf(args);
     // Read now, in the caller's context: the rejection settles on another continuation.
     const statement = {
       text,
       label: currentWorkLabel(),
-      scope: { ...scope },
+      scope: currentDbScope(),
       pool,
     };
     const last = args[args.length - 1];

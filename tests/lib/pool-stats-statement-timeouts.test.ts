@@ -1,7 +1,10 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { Elysia } from "elysia";
 import { Pool } from "pg";
+import { PrismaClient } from "@/../generated/prisma/client";
 import { localeMiddleware } from "@/api/middlewares/locale";
+import { checkpointTransaction } from "@/graph/checkpoint-sweep";
 import {
   drainStatementTimeouts,
   forgetPool,
@@ -14,22 +17,27 @@ import {
   resetStatementTimeouts,
   statementTimeoutsPerMinute,
 } from "@/lib/pool-stats";
+import { asSuperAdminOn, runScopedOn, runWithinBudgetOn } from "@/lib/tenancy";
 import { currentWorkLabel, runWithWorkLabel } from "@/lib/work-label";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // A statement cancelled by its budget (SQLSTATE 57014) is recorded by the pool it ran on, with the
-// work that ran it and the scope its transaction set (docs/logs.md, "Database"): that is what the
+// work that ran it and the scope its transaction was opened under (src/lib/db-scope.ts, declared by
+// the tenancy helpers and never parsed from the SQL; docs/logs.md, "Database"): that is what the
 // database screen stores and plans, and what the instance alert names.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 let dbUp = false;
 let pool: Pool | undefined;
+// The tenancy helpers over the instrumented pool, as src/api/lib/prisma.ts builds the app's client.
+let db: PrismaClient | undefined;
 if (appUrl) {
   try {
     pool = instrumentPool(
       "test-statement-timeouts",
       new Pool({ connectionString: appUrl, max: 2 }),
     );
+    db = new PrismaClient({ adapter: new PrismaPg(pool) });
     await pool.query("SELECT 1");
     dbUp = true;
   } catch (err) {
@@ -39,7 +47,14 @@ if (appUrl) {
 
 afterAll(async () => {
   forgetPool("test-statement-timeouts");
+  await db?.$disconnect();
   await pool?.end();
+});
+
+const budget = (timeout: number, deadline?: number) => ({
+  maxWait: 5000,
+  timeout,
+  ...(deadline === undefined ? {} : { deadline }),
 });
 
 describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
@@ -49,25 +64,18 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
   });
 
   test("a 57014 inside a scoped transaction is recorded with its work, tenant and budget", async () => {
-    const client = await (pool as Pool).connect();
-    try {
-      await runWithWorkLabel("job:FOLLOWUP_SWEEP", async () => {
-        await client.query("BEGIN");
-        // The shape src/lib/tenancy/multi-tenant.ts opens every scoped transaction with.
-        await client.query(
-          "SELECT set_config('app.tenant_id', $1, true), set_config('statement_timeout', $2, true)",
-          ["42", "50"],
-        );
-        await expect(
-          client.query("SELECT pg_sleep($1)", [1]),
-        ).rejects.toThrow();
-        await client.query("ROLLBACK");
-      });
-    } finally {
-      client.release();
-    }
+    await runWithWorkLabel("job:FOLLOWUP_SWEEP", () =>
+      expect(
+        runScopedOn(
+          db as PrismaClient,
+          { tenantId: 42n, userId: null, role: "TENANT_ADMIN" },
+          (tx) => tx.$queryRaw`SELECT pg_sleep(1)`,
+          budget(50),
+        ),
+      ).rejects.toThrow(),
+    );
     const [ev] = drainStatementTimeouts();
-    expect(ev?.sql).toBe("SELECT pg_sleep($1)");
+    expect(ev?.sql).toContain("pg_sleep");
     expect(ev?.label).toBe("job:FOLLOWUP_SWEEP");
     expect(ev?.tenantId).toBe("42");
     expect(ev?.budgetMs).toBe(50);
@@ -80,57 +88,56 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
   });
 
   test("the fleet path is recorded as such", async () => {
-    const client = await (pool as Pool).connect();
-    try {
-      await client.query("BEGIN");
-      // The shape asSuperAdmin opens with.
-      await client.query(
-        "SELECT set_config('role', public.fazerai_fleet_role(), true), set_config('statement_timeout', $1, true)",
-        ["40"],
-      );
-      await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
-      await client.query("ROLLBACK");
-    } finally {
-      client.release();
-    }
+    await expect(
+      asSuperAdminOn(
+        db as PrismaClient,
+        (tx) => tx.$queryRaw`SELECT pg_sleep(1)`,
+        budget(40),
+      ),
+    ).rejects.toThrow();
     const [ev] = drainStatementTimeouts();
     expect(ev?.fleet).toBe(true);
     expect(ev?.tenantId).toBeNull();
+    expect(ev?.budgetMs).toBe(40);
   });
 
-  test("a later transaction does not inherit the scope of the one before", async () => {
-    const client = await (pool as Pool).connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        "SELECT set_config('statement_timeout', $1, true), set_config('app.tenant_id', $2, true)",
-        ["40", "7"],
-      );
-      await client.query("ROLLBACK");
-      await client.query("BEGIN");
-      await client.query("SELECT set_config('statement_timeout', '40', true)");
-      await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
-      await client.query("ROLLBACK");
-    } finally {
-      client.release();
-    }
+  test("under a deadline the budget recorded is what was left of it when the statement went out", async () => {
+    await expect(
+      runWithinBudgetOn(
+        db as PrismaClient,
+        budget(5000, Date.now() + 60),
+        (tx) => tx.$queryRaw`SELECT pg_sleep(1)`,
+      ),
+    ).rejects.toThrow();
     const [ev] = drainStatementTimeouts();
     expect(ev?.tenantId).toBeNull();
-    expect(ev?.budgetMs).toBe(40);
-    expect(ev?.label).toBeNull();
+    expect(ev?.fleet).toBe(false);
+    expect(ev?.budgetMs).toBeGreaterThan(0);
+    expect(ev?.budgetMs).toBeLessThanOrEqual(60);
   });
 
-  test("a statement after COMMIT, outside any transaction, does not carry the committed scope", async () => {
+  test("the SQL a transaction sends cannot change the scope it is recorded under", async () => {
+    await expect(
+      runWithinBudgetOn(db as PrismaClient, budget(40), async (tx) => {
+        // A statement that sets a tenant by itself: the scope is what the helper declared.
+        await tx.$queryRaw`SELECT set_config('app.tenant_id', '9', true), set_config('role', current_user, true)`;
+        return tx.$queryRaw`SELECT pg_sleep(1)`;
+      }),
+    ).rejects.toThrow();
+    const [ev] = drainStatementTimeouts();
+    expect(ev?.tenantId).toBeNull();
+    expect(ev?.fleet).toBe(false);
+  });
+
+  test("a statement after the transaction, outside any scope, carries none of it", async () => {
+    await asSuperAdminOn(
+      db as PrismaClient,
+      (tx) => tx.$queryRaw`SELECT 1`,
+      budget(5000),
+    );
     const client = await (pool as Pool).connect();
     try {
-      await client.query("BEGIN");
-      await client.query(
-        "SELECT set_config('app.tenant_id', $1, true), set_config('statement_timeout', $2, true)",
-        ["9", "5000"],
-      );
-      await client.query("COMMIT");
-      // A session-level budget, in autocommit: no transaction, so no tenant.
-      await client.query("SELECT set_config('statement_timeout', '40', false)");
+      await client.query("SET statement_timeout = 40");
       await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
       await client.query("RESET statement_timeout");
     } finally {
@@ -138,43 +145,23 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
     }
     const [ev] = drainStatementTimeouts();
     expect(ev?.tenantId).toBeNull();
-    expect(ev?.budgetMs).toBe(40);
+    expect(ev?.fleet).toBe(false);
+    expect(ev?.budgetMs).toBeNull();
   });
 
-  test("a rollback to a savepoint keeps the transaction's scope", async () => {
-    const client = await (pool as Pool).connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        "SELECT set_config('app.tenant_id', $1, true), set_config('statement_timeout', $2, true)",
-        ["5", "40"],
-      );
-      await client.query("SAVEPOINT s1");
-      await expect(client.query("SELECT 1/0")).rejects.toThrow();
-      await client.query("ROLLBACK TO SAVEPOINT s1");
-      await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
-      await client.query("ROLLBACK");
-    } finally {
-      client.release();
-    }
+  test("the checkpointer's sweep is recorded with what was left of its deadline", async () => {
+    await expect(
+      checkpointTransaction(
+        pool as Pool,
+        { deadline: Date.now() + 45, beforeCommit: async () => {} },
+        (query) => query("SELECT pg_sleep(1)", []),
+      ),
+    ).rejects.toThrow();
     const [ev] = drainStatementTimeouts();
-    expect(ev?.tenantId).toBe("5");
-    expect(ev?.budgetMs).toBe(40);
-  });
-
-  test("a budget set with SET LOCAL statement_timeout is recorded too", async () => {
-    const client = await (pool as Pool).connect();
-    try {
-      await client.query("BEGIN");
-      // The shape src/graph/checkpoint-sweep.ts sets its budget with.
-      await client.query("SET LOCAL statement_timeout = 45");
-      await expect(client.query("SELECT pg_sleep(1)")).rejects.toThrow();
-      await client.query("ROLLBACK");
-    } finally {
-      client.release();
-    }
-    const [ev] = drainStatementTimeouts();
-    expect(ev?.budgetMs).toBe(45);
+    expect(ev?.sql).toBe("SELECT pg_sleep(1)");
+    expect(ev?.tenantId).toBeNull();
+    expect(ev?.budgetMs).toBeGreaterThan(0);
+    expect(ev?.budgetMs).toBeLessThanOrEqual(45);
   });
 
   test("a query that waited in the pool keeps the label of the work that sent it", async () => {

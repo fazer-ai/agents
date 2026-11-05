@@ -3034,19 +3034,18 @@ model DbStatSnapshotRun {
 }
 
 // Cumulative pg_stat_statements counters of an entry that moved since the previous snapshot.
-model DbStatementSnapshot {
-  takenAt     DateTime  @map("taken_at")
+model DbStatementDelta {
+  takenAt     DateTime @map("taken_at")
   userid      BigInt
   dbid        BigInt
   queryid     BigInt
   calls       BigInt
-  totalExecMs Float     @map("total_exec_ms")
+  totalExecMs Float    @map("total_exec_ms")
   rows        BigInt
-  statsSince  DateTime? @map("stats_since")
 
   @@id([userid, dbid, queryid, takenAt])
   @@index([takenAt])
-  @@map("db_statement_snapshots")
+  @@map("db_statement_deltas")
 }
 
 model DbStatementText {
@@ -3076,17 +3075,17 @@ model DbTableSnapshot {
 // A statement that failed with 57014, captured by the app with the scope it ran under; the plan is
 // captured for the first occurrence of a statement per window.
 model DbStatementTimeout {
-  id          BigInt   @id @default(autoincrement())
-  occurredAt  DateTime @map("occurred_at")
-  fingerprint String
-  statement   String
-  label       String?
-  scopeTenantId BigInt? @map("scope_tenant_id")
-  fleet       Boolean  @default(false)
-  budgetMs    Int?     @map("budget_ms")
-  plan        String?
-  planError   String?  @map("plan_error")
-  plannedAs   String?  @map("planned_as")
+  id            BigInt   @id @default(autoincrement())
+  occurredAt    DateTime @map("occurred_at")
+  fingerprint   String
+  statement     String
+  label         String?
+  scopeTenantId BigInt?  @map("scope_tenant_id")
+  fleet         Boolean  @default(false)
+  budgetMs      Int?     @map("budget_ms")
+  plan          String?
+  planError     String?  @map("plan_error")
+  plannedAs     String?  @map("planned_as")
 
   @@index([occurredAt])
   @@index([fingerprint, occurredAt])

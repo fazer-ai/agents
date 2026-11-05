@@ -88,7 +88,7 @@ const FLEET_ONLY_TABLES = [
   "instance_alert_deliveries",
   "instance_alert_thresholds",
   "db_stat_snapshot_runs",
-  "db_statement_snapshots",
+  "db_statement_deltas",
   "db_statement_texts",
   "db_table_snapshots",
   "db_statement_timeouts",

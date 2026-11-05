@@ -17,10 +17,7 @@ import {
   type TxBudget,
 } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
-import {
-  asFleetForInstanceHealth,
-  INSTANCE_HEALTH_TX_BUDGET,
-} from "../fleet-tx";
+import { budgetUntil, fleetWithin } from "./budget";
 
 // The statements that hit their `statement_timeout` (SQLSTATE 57014), stored with the scope they ran
 // under and, for the first occurrence of each statement in a window, the plan Postgres gives it
@@ -150,6 +147,8 @@ export const FLUSH_MAX_EVENTS = 50;
 // And the time a call may spend on them, all together: past it, what is left goes back to the queue.
 const FLUSH_BUDGET_MS = 3_000;
 const FLUSH_MAX_PLANS = 1;
+// The most one store statement may take of what is left.
+const STORE_CAP_MS = 2_000;
 // Ticks an event may fail to be stored before it is given up on.
 const MAX_STORE_ATTEMPTS = 3;
 const failedAttempts = new WeakMap<StatementTimeoutEvent, number>();
@@ -167,10 +166,7 @@ export async function flushStatementTimeouts(
   if (events.length === 0) return 0;
   const deadline = Date.now() + budgetMs;
   // Every statement of this call shares the call's deadline, so one slow event cannot overrun it.
-  const left = (cap: number): TxBudget => {
-    const ms = Math.max(1, Math.min(cap, Math.ceil(deadline - Date.now())));
-    return { maxWait: ms, timeout: ms, deadline };
-  };
+  const left = (cap: number): TxBudget => budgetUntil(deadline, cap);
   const plannedNow = new Set<string>();
   const deferred: StatementTimeoutEvent[] = [];
   const deferredPrints = new Set<string>();
@@ -186,18 +182,15 @@ export async function flushStatementTimeouts(
       continue;
     }
     try {
-      const recent = await asFleetForInstanceHealth(
-        base,
-        (db) =>
-          db.dbStatementTimeout.findFirst({
-            where: {
-              fingerprint,
-              occurredAt: { gte: new Date(ev.at - PLAN_WINDOW_MS) },
-              OR: [{ plan: { not: null } }, { planError: { not: null } }],
-            },
-            select: { id: true },
-          }),
-        left(INSTANCE_HEALTH_TX_BUDGET.timeout),
+      const recent = await fleetWithin(base, left(STORE_CAP_MS), (db) =>
+        db.dbStatementTimeout.findFirst({
+          where: {
+            fingerprint,
+            occurredAt: { gte: new Date(ev.at - PLAN_WINDOW_MS) },
+            OR: [{ plan: { not: null } }, { planError: { not: null } }],
+          },
+          select: { id: true },
+        }),
       );
       const wantsPlan = !recent && !plannedNow.has(fingerprint);
       if (wantsPlan && plannedNow.size >= maxPlans) {
@@ -207,22 +200,19 @@ export async function flushStatementTimeouts(
       }
       // Stored first, the plan after: a plan that uses up the call's time must not keep the
       // occurrence itself from being recorded, tick after tick.
-      const row = await asFleetForInstanceHealth(
-        base,
-        (db) =>
-          db.dbStatementTimeout.create({
-            data: {
-              occurredAt: new Date(ev.at),
-              fingerprint,
-              statement: clipText(normalizeStatement(ev.sql), STATEMENT_MAX),
-              label: ev.label,
-              scopeTenantId: parseDbId(ev.tenantId),
-              fleet: ev.fleet,
-              budgetMs: ev.budgetMs,
-            },
-            select: { id: true },
-          }),
-        left(INSTANCE_HEALTH_TX_BUDGET.timeout),
+      const row = await fleetWithin(base, left(STORE_CAP_MS), (db) =>
+        db.dbStatementTimeout.create({
+          data: {
+            occurredAt: new Date(ev.at),
+            fingerprint,
+            statement: clipText(normalizeStatement(ev.sql), STATEMENT_MAX),
+            label: ev.label,
+            scopeTenantId: parseDbId(ev.tenantId),
+            fleet: ev.fleet,
+            budgetMs: ev.budgetMs,
+          },
+          select: { id: true },
+        }),
       );
       stored++;
       if (wantsPlan) {
@@ -230,19 +220,16 @@ export async function flushStatementTimeouts(
         // capturePlan answers a failure (the deadline included) as a reason, which is stored.
         const plan = await capturePlan(ev, base, left(PLAN_TIMEOUT_MS));
         try {
-          await asFleetForInstanceHealth(
-            base,
-            (db) =>
-              db.dbStatementTimeout.update({
-                where: { id: row.id },
-                data: {
-                  plan: "plan" in plan ? plan.plan : null,
-                  planError: "error" in plan ? plan.error : null,
-                  plannedAs:
-                    "plannedAs" in plan ? plan.plannedAs : plannedAsOf(ev),
-                },
-              }),
-            left(INSTANCE_HEALTH_TX_BUDGET.timeout),
+          await fleetWithin(base, left(STORE_CAP_MS), (db) =>
+            db.dbStatementTimeout.update({
+              where: { id: row.id },
+              data: {
+                plan: "plan" in plan ? plan.plan : null,
+                planError: "error" in plan ? plan.error : null,
+                plannedAs:
+                  "plannedAs" in plan ? plan.plannedAs : plannedAsOf(ev),
+              },
+            }),
           );
         } catch (err) {
           // The occurrence is stored; the next one of this statement asks for its plan again.

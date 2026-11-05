@@ -7,7 +7,7 @@ import {
   type TxBudget,
 } from "@/lib/tenancy";
 import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
-import { asFleetForInstanceHealth } from "../fleet-tx";
+import { budgetUntil, fleetWithin } from "./budget";
 import {
   availabilityOfError,
   lastAvailability,
@@ -15,9 +15,7 @@ import {
 } from "./snapshot";
 
 // What the "Database" screen, its REST route and its MCP tool read (docs/logs.md, "Database"). Every
-// figure about statements is a difference between snapshots inside the window, so it never mixes in
-// what happened before it; a counter that went DOWN between two snapshots (a reset, an eviction, a
-// newer `stats_since`) restarts the series, counting what the later snapshot holds since then.
+// figure about statements is the sum of the deltas stored inside the window (./snapshot.ts).
 
 export const WINDOWS = {
   "1h": 3_600_000,
@@ -32,6 +30,8 @@ const SPARK_BUCKETS = 24;
 const TABLES_TOP = 500;
 // How many timed-out statements the screen lists, the most recent first.
 const TIMEOUT_GROUPS = 100;
+// What the drift computation may take when its caller gives no deadline.
+const DRIFT_BUDGET_MS = 5_000;
 
 // How to switch the extension on, said the same way on every surface that shows it.
 export const ENABLE_STATEMENTS = [
@@ -109,7 +109,8 @@ interface KeyTotals {
   total_ms: number;
 }
 
-// The per-entry totals of a window, resets handled, as one aggregate over the snapshots.
+// The per-entry totals of a window: the sum of the deltas stored inside it (./snapshot.ts takes each
+// difference when it writes, resets included), so nothing here compares rows.
 export async function statementTotals(
   db: Pick<PrismaClient, "$queryRaw">,
   from: Date,
@@ -125,32 +126,18 @@ export async function statementTotals(
       total_ms: number;
     }[]
   >`
-    WITH s AS (
-      SELECT userid, dbid, queryid, taken_at, calls, rows, total_exec_ms, stats_since,
-             lag(calls) OVER w AS p_calls, lag(rows) OVER w AS p_rows,
-             lag(total_exec_ms) OVER w AS p_total, lag(stats_since) OVER w AS p_since
-        FROM db_statement_snapshots
-       WHERE taken_at >= ${from} AND taken_at <= ${to}
-      WINDOW w AS (PARTITION BY userid, dbid, queryid ORDER BY taken_at)
-    ), d AS (
-      SELECT userid, dbid, queryid,
-             (calls < p_calls OR total_exec_ms < p_total OR rows < p_rows
-              OR (stats_since IS NOT NULL AND p_since IS NOT NULL AND stats_since > p_since)) AS reset,
-             calls, rows, total_exec_ms, p_calls, p_rows, p_total
-        FROM s WHERE p_calls IS NOT NULL
-    )
     SELECT userid, dbid, queryid,
-           sum(CASE WHEN reset THEN calls ELSE calls - p_calls END)::float8 AS calls,
-           sum(CASE WHEN reset THEN rows ELSE rows - p_rows END)::float8 AS rows,
-           sum(CASE WHEN reset THEN total_exec_ms ELSE total_exec_ms - p_total END)::float8 AS total_ms
-      FROM d
+           sum(calls)::float8 AS calls, sum(rows)::float8 AS rows,
+           sum(total_exec_ms)::float8 AS total_ms
+      FROM db_statement_deltas
+     WHERE taken_at > ${from} AND taken_at <= ${to}
      GROUP BY userid, dbid, queryid
-    HAVING sum(CASE WHEN reset THEN calls ELSE calls - p_calls END) > 0`;
+    HAVING sum(calls) > 0`;
   return rows.map((r) => ({
     ...r,
-    calls: Math.max(0, Number(r.calls)),
-    rows: Math.max(0, Number(r.rows)),
-    total_ms: Math.max(0, Number(r.total_ms)),
+    calls: Number(r.calls),
+    rows: Number(r.rows),
+    total_ms: Number(r.total_ms),
   }));
 }
 
@@ -173,29 +160,13 @@ async function sparks(
       total_ms: number;
     }[]
   >`
-    WITH s AS (
-      SELECT userid, dbid, queryid, taken_at, calls, rows, total_exec_ms, stats_since,
-             lag(calls) OVER w AS p_calls, lag(total_exec_ms) OVER w AS p_total,
-             lag(stats_since) OVER w AS p_since
-        FROM db_statement_snapshots
-       WHERE taken_at >= ${from} AND taken_at <= ${to}
-         AND (userid::text || ':' || dbid::text || ':' || queryid::text)
-             = ANY(${keys.map((k) => `${k.userid}:${k.dbid}:${k.queryid}`)}::text[])
-      WINDOW w AS (PARTITION BY userid, dbid, queryid ORDER BY taken_at)
-    ), d AS (
-      SELECT userid, dbid, queryid, taken_at,
-             CASE WHEN calls < p_calls OR total_exec_ms < p_total
-                       OR (stats_since IS NOT NULL AND p_since IS NOT NULL AND stats_since > p_since)
-                  THEN calls ELSE calls - p_calls END AS dc,
-             CASE WHEN calls < p_calls OR total_exec_ms < p_total
-                       OR (stats_since IS NOT NULL AND p_since IS NOT NULL AND stats_since > p_since)
-                  THEN total_exec_ms ELSE total_exec_ms - p_total END AS dt
-        FROM s WHERE p_calls IS NOT NULL
-    )
     SELECT userid, dbid, queryid,
            least(${SPARK_BUCKETS - 1}, floor(extract(epoch FROM taken_at - ${from}::timestamp) * 1000 / ${span} * ${SPARK_BUCKETS}))::int AS bucket,
-           sum(dc)::float8 AS calls, sum(dt)::float8 AS total_ms
-      FROM d
+           sum(calls)::float8 AS calls, sum(total_exec_ms)::float8 AS total_ms
+      FROM db_statement_deltas
+     WHERE taken_at > ${from} AND taken_at <= ${to}
+       AND (userid::text || ':' || dbid::text || ':' || queryid::text)
+           = ANY(${keys.map((k) => `${k.userid}:${k.dbid}:${k.queryid}`)}::text[])
      GROUP BY 1, 2, 3, 4`;
   for (const k of keys) {
     out.set(
@@ -207,7 +178,7 @@ async function sparks(
     const series = out.get(`${r.userid}:${r.dbid}:${r.queryid}`);
     const calls = Number(r.calls);
     if (series && calls > 0 && r.bucket >= 0) {
-      series[r.bucket] = Math.max(0, Number(r.total_ms)) / calls;
+      series[r.bucket] = Number(r.total_ms) / calls;
     }
   }
   return out;
@@ -219,8 +190,9 @@ export async function slowestMeanShare(
   base: PrismaClient,
   now: number = Date.now(),
   budgetMs: number = config.dbTx.timeoutMs,
+  txBudget: TxBudget = budgetUntil(Date.now() + DRIFT_BUDGET_MS),
 ): Promise<{ pct: number; query: string | null }> {
-  return asFleetForInstanceHealth(base, async (db) => {
+  return fleetWithin(base, txBudget, async (db) => {
     const totals = await statementTotals(
       db,
       new Date(now - WINDOWS["1h"]),
@@ -255,7 +227,7 @@ export function isOwnStatement(query: string): boolean {
   return (
     /^\s*EXPLAIN\b/i.test(query) ||
     /\bpg_stat_\w+/.test(query) ||
-    /\bdb_(?:statement_snapshots|statement_texts|statement_timeouts|stat_snapshot_runs|table_snapshots)\b/.test(
+    /\bdb_(?:statement_deltas|statement_texts|statement_timeouts|stat_snapshot_runs|table_snapshots)\b/.test(
       query,
     )
   );

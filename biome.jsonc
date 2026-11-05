@@ -181,6 +181,15 @@
       ],
       "plugins": ["./biome-plugins/no-env-read-outside-config.grit"]
     },
+    // budget.ts defines the budgeted helpers every other file of the database screen goes through.
+    {
+      "includes": [
+        "src/modules/instance-health/database/**/*.ts",
+        "!src/modules/instance-health/database/budget.ts",
+        "tests/lint/.probe-src-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/require-database-screen-budget.grit"]
+    },
     // src/graph/model-limit.ts defines runModelCall and holds the default the rule keeps callers off.
     {
       "includes": [

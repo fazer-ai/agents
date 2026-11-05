@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { currentWorkLabel } from "@/lib/work-label";
 
 // What each database pool is doing, for the instance health sampler (docs/logs.md, instance alerts):
 // connections in use and idle, requests waiting for one and how long the oldest has waited, and the
@@ -9,6 +10,7 @@ import type { Pool, PoolClient } from "pg";
 // Per process, which is what the sampler is.
 
 export const LOCK_TIMEOUT_SQLSTATE = "55P03";
+export const STATEMENT_TIMEOUT_SQLSTATE = "57014";
 
 const LOCK_WINDOW_MS = 60_000;
 // Bounds the memory a lock storm can take; past it the per-minute count saturates, which still
@@ -22,17 +24,53 @@ interface Tracked {
   next: number;
 }
 
+// A statement that hit its `statement_timeout`, as this process sent it: the SQL text (parameters
+// stay `$N`; the values are never kept), the work that ran it, and the scope of its transaction as
+// the statements before it in that transaction set it (src/lib/tenancy/multi-tenant.ts): the tenant,
+// whether it ran as the fleet role, and the budget. Read by the database screen (docs/logs.md,
+// "Database"), which stores it and captures its plan under that same scope.
+export interface StatementTimeoutEvent {
+  at: number;
+  sql: string;
+  label: string | null;
+  tenantId: string | null;
+  fleet: boolean;
+  budgetMs: number | null;
+}
+
+interface ClientScope {
+  tenantId: string | null;
+  fleet: boolean;
+  budgetMs: number | null;
+}
+
 interface Registry {
   pools: Map<string, Tracked>;
   lockTimeouts: number[];
+  statementTimeouts: number[];
+  // Waiting to be stored; bounded like the counts, oldest dropped first.
+  pendingTimeouts: StatementTimeoutEvent[];
+  lastTimeout: StatementTimeoutEvent | null;
 }
 
 const KEY = Symbol.for("fazerai.poolStats");
 const WATCHED = Symbol.for("fazerai.poolStats.watched");
+const SCOPE = Symbol.for("fazerai.poolStats.scope");
+const MAX_PENDING_TIMEOUTS = 500;
 
 function registry(): Registry {
   const g = globalThis as unknown as Record<symbol, Registry | undefined>;
-  g[KEY] ??= { pools: new Map(), lockTimeouts: [] };
+  g[KEY] ??= {
+    pools: new Map(),
+    lockTimeouts: [],
+    statementTimeouts: [],
+    pendingTimeouts: [],
+    lastTimeout: null,
+  };
+  // A registry built by an older copy of this module (a hot reload) lacks the newer fields.
+  g[KEY].statementTimeouts ??= [];
+  g[KEY].pendingTimeouts ??= [];
+  g[KEY].lastTimeout ??= null;
   return g[KEY];
 }
 
@@ -54,33 +92,157 @@ export function lockTimeoutsPerMinute(now: number = Date.now()): number {
   return events.filter((t) => t <= now).length;
 }
 
-function noteError(err: unknown): void {
-  if ((err as { code?: unknown } | null)?.code === LOCK_TIMEOUT_SQLSTATE) {
-    recordLockTimeout();
+export function recordStatementTimeout(event: StatementTimeoutEvent): void {
+  const r = registry();
+  r.statementTimeouts.push(event.at);
+  if (r.statementTimeouts.length > MAX_LOCK_EVENTS) {
+    r.statementTimeouts.splice(0, r.statementTimeouts.length - MAX_LOCK_EVENTS);
+  }
+  r.pendingTimeouts.push(event);
+  if (r.pendingTimeouts.length > MAX_PENDING_TIMEOUTS) {
+    r.pendingTimeouts.splice(
+      0,
+      r.pendingTimeouts.length - MAX_PENDING_TIMEOUTS,
+    );
+  }
+  r.lastTimeout = event;
+}
+
+// Statement timeouts in the last minute, across every pool.
+export function statementTimeoutsPerMinute(now: number = Date.now()): number {
+  const events = registry().statementTimeouts;
+  const cutoff = now - LOCK_WINDOW_MS;
+  let drop = 0;
+  while (drop < events.length && (events[drop] as number) <= cutoff) drop++;
+  if (drop > 0) events.splice(0, drop);
+  return events.filter((t) => t <= now).length;
+}
+
+// The most recent one, for the alert's text; null once it is older than the signal's minute.
+export function lastStatementTimeout(
+  now: number = Date.now(),
+): StatementTimeoutEvent | null {
+  const last = registry().lastTimeout;
+  return last && now - last.at <= LOCK_WINDOW_MS ? last : null;
+}
+
+// Hands over what is waiting to be stored, and forgets it.
+export function drainStatementTimeouts(): StatementTimeoutEvent[] {
+  const r = registry();
+  const out = r.pendingTimeouts;
+  r.pendingTimeouts = [];
+  return out;
+}
+
+// The text and values of a `client.query(...)` call, in either of pg's shapes: (text, values) or
+// ({ text, values }).
+function statementOf(args: unknown[]): {
+  text: string | null;
+  values: unknown[];
+} {
+  const first = args[0];
+  if (typeof first === "string") {
+    return { text: first, values: Array.isArray(args[1]) ? args[1] : [] };
+  }
+  if (first && typeof first === "object") {
+    const q = first as { text?: unknown; values?: unknown };
+    const values = Array.isArray(q.values)
+      ? q.values
+      : Array.isArray(args[1])
+        ? (args[1] as unknown[])
+        : [];
+    return { text: typeof q.text === "string" ? q.text : null, values };
+  }
+  return { text: null, values: [] };
+}
+
+const TX_START = /^\s*(BEGIN|START\s+TRANSACTION)\b/i;
+const TX_END = /^\s*(COMMIT|ROLLBACK|END|ABORT)\b/i;
+const SET_CONFIG =
+  /set_config\(\s*'([a-z_.]+)'\s*,\s*([^,]+?)\s*,\s*(?:true|false)\s*\)/gi;
+
+function argValue(arg: string, values: unknown[]): string | null {
+  const param = /^\$(\d+)$/.exec(arg);
+  if (param) {
+    const v = values[Number(param[1]) - 1];
+    return v === undefined || v === null ? null : String(v);
+  }
+  const literal = /^'(.*)'$/.exec(arg);
+  return literal ? (literal[1] as string) : null;
+}
+
+// Follows what a transaction's own statements set (src/lib/tenancy/multi-tenant.ts opens every scoped
+// transaction with `set_config('app.tenant_id', …)`, the fleet path with `set_config('role', …)`, both
+// with `set_config('statement_timeout', …)`), so a statement that times out is recorded with the
+// scope it ran under. Cleared when a transaction starts and when it ends.
+function trackScope(scope: ClientScope, text: string, values: unknown[]): void {
+  if (TX_START.test(text) || TX_END.test(text)) {
+    scope.tenantId = null;
+    scope.fleet = false;
+    scope.budgetMs = null;
+    return;
+  }
+  if (!text.includes("set_config")) return;
+  for (const m of text.matchAll(SET_CONFIG)) {
+    const name = m[1] as string;
+    const arg = (m[2] as string).trim();
+    if (name === "app.tenant_id") scope.tenantId = argValue(arg, values);
+    else if (name === "role") scope.fleet = true;
+    else if (name === "statement_timeout") {
+      const v = Number(argValue(arg, values));
+      scope.budgetMs = Number.isFinite(v) && v > 0 ? v : null;
+    }
   }
 }
 
-// Watches a client's statements for 55P03, once per client, without changing what the caller gets:
-// the rejection still reaches it, and a callback still receives its error.
+function noteError(
+  err: unknown,
+  statement: { text: string | null; label: string | null; scope: ClientScope },
+): void {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === LOCK_TIMEOUT_SQLSTATE) recordLockTimeout();
+  else if (code === STATEMENT_TIMEOUT_SQLSTATE && statement.text) {
+    recordStatementTimeout({
+      at: Date.now(),
+      sql: statement.text,
+      label: statement.label,
+      ...statement.scope,
+    });
+  }
+}
+
+// Watches a client's statements for 55P03 and 57014, once per client, without changing what the
+// caller gets: the rejection still reaches it, and a callback still receives its error.
 function watchClient(client: PoolClient): void {
-  const c = client as PoolClient & { [WATCHED]?: true };
+  const c = client as PoolClient & {
+    [WATCHED]?: true;
+    [SCOPE]?: ClientScope;
+  };
   if (c[WATCHED]) return;
   c[WATCHED] = true;
+  const scope: ClientScope = { tenantId: null, fleet: false, budgetMs: null };
+  c[SCOPE] = scope;
   const query = c.query.bind(c) as (...args: unknown[]) => unknown;
   (c as unknown as { query: (...args: unknown[]) => unknown }).query = (
     ...args: unknown[]
   ) => {
+    const { text, values } = statementOf(args);
+    if (text) trackScope(scope, text, values);
+    // Read now, in the caller's context: the rejection settles on another continuation.
+    const statement = { text, label: currentWorkLabel(), scope: { ...scope } };
     const last = args[args.length - 1];
     if (typeof last === "function") {
       args[args.length - 1] = (err: unknown, ...rest: unknown[]) => {
-        if (err) noteError(err);
+        if (err) noteError(err, statement);
         return (last as (...a: unknown[]) => unknown)(err, ...rest);
       };
       return query(...args);
     }
     const out = query(...args);
     if (out && typeof (out as Promise<unknown>).then === "function") {
-      (out as Promise<unknown>).then(undefined, noteError);
+      (out as Promise<unknown>).then(undefined, (err: unknown) =>
+        noteError(err, statement),
+      );
     }
     return out;
   };
@@ -165,4 +327,12 @@ export function registeredPool(name: string): Pool | undefined {
 
 export function resetLockTimeouts(): void {
   registry().lockTimeouts = [];
+}
+
+// Test-only: forget the statement timeouts counted and waiting to be stored.
+export function resetStatementTimeouts(): void {
+  const r = registry();
+  r.statementTimeouts = [];
+  r.pendingTimeouts = [];
+  r.lastTimeout = null;
 }

@@ -21,6 +21,10 @@ import {
   setInstanceThreshold,
   updateInstanceAlertChannel,
 } from "@/modules/instance-health/channels";
+import {
+  readDatabaseScreen,
+  type WindowKey,
+} from "@/modules/instance-health/database/read";
 import { readInstanceHealth } from "@/modules/instance-health/read";
 import { isSignalKey } from "@/modules/instance-health/signals";
 import { instanceChannelFillUrl } from "@/modules/mcp/console-links";
@@ -47,6 +51,23 @@ function adminGate(principal: VerifiedToken): TenantContext | WriteResult {
     return err("forbidden: instance health requires a SUPER_ADMIN token");
   }
   return ctxOf(principal);
+}
+
+export async function instanceDatabaseGet(
+  principal: VerifiedToken,
+  args: { window?: WindowKey },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = adminGate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    return ok({
+      database: await readDatabaseScreen(args.window ?? "1h", base),
+    });
+  } catch (e) {
+    return failOf(e);
+  }
 }
 
 export async function instanceHealthGet(

@@ -51,6 +51,7 @@ const {
   ALERT_RECOVERY_WINDOW_MS,
   ALERT_LATE_REPLY_AGE_MS,
   FLOWLOG_RETENTION_DAYS,
+  DB_STATS_RETENTION_DAYS,
   HEARTBEAT_INTERVAL_MS,
   SPEND_CEILING_POLL_INTERVAL_MS,
   MCP_STDIO_ENABLED,
@@ -959,6 +960,17 @@ const config = {
       "FLOWLOG_RETENTION_DAYS",
       30,
       "It is the cutoff the daily sweep deletes execution_logs against, so a malformed value leaves the highest-write table growing forever.",
+      MAX_RETENTION_DAYS,
+    ),
+  },
+  // NOTE: Retention for the database screen's own tables (pg_stat_statements and table snapshots,
+  // captured statement timeouts; docs/logs.md, "Database"), pruned by the instance health sampler.
+  dbStats: {
+    retentionDays: parseIntSetting(
+      DB_STATS_RETENTION_DAYS,
+      "DB_STATS_RETENTION_DAYS",
+      7,
+      "It is the cutoff the database screen prunes its snapshots against, so a malformed value leaves them growing every five minutes forever.",
       MAX_RETENTION_DAYS,
     ),
   },

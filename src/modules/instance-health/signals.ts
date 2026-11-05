@@ -17,7 +17,8 @@ export const INSTANCE_THRESHOLD_RANGES = {
 // a number sampled by ./sampler.ts and compared, "above X for Y seconds", against its threshold: the
 // default below, or the super admin's override in `instance_alert_thresholds`.
 
-export type SignalUnit = "ms" | "count" | "per_minute";
+// `percent` is a share of a budget (the drift signal reads a mean as a share of DB_TX_TIMEOUT_MS).
+export type SignalUnit = "ms" | "count" | "per_minute" | "percent";
 
 export interface SignalDef {
   name: string;
@@ -169,6 +170,26 @@ export const SIGNALS: readonly SignalDef[] = [
     defaultThreshold: 0,
     defaultDurationSeconds: 0,
     source: "process",
+  },
+  // Statements cancelled by their `statement_timeout` (SQLSTATE 57014) in the last minute, counted on
+  // every pooled client like the lock timeouts; the alert names the work and the statement of the
+  // last one (docs/logs.md, "Database").
+  {
+    name: "statement_timeouts_per_min",
+    unit: "per_minute",
+    defaultThreshold: 0,
+    defaultDurationSeconds: 0,
+    source: "process",
+  },
+  // The drift alarm: the slowest statement's mean time over the last hour, from the pg_stat_statements
+  // snapshots, as a share of the transaction budget (DB_TX_TIMEOUT_MS). It climbs while a query
+  // degrades and fires before the first timeout; 0 without the extension.
+  {
+    name: "statement_mean_budget_pct",
+    unit: "percent",
+    defaultThreshold: 50,
+    defaultDurationSeconds: 0,
+    source: "database",
   },
   // Debounce flushes due and not yet claimed. Each sample counts whichever flush fell due since the
   // last claim, so steady traffic keeps it at 1 or 2 with every job claimed within a second: it is

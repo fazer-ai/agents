@@ -749,6 +749,17 @@ export async function provisionDatabase(
   const ident = `"${role}"`;
   // NOTE: superuser-only to install, and a permitted no-op once present.
   await client.query("CREATE EXTENSION IF NOT EXISTS vector");
+  // The database screen's query statistics (docs/logs.md, "Database"). Creating it works whether or
+  // not the server preloads the library; reading it does not, and the screen says so. Never fatal:
+  // a managed server that refuses it only loses that section.
+  await client.query(`
+    DO $$
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'pg_stat_statements not installed: %', SQLERRM;
+    END $$;
+  `);
 
   await client.query("SELECT set_config('fazerai.app_role', $1, false)", [
     role,
@@ -828,6 +839,21 @@ export async function provisionDatabase(
                      current_database(), current_setting('fazerai.app_role'));
     END $$;
   `);
+
+  // NOTE: pg_stat_statements shows a statement's text only to the role that ran it, and the
+  // cross-tenant path runs as the fleet role: without this the database screen would list those
+  // statements as "<insufficient privilege>". A predefined role that reads statistics views, with
+  // no write and no RLS reach (it is neither superuser nor BYPASSRLS, so the boot guard accepts it).
+  // Best-effort: granting a predefined role needs ADMIN over it, which a non-superuser administrator
+  // may not hold, and the screen still works without it, only with those texts hidden.
+  try {
+    await client.query(`GRANT pg_read_all_stats TO ${ident}`);
+  } catch (err) {
+    console.warn(
+      `db-bootstrap: could not grant pg_read_all_stats to runtime role "${role}" (${message(err)}); ` +
+        "the database screen shows the fleet role's statements as <insufficient privilege>",
+    );
+  }
 
   // NOTE: ALTER DEFAULT PRIVILEGES is scoped to the role running it, which is the one that runs
   // migrations, so future migration tables get these grants.

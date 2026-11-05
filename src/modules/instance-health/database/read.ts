@@ -1,0 +1,458 @@
+import type { PrismaClient } from "@/../generated/prisma/client";
+import metricsPrisma from "@/api/lib/prisma-metrics";
+import config from "@/config";
+import { asSuperAdminOn } from "@/lib/tenancy";
+import { metricsBudget } from "@/modules/analytics/budget";
+import { asFleetForInstanceHealth } from "../fleet-tx";
+import { lastAvailability, readStatements } from "./snapshot";
+
+// What the "Database" screen, its REST route and its MCP tool read (docs/logs.md, "Database"). Every
+// figure about statements is a difference between snapshots inside the window, so it never mixes in
+// what happened before it; a counter that went DOWN between two snapshots (a reset, an eviction, a
+// newer `stats_since`) restarts the series, counting what the later snapshot holds since then.
+
+export const WINDOWS = {
+  "1h": 3_600_000,
+  "24h": 86_400_000,
+  "7d": 604_800_000,
+} as const;
+export type WindowKey = keyof typeof WINDOWS;
+
+const TOP = 50;
+const SPARK_BUCKETS = 24;
+// Every table of the schema (a hundred or so): a seeded test table is as much a table as the largest.
+const TABLES_TOP = 500;
+
+// How to switch the extension on, said the same way on every surface that shows it.
+export const ENABLE_STATEMENTS = [
+  "shared_preload_libraries = 'pg_stat_statements'",
+  "pg_stat_statements.track = top",
+  "pg_stat_statements.track_utility = off",
+] as const;
+
+export interface StatementRowDto {
+  queryid: string;
+  userid: string;
+  query: string;
+  calls: number;
+  rows: number;
+  totalMs: number;
+  meanMs: number;
+  // Mean time per bucket of the window, oldest first; null where the statement did not run.
+  spark: (number | null)[];
+}
+
+export interface TimeoutDto {
+  fingerprint: string;
+  statement: string;
+  occurrences: number;
+  lastAt: string;
+  label: string | null;
+  tenantId: string | null;
+  fleet: boolean;
+  budgetMs: number | null;
+  plan: string | null;
+  planError: string | null;
+  plannedAs: string | null;
+  plannedAt: string | null;
+}
+
+export interface TableHealthDto {
+  table: string;
+  totalBytes: number;
+  growthBytes: number | null;
+  liveTuples: number;
+  deadTuples: number;
+  lastAutovacuum: string | null;
+  lastAutoanalyze: string | null;
+  seqScans: number;
+  indexScans: number;
+}
+
+export interface DatabaseScreenDto {
+  window: WindowKey;
+  statements:
+    | {
+        available: true;
+        snapshots: number;
+        lastSnapshotAt: string | null;
+        byTotal: StatementRowDto[];
+        byMean: StatementRowDto[];
+      }
+    | {
+        available: false;
+        reason: "not_created" | "not_loaded" | "unreadable";
+        enable: readonly string[];
+      };
+  timeouts: TimeoutDto[];
+  tables: TableHealthDto[];
+  unusedIndexes: { table: string; index: string; bytes: number }[];
+  seqScanHeavy: TableHealthDto[];
+}
+
+interface KeyTotals {
+  userid: bigint;
+  dbid: bigint;
+  queryid: bigint;
+  calls: number;
+  rows: number;
+  total_ms: number;
+}
+
+// The per-entry totals of a window, resets handled, as one aggregate over the snapshots.
+export async function statementTotals(
+  db: Pick<PrismaClient, "$queryRaw">,
+  from: Date,
+  to: Date,
+): Promise<KeyTotals[]> {
+  const rows = await db.$queryRaw<
+    {
+      userid: bigint;
+      dbid: bigint;
+      queryid: bigint;
+      calls: number;
+      rows: number;
+      total_ms: number;
+    }[]
+  >`
+    WITH s AS (
+      SELECT userid, dbid, queryid, taken_at, calls, rows, total_exec_ms, stats_since,
+             lag(calls) OVER w AS p_calls, lag(rows) OVER w AS p_rows,
+             lag(total_exec_ms) OVER w AS p_total, lag(stats_since) OVER w AS p_since
+        FROM db_statement_snapshots
+       WHERE taken_at >= ${from} AND taken_at <= ${to}
+      WINDOW w AS (PARTITION BY userid, dbid, queryid ORDER BY taken_at)
+    ), d AS (
+      SELECT userid, dbid, queryid,
+             (calls < p_calls OR total_exec_ms < p_total OR rows < p_rows
+              OR (stats_since IS NOT NULL AND p_since IS NOT NULL AND stats_since > p_since)) AS reset,
+             calls, rows, total_exec_ms, p_calls, p_rows, p_total
+        FROM s WHERE p_calls IS NOT NULL
+    )
+    SELECT userid, dbid, queryid,
+           sum(CASE WHEN reset THEN calls ELSE calls - p_calls END)::float8 AS calls,
+           sum(CASE WHEN reset THEN rows ELSE rows - p_rows END)::float8 AS rows,
+           sum(CASE WHEN reset THEN total_exec_ms ELSE total_exec_ms - p_total END)::float8 AS total_ms
+      FROM d
+     GROUP BY userid, dbid, queryid
+    HAVING sum(CASE WHEN reset THEN calls ELSE calls - p_calls END) > 0`;
+  return rows.map((r) => ({
+    ...r,
+    calls: Math.max(0, Number(r.calls)),
+    rows: Math.max(0, Number(r.rows)),
+    total_ms: Math.max(0, Number(r.total_ms)),
+  }));
+}
+
+async function sparks(
+  db: Pick<PrismaClient, "$queryRaw">,
+  keys: KeyTotals[],
+  from: Date,
+  to: Date,
+): Promise<Map<string, (number | null)[]>> {
+  const out = new Map<string, (number | null)[]>();
+  if (keys.length === 0) return out;
+  const span = Math.max(1, to.getTime() - from.getTime());
+  const rows = await db.$queryRaw<
+    {
+      userid: bigint;
+      dbid: bigint;
+      queryid: bigint;
+      bucket: number;
+      calls: number;
+      total_ms: number;
+    }[]
+  >`
+    WITH s AS (
+      SELECT userid, dbid, queryid, taken_at, calls, rows, total_exec_ms, stats_since,
+             lag(calls) OVER w AS p_calls, lag(total_exec_ms) OVER w AS p_total,
+             lag(stats_since) OVER w AS p_since
+        FROM db_statement_snapshots
+       WHERE taken_at >= ${from} AND taken_at <= ${to}
+         AND (userid::text || ':' || dbid::text || ':' || queryid::text)
+             = ANY(${keys.map((k) => `${k.userid}:${k.dbid}:${k.queryid}`)}::text[])
+      WINDOW w AS (PARTITION BY userid, dbid, queryid ORDER BY taken_at)
+    ), d AS (
+      SELECT userid, dbid, queryid, taken_at,
+             CASE WHEN calls < p_calls OR total_exec_ms < p_total
+                       OR (stats_since IS NOT NULL AND p_since IS NOT NULL AND stats_since > p_since)
+                  THEN calls ELSE calls - p_calls END AS dc,
+             CASE WHEN calls < p_calls OR total_exec_ms < p_total
+                       OR (stats_since IS NOT NULL AND p_since IS NOT NULL AND stats_since > p_since)
+                  THEN total_exec_ms ELSE total_exec_ms - p_total END AS dt
+        FROM s WHERE p_calls IS NOT NULL
+    )
+    SELECT userid, dbid, queryid,
+           least(${SPARK_BUCKETS - 1}, floor(extract(epoch FROM taken_at - ${from}::timestamp) * 1000 / ${span} * ${SPARK_BUCKETS}))::int AS bucket,
+           sum(dc)::float8 AS calls, sum(dt)::float8 AS total_ms
+      FROM d
+     GROUP BY 1, 2, 3, 4`;
+  for (const k of keys) {
+    out.set(
+      `${k.userid}:${k.dbid}:${k.queryid}`,
+      Array(SPARK_BUCKETS).fill(null),
+    );
+  }
+  for (const r of rows) {
+    const series = out.get(`${r.userid}:${r.dbid}:${r.queryid}`);
+    const calls = Number(r.calls);
+    if (series && calls > 0 && r.bucket >= 0) {
+      series[r.bucket] = Math.max(0, Number(r.total_ms)) / calls;
+    }
+  }
+  return out;
+}
+
+// The slowest statement's mean over the last hour, as a share of DB_TX_TIMEOUT_MS, and its text.
+// Statements the screen itself runs (EXPLAIN, the snapshot reads) are left out.
+export async function slowestMeanShare(
+  base: PrismaClient,
+  now: number = Date.now(),
+  budgetMs: number = config.dbTx.timeoutMs,
+): Promise<{ pct: number; query: string | null }> {
+  return asFleetForInstanceHealth(base, async (db) => {
+    const totals = await statementTotals(
+      db,
+      new Date(now - WINDOWS["1h"]),
+      new Date(now),
+    );
+    if (totals.length === 0) return { pct: 0, query: null };
+    // Only what this application runs is measured against its budget: the runtime role and the
+    // roles it can act as (the fleet role). A statement an operator runs in psql as another user
+    // never had DB_TX_TIMEOUT_MS as its limit. An install that connects as a superuser matches every
+    // role, which is the same as not filtering.
+    const ours = await db.$queryRaw<{ oid: bigint }[]>`
+      SELECT oid::bigint AS oid FROM pg_roles WHERE pg_has_role(session_user, oid, 'MEMBER')`;
+    const roles = new Set(ours.map((r) => String(r.oid)));
+    const texts = await textsOf(db, totals);
+    let best: { mean: number; query: string } | null = null;
+    for (const t of totals) {
+      if (!roles.has(String(t.userid))) continue;
+      const query = texts.get(`${t.userid}:${t.dbid}:${t.queryid}`) ?? "";
+      if (isOwnStatement(query)) continue;
+      const mean = t.total_ms / t.calls;
+      if (!best || mean > best.mean) best = { mean, query };
+    }
+    if (!best || budgetMs <= 0) return { pct: 0, query: null };
+    return { pct: (best.mean / budgetMs) * 100, query: best.query };
+  });
+}
+
+export function isOwnStatement(query: string): boolean {
+  return (
+    /^\s*EXPLAIN\b/i.test(query) ||
+    /\bpg_stat_statements\b/.test(query) ||
+    /\bdb_statement_snapshots\b/.test(query) ||
+    /\bpg_stat_user_tables\b/.test(query)
+  );
+}
+
+async function textsOf(
+  db: Pick<PrismaClient, "$queryRaw">,
+  keys: { userid: bigint; dbid: bigint; queryid: bigint }[],
+): Promise<Map<string, string>> {
+  if (keys.length === 0) return new Map();
+  const rows = await db.$queryRaw<
+    { userid: bigint; dbid: bigint; queryid: bigint; query: string }[]
+  >`SELECT userid, dbid, queryid, query FROM db_statement_texts
+     WHERE (userid::text || ':' || dbid::text || ':' || queryid::text)
+           = ANY(${keys.map((k) => `${k.userid}:${k.dbid}:${k.queryid}`)}::text[])`;
+  return new Map(
+    rows.map((r) => [`${r.userid}:${r.dbid}:${r.queryid}`, r.query]),
+  );
+}
+
+function toRow(
+  t: KeyTotals,
+  texts: Map<string, string>,
+  spark: Map<string, (number | null)[]>,
+): StatementRowDto {
+  const k = `${t.userid}:${t.dbid}:${t.queryid}`;
+  return {
+    queryid: String(t.queryid),
+    userid: String(t.userid),
+    query: texts.get(k) ?? "",
+    calls: t.calls,
+    rows: t.rows,
+    totalMs: t.total_ms,
+    meanMs: t.calls > 0 ? t.total_ms / t.calls : 0,
+    spark: spark.get(k) ?? [],
+  };
+}
+
+export async function readDatabaseScreen(
+  window: WindowKey,
+  base: PrismaClient = metricsPrisma,
+  now: number = Date.now(),
+): Promise<DatabaseScreenDto> {
+  const from = new Date(now - WINDOWS[window]);
+  const to = new Date(now);
+  // Whether the extension is readable now: the last snapshot's answer when there was one, else a
+  // read of its own (a fresh process, or one that does not sample).
+  let availability = lastAvailability();
+  if (!availability) availability = (await readStatements(base)).availability;
+
+  // A console read, on the metrics pool and within the metrics budget like the dashboards: a 7 day
+  // window aggregates more than a scoped transaction's budget allows.
+  return asSuperAdminOn(
+    base,
+    async (db) => {
+      let statements: DatabaseScreenDto["statements"];
+      if (availability.available) {
+        const totals = await statementTotals(db, from, to);
+        const byTotal = [...totals]
+          .sort((a, b) => b.total_ms - a.total_ms)
+          .slice(0, TOP);
+        const byMean = [...totals]
+          .sort((a, b) => b.total_ms / b.calls - a.total_ms / a.calls)
+          .slice(0, TOP);
+        const shown = [
+          ...new Map(
+            [...byTotal, ...byMean].map((t) => [
+              `${t.userid}:${t.dbid}:${t.queryid}`,
+              t,
+            ]),
+          ).values(),
+        ];
+        const texts = await textsOf(db, shown);
+        const spark = await sparks(db, shown, from, to);
+        const runs = await db.dbStatSnapshotRun.findMany({
+          where: { takenAt: { gte: from, lte: to } },
+          orderBy: { takenAt: "desc" },
+          select: { takenAt: true },
+        });
+        statements = {
+          available: true,
+          snapshots: runs.length,
+          lastSnapshotAt: runs[0]?.takenAt.toISOString() ?? null,
+          byTotal: byTotal.map((t) => toRow(t, texts, spark)),
+          byMean: byMean.map((t) => toRow(t, texts, spark)),
+        };
+      } else {
+        statements = {
+          available: false,
+          reason: availability.reason,
+          enable: ENABLE_STATEMENTS,
+        };
+      }
+
+      const timeoutRows = await db.dbStatementTimeout.findMany({
+        where: { occurredAt: { gte: from, lte: to } },
+        orderBy: { occurredAt: "desc" },
+        take: 2_000,
+      });
+      const groups = new Map<string, TimeoutDto>();
+      for (const r of timeoutRows) {
+        const g = groups.get(r.fingerprint);
+        if (!g) {
+          groups.set(r.fingerprint, {
+            fingerprint: r.fingerprint,
+            statement: r.statement,
+            occurrences: 1,
+            lastAt: r.occurredAt.toISOString(),
+            label: r.label,
+            tenantId: r.scopeTenantId === null ? null : String(r.scopeTenantId),
+            fleet: r.fleet,
+            budgetMs: r.budgetMs,
+            plan: r.plan,
+            planError: r.planError,
+            plannedAs: r.plannedAs,
+            plannedAt:
+              r.plan || r.planError ? r.occurredAt.toISOString() : null,
+          });
+          continue;
+        }
+        g.occurrences++;
+        if (!g.plan && !g.planError && (r.plan || r.planError)) {
+          g.plan = r.plan;
+          g.planError = r.planError;
+          g.plannedAs = r.plannedAs;
+          g.plannedAt = r.occurredAt.toISOString();
+        }
+      }
+      // Plans older than the window still describe the statement: take the newest one.
+      for (const g of groups.values()) {
+        if (g.plan || g.planError) continue;
+        const planned = await db.dbStatementTimeout.findFirst({
+          where: {
+            fingerprint: g.fingerprint,
+            OR: [{ plan: { not: null } }, { planError: { not: null } }],
+          },
+          orderBy: { occurredAt: "desc" },
+        });
+        if (planned) {
+          g.plan = planned.plan;
+          g.planError = planned.planError;
+          g.plannedAs = planned.plannedAs;
+          g.plannedAt = planned.occurredAt.toISOString();
+        }
+      }
+
+      const tableRows = await db.$queryRaw<
+        {
+          table_name: string;
+          total_bytes: bigint;
+          live: bigint;
+          dead: bigint;
+          last_autovacuum: Date | null;
+          last_autoanalyze: Date | null;
+          seq_scan: bigint;
+          idx_scan: bigint | null;
+          first_bytes: bigint | null;
+        }[]
+      >`SELECT c.relname AS table_name, pg_total_relation_size(c.oid) AS total_bytes,
+             s.n_live_tup AS live, s.n_dead_tup AS dead,
+             s.last_autovacuum, s.last_autoanalyze, s.seq_scan, s.idx_scan,
+             (SELECT ts.total_bytes FROM db_table_snapshots ts
+               WHERE ts.table_name = c.relname AND ts.taken_at >= ${from}
+               ORDER BY ts.taken_at ASC LIMIT 1) AS first_bytes
+        FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
+       WHERE s.schemaname = 'public'`;
+      const tables: TableHealthDto[] = tableRows.map((r) => ({
+        table: r.table_name,
+        totalBytes: Number(r.total_bytes),
+        growthBytes:
+          r.first_bytes === null
+            ? null
+            : Number(r.total_bytes) - Number(r.first_bytes),
+        liveTuples: Number(r.live),
+        deadTuples: Number(r.dead),
+        lastAutovacuum: r.last_autovacuum?.toISOString() ?? null,
+        lastAutoanalyze: r.last_autoanalyze?.toISOString() ?? null,
+        seqScans: Number(r.seq_scan),
+        indexScans: Number(r.idx_scan ?? 0),
+      }));
+
+      const unused = await db.$queryRaw<
+        { table_name: string; index_name: string; bytes: bigint }[]
+      >`SELECT s.relname AS table_name, s.indexrelname AS index_name,
+             pg_relation_size(s.indexrelid) AS bytes
+        FROM pg_stat_user_indexes s
+        JOIN pg_index i ON i.indexrelid = s.indexrelid
+       WHERE s.schemaname = 'public' AND s.idx_scan = 0
+         AND NOT i.indisunique AND NOT i.indisprimary
+       ORDER BY pg_relation_size(s.indexrelid) DESC
+       LIMIT 50`;
+
+      return {
+        window,
+        statements,
+        timeouts: [...groups.values()],
+        tables: [...tables]
+          .sort((a, b) => b.totalBytes - a.totalBytes)
+          .slice(0, TABLES_TOP),
+        unusedIndexes: unused.map((u) => ({
+          table: u.table_name,
+          index: u.index_name,
+          bytes: Number(u.bytes),
+        })),
+        // Where sequential scans cost the most: how many times the table was read whole, by its size.
+        seqScanHeavy: [...tables]
+          .filter((t) => t.seqScans > 0)
+          .sort((a, b) => b.seqScans * b.totalBytes - a.seqScans * a.totalBytes)
+          .slice(0, 10),
+      };
+    },
+    metricsBudget(),
+  );
+}

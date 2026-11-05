@@ -3024,6 +3024,75 @@ model InstanceAlertThreshold {
   @@map("instance_alert_thresholds")
 }
 
+// The instance's database screen (docs/logs.md, "Database"). Fleet tables like the three above: no
+// tenant, RLS with the fleet policy only.
+model DbStatSnapshotRun {
+  takenAt             DateTime @id @map("taken_at")
+  statementsAvailable Boolean  @map("statements_available")
+
+  @@map("db_stat_snapshot_runs")
+}
+
+// Cumulative pg_stat_statements counters of an entry that moved since the previous snapshot.
+model DbStatementSnapshot {
+  takenAt     DateTime  @map("taken_at")
+  userid      BigInt
+  dbid        BigInt
+  queryid     BigInt
+  calls       BigInt
+  totalExecMs Float     @map("total_exec_ms")
+  rows        BigInt
+  statsSince  DateTime? @map("stats_since")
+
+  @@id([userid, dbid, queryid, takenAt])
+  @@index([takenAt])
+  @@map("db_statement_snapshots")
+}
+
+model DbStatementText {
+  userid     BigInt
+  dbid       BigInt
+  queryid    BigInt
+  query      String
+  lastSeenAt DateTime @map("last_seen_at")
+
+  @@id([userid, dbid, queryid])
+  @@index([lastSeenAt])
+  @@map("db_statement_texts")
+}
+
+model DbTableSnapshot {
+  takenAt    DateTime @map("taken_at")
+  tableName  String   @map("table_name")
+  totalBytes BigInt   @map("total_bytes")
+  liveTuples BigInt   @map("live_tuples")
+  deadTuples BigInt   @map("dead_tuples")
+
+  @@id([tableName, takenAt])
+  @@index([takenAt])
+  @@map("db_table_snapshots")
+}
+
+// A statement that failed with 57014, captured by the app with the scope it ran under; the plan is
+// captured for the first occurrence of a statement per window.
+model DbStatementTimeout {
+  id          BigInt   @id @default(autoincrement())
+  occurredAt  DateTime @map("occurred_at")
+  fingerprint String
+  statement   String
+  label       String?
+  scopeTenantId BigInt? @map("scope_tenant_id")
+  fleet       Boolean  @default(false)
+  budgetMs    Int?     @map("budget_ms")
+  plan        String?
+  planError   String?  @map("plan_error")
+  plannedAs   String?  @map("planned_as")
+
+  @@index([occurredAt])
+  @@index([fingerprint, occurredAt])
+  @@map("db_statement_timeouts")
+}
+
 model AlertChannel {
   id              BigInt   @id @default(autoincrement())
   tenantId        BigInt   @map("tenant_id")

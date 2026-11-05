@@ -1,0 +1,191 @@
+/// <reference lib="dom" />
+
+import { afterEach, expect, test } from "bun:test";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router";
+
+const { DatabasePage } = await import(
+  "@/client/pages/admin/database/DatabasePage"
+);
+const { AuthProvider } = await import("@/client/contexts/AuthContext");
+const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
+const { ToastProvider } = await import("@/client/components/Toast");
+
+// The Database screen as a super admin uses it: the window and the sort change what is listed, a
+// database without pg_stat_statements says how to enable it, and a tenant admin never sees it.
+//
+// Assertions reduce to strings or booleans before `expect`: a failing expectation that holds a DOM
+// node serializes a cyclic happy-dom tree and stalls the runner.
+
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
+
+const row = (query: string, calls: number, totalMs: number) => ({
+  queryid: query,
+  userid: "10",
+  query,
+  calls,
+  rows: calls,
+  totalMs,
+  meanMs: totalMs / calls,
+  spark: [1, null, 2, 3],
+});
+
+const MANY_CHEAP = row("SELECT cheap FROM a WHERE x = $1", 2000, 2000);
+const FEW_SLOW = row("SELECT slow FROM b WHERE y = $1", 5, 1000);
+
+const BASE = {
+  timeouts: [],
+  tables: [
+    {
+      table: "conversations",
+      totalBytes: 2 * 1024 * 1024,
+      growthBytes: 1024,
+      liveTuples: 10,
+      deadTuples: 3,
+      lastAutovacuum: null,
+      lastAutoanalyze: null,
+      seqScans: 4,
+      indexScans: 1,
+    },
+  ],
+  unusedIndexes: [
+    { table: "conversations", index: "conv_unused_idx", bytes: 8192 },
+  ],
+  seqScanHeavy: [],
+};
+
+function stubApi(
+  role: string,
+  database: (window: string) => unknown,
+  seen: string[] = [],
+) {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const key = `${init?.method ?? "GET"} ${url.pathname}`;
+    let body: unknown;
+    if (key === "GET /api/auth/me") {
+      body = { user: { id: "1", email: "a@b.c", role } };
+    } else if (key === "GET /api/v1/instance-health/database") {
+      const w = url.searchParams.get("window") ?? "1h";
+      seen.push(w);
+      body = { database: database(w) };
+    }
+    return new Response(JSON.stringify(body ?? { error: "not found" }), {
+      status: body === undefined ? 404 : 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+}
+
+function renderPage() {
+  render(
+    <MemoryRouter initialEntries={["/admin/database"]}>
+      <ThemeProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <Routes>
+              <Route path="/admin/database" element={<DatabasePage />} />
+              <Route path="/admin/users" element={<p>users page</p>} />
+            </Routes>
+          </AuthProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+}
+
+const queries = () =>
+  screen
+    .queryAllByTestId("statement-row")
+    .map((r) => r.querySelector("code")?.textContent ?? "");
+
+test("sorting by total and by mean reorders the statements, each with its own series", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: {
+      available: true,
+      snapshots: 12,
+      lastSnapshotAt: null,
+      byTotal: [MANY_CHEAP, FEW_SLOW],
+      byMean: [FEW_SLOW, MANY_CHEAP],
+    },
+  }));
+  renderPage();
+  await waitFor(() => expect(queries().length).toBe(2));
+  expect(queries()[0]).toBe(MANY_CHEAP.query);
+  expect(screen.queryAllByTestId("mean-spark").length).toBe(2);
+  fireEvent.click(screen.getByRole("radio", { name: "Mean time" }));
+  await waitFor(() => expect(queries()[0]).toBe(FEW_SLOW.query));
+});
+
+test("changing the window asks the server for that window", async () => {
+  const seen: string[] = [];
+  stubApi(
+    "SUPER_ADMIN",
+    (w) => ({
+      ...BASE,
+      window: w,
+      statements: {
+        available: true,
+        snapshots: 1,
+        lastSnapshotAt: null,
+        byTotal: [],
+        byMean: [],
+      },
+    }),
+    seen,
+  );
+  renderPage();
+  await waitFor(() => expect(seen).toContain("1h"));
+  fireEvent.click(screen.getByRole("radio", { name: "7d" }));
+  await waitFor(() => expect(seen).toContain("7d"));
+});
+
+test("without the extension the screen shows how to enable it and still lists the tables", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: {
+      available: false,
+      reason: "not_loaded",
+      enable: [
+        "shared_preload_libraries = 'pg_stat_statements'",
+        "pg_stat_statements.track = top",
+        "pg_stat_statements.track_utility = off",
+      ],
+    },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(screen.queryByTestId("enable-statements") !== null).toBe(true),
+  );
+  const text = screen.getByTestId("enable-statements").textContent ?? "";
+  expect(text).toContain("shared_preload_libraries = 'pg_stat_statements'");
+  expect(text).toContain("pg_stat_statements.track_utility = off");
+  expect(screen.queryAllByTestId("table-row").length).toBe(1);
+  expect(screen.getByTestId("unused-indexes").textContent ?? "").toContain(
+    "conv_unused_idx",
+  );
+  expect(screen.queryByTestId("no-timeouts") !== null).toBe(true);
+});
+
+test("a tenant admin is sent away and the screen's API is never asked", async () => {
+  const seen: string[] = [];
+  stubApi("TENANT_ADMIN", () => ({}), seen);
+  renderPage();
+  await waitFor(() =>
+    expect(screen.queryByText("users page") !== null).toBe(true),
+  );
+  expect(seen).toEqual([]);
+});

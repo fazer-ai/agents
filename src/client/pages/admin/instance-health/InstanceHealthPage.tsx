@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Navigate } from "react-router";
+import { Link, Navigate } from "react-router";
 import {
   Badge,
   Button,
@@ -156,7 +156,9 @@ function ThresholdModal({
       ? t("instanceHealth.unitCount", "count")
       : signal?.unit === "per_minute"
         ? t("instanceHealth.unitPerMinute", "per minute")
-        : t("instanceHealth.unitMs", "milliseconds");
+        : signal?.unit === "percent"
+          ? t("instanceHealth.unitPercent", "percent of the budget")
+          : t("instanceHealth.unitMs", "milliseconds");
 
   return (
     <Modal
@@ -508,7 +510,8 @@ function signalDetail(
       ? kinds.join(" · ")
       : t("instanceHealth.laneIdle", "No job overdue");
   }
-  return null;
+  // The statement behind a timeout or drift signal, as the server names it.
+  return health.signals.find((s) => s.signal === signal)?.detail ?? null;
 }
 
 // The follow-up sweep card's line: each tenant, furthest behind first, with how long since its last
@@ -601,7 +604,17 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
             {t(
               "instanceHealth.subtitle",
               "This process's own load, sampled every 5 seconds. The last hour is kept in memory and starts empty after a restart.",
-            )}
+            )}{" "}
+            <Link
+              to="/admin/database"
+              className="text-accent hover:underline"
+              data-testid="database-link"
+            >
+              {t(
+                "instanceHealth.databaseLink",
+                "Database: slow queries, timeouts and tables",
+              )}
+            </Link>
           </p>
         </div>
         {staleSince && (

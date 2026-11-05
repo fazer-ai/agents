@@ -20,6 +20,18 @@ const INVARIANTS: Array<{
   sql: RegExp;
 }> = [
   {
+    // A bare Postgres provisioned by hand would otherwise show the database screen's statement
+    // texts only for the runtime role's own statements, never the fleet path's.
+    what: "lets the runtime role read every statement's text in pg_stat_statements",
+    ts: /GRANT pg_read_all_stats TO \$\{ident\}/,
+    sql: /GRANT pg_read_all_stats TO :"app_role"/,
+  },
+  {
+    what: "creates pg_stat_statements without making its absence fatal",
+    ts: /CREATE EXTENSION IF NOT EXISTS pg_stat_statements;\s*\n\s*EXCEPTION WHEN OTHERS/,
+    sql: /CREATE EXTENSION IF NOT EXISTS pg_stat_statements;\s*\nEXCEPTION WHEN OTHERS/,
+  },
+  {
     what: "creates the fleet role when it is absent",
     ts: /CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS/,
     sql: /CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS/,

@@ -10,6 +10,7 @@ import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_CONSEQUENCE,
@@ -397,15 +398,16 @@ async function runWithDeadline(
   markRunning(job.id);
   // The async wrapper turns a synchronous throw into a rejection, so the row always leaves the
   // running set.
-  const running = runInPoolClass(
-    opts.poolClass ?? JOB_POOL[job.kind],
-    async () =>
+  // The label names the job on a statement that times out inside it (docs/logs.md, "Database").
+  const running = runInPoolClass(opts.poolClass ?? JOB_POOL[job.kind], () =>
+    runWithWorkLabel(`job:${job.kind}`, async () =>
       handler(job, base, {
         signal: controller.signal,
         commit: () => {
           committed = true;
         },
       }),
+    ),
   );
   const lateChain = running
     .catch(() => null)

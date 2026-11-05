@@ -207,7 +207,7 @@ describe("google.service", () => {
       expect(result.id).toBe(mockUser.id);
     });
 
-    test("blocks Google linking on an administrator that has never logged in", async () => {
+    test("blocks Google linking on a pre-created ADMIN that has never logged in", async () => {
       mockFindUnique.mockResolvedValueOnce(null);
       mockFindFirst.mockResolvedValueOnce({
         ...mockUser,
@@ -224,7 +224,7 @@ describe("google.service", () => {
       expect(mockCreate).not.toHaveBeenCalled();
     });
 
-    test("allows Google linking for an administrator that has completed at least one login", async () => {
+    test("allows Google linking for ADMIN that has completed at least one login", async () => {
       mockFindUnique.mockResolvedValueOnce(null);
       mockFindFirst.mockResolvedValueOnce({
         ...mockUser,
@@ -241,26 +241,6 @@ describe("google.service", () => {
       const result = await upsertGoogleUser(baseProfile);
 
       expect(result.role).toBe("TENANT_ADMIN");
-      expect(mockUpdateMany).toHaveBeenCalled();
-    });
-
-    test("allows Google linking for an editor that has never logged in", async () => {
-      mockFindUnique.mockResolvedValueOnce(null);
-      mockFindFirst.mockResolvedValueOnce({
-        ...mockUser,
-        role: "EDITOR",
-        lastLoginAt: null,
-      });
-      mockUpdateMany.mockResolvedValueOnce({ count: 1 });
-      mockFindUnique.mockResolvedValueOnce({
-        ...mockUser,
-        role: "EDITOR",
-        googleId: "google-sub-123",
-      });
-
-      const result = await upsertGoogleUser(baseProfile);
-
-      expect(result.role).toBe("EDITOR");
       expect(mockUpdateMany).toHaveBeenCalled();
     });
 

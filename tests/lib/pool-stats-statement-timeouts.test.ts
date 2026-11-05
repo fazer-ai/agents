@@ -220,6 +220,20 @@ describe("the label of a request is its route pattern", () => {
     const res = await app.handle(new Request("http://localhost/v1/things/123"));
     expect(await res.text()).toBe("GET /v1/things/:id");
   });
+
+  test("the authentication a plugin derives after it already runs under the label", async () => {
+    // The shape of the tenancy plugin: a global derive that looks the principal up in the database.
+    const auth = new Elysia({ name: "auth-probe" }).derive(
+      { as: "global" },
+      () => ({ seenByAuth: currentWorkLabel() ?? "none" }),
+    );
+    const app = new Elysia()
+      .use(localeMiddleware)
+      .use(auth)
+      .get("/v1/things/:id", ({ seenByAuth }) => seenByAuth);
+    const res = await app.handle(new Request("http://localhost/v1/things/123"));
+    expect(await res.text()).toBe("GET /v1/things/:id");
+  });
 });
 
 describe("the queue a flush drains", () => {

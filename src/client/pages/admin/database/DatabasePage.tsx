@@ -69,7 +69,12 @@ interface Screen {
         byTotal: StatementRow[];
         byMean: StatementRow[];
       }
-    | { available: false; reason: string; enable: readonly string[] };
+    | {
+        available: false;
+        reason: string;
+        enable: readonly string[];
+        create?: string | null;
+      };
   timeouts: TimeoutRow[];
   tables: TableRow[];
   unusedIndexes: { table: string; index: string; bytes: number }[];
@@ -209,6 +214,22 @@ function StatementsSection({
         >
           {st.enable.join("\n")}
         </pre>
+        {st.create ? (
+          <>
+            <p className="text-text-secondary">
+              {t(
+                "database.createHelp",
+                "Then create the extension in this database, connected as a superuser (or the database owner on a managed server), or run the bootstrap again:",
+              )}
+            </p>
+            <pre
+              data-testid="create-extension"
+              className="bg-bg-tertiary text-text-primary overflow-x-auto rounded p-3 font-mono text-xs"
+            >
+              {st.create}
+            </pre>
+          </>
+        ) : null}
       </div>
     );
   }

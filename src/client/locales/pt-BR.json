@@ -1280,6 +1280,7 @@
     "backToHealth": "Saúde da instância",
     "budget": "orçamento {{budget}}",
     "calls": "Chamadas",
+    "createHelp": "Depois crie a extensão neste banco, conectado como superusuário (ou como dono do banco num servidor gerenciado), ou rode o bootstrap de novo:",
     "deadTuples": "Linhas mortas",
     "emptyDescription": "O primeiro snapshot sai em até 5 minutos depois de o processo subir.",
     "emptyTitle": "Ainda sem números",

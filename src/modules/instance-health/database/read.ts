@@ -36,6 +36,12 @@ export const ENABLE_STATEMENTS = [
   "pg_stat_statements.track_utility = off",
 ] as const;
 
+// The settings load the library; the extension itself is created per database, by a role allowed to
+// (db-bootstrap tries it, and on a managed server it may not have been allowed). Said apart, since it
+// is a statement to run and not a setting.
+export const CREATE_STATEMENTS =
+  "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;";
+
 export interface StatementRowDto {
   queryid: string;
   userid: string;
@@ -89,6 +95,8 @@ export interface DatabaseScreenDto {
         available: false;
         reason: "not_created" | "not_loaded" | "unreadable";
         enable: readonly string[];
+        // The statement that creates the extension in this database, when it does not exist here.
+        create: string | null;
       };
   timeouts: TimeoutDto[];
   tables: TableHealthDto[];
@@ -338,6 +346,8 @@ export async function readDatabaseScreen(
         available: false,
         reason: availability.reason,
         enable: ENABLE_STATEMENTS,
+        create:
+          availability.reason === "not_created" ? CREATE_STATEMENTS : null,
       };
     }
 

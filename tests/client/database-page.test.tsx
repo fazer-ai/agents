@@ -181,6 +181,28 @@ test("without the extension the screen shows how to enable it and still lists th
     "conv_unused_idx",
   );
   expect(screen.queryByTestId("no-timeouts") !== null).toBe(true);
+  // Preloaded but not created would add the statement; not preloaded is the settings alone.
+  expect(screen.queryByTestId("create-extension") !== null).toBe(false);
+});
+
+test("an extension that does not exist in this database adds the statement that creates it", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: {
+      available: false,
+      reason: "not_created",
+      enable: ["shared_preload_libraries = 'pg_stat_statements'"],
+      create: "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;",
+    },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(screen.queryByTestId("create-extension") !== null).toBe(true),
+  );
+  expect(screen.getByTestId("create-extension").textContent).toBe(
+    "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;",
+  );
 });
 
 test("an installed extension that could not be read says so, without the setup instructions", async () => {

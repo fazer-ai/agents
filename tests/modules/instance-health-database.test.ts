@@ -505,6 +505,11 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       expect(screen.statements.enable).toContain(
         "pg_stat_statements.track_utility = off",
       );
+      // Dropped here, so not created: the statement that creates it is part of the instructions.
+      expect(screen.statements.reason).toBe("not_created");
+      expect(screen.statements.create).toBe(
+        "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;",
+      );
     }
     expect(screen.tables.some((t) => t.table === "conversations")).toBe(true);
     const runs = await suDb.dbStatSnapshotRun.findMany();

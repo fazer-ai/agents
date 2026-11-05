@@ -1224,6 +1224,7 @@
     "backToHealth": "Instance health",
     "budget": "budget {{budget}}",
     "calls": "Calls",
+    "createHelp": "Then create the extension in this database, connected as a superuser (or the database owner on a managed server), or run the bootstrap again:",
     "deadTuples": "Dead rows",
     "emptyDescription": "The first snapshot is taken within 5 minutes of the process starting.",
     "emptyTitle": "No figures yet",

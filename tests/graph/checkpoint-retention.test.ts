@@ -18,6 +18,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
   RETAIN_SQL,
+  RETENTION_PROBES,
   retainCheckpointBatch,
   retainCheckpoints,
 } from "@/graph/checkpoint-retention";
@@ -109,6 +110,10 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     seeded.push(id);
     return id;
   };
+  // Where this file's threads begin. A batch walks every thread from its cursor before the scope
+  // filters them, so one started at "" in a database that kept other files' threads may never reach
+  // these.
+  const start = () => `${prefix}:`;
   const only =
     (...ids: string[]) =>
     (id: string) =>
@@ -188,6 +193,18 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     goneTenant = tenantId + 1_000_000n + BigInt(process.pid);
     saver = new PostgresSaver(cp, undefined, { schema: "langgraph" });
     graph = buildGraph(saver);
+    // More than a batch of threads no test here owns, sorting before this file's, as a database the
+    // suite has run on keeps them: every batch below must still reach its own thread.
+    const others = Array.from(
+      { length: RETENTION_PROBES + 1 },
+      (_, i) => `${tenantId}:0:${i}`,
+    );
+    seeded.push(...others);
+    await cp.query(
+      `INSERT INTO langgraph.checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata)
+       SELECT t, '', 'c1', '{}'::jsonb, '{}'::jsonb FROM unnest($1::text[]) t`,
+      [others],
+    );
   });
 
   afterAll(async () => {
@@ -414,7 +431,7 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     for (let i = 0; i < 40; i++) await turn(long, i);
     const before = await resumed(long);
     let batches = 0;
-    let after = "";
+    let after = start();
     for (;;) {
       const res = await retainCheckpointBatch(cp, after, {
         rows: 7,
@@ -458,14 +475,14 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
       writes: cps.map((c) => ["", c, "messages"] as [string, string, string]),
     });
     const opts = { rows: 3, graceMs: 0, scope: only(id), base: appDb };
-    const first = await retainCheckpointBatch(cp, "", opts);
+    const first = await retainCheckpointBatch(cp, start(), opts);
     expect(first.deleted).toEqual({
       checkpoints: 3,
       checkpoint_writes: 0,
       checkpoint_blobs: 0,
     });
-    expect(first.next).toBe("");
-    let after: string | null = "";
+    expect(first.next).toBe(start());
+    let after: string | null = start();
     while (after !== null) {
       const res = await retainCheckpointBatch(cp, after, opts);
       if (res.deleted.checkpoint_writes > 0 || res.deleted.checkpoint_blobs > 0)
@@ -486,7 +503,7 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     const heavy = thread();
     for (let i = 0; i < 6; i++) await turn(heavy, i);
     const before = await resumed(heavy);
-    let after = "";
+    let after = start();
     let batches = 0;
     for (;;) {
       const res = await retainCheckpointBatch(cp, after, {
@@ -617,7 +634,7 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
         "SELECT 1 FROM langgraph.checkpoint_blobs WHERE thread_id = $1 FOR UPDATE",
         [id],
       );
-      const batch = retainCheckpointBatch(cp, "", {
+      const batch = retainCheckpointBatch(cp, start(), {
         graceMs: 0,
         scope: only(id),
         base: appDb,
@@ -672,7 +689,7 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
         });
       },
     } as unknown as Pool;
-    await retainCheckpointBatch(recording, "", {
+    await retainCheckpointBatch(recording, start(), {
       graceMs: 0,
       scope: only(id),
       base: appDb,

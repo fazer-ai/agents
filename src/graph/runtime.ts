@@ -109,6 +109,7 @@ import {
   turnLimitSettingsUrl,
   turnLimitVerdict,
 } from "@/modules/turn-limit/service";
+import { thinkingDroppedThisTurn } from "./anthropic-thinking-binding";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -2275,6 +2276,15 @@ async function runTurnBody(
         detail: { silenceRetry: outcome },
       });
     }
+    const thinkingDropped = thinkingDroppedThisTurn(
+      result.messages as BaseMessage[],
+    );
+    if (thinkingDropped > 0)
+      emitFlowEvent(flow, {
+        stage: "generate",
+        status: "ok",
+        detail: { thinkingDropped },
+      });
     const inertTools = inertToolsFor(loaded);
     // Whether a refusal leaves the next turn a note about acts the customer was not told of. A
     // completed transfer spoke to the customer itself and leaves the conversation with a person.

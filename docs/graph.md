@@ -106,6 +106,16 @@ The fields are refused on any provider other than `anthropic` and `openrouter`. 
 
 The prefix mark only hits while the system prompt renders the same bytes. `{{data_atual}}` changes once a day and the rounded time variables once per rounding window, and both break the system mark when they change; the tool mark still hits. `{{hora_atual_exata}}` changes every minute, which is why the editor suggests the rounded sibling.
 
+## Replayed thinking blocks after a prefix change (Anthropic)
+
+The Claude 5.5 models bind each signed `thinking` block to everything before it in the request: the system prompt, the tool list and the earlier messages. The thread is replayed with its signed blocks, so once that prefix changes (an operator edits the prompt, a tool's description or schema changes, an upgrade turns on `memory.historyDates`) every conversation with history gets a 400 (`Invalid signature in thinking block. The block is bound to a different conversation`), and the same body fails the same way on every retry. New conversations are unaffected.
+
+`src/graph/anthropic-thinking-binding.ts` wraps the Anthropic client's fetch (composed under the prompt-cache wrapper, so the retried body keeps its cache marks). On that exact 400 it sends the request once more with the `thinking-binding-controls-2026-08-01` beta and `thinking: { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } }`: the API drops only the blocks whose prefix no longer matches, keeps the rest (the current turn's blocks during a tool loop included), and lists each drop in `input_transformations`. Any other 400 passes through untouched, and a 400 on the retry fails the call: there is no third request.
+
+The field is not sent to every Anthropic model because it requires `adaptive` thinking, and the 4.x models refuse that with a 400 of their own (`adaptive thinking is not supported on this model`, measured on claude-haiku-4-5); a model id says nothing about which line it belongs to. A binding refusal proves the model enforces the binding and accepts the field, so the model is remembered for the life of the process and its later requests carry `drop_block` from the first attempt. Measured on the real API: claude-haiku-5-5, claude-sonnet-5-5 and claude-opus-5-5 accept the field; `block_binding` without `type` is refused on the 5.5 models.
+
+A turn whose replies report dropped blocks writes an `ok` event on the `generate` stage with `thinkingDropped: <count>`, and nothing about the blocks themselves.
+
 ## Tool preconditions
 
 An operator can declare, per granted tool, a condition the runtime checks BEFORE running it. Unmet, the call does not happen and the model is handed a sentence saying which attribute is missing, so the turn continues instead of ending. Motivated by an agent that was told in five separate places never to hand off without the article URL and called `handoff_to_human` three times out of three anyway, writing the unmet condition into its own `reason` argument (issue #101): a tool grant was binary, so every constraint on tool use was an instruction, and an instruction is re-decided by the model every turn.

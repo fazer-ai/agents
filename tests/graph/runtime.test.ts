@@ -5137,6 +5137,64 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await unexplainedWarned(98851)).toBe(false);
   });
 
+  test("a reply whose replayed thinking blocks the provider dropped is logged with the count", async () => {
+    await seedConversation(91684, null);
+    const calls: Array<[string, number, string]> = [];
+    const reply = () =>
+      new AIMessage({
+        content: "Começa às 20h30.",
+        response_metadata: {
+          model_provider: "anthropic",
+          input_transformations: [
+            {
+              type: "thinking_dropped",
+              path: "messages.1.content.0",
+              reason: "prefix_binding_mismatch",
+            },
+            {
+              type: "thinking_dropped",
+              path: "messages.3.content.0",
+              reason: "prefix_binding_mismatch",
+            },
+          ],
+        },
+      });
+    const model = {
+      invoke: async () => reply(),
+      bindTools: () => ({ invoke: async () => reply() }),
+    };
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 91684 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:91684`,
+      },
+      select: { detail: true, status: true },
+    });
+    const dropped = rows
+      .filter(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.thinkingDropped !==
+          undefined,
+      )
+      .map((r) => ({ detail: r.detail, status: r.status }));
+    expect(dropped).toEqual([{ detail: { thinkingDropped: 2 }, status: "ok" }]);
+  });
+
   test("empty twice: nothing is sent, nothing is closed, and the warn says a retry was made", async () => {
     await seedConversation(98852, null);
     const calls: Array<[string, number, string]> = [];

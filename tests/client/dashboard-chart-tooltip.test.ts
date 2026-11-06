@@ -300,6 +300,63 @@ describe("a line at zero", () => {
   });
 });
 
+describe("a stacked day with no cost", () => {
+  test("reads as the day and a zero total, with no rows", async () => {
+    const empty: ChartRow[] = data.map((r, d) =>
+      d === 0
+        ? {
+            day: r.day,
+            state: "ready",
+            ...Object.fromEntries(series.slice(0, 3).map((s) => [s.key, 0])),
+          }
+        : r,
+    );
+    const { container } = renderChart(StackedBars, {
+      data: empty,
+      series: series.slice(0, 3),
+      lang: "en",
+      format: String,
+    });
+    const wrapper = await waitFor(() => {
+      const w = container.querySelector(".recharts-wrapper");
+      if (!w || !container.querySelector(".recharts-surface"))
+        throw new Error("no chart yet");
+      return w;
+    });
+    fireEvent.mouseMove(wrapper, {
+      clientX: centerOf(0, 2),
+      clientY: HEIGHT / 2,
+    });
+    const tip = await waitFor(() => {
+      const shown = container.querySelector<HTMLElement>(
+        ".recharts-tooltip-wrapper",
+      );
+      if (!shown?.textContent?.includes("Day total"))
+        throw new Error("no total shown");
+      return shown;
+    });
+    expect(tip.textContent).toContain("Day total 0");
+    expect(tip.querySelectorAll("li")).toHaveLength(0);
+  });
+});
+
+describe("the context lines of a line chart", () => {
+  test("all go by the one Others name, never their own", async () => {
+    const { container } = renderChart(LineTrend, {
+      data,
+      series: series.slice(0, 11),
+      lang: "en",
+      format: String,
+    });
+    const names = await waitFor(() => {
+      const lines = [...container.querySelectorAll(".recharts-line-curve")];
+      if (lines.length < 11) throw new Error("lines not drawn yet");
+      return lines.map((l) => l.getAttribute("name"));
+    });
+    expect(names.slice(8)).toEqual(["Others (3)", "Others (3)", "Others (3)"]);
+  });
+});
+
 describe("a line chart within the palette", () => {
   test("names how many rows it leaves out, without adding rates", async () => {
     const { container } = renderChart(LineTrend, {

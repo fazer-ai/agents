@@ -349,7 +349,7 @@ function TooltipCard({
     >
       <div className="flex items-baseline justify-between gap-4">
         <span className="recharts-tooltip-label">{head}</span>
-        {ready && total !== null && rows.length > 1 && (
+        {ready && total !== null && (
           <span className="font-medium tabular-nums">
             {t("dashboard.chart.total", "Day total")} {format(total)}
           </span>
@@ -526,7 +526,7 @@ export function LineTrend({
                 type="monotone"
                 dataKey={s.key}
                 name={
-                  i === CATEGORICAL_SLOTS
+                  i >= CATEGORICAL_SLOTS
                     ? t("dashboard.chart.otherLines", "Others ({{count}})", {
                         count: contextKeys.size,
                       })

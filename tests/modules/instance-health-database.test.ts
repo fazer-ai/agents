@@ -10,10 +10,12 @@ import { asSuperAdminOn, DeadlinePassedError } from "@/lib/tenancy";
 import { registerFollowUpHandlers } from "@/modules/followups/handlers";
 import { fleetWithin } from "@/modules/instance-health/database/budget";
 import {
+  deadRows,
   isOwnStatement,
   probeAvailability,
   readDatabaseScreen,
   slowestMeanShare,
+  sparkBuckets,
   statementTotals,
 } from "@/modules/instance-health/database/read";
 import {
@@ -37,6 +39,11 @@ import {
   flushStatementTimeouts,
   statementFingerprint,
 } from "@/modules/instance-health/database/timeouts";
+import {
+  DATABASE_SIGNALS,
+  readDatabaseView,
+  signalState,
+} from "@/modules/instance-health/database/view";
 import {
   setSignalDetail,
   signalDetail,
@@ -1295,5 +1302,102 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect(later?.tenantId).toBe("2");
     expect(later?.plan).toBeNull();
     expect(later?.plannedAs).toBeNull();
+  });
+});
+
+describe("what the screen derives, decided by the server", () => {
+  test("a table is overdue for vacuum past autovacuum's own trigger, and an empty one has no ratio", () => {
+    const pg = { threshold: 50, scale: 0.2 };
+    expect(deadRows(1000, 250, pg)).toEqual({
+      deadRatio: 0.2,
+      vacuumOverdue: false,
+    });
+    expect(deadRows(1000, 251, pg).vacuumOverdue).toBe(true);
+    expect(deadRows(0, 51, pg)).toEqual({ deadRatio: 1, vacuumOverdue: true });
+    expect(deadRows(0, 0, pg)).toEqual({
+      deadRatio: null,
+      vacuumOverdue: false,
+    });
+  });
+
+  test("a series never has more points than the window has snapshots, so a run is not drawn as a gap", () => {
+    expect(sparkBuckets(60 * MIN)).toBe(12);
+    expect(sparkBuckets(24 * 60 * MIN)).toBe(24);
+    expect(sparkBuckets(7 * 24 * 60 * MIN)).toBe(24);
+    expect(sparkBuckets(MIN)).toBe(1);
+  });
+
+  test("a signal's state: stale before firing, firing before muted, and no reading is not fine", () => {
+    const s = { value: 1, enabled: true, firing: false, stale: false };
+    expect(signalState(s)).toBe("ok");
+    expect(signalState({ ...s, firing: true })).toBe("firing");
+    expect(signalState({ ...s, firing: true, stale: true })).toBe("stale");
+    expect(signalState({ ...s, enabled: false })).toBe("muted");
+    expect(signalState({ ...s, value: null })).toBe("no_data");
+  });
+});
+
+describe.skipIf(!dbUp)("the screen's summary figures", () => {
+  beforeEach(async () => {
+    await wipe();
+    resetSnapshotState();
+  });
+
+  test("each statement carries its mean as a share of the budget, uncapped past 100", async () => {
+    const now = Date.now();
+    setLastAvailabilityForTest({ available: true });
+    await seed(71n, [{ at: now - 5 * MIN, calls: 4, total: 6000 }]);
+    await seed(72n, [{ at: now - 5 * MIN, calls: 10, total: 100 }]);
+    const screen = await readDatabaseScreen("1h", appDb, now, 1000);
+    if (!screen.statements.available) throw new Error("statements off");
+    expect(screen.statements.budgetMs).toBe(1000);
+    const pct = Object.fromEntries(
+      screen.statements.byTotal.map((r) => [r.queryid, r.meanBudgetPct]),
+    );
+    expect(pct["71"]).toBe(150);
+    expect(pct["72"]).toBe(1);
+  });
+
+  test("the window's timeout count and the tables' size are totals, not the listed groups", async () => {
+    const now = Date.now();
+    await suDb.dbStatementTimeout.createMany({
+      data: Array.from({ length: 120 }, (_, i) => ({
+        occurredAt: new Date(now - i * 1000),
+        fingerprint: statementFingerprint(`SELECT g${i}`),
+        statement: `SELECT g${i}`,
+        fleet: false,
+      })),
+    });
+    await suDb.dbStatementTimeout.create({
+      data: {
+        occurredAt: new Date(now - 2 * 60 * MIN),
+        fingerprint: statementFingerprint("SELECT old"),
+        statement: "SELECT old",
+        fleet: false,
+      },
+    });
+    const screen = await readDatabaseScreen("1h", appDb, now);
+    expect(screen.timeouts.length).toBe(100);
+    expect(screen.timeoutOccurrences).toBe(120);
+    expect(screen.size.totalBytes).toBe(
+      screen.tables.reduce((n, t) => n + t.totalBytes, 0),
+    );
+    for (const t of screen.tables) {
+      expect(
+        t.deadRatio === null || (t.deadRatio >= 0 && t.deadRatio <= 1),
+      ).toBe(true);
+    }
+  });
+
+  test("the view carries both statement signals, each with its threshold and state", async () => {
+    const view = await readDatabaseView("1h", appDb, false);
+    expect(view.signals.map((s) => s.signal)).toEqual([...DATABASE_SIGNALS]);
+    for (const s of view.signals) {
+      expect(typeof s.threshold).toBe("number");
+      expect(s.state).toBe(signalState(s));
+      expect("history" in s).toBe(false);
+    }
+    expect(view.sampling).toBe(false);
+    expect(view.window).toBe("1h");
   });
 });

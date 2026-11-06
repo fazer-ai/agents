@@ -8,6 +8,7 @@ import {
   availabilityOfError,
   lastAvailability,
   SCREEN_SCHEMAS,
+  SNAPSHOT_INTERVAL_MS,
   type StatementsAvailability,
   TABLE_NAME,
 } from "./snapshot";
@@ -23,7 +24,16 @@ export const WINDOWS = {
 export type WindowKey = keyof typeof WINDOWS;
 
 const TOP = 50;
+// At most this many points per series, and never more than the snapshots a window holds: a bucket
+// shorter than the snapshot interval would be empty every other time and draw a run as a gap.
 const SPARK_BUCKETS = 24;
+
+export function sparkBuckets(spanMs: number): number {
+  return Math.max(
+    1,
+    Math.min(SPARK_BUCKETS, Math.floor(spanMs / SNAPSHOT_INTERVAL_MS)),
+  );
+}
 // Every table of the schema (a hundred or so): a seeded test table is as much a table as the largest.
 const TABLES_TOP = 500;
 // How many timed-out statements the screen lists, the most recent first.
@@ -52,6 +62,8 @@ export interface StatementRowDto {
   rows: number;
   totalMs: number;
   meanMs: number;
+  // The mean as a share of DB_TX_TIMEOUT_MS, in percent and not capped at 100; null with no budget.
+  meanBudgetPct: number | null;
   // Mean time per bucket of the window, oldest first; null where the statement did not run.
   spark: (number | null)[];
 }
@@ -81,6 +93,11 @@ export interface TableHealthDto {
   lastAutoanalyze: string | null;
   seqScans: number;
   indexScans: number;
+  // Dead rows over live plus dead; null for an empty table.
+  deadRatio: number | null;
+  // More dead rows than autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × live rows: the
+  // point where autovacuum should already have run on this table.
+  vacuumOverdue: boolean;
 }
 
 export interface DatabaseScreenDto {
@@ -90,6 +107,8 @@ export interface DatabaseScreenDto {
         available: true;
         snapshots: number;
         lastSnapshotAt: string | null;
+        // DB_TX_TIMEOUT_MS, which each row's meanBudgetPct is a share of.
+        budgetMs: number;
         byTotal: StatementRowDto[];
         byMean: StatementRowDto[];
       }
@@ -101,6 +120,11 @@ export interface DatabaseScreenDto {
         create: string | null;
       };
   timeouts: TimeoutDto[];
+  // Every timeout of the window, across all the groups (the list above stops at TIMEOUT_GROUPS).
+  timeoutOccurrences: number;
+  // Every table of the screen's schemas, indexes and TOAST included, and how much they grew in the
+  // window (null when no table has a snapshot that old).
+  size: { totalBytes: number; growthBytes: number | null };
   tables: TableHealthDto[];
   unusedIndexes: { table: string; index: string; bytes: number }[];
   seqScanHeavy: TableHealthDto[];
@@ -156,6 +180,7 @@ async function sparks(
   const out = new Map<string, (number | null)[]>();
   if (keys.length === 0) return out;
   const span = Math.max(1, to.getTime() - from.getTime());
+  const buckets = sparkBuckets(span);
   const rows = await db.$queryRaw<
     {
       userid: bigint;
@@ -167,7 +192,7 @@ async function sparks(
     }[]
   >`
     SELECT userid, dbid, queryid,
-           least(${SPARK_BUCKETS - 1}, floor(extract(epoch FROM taken_at - ${from}::timestamp) * 1000 / ${span} * ${SPARK_BUCKETS}))::int AS bucket,
+           least(${buckets - 1}, floor(extract(epoch FROM taken_at - ${from}::timestamp) * 1000 / ${span} * ${buckets}))::int AS bucket,
            sum(calls)::float8 AS calls, sum(total_exec_ms)::float8 AS total_ms
       FROM db_statement_deltas
      WHERE taken_at > ${from} AND taken_at <= ${to}
@@ -177,7 +202,7 @@ async function sparks(
   for (const k of keys) {
     out.set(
       `${k.userid}:${k.dbid}:${k.queryid}`,
-      Array(SPARK_BUCKETS).fill(null),
+      Array(buckets).fill(null),
     );
   }
   for (const r of rows) {
@@ -258,8 +283,10 @@ function toRow(
   t: KeyTotals,
   texts: Map<string, string>,
   spark: Map<string, (number | null)[]>,
+  budgetMs: number,
 ): StatementRowDto {
   const k = `${t.userid}:${t.dbid}:${t.queryid}`;
+  const meanMs = t.calls > 0 ? t.total_ms / t.calls : 0;
   return {
     queryid: String(t.queryid),
     userid: String(t.userid),
@@ -267,7 +294,8 @@ function toRow(
     calls: t.calls,
     rows: t.rows,
     totalMs: t.total_ms,
-    meanMs: t.calls > 0 ? t.total_ms / t.calls : 0,
+    meanMs,
+    meanBudgetPct: budgetMs > 0 ? (meanMs / budgetMs) * 100 : null,
     spark: spark.get(k) ?? [],
   };
 }
@@ -294,10 +322,24 @@ export async function probeAvailability(
   }
 }
 
+export function deadRows(
+  live: number,
+  dead: number,
+  vacuum: { threshold: number; scale: number } | undefined,
+): Pick<TableHealthDto, "deadRatio" | "vacuumOverdue"> {
+  return {
+    deadRatio: live + dead > 0 ? dead / (live + dead) : null,
+    vacuumOverdue: vacuum
+      ? dead > Number(vacuum.threshold) + Number(vacuum.scale) * live
+      : false,
+  };
+}
+
 export async function readDatabaseScreen(
   window: WindowKey,
   base: PrismaClient = metricsPrisma,
   now: number = Date.now(),
+  budgetMs: number = config.dbTx.timeoutMs,
 ): Promise<DatabaseScreenDto> {
   const from = new Date(now - WINDOWS[window]);
   const to = new Date(now);
@@ -340,8 +382,9 @@ export async function readDatabaseScreen(
         available: true,
         snapshots: runs.length,
         lastSnapshotAt: runs[0]?.takenAt.toISOString() ?? null,
-        byTotal: byTotal.map((t) => toRow(t, texts, spark)),
-        byMean: byMean.map((t) => toRow(t, texts, spark)),
+        budgetMs,
+        byTotal: byTotal.map((t) => toRow(t, texts, spark, budgetMs)),
+        byMean: byMean.map((t) => toRow(t, texts, spark, budgetMs)),
       };
     } else {
       statements = {
@@ -411,6 +454,14 @@ export async function readDatabaseScreen(
       plannedAs: r.planned_as,
       plannedAt: r.planned_at?.toISOString() ?? null,
     }));
+    const [occurrences] = await db.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM db_statement_timeouts
+       WHERE occurred_at >= ${from} AND occurred_at <= ${to}`;
+
+    const [vacuum] = await db.$queryRaw<
+      { threshold: number; scale: number }[]
+    >`SELECT current_setting('autovacuum_vacuum_threshold')::float8 AS threshold,
+             current_setting('autovacuum_vacuum_scale_factor')::float8 AS scale`;
 
     const tableRows = await db.$queryRaw<
       {
@@ -447,7 +498,9 @@ export async function readDatabaseScreen(
       lastAutoanalyze: r.last_autoanalyze?.toISOString() ?? null,
       seqScans: Number(r.seq_scan),
       indexScans: Number(r.idx_scan ?? 0),
+      ...deadRows(Number(r.live), Number(r.dead), vacuum),
     }));
+    const grown = tables.filter((t) => t.growthBytes !== null);
 
     const unused = await db.$queryRaw<
       { table_name: string; index_name: string; bytes: bigint }[]
@@ -464,6 +517,13 @@ export async function readDatabaseScreen(
       window,
       statements,
       timeouts,
+      timeoutOccurrences: occurrences?.n ?? 0,
+      size: {
+        totalBytes: tables.reduce((n, t) => n + t.totalBytes, 0),
+        growthBytes: grown.length
+          ? grown.reduce((n, t) => n + (t.growthBytes ?? 0), 0)
+          : null,
+      },
       tables: [...tables]
         .sort((a, b) => b.totalBytes - a.totalBytes)
         .slice(0, TABLES_TOP),

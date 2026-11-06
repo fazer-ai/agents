@@ -22,10 +22,8 @@ import {
   setInstanceThreshold,
   updateInstanceAlertChannel,
 } from "@/modules/instance-health/channels";
-import {
-  readDatabaseScreen,
-  type WindowKey,
-} from "@/modules/instance-health/database/read";
+import type { WindowKey } from "@/modules/instance-health/database/read";
+import { readDatabaseView } from "@/modules/instance-health/database/view";
 import { readInstanceHealth } from "@/modules/instance-health/read";
 import { isSignalKey } from "@/modules/instance-health/signals";
 import { instanceChannelFillUrl } from "@/modules/mcp/console-links";
@@ -66,7 +64,7 @@ export async function instanceDatabaseGet(
   if ("ok" in ctx) return ctx;
   try {
     return ok({
-      database: await readDatabaseScreen(args.window ?? "1h", base),
+      database: await readDatabaseView(args.window ?? "1h", base),
     });
   } catch (e) {
     return failOf(e);

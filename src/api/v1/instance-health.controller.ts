@@ -18,10 +18,8 @@ import {
   setInstanceThreshold,
   updateInstanceAlertChannel,
 } from "@/modules/instance-health/channels";
-import {
-  readDatabaseScreen,
-  type WindowKey,
-} from "@/modules/instance-health/database/read";
+import type { WindowKey } from "@/modules/instance-health/database/read";
+import { readDatabaseView } from "@/modules/instance-health/database/view";
 import {
   readInstanceHealth,
   requireFleet,
@@ -87,9 +85,10 @@ export const instanceHealthController = new Elysia({
       requireFleet(tenantContext);
       return {
         instance: instanceIdentity,
-        database: await readDatabaseScreen(
+        database: await readDatabaseView(
           (query.window ?? "1h") as WindowKey,
           metricsPrisma,
+          config.alertWorker.enabled,
         ),
       };
     },
@@ -104,7 +103,7 @@ export const instanceHealthController = new Elysia({
       }),
       detail: doc(
         "Read the database screen",
-        "Returns the database's own figures: pg_stat_statements deltas over the window (top statements by total and by mean time, with calls, rows and a mean-time series; or, without the extension, how to enable it), the statements that hit their statement_timeout with the plan captured under the scope they ran in, table sizes, growth, tuples and vacuum times, never-scanned indexes and the tables read most by sequential scan. Statement texts are normalized by Postgres ($N for every value).",
+        "Returns the database's own figures: the two statement signals (timeouts per minute, slowest mean as a share of the budget) with their value, threshold and state against it; pg_stat_statements deltas over the window (top statements by total and by mean time, with calls, rows, the mean as a share of DB_TX_TIMEOUT_MS and a mean-time series; or, without the extension, how to enable it), the statements that hit their statement_timeout with the plan captured under the scope they ran in and the window's count of them, the size of the screen's tables and their growth, per table its size, growth, tuples, dead-row ratio, whether autovacuum is overdue and vacuum times, never-scanned indexes and the tables read most by sequential scan. Statement texts are normalized by Postgres ($N for every value).",
       ),
       response: errors(401, 403, 422),
     },

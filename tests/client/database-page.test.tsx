@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterEach, expect, test } from "bun:test";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   cleanup,
   fireEvent,
@@ -8,7 +9,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
 const { DatabasePage } = await import(
   "@/client/pages/admin/database/DatabasePage"
@@ -37,13 +38,35 @@ const row = (query: string, calls: number, totalMs: number) => ({
   rows: calls,
   totalMs,
   meanMs: totalMs / calls,
+  meanBudgetPct: (totalMs / calls / 1000) * 100,
   spark: [1, null, 2, 3],
 });
 
 const MANY_CHEAP = row("SELECT cheap FROM a WHERE x = $1", 2000, 2000);
 const FEW_SLOW = row("SELECT slow FROM b WHERE y = $1", 5, 1000);
 
+const signal = (name: string, unit: string, value: number, state = "ok") => ({
+  signal: name,
+  unit,
+  value,
+  at: null,
+  threshold: unit === "percent" ? 50 : 0,
+  durationSeconds: 0,
+  enabled: true,
+  firing: state === "firing",
+  stale: false,
+  detail: null,
+  state,
+});
+
 const BASE = {
+  sampling: true,
+  signals: [
+    signal("statement_timeouts_per_min", "per_minute", 0),
+    signal("statement_mean_budget_pct", "percent", 20),
+  ],
+  timeoutOccurrences: 0,
+  size: { totalBytes: 2 * 1024 * 1024, growthBytes: 1024 },
   timeouts: [],
   tables: [
     {
@@ -56,6 +79,8 @@ const BASE = {
       lastAutoanalyze: null,
       seqScans: 4,
       indexScans: 1,
+      deadRatio: 3 / 13,
+      vacuumOverdue: false,
     },
   ],
   unusedIndexes: [
@@ -87,22 +112,35 @@ function stubApi(
   }) as typeof fetch;
 }
 
-function renderPage(refreshMs?: number) {
+// Prints where the router is, so a test reads the URL the screen wrote.
+function Where() {
+  const loc = useLocation();
+  return <output data-testid="where">{`${loc.pathname}${loc.search}`}</output>;
+}
+
+function renderPage(refreshMs?: number, at = "/admin/database") {
   render(
-    <MemoryRouter initialEntries={["/admin/database"]}>
-      <ThemeProvider>
-        <ToastProvider>
-          <AuthProvider>
-            <Routes>
-              <Route
-                path="/admin/database"
-                element={<DatabasePage refreshMs={refreshMs} />}
-              />
-              <Route path="/admin/users" element={<p>users page</p>} />
-            </Routes>
-          </AuthProvider>
-        </ToastProvider>
-      </ThemeProvider>
+    <MemoryRouter initialEntries={[at]}>
+      <TooltipProvider>
+        <ThemeProvider>
+          <ToastProvider>
+            <AuthProvider>
+              <Routes>
+                <Route
+                  path="/admin/database"
+                  element={
+                    <>
+                      <DatabasePage refreshMs={refreshMs} />
+                      <Where />
+                    </>
+                  }
+                />
+                <Route path="/admin/users" element={<p>users page</p>} />
+              </Routes>
+            </AuthProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </TooltipProvider>
     </MemoryRouter>,
   );
 }
@@ -120,6 +158,7 @@ test("sorting by total and by mean reorders the statements, each with its own se
       available: true,
       snapshots: 12,
       lastSnapshotAt: null,
+      budgetMs: 1000,
       byTotal: [MANY_CHEAP, FEW_SLOW],
       byMean: [FEW_SLOW, MANY_CHEAP],
     },
@@ -143,6 +182,7 @@ test("changing the window asks the server for that window", async () => {
         available: true,
         snapshots: 1,
         lastSnapshotAt: null,
+        budgetMs: 1000,
         byTotal: [],
         byMean: [],
       },
@@ -176,11 +216,17 @@ test("without the extension the screen shows how to enable it and still lists th
   const text = screen.getByTestId("enable-statements").textContent ?? "";
   expect(text).toContain("shared_preload_libraries = 'pg_stat_statements'");
   expect(text).toContain("pg_stat_statements.track_utility = off");
-  expect(screen.queryAllByTestId("table-row").length).toBe(1);
+  fireEvent.click(screen.getByRole("tab", { name: "Tables and indexes" }));
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("table-row").length).toBe(1),
+  );
   expect(screen.getByTestId("unused-indexes").textContent ?? "").toContain(
     "conv_unused_idx",
   );
-  expect(screen.queryByTestId("no-timeouts") !== null).toBe(true);
+  fireEvent.click(screen.getByRole("tab", { name: "Timeouts" }));
+  await waitFor(() =>
+    expect(screen.queryByTestId("no-timeouts") !== null).toBe(true),
+  );
   // Preloaded but not created would add the statement; not preloaded is the settings alone.
   expect(screen.queryByTestId("create-extension") !== null).toBe(false);
 });
@@ -216,7 +262,10 @@ test("an installed extension that could not be read says so, without the setup i
     expect(screen.queryByTestId("statements-unreadable") !== null).toBe(true),
   );
   expect(screen.queryByTestId("enable-statements") !== null).toBe(false);
-  expect(screen.queryAllByTestId("table-row").length).toBe(1);
+  fireEvent.click(screen.getByRole("tab", { name: "Tables and indexes" }));
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("table-row").length).toBe(1),
+  );
 });
 
 test("a refresh that overtakes a slow first read still ends the loading state", async () => {
@@ -246,6 +295,7 @@ test("a refresh that overtakes a slow first read still ends the loading state", 
             available: true,
             snapshots: 1,
             lastSnapshotAt: null,
+            budgetMs: 1000,
             byTotal: [MANY_CHEAP],
             byMean: [MANY_CHEAP],
           },
@@ -290,6 +340,7 @@ test("a refresh that fails after figures were shown keeps them and says they may
             available: true,
             snapshots: 1,
             lastSnapshotAt: null,
+            budgetMs: 1000,
             byTotal: [MANY_CHEAP],
             byMean: [MANY_CHEAP],
           },
@@ -314,4 +365,197 @@ test("a tenant admin is sent away and the screen's API is never asked", async ()
     expect(screen.queryByText("users page") !== null).toBe(true),
   );
   expect(seen).toEqual([]);
+});
+
+const available = (rows = [MANY_CHEAP, FEW_SLOW]) => ({
+  available: true,
+  snapshots: 3,
+  lastSnapshotAt: null,
+  budgetMs: 1000,
+  byTotal: rows,
+  byMean: [...rows].reverse(),
+});
+
+test("the section and the window come from the URL, and changing either writes it back", async () => {
+  const seen: string[] = [];
+  stubApi(
+    "SUPER_ADMIN",
+    (w) => ({ ...BASE, window: w, statements: available() }),
+    seen,
+  );
+  renderPage(undefined, "/admin/database?section=tables&window=24h");
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("table-row").length).toBe(1),
+  );
+  expect(seen).toEqual(["24h"]);
+  expect(screen.queryByTestId("statements-table") !== null).toBe(false);
+  fireEvent.click(screen.getByRole("tab", { name: "Timeouts" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("where").textContent).toBe(
+      "/admin/database?section=timeouts&window=24h",
+    ),
+  );
+  expect(screen.queryByTestId("no-timeouts") !== null).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "7d" }));
+  await waitFor(() => expect(seen).toContain("7d"));
+  expect(screen.getByTestId("where").textContent).toBe(
+    "/admin/database?section=timeouts&window=7d",
+  );
+});
+
+test("a section or a window the URL names wrongly falls back to the defaults, and no bad window is asked", async () => {
+  const seen: string[] = [];
+  stubApi(
+    "SUPER_ADMIN",
+    (w) => ({ ...BASE, window: w, statements: available() }),
+    seen,
+  );
+  renderPage(undefined, "/admin/database?section=nope&window=90d");
+  await waitFor(() => expect(queries().length).toBe(2));
+  expect(seen).toEqual(["1h"]);
+  expect(
+    screen.getByRole("tab", { name: "Queries" }).getAttribute("aria-selected"),
+  ).toBe("true");
+});
+
+test("the text filter narrows the statements, says when nothing matches, and clears back to the full list", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available(),
+  }));
+  renderPage();
+  await waitFor(() => expect(queries().length).toBe(2));
+  const box = screen.getByTestId("statements-filter");
+  fireEvent.change(box, { target: { value: "SLOW from" } });
+  await waitFor(() => expect(queries()).toEqual([FEW_SLOW.query]));
+  fireEvent.change(box, { target: { value: "zzz_none" } });
+  await waitFor(() => expect(queries().length).toBe(0));
+  fireEvent.click(screen.getByRole("button", { name: "Clear the filter" }));
+  await waitFor(() =>
+    expect(queries()).toEqual([MANY_CHEAP.query, FEW_SLOW.query]),
+  );
+});
+
+test("the summary shows each signal in the state the server gave it, not one worked out from value and threshold", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    signals: [
+      // Below its threshold, yet the server says firing: the screen follows the server.
+      signal("statement_timeouts_per_min", "per_minute", 0, "firing"),
+      signal("statement_mean_budget_pct", "percent", 90, "ok"),
+    ],
+    statements: available(),
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId("summary-signal-statement_timeouts_per_min") !==
+        null,
+    ).toBe(true),
+  );
+  const tone = (id: string) =>
+    screen.getByTestId(`summary-signal-${id}`).getAttribute("data-tone");
+  expect(tone("statement_timeouts_per_min")).toBe("error");
+  expect(tone("statement_mean_budget_pct")).toBe("success");
+  expect(screen.getByTestId("summary-size").textContent ?? "").toContain(
+    "2.0 MB",
+  );
+});
+
+test("each statement's share of the budget is the server's figure, and past 100 it is shown whole and in the error tone", async () => {
+  const over = { ...FEW_SLOW, meanBudgetPct: 340 };
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available([over, MANY_CHEAP]),
+  }));
+  renderPage();
+  await waitFor(() => expect(queries().length).toBe(2));
+  const pct = screen.queryAllByTestId("budget-pct").map((e) => e.textContent);
+  expect(pct[0]).toBe("340%");
+  const meters = [...document.querySelectorAll("[data-tone][data-pct]")].map(
+    (m) => `${m.getAttribute("data-tone")}:${m.getAttribute("data-pct")}`,
+  );
+  expect(meters[0]).toBe("error:340");
+});
+
+test("a timeout's plan opens on demand, with the sequential scans and the tenant predicate marked", async () => {
+  const plan = [
+    "Limit  (cost=0.00..1.00 rows=1 width=8)",
+    "  ->  Seq Scan on agents  (cost=0.00..1.00 rows=1 width=8)",
+    "        Filter: (tenant_id = (NULLIF(current_setting('app.tenant_id', true), ''))::bigint)",
+  ].join("\n");
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    timeoutOccurrences: 3,
+    timeouts: [
+      {
+        fingerprint: "f1",
+        statement: "SELECT id FROM agents WHERE tenant_id = $1",
+        occurrences: 3,
+        lastAt: new Date().toISOString(),
+        label: "GET /api/v1/agents/",
+        tenantId: "1",
+        fleet: false,
+        budgetMs: 1000,
+        plan,
+        planError: null,
+        plannedAs: "application role, tenant 1",
+        plannedAt: new Date().toISOString(),
+      },
+    ],
+    statements: available(),
+  }));
+  renderPage(undefined, "/admin/database?section=timeouts");
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("timeout-item").length).toBe(1),
+  );
+  expect(screen.queryByTestId("timeout-plan") !== null).toBe(false);
+  fireEvent.click(screen.getByTestId("timeout-plan-toggle"));
+  await waitFor(() =>
+    expect(screen.queryByTestId("timeout-plan") !== null).toBe(true),
+  );
+  const marks = [
+    ...screen.getByTestId("timeout-plan").querySelectorAll("[data-plan-line]"),
+  ].map((l) => l.getAttribute("data-plan-line"));
+  expect(marks).toEqual(["seq", "rls"]);
+});
+
+test("a table past autovacuum's trigger shows its dead-row share in the warning tone, from the server's verdict", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    tables: [
+      {
+        ...BASE.tables[0],
+        table: "bloated",
+        deadRatio: 0.8,
+        vacuumOverdue: true,
+      },
+      {
+        ...BASE.tables[0],
+        table: "fine",
+        deadRatio: 0.5,
+        vacuumOverdue: false,
+      },
+    ],
+    statements: available(),
+  }));
+  renderPage(undefined, "/admin/database?section=tables");
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("table-row").length).toBe(2),
+  );
+  const rows = screen
+    .queryAllByTestId("table-row")
+    .map(
+      (r) =>
+        `${r.querySelector("code")?.textContent}:${r.getAttribute("data-vacuum-overdue")}:${r.querySelector("[data-testid=dead-ratio]")?.textContent}`,
+    );
+  expect(rows).toEqual(["bloated:true:80%", "fine:false:50%"]);
+  expect(
+    screen.getByTestId("vacuum-overdue-count").textContent ?? "",
+  ).toContain("1");
 });

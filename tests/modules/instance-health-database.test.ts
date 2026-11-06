@@ -1374,22 +1374,26 @@ describe("what the screen derives, decided by the server", () => {
     });
   });
 
-  test("a table's own autovacuum settings decide its trigger, the server's only where it sets none", async () => {
-    const probe = `vacuum_probe_${process.pid}`;
-    await suDb.$executeRawUnsafe(
-      `CREATE TABLE ${probe} (id int PRIMARY KEY) WITH (autovacuum_vacuum_threshold = 1000, autovacuum_vacuum_scale_factor = 0)`,
-    );
-    try {
-      const screen = await readDatabaseScreen("1h", appDb);
-      const row = screen.tables.find((t) => t.table === probe);
-      expect(row?.vacuumTriggerRows).toBe(1000);
-      // A table with nothing of its own takes the server's defaults (50 + 0.2 x reltuples).
-      const plain = screen.tables.find((t) => t.table === "conversations");
-      expect(plain?.vacuumTriggerRows).toBeGreaterThanOrEqual(50);
-    } finally {
-      await suDb.$executeRawUnsafe(`DROP TABLE ${probe}`);
-    }
-  });
+  // Against the database, skipped with the rest when none is up (ALLOW_NO_DB).
+  test.skipIf(!dbUp)(
+    "a table's own autovacuum settings decide its trigger, the server's only where it sets none",
+    async () => {
+      const probe = `vacuum_probe_${process.pid}`;
+      await suDb.$executeRawUnsafe(
+        `CREATE TABLE ${probe} (id int PRIMARY KEY) WITH (autovacuum_vacuum_threshold = 1000, autovacuum_vacuum_scale_factor = 0)`,
+      );
+      try {
+        const screen = await readDatabaseScreen("1h", appDb);
+        const row = screen.tables.find((t) => t.table === probe);
+        expect(row?.vacuumTriggerRows).toBe(1000);
+        // A table with nothing of its own takes the server's defaults (50 + 0.2 x reltuples).
+        const plain = screen.tables.find((t) => t.table === "conversations");
+        expect(plain?.vacuumTriggerRows).toBeGreaterThanOrEqual(50);
+      } finally {
+        await suDb.$executeRawUnsafe(`DROP TABLE ${probe}`);
+      }
+    },
+  );
 
   test("a series never has more points than the window has snapshots, so a run is not drawn as a gap", () => {
     expect(sparkBuckets(60 * MIN)).toBe(12);

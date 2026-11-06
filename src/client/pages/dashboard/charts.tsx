@@ -889,6 +889,9 @@ export function StackedBars({
         <StatePatterns ids={ids} p={p} />
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
+            // Recharts stacks the bars in the order they first registered, so a new ranking or a new
+            // group draws a new chart rather than a legend that disagrees with the stack.
+            key={drawn.map((s) => s.key).join("|")}
             data={plotted(arranged.rows, drawn)}
             margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
             onClick={(e) => {

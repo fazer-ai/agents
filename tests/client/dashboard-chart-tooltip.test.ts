@@ -235,6 +235,56 @@ describe("a stacked chart with more series than colours", () => {
     expect(lines(await hover(container, 1, 2))).toEqual(["B1", "A10"]);
   });
 
+  test("a new ranking restacks the bars, so the base is the series the legend names first", async () => {
+    const two = [
+      { key: "a", label: "A" },
+      { key: "b", label: "B" },
+    ];
+    const rows = (a: number, b: number): ChartRow[] =>
+      data.map((r) => ({ day: r.day, state: "ready", a, b }));
+    const tree = (rowsNow: ChartRow[]) =>
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(StackedBars, {
+              ...stacked,
+              series: two,
+              data: rowsNow,
+            }),
+          ),
+        ),
+      );
+    const { container, rerender } = render(tree(rows(10, 2)));
+    await legendOf(container);
+    rerender(tree(rows(1, 20)));
+    const base = await waitFor(() => {
+      if (legend(container)[0]?.text !== "B") throw new Error("not re-ranked");
+      // The first day's segments: the base is the one drawn lowest, the largest y.
+      const rects = [
+        ...container.querySelectorAll<SVGElement>(
+          ".recharts-bar-rectangle path",
+        ),
+      ]
+        .map((r) => ({
+          fill: r.getAttribute("fill"),
+          x: Number(r.getAttribute("x")),
+          y: Number(r.getAttribute("y")),
+        }))
+        .filter((r) => !Number.isNaN(r.y));
+      if (rects.length < 4) throw new Error("bars not drawn yet");
+      const x0 = Math.min(...rects.map((r) => r.x));
+      const day0 = rects.filter((r) => r.x === x0);
+      return day0.sort((p, q) => q.y - p.y)[0]?.fill;
+    });
+    expect(base).toBe(legend(container)[0]?.color);
+  });
+
   test("a day with a series at zero leaves it out of the tooltip", async () => {
     const { container } = renderChart(StackedBars, {
       ...stacked,

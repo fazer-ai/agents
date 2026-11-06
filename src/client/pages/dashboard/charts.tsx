@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -450,46 +449,6 @@ interface LegendItem {
 
 // The chart's legend, in the order given: the key carries the series colour, the name wears text
 // ink, legible on both themes. The "Other" entry names its members on hover, click, tap or Enter.
-// The names inside the "Other" group, in a list that scrolls inside the room the screen has. Opened
-// from the keyboard, it takes the focus, so the arrows and Page keys scroll it, and gives it back to
-// its trigger when it closes.
-function MembersList({
-  members,
-  label,
-  fromKeyboard,
-  trigger,
-}: {
-  members: SeriesDef[];
-  label: string;
-  fromKeyboard: RefObject<boolean>;
-  trigger: RefObject<HTMLButtonElement | null>;
-}) {
-  const list = useRef<HTMLUListElement>(null);
-  useLayoutEffect(() => {
-    const el = list.current;
-    // Read once per opening: the next one, by hover or by a click, starts without it.
-    if (fromKeyboard.current) el?.focus({ preventScroll: true });
-    fromKeyboard.current = false;
-    return () => {
-      if (el?.contains(document.activeElement)) trigger.current?.focus();
-    };
-  }, [fromKeyboard, trigger]);
-  return (
-    <ul
-      ref={list}
-      data-testid="chart-legend-members"
-      aria-label={label}
-      // biome-ignore lint/a11y/noNoninteractiveTabindex: a list that can overflow has to be reachable to scroll.
-      tabIndex={0}
-      className="focus-visible:ring-accent-soft max-h-[min(18rem,calc(var(--radix-popover-content-available-height)-1.5rem))] overflow-y-auto rounded-sm focus-visible:ring-2 focus-visible:outline-none"
-    >
-      {members.map((m) => (
-        <li key={m.key}>{m.label}</li>
-      ))}
-    </ul>
-  );
-}
-
 function SeriesLegend({
   items,
   mark,
@@ -499,10 +458,6 @@ function SeriesLegend({
   mark: "bar" | "line";
   p: ReturnType<typeof useChartPalette>;
 }) {
-  // Whether the Others list was opened from the keyboard, which takes the focus into it so a long one
-  // scrolls with the arrows; a hover or a click leaves the focus where it is.
-  const fromKeyboard = useRef(false);
-  const trigger = useRef<HTMLButtonElement>(null);
   if (items.length === 0) return null;
   return (
     <ul
@@ -532,26 +487,20 @@ function SeriesLegend({
                 label={it.label}
                 side="top"
                 align="center"
+                // A long group still fits the screen: the list scrolls inside the room Radix measures.
+                // The day detail lists the same members, every one reachable from the keyboard.
+                contentClassName="max-h-[min(20rem,var(--radix-popover-content-available-height))] overflow-y-auto"
                 content={
-                  <MembersList
-                    members={it.members}
-                    label={it.label}
-                    fromKeyboard={fromKeyboard}
-                    trigger={trigger}
-                  />
+                  <ul data-testid="chart-legend-members">
+                    {it.members.map((m) => (
+                      <li key={m.key}>{m.label}</li>
+                    ))}
+                  </ul>
                 }
               >
                 <button
-                  ref={trigger}
                   type="button"
                   className="focus-visible:ring-accent-soft cursor-help rounded-sm focus-visible:ring-2 focus-visible:outline-none"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ")
-                      fromKeyboard.current = true;
-                  }}
-                  onPointerDown={() => {
-                    fromKeyboard.current = false;
-                  }}
                 >
                   {entry}
                 </button>

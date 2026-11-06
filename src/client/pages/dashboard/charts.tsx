@@ -20,7 +20,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Tooltip as Hint } from "@/client/components/Tooltip";
+import { Popover } from "@/client/components/Popover";
 import { useTheme } from "@/client/contexts/ThemeContext";
 import {
   type Arranged,
@@ -430,12 +430,12 @@ interface LegendItem {
   key: string;
   label: string;
   color: string;
-  // The names inside the "Other" group, shown when the entry is hovered or focused.
+  // The names inside the "Other" group, shown when the entry is hovered or opened.
   members?: string[];
 }
 
 // The chart's legend, in the order given: the key carries the series colour, the name wears text
-// ink, legible on both themes. The "Other" entry names its members on hover and on focus.
+// ink, legible on both themes. The "Other" entry names its members on hover, click, tap or Enter.
 function SeriesLegend({
   items,
   mark,
@@ -470,7 +470,10 @@ function SeriesLegend({
         return (
           <li key={it.key} data-series-key={it.key}>
             {it.members ? (
-              <Hint
+              <Popover
+                label={it.label}
+                side="top"
+                align="center"
                 content={
                   <ul data-testid="chart-legend-members">
                     {it.members.map((m) => (
@@ -479,14 +482,13 @@ function SeriesLegend({
                   </ul>
                 }
               >
-                <span
-                  // biome-ignore lint/a11y/noNoninteractiveTabindex: the group's members are read on focus, like on hover.
-                  tabIndex={0}
+                <button
+                  type="button"
                   className="focus-visible:ring-accent-soft cursor-help rounded-sm focus-visible:ring-2 focus-visible:outline-none"
                 >
                   {entry}
-                </span>
-              </Hint>
+                </button>
+              </Popover>
             ) : (
               entry
             )}
@@ -568,7 +570,13 @@ export function LineTrend({
   );
   return (
     <div className="flex w-full flex-col gap-2">
-      <div style={{ height }} className="relative w-full">
+      <div
+        style={{ height }}
+        className="relative w-full"
+        // The drawing only: a screen reader reads the block's table instead, and still reaches the
+        // legend and the day detail.
+        aria-hidden="true"
+      >
         <StatePatterns ids={ids} p={p} />
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
@@ -869,7 +877,13 @@ export function StackedBars({
   const pickedRow = picked ? data.find((r) => r.day === picked) : undefined;
   return (
     <div className="flex w-full flex-col gap-2">
-      <div style={{ height }} className="relative w-full">
+      <div
+        style={{ height }}
+        className="relative w-full"
+        // The drawing only: a screen reader reads the block's table instead, and still reaches the
+        // legend and the day detail.
+        aria-hidden="true"
+      >
         <StatePatterns ids={ids} p={p} />
         <ResponsiveContainer width="100%" height="100%">
           <BarChart

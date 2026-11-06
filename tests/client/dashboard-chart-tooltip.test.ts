@@ -11,11 +11,13 @@ import {
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import i18next from "i18next";
+import { Coins } from "lucide-react";
 import { createElement } from "react";
 import { I18nextProvider } from "react-i18next";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
+import { Block } from "@/client/pages/dashboard/Block";
 import {
   type ChartRow,
   LineTrend,
@@ -336,13 +338,13 @@ describe("a stacked chart with more series than colours", () => {
     expect(after.get("n2")).toBe(before.get("n7"));
   });
 
-  test("the Others legend entry names its members on focus", async () => {
+  test("the Others legend entry names its members on a click, which a tap and Enter also are", async () => {
     const { container } = renderChart(StackedBars, stacked);
     await legendOf(container);
     const other = container.querySelector(
-      '[data-testid="chart-legend"] > li[data-series-key="__other"] [tabindex="0"]',
+      '[data-testid="chart-legend"] > li[data-series-key="__other"] button',
     ) as HTMLElement;
-    fireEvent.focus(other);
+    fireEvent.click(other);
     const members = await waitFor(() => {
       const m = document.querySelector('[data-testid="chart-legend-members"]');
       if (!m) throw new Error("no members yet");
@@ -350,6 +352,54 @@ describe("a stacked chart with more series than colours", () => {
     });
     // Top to bottom, as the group's members would stack: the smallest first, like the day detail.
     expect(lines(members)).toEqual(["Node 0", "Node 3", "Node 1", "Node 2"]);
+  });
+
+  test("hides only the drawing from a screen reader: the legend and the day detail stay reachable", async () => {
+    const { container } = render(
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(
+              Block,
+              {
+                icon: Coins,
+                title: "Daily cost",
+                chart: true,
+              } as Parameters<typeof Block>[0],
+              createElement(StackedBars, stacked),
+            ),
+          ),
+        ),
+      ),
+    );
+    await hover(container, 1, 2);
+    fireEvent.click(container.querySelector(".recharts-wrapper") as Element, {
+      clientX: centerOf(1, 2),
+      clientY: HEIGHT / 2,
+    });
+    const detail = await waitFor(() => {
+      const d = container.querySelector('[data-testid="chart-day-detail"]');
+      if (!d) throw new Error("no detail yet");
+      return d;
+    });
+    expect(
+      container
+        .querySelector(".recharts-wrapper")
+        ?.closest("[aria-hidden='true']"),
+    ).not.toBeNull();
+    expect(detail.closest("[aria-hidden='true']")).toBeNull();
+    expect(document.activeElement).toBe(detail);
+    expect(
+      container
+        .querySelector('[data-testid="chart-legend"]')
+        ?.closest("[aria-hidden='true']"),
+    ).toBeNull();
   });
 });
 

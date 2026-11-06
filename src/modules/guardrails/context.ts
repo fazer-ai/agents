@@ -55,6 +55,18 @@ export function guardrailContext(
   messages: readonly BaseMessage[],
   limit: number,
 ): GuardrailContextMessage[] {
+  return unclippedContext(messages, limit).map((c) => ({
+    ...c,
+    text: clipText(c.text, CONTEXT_MESSAGE_MAX),
+  }));
+}
+
+// The same window with every message whole, for a reader that must not decide on a prefix of what
+// someone said.
+export function unclippedContext(
+  messages: readonly BaseMessage[],
+  limit: number,
+): GuardrailContextMessage[] {
   const out: GuardrailContextMessage[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
     const m = messages[i];
@@ -83,7 +95,5 @@ export function guardrailContext(
     if (type === "human") out.push({ role: "customer", text });
     else if (type === "ai") out.push({ role: "assistant", text });
   }
-  return out
-    .reverse()
-    .map((c) => ({ ...c, text: clipText(c.text, CONTEXT_MESSAGE_MAX) }));
+  return out.reverse();
 }

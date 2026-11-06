@@ -2120,7 +2120,12 @@ export function customerChoiceCheck(
   });
   let built: BaseChatModel | null | undefined;
   return choiceCheck({
-    timezone: cfg.timezone,
+    // NOTE: the clock and zone the agent's own prompt rendered, so the playground's simulated hour
+    // reaches the judge too and "tomorrow" means the same day to both.
+    clock: () => ({
+      now: cfg.promptOpts.now,
+      timezone: cfg.promptOpts.timezone ?? cfg.timezone,
+    }),
     model: () => {
       if (built !== undefined) return built;
       try {

@@ -24,6 +24,7 @@ import {
   choiceTranscript,
   judgeChoice,
   literallyChosen,
+  TRANSCRIPT_CHARS_MAX,
 } from "@/graph/tools/customer-choice";
 import { buildDocumentTools } from "@/graph/tools/documents";
 import {
@@ -172,7 +173,7 @@ describe("a choice-guarded tool in a real graph turn", () => {
         new HumanMessage("Quero o orçamento."),
         new AIMessage("Temos 8, 10 ou 12 sessões. Qual prefere?"),
         new HumanMessage(
-          "Pacote Fisioterapia 10 sessões, 1450. Pode mandar o PDF.",
+          "Pacote Fisioterapia 10 sessões, 1450. Pode mandar, por favor.",
         ),
       ],
       TEN,
@@ -259,7 +260,7 @@ describe("a choice-guarded tool in a real graph turn", () => {
 });
 
 describe("literallyChosen", () => {
-  const said = "Quero o PACOTE fisioterapia 10 Sessões! valor 1450";
+  const said = "Quero o PACOTE fisioterapia 10 Sessões! de 1450";
   test.each([
     ["every value folded and found", said, TEN, true],
     ["one value missing", said, ALL_THREE, false],
@@ -297,6 +298,47 @@ describe("literallyChosen", () => {
       "o básico ou o premium",
       { plans: ["básico", "premium"] },
       false,
+    ],
+    // The refusal no word list anticipates: a contraction the folding splits, a question with no
+    // question mark, a preference stated against the value. Each one goes to the judge.
+    ["a contraction", "I don't want premium", { plan: "premium" }, false],
+    [
+      "a question without its mark",
+      "Tell me about premium",
+      { plan: "premium" },
+      false,
+    ],
+    [
+      "a preference against it",
+      "prefiro outro, não o premium",
+      { plan: "premium" },
+      false,
+    ],
+    ["anything but", "anything but premium", { plan: "premium" }, false],
+    ["a Spanish refusal", "no quiero el premium", { plan: "premium" }, false],
+    [
+      "another value beside it",
+      "o premium e o básico",
+      { plan: "premium" },
+      false,
+    ],
+    [
+      "asking for it in English",
+      "I'll take the premium, please",
+      { plan: "premium" },
+      true,
+    ],
+    [
+      "asking for it in Spanish",
+      "quiero el premium",
+      { plan: "premium" },
+      true,
+    ],
+    [
+      "asking for it in Portuguese",
+      "pode ser o premium, me manda",
+      { plan: "premium" },
+      true,
     ],
   ])("%s", (_label, latest, args, expected) => {
     expect(literallyChosen(args, latest)).toBe(expected);
@@ -347,6 +389,35 @@ describe("choiceTranscript", () => {
 
   test("a call with no graph state has no transcript", () => {
     expect(choiceTranscript(undefined)).toBeNull();
+  });
+
+  // A refusal written after the first thousand characters is still the customer's answer.
+  test("every message is whole, however long", () => {
+    const long = `${"quero o premium. ".repeat(80)}mas não, deixa o premium pra lá`;
+    const t = choiceTranscript([new HumanMessage(long)]);
+    expect(t?.latest).toBe(long);
+    expect(t?.exchange).toEqual([{ role: "customer", text: long }]);
+  });
+
+  test("the bound drops whole messages from the oldest end", () => {
+    const old = "x".repeat(TRANSCRIPT_CHARS_MAX);
+    const t = choiceTranscript([
+      new HumanMessage(old),
+      new AIMessage("8, 10 ou 12?"),
+      new HumanMessage("o de 10"),
+    ]);
+    expect(t?.exchange).toEqual([
+      { role: "assistant", text: "8, 10 ou 12?" },
+      { role: "customer", text: "o de 10" },
+    ]);
+  });
+
+  test("a latest customer message past the bound is not read in part", () => {
+    expect(
+      choiceTranscript([
+        new HumanMessage(`premium ${"x".repeat(TRANSCRIPT_CHARS_MAX)}`),
+      ]),
+    ).toBeNull();
   });
 });
 
@@ -401,9 +472,11 @@ describe("the judge is told the business's date", () => {
     const check = choiceCheck({
       model: () => model as unknown as BaseChatModel,
       callbacks: () => [],
-      timezone: "America/Sao_Paulo",
       // 02:00 UTC on the 6th is still the 5th in São Paulo.
-      now: () => new Date("2026-11-06T02:00:00Z"),
+      clock: () => ({
+        now: new Date("2026-11-06T02:00:00Z"),
+        timezone: "America/Sao_Paulo",
+      }),
     });
     await check({
       tool: "agendar",
@@ -412,6 +485,44 @@ describe("the judge is told the business's date", () => {
       messages: [new HumanMessage("terça às 8h")],
     });
     expect(model.calls[0]).toContain("Today is 2026-11-05 (Thursday).");
+  });
+});
+
+describe("the judge a toolset builds reads the turn's own clock", () => {
+  test("the playground's simulated hour, in the zone the prompt rendered it", async () => {
+    const asked: string[] = [];
+    const check = customerChoiceCheck(
+      {
+        agentId: 5n,
+        mc: { provider: "openai", model: "gpt-5.4-mini" },
+        apiKey: "sk-agent",
+        timezone: "America/Los_Angeles",
+        // 04:30 UTC on 2027-03-02 is already the 2nd in the default zone and still the 1st here.
+        promptOpts: {
+          timezone: "America/Los_Angeles",
+          now: new Date("2027-03-02T04:30:00Z"),
+        },
+      } as unknown as AgentConfig,
+      { tenantId: 1n, threadId: "t-1" } as never,
+      {
+        makeModel: () => {
+          const m = new UsageReportingModel(["YES"]);
+          return {
+            invoke: (msgs: BaseMessage[], o: unknown) => {
+              asked.push(String(msgs[1]?.content));
+              return m.invoke(msgs, o as never);
+            },
+          } as unknown as BaseChatModel;
+        },
+      } as never,
+    );
+    await check({
+      tool: "agendar",
+      description: "d",
+      args: { data: "2027-03-02" },
+      messages: [new HumanMessage("amanhã de manhã")],
+    });
+    expect(asked[0]).toContain("Today is 2027-03-01 (Monday).");
   });
 });
 
@@ -481,6 +592,8 @@ describe("the judge a toolset builds", () => {
         credentialBaseUrl: null,
         conversationDbId: null,
         inboxDbId: null,
+        timezone: "America/Sao_Paulo",
+        promptOpts: { timezone: "America/Sao_Paulo", now: new Date() },
       } as unknown as AgentConfig,
       { tenantId: 1n, threadId: "t-1", base: undefined } as never,
       {
@@ -532,6 +645,7 @@ describe("the judge a toolset builds", () => {
         mc: { provider: "openai-compatible", model: "local" },
         apiKey: "",
         credentialBaseUrl: "http://llm.internal/v1",
+        promptOpts: { now: new Date() },
       } as unknown as AgentConfig,
       { tenantId: 1n, threadId: "t-1" } as never,
       {

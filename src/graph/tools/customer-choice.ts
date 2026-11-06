@@ -8,10 +8,9 @@ import {
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
-import { clipText } from "@/lib/text";
 import {
   type GuardrailContextMessage,
-  guardrailContext,
+  unclippedContext,
 } from "@/modules/guardrails/context";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 
@@ -24,18 +23,21 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 
 // The open attendance as the judge reads it, oldest first: every customer, agent and attendant
 // message, so "the second one" stays next to the question it answers even after a later exchange.
-// `latest` is the customer's last message. Null when the call carries no transcript: a rule's action
-// or a voice call.
+// `latest` is the customer's last message. Every message is whole: a refusal written after a cut
+// would not reach either reader.
 export interface ChoiceTranscript {
   exchange: GuardrailContextMessage[];
   latest: string;
 }
 
 // Enough to hold the exchange that settles a choice, bounded so a long attendance does not make
-// every guarded call cost a page of tokens.
+// every guarded call cost pages of tokens. The bound drops the OLDEST whole messages, which can only
+// take evidence for a choice away, never a retraction that came after it.
 const TRANSCRIPT_MESSAGES_MAX = 40;
-const MESSAGE_CHARS_MAX = 2000;
+export const TRANSCRIPT_CHARS_MAX = 24_000;
 
+// Null when there is nothing whole to read: no transcript (a rule's action, a voice call), or a
+// latest customer message longer than the bound, which neither reader may decide on a part of.
 export function choiceTranscript(
   messages: readonly BaseMessage[] | undefined,
 ): ChoiceTranscript | null {
@@ -46,12 +48,19 @@ export function choiceTranscript(
   const { open } = selectClosedPrefix([...messages], {
     currentAttendanceClosed: false,
   });
-  const exchange = guardrailContext(open, TRANSCRIPT_MESSAGES_MAX).map((m) => ({
-    role: m.role,
-    text: clipText(m.text, MESSAGE_CHARS_MAX),
-  }));
-  const latest = exchange.findLast((m) => m.role === "customer");
-  return { exchange, latest: latest?.text ?? "" };
+  const window = unclippedContext(open, TRANSCRIPT_MESSAGES_MAX);
+  const latestAt = window.findLastIndex((m) => m.role === "customer");
+  let chars = 0;
+  let from = window.length;
+  while (from > 0) {
+    const next = window[from - 1]?.text.length ?? 0;
+    if (chars + next > TRANSCRIPT_CHARS_MAX) break;
+    chars += next;
+    from--;
+  }
+  if (latestAt >= 0 && latestAt < from) return null;
+  const exchange = window.slice(from);
+  return { exchange, latest: window[latestAt]?.text ?? "" };
 }
 
 // Lowercased, accents and punctuation folded to single spaces, so "10 Sessões," in a message matches
@@ -72,31 +81,46 @@ function leaves(value: unknown, out: unknown[]): void {
   else out.push(value);
 }
 
-// A word that can turn a mention into a refusal or a doubt ("não quero o premium", "not the 12"). The
-// list errs wide: a hit only costs a judge call.
-const DOUBT_WORDS =
-  /\s(nao|nem|nunca|sem|no|not|dont|never|without|ni|sin|ou|or)\s/;
+// The only words a message may hold besides the values for it to read as choosing them: articles,
+// connectives and the verbs of asking for something, in the three languages the product speaks. A
+// closed list, so a word it does not know ("don't", "about", "instead", "rather") sends the call to
+// the judge instead of being read as agreement; none of these turns a mention into a refusal, which
+// is why the Portuguese "no" (em + o) is left out: in Spanish it is the refusal.
+const AFFIRMING_WORDS = new Set(
+  (
+    "o a os as um uma uns umas de do da dos das na e com para pra pro me eu " +
+    "quero queria vou fico fechado pode ser manda mande mandar envia envie enviar sim isso esse essa este esta ok por favor " +
+    "the an of with and i ll d m want would like take go for please send me it that this one yes ok " +
+    "el la los las un una y con quiero me envia enviame si por favor"
+  ).split(" "),
+);
 
 // Whether the customer's latest message, on its own, states every value in the arguments, whole-word,
-// as an answer rather than a question, a refusal or an either-or. A pass spares the model call; a miss
-// decides nothing, since "the second one" or "yes" chooses a value without spelling it, and a value
-// named in an earlier message may have been dropped since. Only strings and numbers can be found: any
-// other leaf (a boolean, a null) sends the call to the judge.
+// and says nothing else but words that ask for them. A pass spares the model call; a miss decides
+// nothing, since "the second one" or "yes" chooses a value without spelling it, "tell me about the
+// premium" names one without choosing it, and a value named in an earlier message may have been
+// dropped since. Only strings and numbers can be found: any other leaf (a boolean, a null) sends the
+// call to the judge.
 export function literallyChosen(args: unknown, latest: string): boolean {
   if (latest.includes("?")) return false;
   const said = folded(latest);
-  if (DOUBT_WORDS.test(said)) return false;
   const values: unknown[] = [];
   leaves(args, values);
-  let found = 0;
+  const needles: string[] = [];
   for (const v of values) {
     if (typeof v !== "string" && typeof v !== "number") return false;
     const needle = folded(String(v));
     if (needle.trim() === "") continue;
     if (!said.includes(needle)) return false;
-    found++;
+    needles.push(needle);
   }
-  return found > 0;
+  if (needles.length === 0) return false;
+  let rest = said;
+  for (const needle of needles.sort((x, y) => y.length - x.length))
+    rest = rest.replaceAll(needle, " ");
+  return rest
+    .split(" ")
+    .every((word) => word === "" || AFFIRMING_WORDS.has(word));
 }
 
 // The judge's instruction. The detail that tells one option from another has to be in the customer's
@@ -166,8 +190,8 @@ export type ChoiceCheck = (req: {
 export function choiceCheck(deps: {
   model: () => BaseChatModel | null;
   callbacks: () => BaseCallbackHandler[];
-  timezone?: string;
-  now?: () => Date;
+  // The instant and zone the agent's own turn reads, the playground's simulated hour included.
+  clock?: () => { now: Date; timezone?: string };
 }): ChoiceCheck {
   return async (req) => {
     const transcript = choiceTranscript(req.messages);
@@ -175,7 +199,7 @@ export function choiceCheck(deps: {
       return {
         chosen: false,
         reason: "unreadable",
-        err: new Error("no transcript"),
+        err: new Error("no whole transcript to read"),
       };
     }
     if (literallyChosen(req.args, transcript.latest)) {
@@ -184,14 +208,15 @@ export function choiceCheck(deps: {
     try {
       const model = deps.model();
       if (!model) throw new Error("model not runnable");
+      const clock = deps.clock?.();
       const yes = await judgeChoice(
         model,
         choiceJudgeInput({
           ...req,
           transcript,
           today: judgeToday(
-            deps.now?.() ?? new Date(),
-            deps.timezone ?? DEFAULT_TIMEZONE,
+            clock?.now ?? new Date(),
+            clock?.timezone ?? DEFAULT_TIMEZONE,
           ),
         }),
         deps.callbacks(),

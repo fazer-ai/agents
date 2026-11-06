@@ -698,6 +698,7 @@ describe("every node the ledger writes is classified for the involvement KPI", (
     }
     // The claim the KPI actually rests on, spelled out where it can go red.
     expect([...NON_AGENT_TURN_NODES].sort()).toEqual([
+      "choice_check",
       "decision",
       "observer",
       "occurrence_assignment",

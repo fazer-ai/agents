@@ -882,11 +882,15 @@ function DayDetail({
       // A popup above it (the Others list) takes its own Escape first and marks it handled, and an
       // Escape pressed inside another chart's detail is that one's.
       if (e.key !== "Escape" || e.defaultPrevented) return;
-      const at = document.activeElement;
+      // The key's own target, which closing the detail (and moving the focus) does not change.
+      const at = e.target instanceof Element ? e.target : null;
       const elsewhere =
         at?.closest('[data-testid="chart-day-detail"]') &&
         !box.current?.contains(at);
-      if (!elsewhere) onClose();
+      if (elsewhere) return;
+      // Handled: one Escape closes one detail.
+      e.preventDefault();
+      onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

@@ -672,6 +672,53 @@ describe("the day a stacked chart's detail opens", () => {
     ).not.toBeNull();
   });
 
+  test("with two charts open, Escape in the first closes only the first", async () => {
+    const { container } = render(
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(
+              "div",
+              null,
+              createElement(
+                "div",
+                { "data-chart": "first" },
+                createElement(StackedBars, stacked),
+              ),
+              createElement(
+                "div",
+                { "data-chart": "second" },
+                createElement(StackedBars, stacked),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    const chart = (which: string) =>
+      container.querySelector(`[data-chart="${which}"]`) as HTMLElement;
+    // The first detail opens first, so its page-wide Escape listener runs before the second's.
+    await clickDay(chart("first"), "2026-01-01");
+    const first = await openDetail(chart("first"));
+    await clickDay(chart("second"), "2026-01-02");
+    await openDetail(chart("second"));
+    first.focus();
+    fireEvent.keyDown(first, { key: "Escape" });
+    await waitFor(() => {
+      if (chart("first").querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("still open");
+    });
+    expect(
+      chart("second").querySelector('[data-testid="chart-day-detail"]'),
+    ).not.toBeNull();
+  });
+
   test("takes the focus once when it opens, not again on every redraw", async () => {
     const tree = (rows: ChartRow[]) =>
       createElement(

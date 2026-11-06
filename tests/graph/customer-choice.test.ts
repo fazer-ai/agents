@@ -23,7 +23,6 @@ import {
   choiceCheck,
   choiceTranscript,
   judgeChoice,
-  literallyChosen,
   TRANSCRIPT_CHARS_MAX,
 } from "@/graph/tools/customer-choice";
 import { buildDocumentTools } from "@/graph/tools/documents";
@@ -164,9 +163,10 @@ describe("a choice-guarded tool in a real graph turn", () => {
     expect(refusals).toHaveLength(1);
   });
 
-  test("the option in the customer's own words issues it without asking the model", async () => {
+  // A mention is not a choice, so even the option spelled out in full goes to the judge.
+  test("the option in the customer's own words is still judged, and runs on its YES", async () => {
     const { tool: inner, calls } = spyDocument();
-    const { model: judge, check } = judgeAnswering("NO");
+    const { model: judge, check } = judgeAnswering("YES");
     await runTurn(
       guarded(inner, check),
       [
@@ -179,8 +179,37 @@ describe("a choice-guarded tool in a real graph turn", () => {
       TEN,
     );
     expect(calls).toHaveLength(1);
-    expect(judge.calls).toEqual([]);
+    expect(judge.calls).toHaveLength(1);
+    expect(judge.calls[0]).toContain(
+      "- customer: Pacote Fisioterapia 10 sessões",
+    );
   });
+
+  test.each([
+    ["a refusal", "I don't want premium"],
+    ["a question without its mark", "Tell me about premium"],
+    ["a value inside another", "quero premium"],
+  ])(
+    "%s that names every value is refused on the judge's NO",
+    async (_l, said) => {
+      const model = new UsageReportingModel(["NO"]);
+      const check = choiceCheck({
+        model: () => model as unknown as BaseChatModel,
+        callbacks: () => [],
+      });
+      const verdict = await check({
+        tool: "x",
+        description: "d",
+        args: {
+          plan: said.includes("quero") ? "premium+" : "premium",
+          notes: said,
+        },
+        messages: [new HumanMessage(said)],
+      });
+      expect(model.calls).toHaveLength(1);
+      expect(verdict).toEqual({ chosen: false, reason: "unmet" });
+    },
+  );
 
   test("a short answer to the agent's question runs when the judge says YES, and the judge saw the question", async () => {
     const { tool: inner, calls } = spyDocument();
@@ -259,92 +288,6 @@ describe("a choice-guarded tool in a real graph turn", () => {
   });
 });
 
-describe("literallyChosen", () => {
-  const said = "Quero o PACOTE fisioterapia 10 Sessões! de 1450";
-  test.each([
-    ["every value folded and found", said, TEN, true],
-    ["one value missing", said, ALL_THREE, false],
-    [
-      "a boolean leaf goes to the judge",
-      said,
-      { name: "10 sessoes", urgent: true },
-      false,
-    ],
-    [
-      "a null leaf goes to the judge",
-      said,
-      { name: "10 sessoes", note: null },
-      false,
-    ],
-    ["a partial word is not a match", said, { name: "sess" }, false],
-    ["nothing to find is not a pass", said, { name: "  " }, false],
-    ["no arguments is not a pass", said, {}, false],
-    // A mention is not a choice: each of these names every value and chooses none of them.
-    ["a refusal", "não quero o premium", { plan: "premium" }, false],
-    [
-      "a refusal in English",
-      "I do not want premium",
-      { plan: "premium" },
-      false,
-    ],
-    [
-      "a question about the options",
-      "qual a diferença entre o básico e o premium?",
-      { plans: ["básico", "premium"] },
-      false,
-    ],
-    [
-      "an either-or",
-      "o básico ou o premium",
-      { plans: ["básico", "premium"] },
-      false,
-    ],
-    // The refusal no word list anticipates: a contraction the folding splits, a question with no
-    // question mark, a preference stated against the value. Each one goes to the judge.
-    ["a contraction", "I don't want premium", { plan: "premium" }, false],
-    [
-      "a question without its mark",
-      "Tell me about premium",
-      { plan: "premium" },
-      false,
-    ],
-    [
-      "a preference against it",
-      "prefiro outro, não o premium",
-      { plan: "premium" },
-      false,
-    ],
-    ["anything but", "anything but premium", { plan: "premium" }, false],
-    ["a Spanish refusal", "no quiero el premium", { plan: "premium" }, false],
-    [
-      "another value beside it",
-      "o premium e o básico",
-      { plan: "premium" },
-      false,
-    ],
-    [
-      "asking for it in English",
-      "I'll take the premium, please",
-      { plan: "premium" },
-      true,
-    ],
-    [
-      "asking for it in Spanish",
-      "quiero el premium",
-      { plan: "premium" },
-      true,
-    ],
-    [
-      "asking for it in Portuguese",
-      "pode ser o premium, me manda",
-      { plan: "premium" },
-      true,
-    ],
-  ])("%s", (_label, latest, args, expected) => {
-    expect(literallyChosen(args, latest)).toBe(expected);
-  });
-});
-
 describe("choiceTranscript", () => {
   test("the open attendance in order, with the system's own notes and tool chatter left out", () => {
     const t = choiceTranscript([
@@ -365,7 +308,6 @@ describe("choiceTranscript", () => {
         { role: "assistant", text: "8, 10 ou 12?" },
         { role: "customer", text: "o de 10" },
       ],
-      latest: "o de 10",
     });
   });
 
@@ -383,7 +325,6 @@ describe("choiceTranscript", () => {
     ]);
     expect(t).toEqual({
       exchange: [{ role: "customer", text: "me manda o orçamento" }],
-      latest: "me manda o orçamento",
     });
   });
 
@@ -395,7 +336,6 @@ describe("choiceTranscript", () => {
   test("every message is whole, however long", () => {
     const long = `${"quero o premium. ".repeat(80)}mas não, deixa o premium pra lá`;
     const t = choiceTranscript([new HumanMessage(long)]);
-    expect(t?.latest).toBe(long);
     expect(t?.exchange).toEqual([{ role: "customer", text: long }]);
   });
 
@@ -616,7 +556,7 @@ describe("the judge a toolset builds", () => {
       args: TEN,
       messages: [new HumanMessage("o do meio")],
     });
-    expect(verdict).toEqual({ chosen: true, by: "judge" });
+    expect(verdict).toEqual({ chosen: true });
     expect(built).toEqual([
       {
         provider: "openai",

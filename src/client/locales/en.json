@@ -2680,7 +2680,7 @@
       "addCondition": "Add a condition",
       "andUntil": "and until",
       "block": "Block",
-      "customerChoiceHelp": "Each call is checked against the customer's messages: when a value of the call (which option, how many, which day) was not said or confirmed by the customer, it does not run and the agent asks. Values not in the customer's words are judged by the agent's own model, billed on its own line.",
+      "customerChoiceHelp": "Each call is checked against the customer's messages: when a value of the call (which option, how many, which day) was not said or confirmed by the customer, it does not run and the agent asks. The agent's own model makes the check, billed on its own line.",
       "description": "Block a tool until every condition you list holds: a conversation or contact attribute with a value, or the customer having chosen the values the agent calls it with. The agent is told why and continues the conversation; nothing is said to the customer.",
       "descriptionDecisions": "Block a tool until every condition you list holds: a conversation or contact attribute with a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
       "empty": "No preconditions. Without one, the agent may use any of its tools whenever it sees fit.",

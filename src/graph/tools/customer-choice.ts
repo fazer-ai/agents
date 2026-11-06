@@ -23,11 +23,9 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 
 // The open attendance as the judge reads it, oldest first: every customer, agent and attendant
 // message, so "the second one" stays next to the question it answers even after a later exchange.
-// `latest` is the customer's last message. Every message is whole: a refusal written after a cut
-// would not reach either reader.
+// Every message is whole: a refusal written after a cut would not reach the judge.
 export interface ChoiceTranscript {
   exchange: GuardrailContextMessage[];
-  latest: string;
 }
 
 // Enough to hold the exchange that settles a choice, bounded so a long attendance does not make
@@ -37,7 +35,7 @@ const TRANSCRIPT_MESSAGES_MAX = 40;
 export const TRANSCRIPT_CHARS_MAX = 24_000;
 
 // Null when there is nothing whole to read: no transcript (a rule's action, a voice call), or a
-// latest customer message longer than the bound, which neither reader may decide on a part of.
+// latest customer message longer than the bound, which the judge may not decide on a part of.
 export function choiceTranscript(
   messages: readonly BaseMessage[] | undefined,
 ): ChoiceTranscript | null {
@@ -59,68 +57,7 @@ export function choiceTranscript(
     from--;
   }
   if (latestAt >= 0 && latestAt < from) return null;
-  const exchange = window.slice(from);
-  return { exchange, latest: window[latestAt]?.text ?? "" };
-}
-
-// Lowercased, accents and punctuation folded to single spaces, so "10 Sessões," in a message matches
-// the line item "10 sessoes".
-function folded(text: string): string {
-  return ` ${text
-    .normalize("NFD")
-    .replace(/\p{M}+/gu, "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim()} `;
-}
-
-function leaves(value: unknown, out: unknown[]): void {
-  if (Array.isArray(value)) for (const v of value) leaves(v, out);
-  else if (value && typeof value === "object")
-    for (const v of Object.values(value)) leaves(v, out);
-  else out.push(value);
-}
-
-// The only words a message may hold besides the values for it to read as choosing them: articles,
-// connectives and the verbs of asking for something, in the three languages the product speaks. A
-// closed list, so a word it does not know ("don't", "about", "instead", "rather") sends the call to
-// the judge instead of being read as agreement; none of these turns a mention into a refusal, which
-// is why the Portuguese "no" (em + o) is left out: in Spanish it is the refusal.
-const AFFIRMING_WORDS = new Set(
-  (
-    "o a os as um uma uns umas de do da dos das na e com para pra pro me eu " +
-    "quero queria vou fico fechado pode ser manda mande mandar envia envie enviar sim isso esse essa este esta ok por favor " +
-    "the an of with and i ll d m want would like take go for please send me it that this one yes ok " +
-    "el la los las un una y con quiero me envia enviame si por favor"
-  ).split(" "),
-);
-
-// Whether the customer's latest message, on its own, states every value in the arguments, whole-word,
-// and says nothing else but words that ask for them. A pass spares the model call; a miss decides
-// nothing, since "the second one" or "yes" chooses a value without spelling it, "tell me about the
-// premium" names one without choosing it, and a value named in an earlier message may have been
-// dropped since. Only strings and numbers can be found: any other leaf (a boolean, a null) sends the
-// call to the judge.
-export function literallyChosen(args: unknown, latest: string): boolean {
-  if (latest.includes("?")) return false;
-  const said = folded(latest);
-  const values: unknown[] = [];
-  leaves(args, values);
-  const needles: string[] = [];
-  for (const v of values) {
-    if (typeof v !== "string" && typeof v !== "number") return false;
-    const needle = folded(String(v));
-    if (needle.trim() === "") continue;
-    if (!said.includes(needle)) return false;
-    needles.push(needle);
-  }
-  if (needles.length === 0) return false;
-  let rest = said;
-  for (const needle of needles.sort((x, y) => y.length - x.length))
-    rest = rest.replaceAll(needle, " ");
-  return rest
-    .split(" ")
-    .every((word) => word === "" || AFFIRMING_WORDS.has(word));
+  return { exchange: window.slice(from) };
 }
 
 // The judge's instruction. The detail that tells one option from another has to be in the customer's
@@ -175,7 +112,7 @@ export async function judgeChoice(
 }
 
 export type ChoiceVerdict =
-  | { chosen: true; by: "literal" | "judge" }
+  | { chosen: true }
   | { chosen: false; reason: "unmet" | "unreadable"; err?: unknown };
 
 export type ChoiceCheck = (req: {
@@ -185,8 +122,12 @@ export type ChoiceCheck = (req: {
   messages: readonly BaseMessage[] | undefined;
 }) => Promise<ChoiceVerdict>;
 
-// The check a toolset hands its guarded tools. `model` is built lazily, on the first call that needs
-// a judge, and stays null when the agent's own model cannot be built, which refuses.
+// The check a toolset hands its guarded tools. `model` is built lazily, on the first call, and stays
+// null when the agent's own model cannot be built, which refuses. Every call goes to the judge: no
+// text match tells a choice from a mention ("I don't want premium", "tell me about premium",
+// "premium" inside "premium+"), and on 96 guarded calls of the live battery a match of every argument
+// in the customer's latest message spared no judge call, since arguments carry prices the customer
+// never types.
 export function choiceCheck(deps: {
   model: () => BaseChatModel | null;
   callbacks: () => BaseCallbackHandler[];
@@ -201,9 +142,6 @@ export function choiceCheck(deps: {
         reason: "unreadable",
         err: new Error("no whole transcript to read"),
       };
-    }
-    if (literallyChosen(req.args, transcript.latest)) {
-      return { chosen: true, by: "literal" };
     }
     try {
       const model = deps.model();
@@ -221,9 +159,7 @@ export function choiceCheck(deps: {
         }),
         deps.callbacks(),
       );
-      return yes
-        ? { chosen: true, by: "judge" }
-        : { chosen: false, reason: "unmet" };
+      return yes ? { chosen: true } : { chosen: false, reason: "unmet" };
     } catch (err) {
       return { chosen: false, reason: "unreadable", err };
     }

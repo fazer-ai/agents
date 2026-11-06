@@ -127,6 +127,10 @@ export const DEAD_UNITS = [
   "inbound_delivery",
   // A knowledge document whose indexing failed; the row stays FAILED and no retry is coming.
   "knowledge_document",
+  // A live thread the checkpoint retention pass failed to prune alone, in two passes in a row
+  // (../../graph/checkpoint-retention.ts). Not lost: the thread keeps every row and the next pass
+  // tries again, so `warn`; but no pass prunes it until the cause goes away.
+  "checkpoint_retention",
 ] as const;
 export type DeadUnit = (typeof DEAD_UNITS)[number];
 

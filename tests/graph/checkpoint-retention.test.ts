@@ -16,6 +16,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import type { Pool } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { reconcileWalkSql } from "@/graph/checkpoint-reconcile";
+import * as retention from "@/graph/checkpoint-retention";
 import {
   RETAIN_SQL,
   RETENTION_PROBES,
@@ -28,7 +30,9 @@ import {
   deleteCheckpointThreads,
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
+import { currentPoolClass, type PoolClass } from "@/lib/pool-class";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { flowLogRows } from "@/tests/utils/flowlog";
 import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -753,4 +757,648 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
       client.release();
     }
   }, 120_000);
+
+  // Three old checkpoints, each naming its own blob version and with a write, then what a pruned one
+  // looks like: the newest checkpoint, the version it names and its write.
+  const threeOld = {
+    checkpoints: [
+      ["", "c1", null, { messages: "1" }],
+      ["", "c2", "c1", { messages: "2" }],
+      ["", "c3", "c2", { messages: "3" }],
+    ] as [string, string, string | null, Record<string, string>][],
+    blobs: [
+      ["", "messages", "1"],
+      ["", "messages", "2"],
+      ["", "messages", "3"],
+    ] as [string, string, string][],
+    writes: [
+      ["", "c1", "messages"],
+      ["", "c2", "messages"],
+      ["", "c3", "messages"],
+    ] as [string, string, string][],
+  };
+  const prunedThreeOld = {
+    checkpoints: ["/c3"],
+    blobs: ["/messages/3"],
+    writes: ["/c3/messages"],
+  };
+
+  // A batch that cannot finish (here, a thread whose checkpoints another transaction holds past the
+  // batch's cut) is taken again with half the threads, down to the one that fails, which is skipped
+  // and named. On production the first pass died on one batch and every later pass died at the same
+  // place, so every thread after it was never pruned.
+  test("a thread the batch cannot finish is skipped alone, and the pass goes on", async () => {
+    const ids = Array.from({ length: 6 }, () => thread());
+    for (const id of ids) await seedRows(id, threeOld);
+    const stuck = ids[2] as string;
+    const seededStuck = await counts([stuck]);
+    const skipped: string[] = [];
+    const holder = await cp.connect();
+    let totals: Awaited<ReturnType<typeof retainCheckpoints>> = null;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT 1 FROM langgraph.checkpoints WHERE thread_id = $1 FOR UPDATE",
+        [stuck],
+      );
+      totals = await pass(ids, {
+        batchMs: 1_500,
+        onSkip: (id: string) => skipped.push(id),
+      } as Parameters<typeof retainCheckpoints>[1]);
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    expect(totals).not.toBeNull();
+    expect(skipped).toEqual([stuck]);
+    expect(await counts([stuck])).toEqual(seededStuck);
+    for (const id of ids.filter((i) => i !== stuck))
+      expect(await rowsOf(id)).toEqual(prunedThreeOld);
+  }, 120_000);
+
+  // The pass is paced by what the instance writes to the WAL, not by its own rows: deleting TOAST
+  // writes full-page images, and on production the pass pushed past `max_wal_size` every minute,
+  // forcing a checkpoint each time and stalling every other connection. After a batch it waits until
+  // the WAL written since the batch began, at the budget's rate, has had its time.
+  // Batch after batch, on a clock that moves only while the pass sleeps: each wait is the WAL of its
+  // own batch at the budget's rate, so the pass holds the budget over the run, never twice it by
+  // letting one wait pay for the next batch too.
+  test("after a batch the pass waits for the WAL it wrote to fit the budget", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    let wal = 0;
+    let clock = 1_000_000;
+    const slept: number[] = [];
+    await pass([id], {
+      rows: 1,
+      pacing: {
+        budgetBytesPerSec: 1_000,
+        readWal: async () => {
+          wal += 5_000;
+          return wal;
+        },
+        sleep: async (ms: number) => {
+          slept.push(ms);
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    } as Parameters<typeof retainCheckpoints>[1]);
+    expect(await rowsOf(id)).toEqual(prunedThreeOld);
+    expect(slept.length).toBeGreaterThan(1);
+    for (const ms of slept) expect(ms).toBe(5_000);
+  });
+
+  // The wait after a failed batch of one can be long, and a reset can delete the thread during it: the
+  // thread skipped and reported is the one that failed, and the thread after it is still pruned.
+  test("a thread deleted while the pass waits after it failed is the one skipped, not the next", async () => {
+    const failing = thread();
+    const next = thread();
+    for (const id of [failing, next]) await seedRows(id, threeOld);
+    let failedAlone = false;
+    const failingThread = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                const ids = params?.[0];
+                if (
+                  sql.includes("DELETE FROM langgraph.checkpoint_blobs") &&
+                  Array.isArray(ids) &&
+                  ids.includes(failing)
+                ) {
+                  failedAlone = ids.length === 1;
+                  throw Object.assign(new Error("statement timeout"), {
+                    code: "57014",
+                  });
+                }
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    const skipped: string[] = [];
+    let wal = 0;
+    await retainCheckpoints(failingThread, {
+      pauseMs: 0,
+      graceMs: 0,
+      probes: 1,
+      scope: only(failing, next),
+      base: appDb,
+      onSkip: (t) => skipped.push(t),
+      pacing: {
+        budgetBytesPerSec: 1,
+        readWal: async () => ++wal,
+        sleep: async () => {
+          if (!failedAlone) return;
+          failedAlone = false;
+          for (const t of CHECKPOINT_TABLES)
+            await cp.query(`DELETE FROM langgraph.${t} WHERE thread_id = $1`, [
+              failing,
+            ]);
+        },
+      },
+    });
+    expect(skipped).toEqual([failing]);
+    expect(await rowsOf(next)).toEqual(prunedThreeOld);
+  }, 60_000);
+
+  // The property the pacing exists for, measured on the real clock: over a run of fast batches, the WAL
+  // written divided by the time the pass took stays within the budget. A wait that also paid for the
+  // next batch would let every second batch go without one, close to twice the budget.
+  test("over consecutive batches the pass writes no faster than the budget", async () => {
+    const id = thread();
+    const cps = Array.from(
+      { length: 12 },
+      (_, i) => `c${String(i).padStart(2, "0")}`,
+    );
+    await seedRows(id, {
+      checkpoints: cps.map(
+        (c, i) =>
+          ["", c, i ? (cps[i - 1] ?? null) : null, { messages: String(i) }] as [
+            string,
+            string,
+            string | null,
+            Record<string, string>,
+          ],
+      ),
+      blobs: cps.map(
+        (_, i) => ["", "messages", String(i)] as [string, string, string],
+      ),
+      writes: cps.map((c) => ["", c, "messages"] as [string, string, string]),
+    });
+    // Each reading is 5 kB past the last, so each batch writes 5 kB; at 20 kB/s that is 250 ms a
+    // batch, far longer than a batch of one row takes.
+    const budget = 20_000;
+    let wal = 0;
+    const first = { wal: 0, at: 0 };
+    let readings = 0;
+    await pass([id], {
+      rows: 1,
+      pacing: {
+        budgetBytesPerSec: budget,
+        readWal: async () => {
+          wal += 5_000;
+          readings++;
+          if (readings === 1) {
+            first.wal = wal;
+            first.at = performance.now();
+          }
+          return wal;
+        },
+      },
+    } as Parameters<typeof retainCheckpoints>[1]);
+    const seconds = (performance.now() - first.at) / 1000;
+    expect(await rowsOf(id)).toEqual({
+      checkpoints: ["/c11"],
+      blobs: ["/messages/11"],
+      writes: ["/c11/messages"],
+    });
+    expect(readings).toBeGreaterThan(8);
+    const rate = (wal - first.wal) / seconds;
+    expect(rate).toBeLessThanOrEqual(budget * 1.15);
+  }, 30_000);
+
+  // A batch that fails on its last table already committed the tables before it, and a rolled-back
+  // delete writes WAL too: the retry waits for that WAL like a batch that succeeded, or repeated
+  // failures delete at full speed.
+  test("a batch that fails still waits for the WAL it wrote before the retry", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    const events: string[] = [];
+    let failed = false;
+    const failingOnce = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                if (sql.includes("DELETE FROM langgraph.checkpoint_blobs")) {
+                  events.push("blobs");
+                  if (!failed) {
+                    failed = true;
+                    throw Object.assign(new Error("statement timeout"), {
+                      code: "57014",
+                    });
+                  }
+                }
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    let wal = 0;
+    const totals = await retainCheckpoints(failingOnce, {
+      pauseMs: 0,
+      graceMs: 0,
+      scope: only(id),
+      base: appDb,
+      pacing: {
+        budgetBytesPerSec: 1_000,
+        readWal: async () => {
+          wal += 5_000;
+          return wal;
+        },
+        sleep: async (ms: number) => {
+          events.push(`sleep ${ms >= 4_000 ? "paced" : ms}`);
+        },
+      },
+    });
+    expect(await rowsOf(id)).toEqual(prunedThreeOld);
+    expect(events.slice(0, 3)).toEqual(["blobs", "sleep paced", "blobs"]);
+    // The checkpoints and writes the failed attempt committed are in the pass's totals, once.
+    expect(totals).toMatchObject({
+      threads: 1,
+      checkpoints: 2,
+      checkpoint_writes: 2,
+      checkpoint_blobs: 2,
+    });
+  });
+
+  // The budget is for the instance's WAL, not the pass's alone: what the instance's own traffic writes
+  // while the pass sleeps counts against the next batch, or a busy instance plus the pass runs past
+  // the rate that forces a checkpoint.
+  test("the WAL written while the pass sleeps counts against the next batch", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    let wal = 0;
+    const slept: number[] = [];
+    await pass([id], {
+      rows: 1,
+      pacing: {
+        budgetBytesPerSec: 1_000,
+        readWal: async () => {
+          wal += 1_000;
+          return wal;
+        },
+        sleep: async (ms: number) => {
+          slept.push(ms);
+          wal += 10_000;
+        },
+      },
+    } as Parameters<typeof retainCheckpoints>[1]);
+    expect(await rowsOf(id)).toEqual(prunedThreeOld);
+    expect(slept.length).toBeGreaterThan(1);
+    // The first wait pays for its batch alone; every later one also for the 10 kB written during the
+    // wait before it.
+    expect(slept[0]).toBeLessThanOrEqual(2_000);
+    for (const ms of slept.slice(1)) expect(ms).toBeGreaterThanOrEqual(10_000);
+  });
+
+  // An instance whose own traffic alone writes past the budget would otherwise hold the pass for as
+  // long as that traffic lasts between two batches: the wait has a ceiling, and the pass still moves.
+  test("the wait after a batch never passes a minute", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    let wal = 0;
+    const slept: number[] = [];
+    await pass([id], {
+      pacing: {
+        budgetBytesPerSec: 1,
+        readWal: async () => {
+          wal += 1_000_000_000;
+          return wal;
+        },
+        sleep: async (ms: number) => {
+          slept.push(ms);
+        },
+      },
+    } as Parameters<typeof retainCheckpoints>[1]);
+    expect(await rowsOf(id)).toEqual(prunedThreeOld);
+    expect(slept.length).toBeGreaterThan(0);
+    expect(Math.max(...slept)).toBe(60_000);
+  });
+
+  // The budget is half the WAL rate that would force a checkpoint by WAL: Postgres asks for one once
+  // about max_wal_size / (1 + checkpoint_completion_target) is written since the last, and the timed
+  // checkpoints come every checkpoint_timeout. Read from the server, so a tuned instance gets its own.
+  test("the WAL budget is half the rate that would force a checkpoint, read from the server", async () => {
+    const pacing = (
+      retention as unknown as {
+        serverWalPacing: (p: Pool) => Promise<{
+          budgetBytesPerSec: number;
+          readWal: () => Promise<number>;
+        }>;
+      }
+    ).serverWalPacing;
+    expect(typeof pacing).toBe("function");
+    const settings = (
+      await cp.query<{ max_wal: string; target: string; timeout: string }>(
+        `SELECT (SELECT setting FROM pg_settings WHERE name = 'max_wal_size') AS max_wal,
+                (SELECT setting FROM pg_settings WHERE name = 'checkpoint_completion_target') AS target,
+                (SELECT setting FROM pg_settings WHERE name = 'checkpoint_timeout') AS timeout`,
+      )
+    ).rows[0];
+    const forced =
+      (Number(settings?.max_wal) * 1024 * 1024) /
+      (1 + Number(settings?.target)) /
+      Number(settings?.timeout);
+    const got = await pacing(cp);
+    expect(got.budgetBytesPerSec).toBeCloseTo(forced / 2, 0);
+    const a = await got.readWal();
+    await cp.query(
+      "SELECT pg_logical_emit_message(false, 'cp-retention', 'x')",
+    );
+    expect(await got.readWal()).toBeGreaterThan(a);
+  });
+
+  // The stored-bytes bound per statement is what one statement writes to the WAL in one go. At 32 MB
+  // a batch of long conversations wrote far more than a checkpoint cycle in seconds.
+  test("a default pass deletes at most 16 MB of stored bytes per statement", async () => {
+    const id = thread();
+    const versions = Array.from({ length: 11 }, (_, k) => k);
+    await seedRows(id, {
+      checkpoints: versions.map(
+        (k) =>
+          [
+            "",
+            `c${String(k).padStart(2, "0")}`,
+            k ? `c${String(k - 1).padStart(2, "0")}` : null,
+            { messages: String(k) },
+          ] as [string, string, string | null, Record<string, string>],
+      ),
+      blobs: [],
+      writes: [],
+    });
+    // 3 MB of random bytes per version, which do not compress.
+    await cp.query(
+      `INSERT INTO langgraph.checkpoint_blobs (thread_id, checkpoint_ns, channel, version, type, blob)
+       SELECT $1, '', 'messages', k::text, 'bytes',
+              (SELECT decode(string_agg(md5(random()::text || k || g), ''), 'hex')
+                 FROM generate_series(1, 196608) g)
+         FROM generate_series(0, 10) k`,
+      [id],
+    );
+    const perStatement: number[] = [];
+    const recording = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                const res = await target.query(sql, params);
+                if (sql.includes("DELETE FROM langgraph.checkpoint_blobs"))
+                  perStatement.push(
+                    res.rows.reduce(
+                      (s: number, r: { bytes: string | null }) =>
+                        s + Number(r.bytes ?? 0),
+                      0,
+                    ),
+                  );
+                return res;
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    await retainCheckpoints(recording, {
+      pauseMs: 0,
+      graceMs: 0,
+      scope: only(id),
+      base: appDb,
+    });
+    expect((await rowsOf(id)).blobs).toEqual(["/messages/10"]);
+    const deleted = perStatement.filter((b) => b > 0);
+    expect(deleted.length).toBeGreaterThan(1);
+    for (const b of deleted) expect(b).toBeLessThanOrEqual(16 * 1024 * 1024);
+  }, 120_000);
+
+  // The shape of a long production thread: 4,481 checkpoints and 10,359 blob versions. The blob
+  // selection checks each version against every checkpoint its thread still has, which at this shape
+  // with the old checkpoints in place takes seconds per statement. The pass must only run it
+  // once the thread is down to its newest checkpoint, and must go through the thread in one pass with
+  // the default batch budget, skipping nothing.
+  test("a thread of 4,481 checkpoints and 10,359 blobs goes in one pass, its blobs checked against one checkpoint", async () => {
+    const id = thread();
+    const last = 4480;
+    await cp.query(
+      `INSERT INTO langgraph.checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata)
+       SELECT $1, '', lpad(k::text, 6, '0'), CASE WHEN k > 0 THEN lpad((k - 1)::text, 6, '0') END,
+              jsonb_build_object('v', 4, 'id', lpad(k::text, 6, '0'), 'ts', $2::text,
+                'channel_values', '{}'::jsonb, 'versions_seen', '{}'::jsonb,
+                'channel_versions', jsonb_build_object(
+                  'messages', k::text, 'summary', k::text, 'route', (k * 1397 / 4481)::text,
+                  '__start__', '1', 'agent', '1', 'tools', '1')),
+              '{}'::jsonb
+         FROM generate_series(0, $3::int) k`,
+      [id, new Date(Date.now() - 2 * HOUR).toISOString(), last],
+    );
+    await cp.query(
+      `INSERT INTO langgraph.checkpoint_blobs (thread_id, checkpoint_ns, channel, version, type, blob)
+       SELECT $1, '', ch, v::text, 'json', convert_to(ch || '@' || v, 'UTF8')
+         FROM (SELECT 'messages' ch, generate_series(0, $2::int) v
+               UNION ALL SELECT 'summary', generate_series(0, $2::int)
+               UNION ALL SELECT 'route', generate_series(0, 1396)) s`,
+      [id, last],
+    );
+    expect(await counts([id])).toMatchObject({
+      checkpoints: 4481,
+      checkpoint_blobs: 10359,
+    });
+    // Before each blob statement, how many checkpoints the thread still had.
+    const seenByBlobs: number[] = [];
+    const recording = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                if (sql.includes("DELETE FROM langgraph.checkpoint_blobs"))
+                  seenByBlobs.push((await counts([id])).checkpoints);
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    const skipped: string[] = [];
+    // A row bound below the thread's length, as in production, where the batch's other 99 threads
+    // share the 5,000 rows: the checkpoints step stops short of the end at least once.
+    await retainCheckpoints(recording, {
+      pauseMs: 0,
+      graceMs: 0,
+      rows: 1000,
+      scope: only(id),
+      base: appDb,
+      onSkip: (t) => skipped.push(t),
+    });
+    expect(skipped).toEqual([]);
+    expect(seenByBlobs.length).toBeGreaterThan(0);
+    for (const n of seenByBlobs) expect(n).toBe(1);
+    const left = await rowsOf(id);
+    expect(left.checkpoints).toEqual([`/${String(last).padStart(6, "0")}`]);
+    expect(left.blobs).toEqual([
+      `/messages/${last}`,
+      "/route/1396",
+      `/summary/${last}`,
+    ]);
+  }, 180_000);
+
+  // A thread skipped once is likely a lock that went away; skipped by two passes in a row it is stuck,
+  // and that reaches the alert channels on `dead_letter`, the stage they subscribe to. The pino line
+  // alone reaches nobody.
+  test("a thread skipped by two passes in a row is announced on dead_letter, once a pass", async () => {
+    const announce = (
+      retention as unknown as {
+        announceStuckThreads: (
+          previous: ReadonlySet<string>,
+          current: readonly string[],
+          base: PrismaClient,
+        ) => string[];
+      }
+    ).announceStuckThreads;
+    expect(typeof announce).toBe("function");
+    const once = thread();
+    const twice = thread();
+    const got = announce(new Set([twice]), [once, twice], appDb);
+    expect(got).toEqual([twice]);
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "dead_letter",
+        threadId: { in: [once, twice] },
+      },
+      orderBy: { id: "asc" },
+    });
+    expect(rows.map((r) => r.threadId)).toEqual([twice]);
+    expect(rows[0]?.level).toBe("warn");
+    expect((rows[0]?.detail as { unit?: string } | null)?.unit).toBe(
+      "checkpoint_retention",
+    );
+  });
+
+  // A playground thread is an operator's test: its line carries the playground source, which never
+  // pages, and an inbox thread keeps the inbox one.
+  test("a stuck playground thread is announced as playground traffic", async () => {
+    const playground = `${tenantId}:playground:1:${crypto.randomUUID()}`;
+    const inbox = thread();
+    retention.announceStuckThreads(
+      new Set([playground, inbox]),
+      [playground, inbox],
+      appDb,
+    );
+    await until(
+      "both announcements written",
+      async () =>
+        (
+          await flowLogRows(suDb, {
+            where: {
+              tenantId,
+              stage: "dead_letter",
+              threadId: { in: [playground, inbox] },
+            },
+            orderBy: { id: "asc" },
+          })
+        ).length === 2,
+    );
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "dead_letter",
+        threadId: { in: [playground, inbox] },
+      },
+      orderBy: { id: "asc" },
+    });
+    expect(Object.fromEntries(rows.map((r) => [r.threadId, r.source]))).toEqual(
+      { [playground]: "playground", [inbox]: "inbox" },
+    );
+  });
+
+  // After a walk of one thread timed out, the lookup of that thread runs under a deadline too: without
+  // one it repeats the scan that just timed out with nothing to stop it, holding the pass's lock.
+  test("the lookup after a timed-out walk runs under a statement timeout", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    let failedWalk = false;
+    const unbounded: string[] = [];
+    const recording = {
+      connect: async () => {
+        const client = await cp.connect();
+        let bounded = false;
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                if (
+                  typeof sql === "string" &&
+                  sql.startsWith("SET LOCAL statement_timeout")
+                )
+                  bounded = true;
+                if (sql === "BEGIN") bounded = false;
+                if (
+                  typeof sql === "string" &&
+                  sql === reconcileWalkSql("checkpoints") &&
+                  params?.[1] === 1
+                ) {
+                  if (!failedWalk) {
+                    failedWalk = true;
+                    throw Object.assign(new Error("statement timeout"), {
+                      code: "57014",
+                    });
+                  }
+                  if (!bounded) unbounded.push(String(params?.[0]));
+                }
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    await retainCheckpoints(recording, {
+      pauseMs: 0,
+      graceMs: 0,
+      probes: 1,
+      scope: only(id),
+      base: appDb,
+      onSkip: () => {},
+    });
+    expect(failedWalk).toBe(true);
+    expect(unbounded).toEqual([]);
+  }, 120_000);
+
+  // `bun --hot` keeps the holder across builds, so one made before the skip set existed gets it on
+  // first use, or the first pass that skips a thread fails announcing it.
+  test("a holder kept from a build without the skip set gets one", () => {
+    const key = Symbol.for("fazerai.checkpointRetention");
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    const saved = g[key];
+    g[key] = { timer: null, running: false, stopped: false };
+    try {
+      retention.stopCheckpointRetention();
+      expect((g[key] as { skipped?: unknown }).skipped).toBeInstanceOf(Set);
+    } finally {
+      g[key] = saved;
+    }
+  });
+
+  // The announcement runs after the pass returned, out of its background context; the writes it starts
+  // must still draw from the background pool, not the one customer turns use.
+  test("the announcement of a stuck thread writes from the background pool", async () => {
+    const seen: PoolClass[] = [];
+    const recording = new Proxy(
+      {},
+      {
+        get() {
+          seen.push(currentPoolClass());
+          throw new Error("not a database");
+        },
+      },
+    ) as PrismaClient;
+    const twice = thread();
+    retention.announceStuckThreads(new Set([twice]), [twice], recording);
+    await until("the announcement touched the database", () => seen.length > 0);
+    expect(new Set(seen)).toEqual(new Set(["background"]));
+  });
 });

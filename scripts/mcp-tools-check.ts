@@ -16,6 +16,8 @@ export const RAW_SECRET_INPUTS: Record<string, readonly string[]> = {
   deployment_rotate_token: ["admin_token"],
   deployment_update: ["admin_token"],
   instance_list_accounts: ["admin_token"],
+  instance_alert_channel_create: ["secret"],
+  instance_alert_channel_update: ["secret"],
   langfuse_connect: ["secret_key"],
 };
 

@@ -100,6 +100,57 @@ describe("the session options", () => {
       ).options,
     ).toBe("-c jit=off -c TimeZone=UTC");
   });
+
+  test("reach a URL with no host, which `pg` and the Prisma CLI accept and a WHATWG parse refuses", async () => {
+    const { parse } = await import("pg-connection-string");
+    const hostless = "postgres://u:p@/db?host=/var/run/postgresql&options=";
+    expect(URL.parse(hostless)).toBeNull();
+    const pool = withSessionOptions(hostless, ["-c jit=off"]);
+    const parsed = parse(pool.connectionString as string);
+    expect([parsed.options, parsed.host, parsed.database]).toEqual([
+      "-c TimeZone=UTC -c jit=off",
+      "/var/run/postgresql",
+      "db",
+    ]);
+    expect(pool.options).toBe("-c TimeZone=UTC -c jit=off");
+    expect(parse(withSessionZoneInUrl(hostless)).options).toBe(
+      "-c TimeZone=UTC",
+    );
+    expect(
+      parse(withSessionZoneInUrl("postgres://u@/db?host=/run/pg")).options,
+    ).toBe("-c TimeZone=UTC");
+  });
+
+  test("leave the rest of the URL as it was, fragment included", async () => {
+    const { parse } = await import("pg-connection-string");
+    const out = withSessionZoneInUrl(
+      "postgres://u:p%40ss@h:5432/db?sslmode=disable#note",
+    );
+    expect(out.endsWith("#note")).toBe(true);
+    const parsed = parse(out);
+    expect([parsed.options, parsed.password, parsed.sslmode]).toEqual([
+      "-c TimeZone=UTC",
+      "p@ss",
+      "disable",
+    ]);
+  });
+});
+
+// A URL that names its host in the query instead of the authority, the shape of a socket URL, through
+// a real connection: the pin has to win over the zone that URL asks for.
+describe.skipIf(!dbUp)("a URL with no host, connected", () => {
+  test("its session runs in UTC whatever zone its own options ask for", async () => {
+    const u = new URL(appUrl as string);
+    const query = new URLSearchParams(u.search);
+    query.set("host", u.hostname);
+    query.set("port", u.port || "5432");
+    query.set("options", "-c TimeZone=Asia/Tokyo");
+    const hostless = `postgres://${u.username}:${u.password}@${u.pathname}?${query.toString()}`;
+    expect(URL.parse(hostless)).toBeNull();
+    expect(await zoneOf({ ...withSessionOptions(hostless), max: 1 })).toBe(
+      "UTC",
+    );
+  });
 });
 
 describe("the boot check of the session zone", () => {

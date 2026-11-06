@@ -429,6 +429,7 @@ const BARE_SLICES: Record<
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [3, "array + index"],
   "src/lib/redact.ts": [1, "array"],
+  "src/lib/session-zone.ts": [2, "index"],
   "src/lib/ssrf.ts": [1, "index"],
   "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],

@@ -144,6 +144,31 @@ function expectTextInkNames(items: ReturnType<typeof legend>) {
   );
 }
 
+// The transparent column of a day over the plot: where a click or a tap anywhere in that day lands.
+async function dayColumn(container: HTMLElement, day: string) {
+  return waitFor(() => {
+    const r = container.querySelector(
+      `[data-testid="chart-day-hits"] rect[data-day="${day}"]`,
+    );
+    if (!r) throw new Error("no day columns yet");
+    return r;
+  });
+}
+
+async function clickDay(container: HTMLElement, day: string) {
+  fireEvent.click(await dayColumn(container, day));
+}
+
+async function openDetail(container: HTMLElement) {
+  return waitFor(() => {
+    const d = container.querySelector<HTMLElement>(
+      '[data-testid="chart-day-detail"]',
+    );
+    if (!d) throw new Error("no detail yet");
+    return d;
+  });
+}
+
 const lines = (root: Element) =>
   [...root.querySelectorAll("li")].map((li) => li.textContent);
 
@@ -297,9 +322,7 @@ describe("a stacked chart with more series than colours", () => {
 
   test("a click opens the day's every series, the group's members included, with shares, and closes", async () => {
     const { container } = renderChart(StackedBars, stacked);
-    await hover(container, 1, 2);
-    const wrapper = container.querySelector(".recharts-wrapper") as Element;
-    fireEvent.click(wrapper, { clientX: centerOf(1, 2), clientY: HEIGHT / 2 });
+    await clickDay(container, "2026-01-02");
     const detail = await waitFor(() => {
       const d = container.querySelector('[data-testid="chart-day-detail"]');
       if (!d) throw new Error("no detail yet");
@@ -336,31 +359,9 @@ describe("a stacked chart with more series than colours", () => {
     });
   });
 
-  test("a click with no hover before it, like a tap, still opens the day it landed on", async () => {
-    const { container } = renderChart(StackedBars, stacked);
-    const wrapper = await waitFor(() => {
-      const w = container.querySelector(".recharts-wrapper");
-      if (!w || !container.querySelector(".recharts-surface"))
-        throw new Error("no chart yet");
-      return w;
-    });
-    fireEvent.click(wrapper, { clientX: centerOf(0, 2), clientY: HEIGHT / 2 });
-    const detail = await waitFor(() => {
-      const d = container.querySelector('[data-testid="chart-day-detail"]');
-      if (!d) throw new Error("no detail yet");
-      return d;
-    });
-    // The first day: Node 3 is at zero there, so the group is 1 + 2 + 3 + 0 of a 62 total.
-    expect(lines(detail)[0]).toBe("Others (4)69.7%");
-  });
-
   test("Escape on an open Others list closes the list and leaves the day detail open", async () => {
     const { container } = renderChart(StackedBars, stacked);
-    await hover(container, 1, 2);
-    fireEvent.click(container.querySelector(".recharts-wrapper") as Element, {
-      clientX: centerOf(1, 2),
-      clientY: HEIGHT / 2,
-    });
+    await clickDay(container, "2026-01-02");
     await waitFor(() => {
       if (!container.querySelector('[data-testid="chart-day-detail"]'))
         throw new Error("no detail yet");
@@ -388,9 +389,7 @@ describe("a stacked chart with more series than colours", () => {
 
   test("Escape closes the detail from wherever the focus is after the click", async () => {
     const { container } = renderChart(StackedBars, stacked);
-    await hover(container, 1, 2);
-    const wrapper = container.querySelector(".recharts-wrapper") as Element;
-    fireEvent.click(wrapper, { clientX: centerOf(1, 2), clientY: HEIGHT / 2 });
+    await clickDay(container, "2026-01-02");
     await waitFor(() => {
       if (!container.querySelector('[data-testid="chart-day-detail"]'))
         throw new Error("no detail yet");
@@ -543,11 +542,7 @@ describe("a stacked chart with more series than colours", () => {
         ),
       ),
     );
-    await hover(container, 1, 2);
-    fireEvent.click(container.querySelector(".recharts-wrapper") as Element, {
-      clientX: centerOf(1, 2),
-      clientY: HEIGHT / 2,
-    });
+    await clickDay(container, "2026-01-02");
     const detail = await waitFor(() => {
       const d = container.querySelector('[data-testid="chart-day-detail"]');
       if (!d) throw new Error("no detail yet");
@@ -565,6 +560,108 @@ describe("a stacked chart with more series than colours", () => {
         .querySelector('[data-testid="chart-legend"]')
         ?.closest("[aria-hidden='true']"),
     ).toBeNull();
+  });
+});
+
+describe("the day a stacked chart's detail opens", () => {
+  const head = (d: HTMLElement) => d.getAttribute("aria-label");
+
+  test("is the day clicked with no hover before it, like a tap", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    // The columns tile the plot: side by side, one band each, inside the chart.
+    const [first, second] = await Promise.all(
+      ["2026-01-01", "2026-01-02"].map((d) => dayColumn(container, d)),
+    );
+    const n = (el: Element | undefined, a: string) =>
+      Number(el?.getAttribute(a));
+    expect(n(second, "x")).toBeCloseTo(n(first, "x") + n(first, "width"));
+    expect(n(first, "x") + 2 * n(first, "width")).toBeLessThanOrEqual(WIDTH);
+    await clickDay(container, "2026-01-01");
+    const detail = await openDetail(container);
+    expect(head(detail)).toBe("Jan 1");
+    // Node 3 is at zero that day, so the group is 1 + 2 + 3 + 0 of a 62 total.
+    expect(lines(detail)[0]).toBe("Others (4)69.7%");
+  });
+
+  test("is the day clicked, not the day hovered before", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await hover(container, 0, 2);
+    await clickDay(container, "2026-01-02");
+    expect(head(await openDetail(container))).toBe("Jan 2");
+  });
+
+  for (const key of ["Enter", " "])
+    test(`is the day focused on the keyboard, opened with ${key === " " ? "Space" : key}`, async () => {
+      const { container } = renderChart(StackedBars, stacked);
+      await hover(container, 0, 2);
+      const days = await waitFor(() => {
+        const b = [
+          ...container.querySelectorAll<HTMLButtonElement>("fieldset button"),
+        ];
+        if (b.length !== 2) throw new Error("no day keys yet");
+        return b;
+      });
+      // One tab stop; the arrow moves to the second day.
+      expect(days.map((b) => b.tabIndex)).toEqual([0, -1]);
+      days[0]?.focus();
+      fireEvent.keyDown(days[0] as HTMLElement, { key: "ArrowRight" });
+      expect(document.activeElement).toBe(days[1] as HTMLElement);
+      fireEvent.keyDown(days[1] as HTMLElement, { key });
+      expect(head(await openDetail(container))).toBe("Jan 2");
+    });
+
+  test("is a day still loading or with no data, which has no segment to hit", async () => {
+    const banded: ChartRow[] = [
+      { day: "2026-01-01", state: "loading" } as ChartRow,
+      { day: "2026-01-02", state: "noData" } as ChartRow,
+      { ...(data[1] as ChartRow), day: "2026-01-03" },
+    ];
+    const { container } = renderChart(StackedBars, {
+      ...stacked,
+      data: banded,
+    });
+    // The bands drawn over those days let a click through to the columns.
+    await dayColumn(container, "2026-01-01");
+    const bands = [...container.querySelectorAll(".recharts-reference-area")];
+    expect(bands).toHaveLength(2);
+    for (const b of bands)
+      expect(b.classList.contains("pointer-events-none")).toBe(true);
+    await clickDay(container, "2026-01-01");
+    let detail = await openDetail(container);
+    expect(head(detail)).toBe("Jan 1 · computing…");
+    expect(detail.querySelectorAll("li")).toHaveLength(0);
+    await clickDay(container, "2026-01-02");
+    detail = await openDetail(container);
+    expect(head(detail)).toMatch(/^Jan 2 · no data/);
+  });
+
+  test("is the day of the Others segment clicked", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    // The Others layer is the top one; its second rectangle is the second day's.
+    const other = await waitFor(() => {
+      const layers = [...container.querySelectorAll(".recharts-bar")];
+      const paths = layers
+        .at(-1)
+        ?.querySelectorAll<SVGElement>(".recharts-bar-rectangle path");
+      if (!paths || paths.length < 2) throw new Error("bars not drawn yet");
+      return paths[1] as SVGElement;
+    });
+    expect(other.getAttribute("fill")).toBe(token("--color-text-muted"));
+    // Hovered on the first day, so a hover-driven pick would name the wrong one.
+    await hover(container, 0, 2);
+    fireEvent.click(other);
+    expect(head(await openDetail(container))).toBe("Jan 2");
+  });
+
+  test("a second click on the open day closes it", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await clickDay(container, "2026-01-02");
+    await openDetail(container);
+    await clickDay(container, "2026-01-02");
+    await waitFor(() => {
+      if (container.querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("still open");
+    });
   });
 });
 

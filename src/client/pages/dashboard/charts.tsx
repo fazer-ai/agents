@@ -17,6 +17,7 @@ import {
   ReferenceArea,
   ResponsiveContainer,
   Tooltip,
+  usePlotArea,
   XAxis,
   YAxis,
 } from "recharts";
@@ -160,6 +161,8 @@ function stateBands(
       x1={r.first}
       x2={r.last}
       ifOverflow="visible"
+      // Clicks pass through to the day columns underneath, which say which day it was.
+      className="pointer-events-none"
       fill={`url(#${r.state === "loading" ? ids.loading : ids.noData})`}
       fillOpacity={1}
       stroke={r.state === "loading" ? p.loading : p.noData}
@@ -310,6 +313,9 @@ function useChartText() {
       t("dashboard.chart.otherLines", "Others ({{count}})", { count }),
     clickForAll: t("dashboard.chart.clickForAll", "Click to see every series"),
     close: t("dashboard.chart.closeDetail", "Close the day's detail"),
+    days: t("dashboard.chart.days", "Days of the chart"),
+    openDay: (day: string) =>
+      t("dashboard.chart.openDay", "Open the detail of {{day}}", { day }),
   };
 }
 
@@ -711,17 +717,111 @@ function withState(
   return label;
 }
 
-// The day under a click, read from where it landed. Recharts names the day only once a hover has
-// made it active, which a tap or a click with no movement before it never does.
-function dayUnder(event: unknown, rows: ChartRow[]): string | undefined {
-  const target = (event as { target?: unknown } | undefined)?.target;
-  const clientX = (event as { clientX?: unknown } | undefined)?.clientX;
-  if (!(target instanceof Element) || typeof clientX !== "number") return;
-  const box = target.closest(".recharts-wrapper")?.getBoundingClientRect();
-  if (!box || rows.length === 0) return;
-  const band = (box.width - AXIS_WIDTH - RIGHT_MARGIN) / rows.length;
-  const i = Math.floor((clientX - box.left - AXIS_WIDTH) / band);
-  return i >= 0 && i < rows.length ? rows[i]?.day : undefined;
+// The height recharts gives the category axis under the plot.
+const X_AXIS_HEIGHT = 30;
+
+// One transparent column per day behind the bars, so a click or a tap on a day's empty room (above
+// its stack, or the band of a day still loading) names that day by itself, whatever the hover state
+// says. A segment, the "Other" layer included, names its own day from its row.
+function DayHits({
+  days,
+  onPick,
+}: {
+  days: string[];
+  onPick: (day: string) => void;
+}) {
+  const area = usePlotArea();
+  if (!area || days.length === 0) return null;
+  const band = area.width / days.length;
+  return (
+    <g data-testid="chart-day-hits">
+      {days.map((d, i) => (
+        // biome-ignore lint/a11y/noStaticElementInteractions: the pointer's way in; the keyboard's is DayKeys.
+        <rect
+          key={d}
+          data-day={d}
+          x={area.x + band * i}
+          y={area.y}
+          width={band}
+          height={area.height}
+          fill="transparent"
+          onClick={() => onPick(d)}
+        />
+      ))}
+    </g>
+  );
+}
+
+// The same days for a keyboard: one tab stop over the plot, the arrows move between days, Enter or
+// Space opens the focused one. Invisible to the pointer, which the columns above serve.
+function DayKeys({
+  days,
+  picked,
+  label,
+  onPick,
+}: {
+  days: string[];
+  picked: string | null;
+  label: (day: string) => string;
+  onPick: (day: string) => void;
+}) {
+  const text = useChartText();
+  const [cursor, setCursor] = useState(0);
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const at = Math.min(cursor, Math.max(days.length - 1, 0));
+  const move = (to: number) => {
+    const i = Math.max(0, Math.min(days.length - 1, to));
+    setCursor(i);
+    refs.current[i]?.focus();
+  };
+  if (days.length === 0) return null;
+  return (
+    <fieldset
+      aria-label={text.days}
+      className="pointer-events-none absolute m-0 flex min-w-0 border-0 p-0"
+      style={{
+        left: AXIS_WIDTH,
+        right: RIGHT_MARGIN,
+        top: 8,
+        bottom: X_AXIS_HEIGHT,
+      }}
+    >
+      {days.map((d, i) => (
+        <button
+          key={d}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          type="button"
+          data-day={d}
+          tabIndex={i === at ? 0 : -1}
+          aria-label={text.openDay(label(d))}
+          aria-pressed={picked === d}
+          className="focus-visible:ring-accent h-full flex-1 rounded-sm opacity-0 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
+          onFocus={() => setCursor(i)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              // NOTE: handled on keydown and defaulted, so the button's own click does not fire too.
+              e.preventDefault();
+              onPick(d);
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              move(i + 1);
+            } else if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              move(i - 1);
+            } else if (e.key === "Home") {
+              e.preventDefault();
+              move(0);
+            } else if (e.key === "End") {
+              e.preventDefault();
+              move(days.length - 1);
+            }
+          }}
+        />
+      ))}
+    </fieldset>
+  );
 }
 
 // The detail of the day a stack was clicked on: every series, the "Other" group's members included,
@@ -894,124 +994,136 @@ export function StackedBars({
   );
   const [picked, setPicked] = useState<string | null>(null);
   const closeDetail = useCallback(() => setPicked(null), []);
+  const days = data.map((r) => r.day);
+  // The day comes from what was clicked or pressed, never from the hover: a second click on the
+  // open day closes it.
+  const pick = (d: string) => {
+    setPicked((cur) => (cur === d ? null : d));
+    onPick?.(d);
+  };
   const pickedRow = picked ? data.find((r) => r.day === picked) : undefined;
   return (
     <div className="flex w-full flex-col gap-2">
-      <div
-        style={{ height }}
-        className="relative w-full"
-        // The drawing only: a screen reader reads the block's table instead, and still reaches the
-        // legend and the day detail.
-        aria-hidden="true"
-      >
-        <StatePatterns ids={ids} p={p} />
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            // Recharts stacks the bars in the order they first registered, so a new ranking or a new
-            // group draws a new chart rather than a legend that disagrees with the stack.
-            key={drawn.map((s) => s.key).join("|")}
-            data={plotted(arranged.rows, drawn)}
-            margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
-            onClick={(e, event) => {
-              const label =
-                (e as { activeLabel?: string } | null)?.activeLabel ??
-                dayUnder(event, arranged.rows);
-              if (typeof label !== "string") return;
-              setPicked((cur) => (cur === label ? null : label));
-              onPick?.(label);
-            }}
-            style={{ cursor: "pointer" }}
-          >
-            <CartesianGrid
-              stroke={p.grid}
-              strokeDasharray="3 3"
-              vertical={false}
-            />
-            <XAxis
-              dataKey="day"
-              tickFormatter={day}
-              stroke={p.axis}
-              tick={{ fill: p.axis, fontSize: 11 }}
-              minTickGap={24}
-            />
-            <YAxis
-              stroke={p.axis}
-              tick={{ fill: p.axis, fontSize: 11 }}
-              tickFormatter={format}
-              width={AXIS_WIDTH}
-              domain={[0, settled]}
-            />
-            {stateBands(data, ids, p, text)}
-            <Tooltip
-              // Every series is null on a day under a band, and the tooltip is what says why.
-              filterNull={false}
-              cursor={{ fill: p.grid, opacity: 0.4 }}
-              wrapperStyle={TOOLTIP_WRAPPER}
-              content={({ active, label, payload }) => {
-                if (!active || label === undefined) return null;
-                const entries = (payload ?? []) as readonly TooltipEntry[];
-                const values = valuesOf(entries);
-                const row = entries[0]?.payload;
-                const ready = !row?.state || row.state === "ready";
-                const total = drawn.reduce((a, s) => {
-                  const v = values.get(s.key);
-                  return a + (typeof v === "number" ? v : 0);
-                }, 0);
-                return (
-                  <TooltipCard
-                    head={withState(
-                      day(String(label)),
-                      stateOf.get(String(label)),
-                      text,
-                    )}
-                    total={ready && drawn.length > 0 ? format(total) : null}
-                    summary={
-                      ready
-                        ? stackSummary(
-                            arranged.kept.map((s) => ({
-                              key: s.key,
-                              label: s.label,
-                              color: colorOf(s.key),
-                              value: values.get(s.key),
-                            })),
-                            arranged.folded.length > 0
-                              ? {
-                                  count: arranged.folded.length,
-                                  value: values.get(OTHER_KEY),
-                                }
-                              : null,
-                            TOOLTIP_ROWS,
-                          )
-                        : null
-                    }
-                    describe={(r) => format(r.value)}
-                    hint={
-                      ready && drawn.length > 0 ? chartText.clickForAll : null
-                    }
-                    p={p}
-                  />
-                );
-              }}
-            />
-            {drawn.length === 0 && (
-              <Bar
-                dataKey={NONE}
-                tooltipType="none"
-                isAnimationActive={false}
+      <div style={{ height }} className="relative w-full">
+        <div
+          className="absolute inset-0"
+          // The drawing only: a screen reader reads the block's table instead, and still reaches the
+          // days, the legend and the day detail.
+          aria-hidden="true"
+        >
+          <StatePatterns ids={ids} p={p} />
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              // Recharts stacks the bars in the order they first registered, so a new ranking or a new
+              // group draws a new chart rather than a legend that disagrees with the stack.
+              key={drawn.map((s) => s.key).join("|")}
+              data={plotted(arranged.rows, drawn)}
+              margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
+              style={{ cursor: "pointer" }}
+            >
+              <CartesianGrid
+                stroke={p.grid}
+                strokeDasharray="3 3"
+                vertical={false}
               />
-            )}
-            {drawn.map((s) => (
-              <Bar
-                key={s.key}
-                dataKey={s.key}
-                name={s.label}
-                stackId="day"
-                fill={colorOf(s.key)}
-                isAnimationActive={false}
+              <XAxis
+                dataKey="day"
+                tickFormatter={day}
+                stroke={p.axis}
+                tick={{ fill: p.axis, fontSize: 11 }}
+                minTickGap={24}
               />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
+              <YAxis
+                stroke={p.axis}
+                tick={{ fill: p.axis, fontSize: 11 }}
+                tickFormatter={format}
+                width={AXIS_WIDTH}
+                domain={[0, settled]}
+              />
+              {stateBands(data, ids, p, text)}
+              <Tooltip
+                // Every series is null on a day under a band, and the tooltip is what says why.
+                filterNull={false}
+                cursor={{ fill: p.grid, opacity: 0.4 }}
+                wrapperStyle={TOOLTIP_WRAPPER}
+                content={({ active, label, payload }) => {
+                  if (!active || label === undefined) return null;
+                  const entries = (payload ?? []) as readonly TooltipEntry[];
+                  const values = valuesOf(entries);
+                  const row = entries[0]?.payload;
+                  const ready = !row?.state || row.state === "ready";
+                  const total = drawn.reduce((a, s) => {
+                    const v = values.get(s.key);
+                    return a + (typeof v === "number" ? v : 0);
+                  }, 0);
+                  return (
+                    <TooltipCard
+                      head={withState(
+                        day(String(label)),
+                        stateOf.get(String(label)),
+                        text,
+                      )}
+                      total={ready && drawn.length > 0 ? format(total) : null}
+                      summary={
+                        ready
+                          ? stackSummary(
+                              arranged.kept.map((s) => ({
+                                key: s.key,
+                                label: s.label,
+                                color: colorOf(s.key),
+                                value: values.get(s.key),
+                              })),
+                              arranged.folded.length > 0
+                                ? {
+                                    count: arranged.folded.length,
+                                    value: values.get(OTHER_KEY),
+                                  }
+                                : null,
+                              TOOLTIP_ROWS,
+                            )
+                          : null
+                      }
+                      describe={(r) => format(r.value)}
+                      hint={
+                        ready && drawn.length > 0 ? chartText.clickForAll : null
+                      }
+                      p={p}
+                    />
+                  );
+                }}
+              />
+              {drawn.length === 0 && (
+                <Bar
+                  dataKey={NONE}
+                  tooltipType="none"
+                  isAnimationActive={false}
+                />
+              )}
+              {drawn.map((s) => (
+                <Bar
+                  key={s.key}
+                  dataKey={s.key}
+                  name={s.label}
+                  stackId="day"
+                  fill={colorOf(s.key)}
+                  isAnimationActive={false}
+                  // A segment sits above its day's column, so it names its day itself, from its row.
+                  onClick={(bar) => {
+                    const d = (bar as { payload?: ChartRow }).payload?.day;
+                    if (typeof d === "string") pick(d);
+                  }}
+                />
+              ))}
+              <DayHits days={days} onPick={pick} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <DayKeys
+          days={days}
+          picked={picked}
+          label={(d) => day(d)}
+          onPick={pick}
+        />
       </div>
       <SeriesLegend
         mark="bar"

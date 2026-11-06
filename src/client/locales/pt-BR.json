@@ -1018,6 +1018,7 @@
     "chart": {
       "clickForAll": "Clique para ver todas as séries",
       "closeDetail": "Fechar o detalhe do dia",
+      "days": "Dias do gráfico",
       "loading": "carregando",
       "loadingDays_zero": "carregando · {{count}} dias",
       "loadingDays_one": "carregando · {{count}} dia",
@@ -1030,6 +1031,7 @@
       "noDataDays_many": "sem dados · {{count}} dias",
       "noDataDays_other": "sem dados · {{count}} dias",
       "noDataTip": "sem dados: os Logs deste dia foram apagados pela retenção antes de ele ser guardado",
+      "openDay": "Abrir o detalhe de {{day}}",
       "otherLines_one": "Outras ({{count}})",
       "otherLines_many": "Outras ({{count}})",
       "otherLines_other": "Outras ({{count}})",

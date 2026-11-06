@@ -406,6 +406,69 @@ describe("a stacked chart with more series than colours", () => {
     expect(members.closest(".overflow-y-auto")).not.toBeNull();
   });
 
+  test("the Others members follow a new ranking, two series with one name included", async () => {
+    const kept = Array.from({ length: 7 }, (_, i) => ({
+      key: `k${i}`,
+      label: `Kept ${i}`,
+    }));
+    const small = [
+      { key: "a", label: "A" },
+      { key: "b1", label: "B" },
+      { key: "b2", label: "B" },
+      { key: "c", label: "C" },
+      { key: "d", label: "D" },
+      { key: "e", label: "E" },
+    ];
+    const rows = (values: Record<string, number>): ChartRow[] =>
+      data.map((r) => ({
+        day: r.day,
+        state: "ready",
+        ...Object.fromEntries(kept.map((k) => [k.key, 100])),
+        ...values,
+      }));
+    const tree = (rowsNow: ChartRow[]) =>
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(StackedBars, {
+              ...stacked,
+              series: [...kept, ...small],
+              data: rowsNow,
+            }),
+          ),
+        ),
+      );
+    const { container, rerender } = render(
+      tree(rows({ a: 6, b1: 5, b2: 4, c: 3, d: 2, e: 1 })),
+    );
+    await legendOf(container);
+    fireEvent.click(
+      container.querySelector(
+        '[data-testid="chart-legend"] > li[data-series-key="__other"] button',
+      ) as HTMLElement,
+    );
+    const members = () =>
+      lines(
+        document.querySelector('[data-testid="chart-legend-members"]') ??
+          document.body,
+      );
+    await waitFor(() => {
+      if (members().length !== 6) throw new Error("no members yet");
+    });
+    expect(members()).toEqual(["E", "D", "C", "B", "B", "A"]);
+    rerender(tree(rows({ c: 6, a: 5, b1: 4, d: 3, e: 2, b2: 1 })));
+    await waitFor(() => {
+      if (members()[0] !== "B") throw new Error("not re-ranked yet");
+    });
+    expect(members()).toEqual(["B", "E", "D", "B", "A", "C"]);
+  });
+
   test("hides only the drawing from a screen reader: the legend and the day detail stay reachable", async () => {
     const { container } = render(
       createElement(

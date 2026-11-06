@@ -431,7 +431,7 @@ interface LegendItem {
   label: string;
   color: string;
   // The names inside the "Other" group, shown when the entry is hovered or opened.
-  members?: string[];
+  members?: SeriesDef[];
 }
 
 // The chart's legend, in the order given: the key carries the series colour, the name wears text
@@ -479,7 +479,7 @@ function SeriesLegend({
                 content={
                   <ul data-testid="chart-legend-members">
                     {it.members.map((m) => (
-                      <li key={m}>{m}</li>
+                      <li key={m.key}>{m.label}</li>
                     ))}
                   </ul>
                 }
@@ -686,7 +686,7 @@ export function LineTrend({
                   key: OTHER_KEY,
                   label: groupName,
                   color: p.other,
-                  members: arranged.folded.map((s) => s.label),
+                  members: arranged.folded,
                 },
               ]
             : []),
@@ -1001,7 +1001,7 @@ export function StackedBars({
           label: s.label,
           color: colorOf(s.key),
           ...(s.key === OTHER_KEY
-            ? { members: [...arranged.folded].reverse().map((f) => f.label) }
+            ? { members: [...arranged.folded].reverse() }
             : {}),
         }))}
       />

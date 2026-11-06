@@ -95,8 +95,11 @@ export interface TableHealthDto {
   indexScans: number;
   // Dead rows over live plus dead; null for an empty table.
   deadRatio: number | null;
-  // More dead rows than autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × live rows: the
-  // point where autovacuum should already have run on this table.
+  // The dead-row count at which autovacuum triggers on this table, computed as autovacuum does: the
+  // table's own autovacuum_vacuum_threshold and _scale_factor (the server's where it sets none), the
+  // scale factor applied to `reltuples`.
+  vacuumTriggerRows: number;
+  // More dead rows than `vacuumTriggerRows`: autovacuum should already have run on this table.
   vacuumOverdue: boolean;
 }
 
@@ -323,16 +326,20 @@ export async function probeAvailability(
   }
 }
 
+// `trigger`: the table's effective threshold and scale factor, and its `reltuples` (-1 when never
+// analyzed, which autovacuum reads as zero rows).
 export function deadRows(
   live: number,
   dead: number,
-  vacuum: { threshold: number; scale: number } | undefined,
-): Pick<TableHealthDto, "deadRatio" | "vacuumOverdue"> {
+  trigger: { threshold: number; scale: number; reltuples: number },
+): Pick<TableHealthDto, "deadRatio" | "vacuumOverdue" | "vacuumTriggerRows"> {
+  const at =
+    Number(trigger.threshold) +
+    Number(trigger.scale) * Math.max(0, Number(trigger.reltuples));
   return {
     deadRatio: live + dead > 0 ? dead / (live + dead) : null,
-    vacuumOverdue: vacuum
-      ? dead > Number(vacuum.threshold) + Number(vacuum.scale) * live
-      : false,
+    vacuumTriggerRows: Math.round(at),
+    vacuumOverdue: dead > at,
   };
 }
 
@@ -465,11 +472,6 @@ export async function readDatabaseScreen(
       SELECT count(*)::int AS n FROM db_statement_timeouts
        WHERE occurred_at >= ${from} AND occurred_at <= ${to}`;
 
-    const [vacuum] = await db.$queryRaw<
-      { threshold: number; scale: number }[]
-    >`SELECT current_setting('autovacuum_vacuum_threshold')::float8 AS threshold,
-             current_setting('autovacuum_vacuum_scale_factor')::float8 AS scale`;
-
     // Growth is measured from a snapshot near the window's start: a later one would report the minutes
     // since it as the window's growth (a 7d window on an instance a day old). Without one, unknown.
     const baselineUntil = new Date(
@@ -486,8 +488,20 @@ export async function readDatabaseScreen(
         seq_scan: bigint;
         idx_scan: bigint | null;
         first_bytes: bigint | null;
+        vac_threshold: number;
+        vac_scale: number;
+        reltuples: number;
       }[]
     >`SELECT t.table_name, pg_total_relation_size(c.oid) AS total_bytes,
+             COALESCE(
+               (SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o
+                 WHERE o LIKE 'autovacuum_vacuum_threshold=%'),
+               current_setting('autovacuum_vacuum_threshold')::float8) AS vac_threshold,
+             COALESCE(
+               (SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o
+                 WHERE o LIKE 'autovacuum_vacuum_scale_factor=%'),
+               current_setting('autovacuum_vacuum_scale_factor')::float8) AS vac_scale,
+             c.reltuples::float8 AS reltuples,
              s.n_live_tup AS live, s.n_dead_tup AS dead,
              s.last_autovacuum, s.last_autoanalyze, s.seq_scan, s.idx_scan,
              (SELECT ts.total_bytes FROM db_table_snapshots ts
@@ -511,7 +525,11 @@ export async function readDatabaseScreen(
       lastAutoanalyze: r.last_autoanalyze?.toISOString() ?? null,
       seqScans: Number(r.seq_scan),
       indexScans: Number(r.idx_scan ?? 0),
-      ...deadRows(Number(r.live), Number(r.dead), vacuum),
+      ...deadRows(Number(r.live), Number(r.dead), {
+        threshold: r.vac_threshold,
+        scale: r.vac_scale,
+        reltuples: r.reltuples,
+      }),
     }));
     const grown = tables.filter((t) => t.growthBytes !== null);
 

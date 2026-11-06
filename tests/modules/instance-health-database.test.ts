@@ -1349,17 +1349,46 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
 
 describe("what the screen derives, decided by the server", () => {
   test("a table is overdue for vacuum past autovacuum's own trigger, and an empty one has no ratio", () => {
-    const pg = { threshold: 50, scale: 0.2 };
+    // The trigger as autovacuum computes it: the table's threshold plus its scale factor times
+    // `reltuples` (the planner's row count), not the live-tuple count, which lags after a large delete.
+    const pg = { threshold: 50, scale: 0.2, reltuples: 1000 };
     expect(deadRows(1000, 250, pg)).toEqual({
       deadRatio: 0.2,
       vacuumOverdue: false,
+      vacuumTriggerRows: 250,
     });
     expect(deadRows(1000, 251, pg).vacuumOverdue).toBe(true);
-    expect(deadRows(0, 51, pg)).toEqual({ deadRatio: 1, vacuumOverdue: true });
-    expect(deadRows(0, 0, pg)).toEqual({
+    // Live tuples already down to 100 after a delete, reltuples still 1000: not past the trigger.
+    expect(deadRows(100, 200, pg).vacuumOverdue).toBe(false);
+    expect(deadRows(0, 51, { ...pg, reltuples: 0 })).toEqual({
+      deadRatio: 1,
+      vacuumOverdue: true,
+      vacuumTriggerRows: 50,
+    });
+    // Never analyzed: Postgres reads reltuples -1 as zero rows.
+    expect(deadRows(0, 51, { ...pg, reltuples: -1 }).vacuumOverdue).toBe(true);
+    expect(deadRows(0, 0, { ...pg, reltuples: 0 })).toEqual({
       deadRatio: null,
       vacuumOverdue: false,
+      vacuumTriggerRows: 50,
     });
+  });
+
+  test("a table's own autovacuum settings decide its trigger, the server's only where it sets none", async () => {
+    const probe = `vacuum_probe_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE TABLE ${probe} (id int PRIMARY KEY) WITH (autovacuum_vacuum_threshold = 1000, autovacuum_vacuum_scale_factor = 0)`,
+    );
+    try {
+      const screen = await readDatabaseScreen("1h", appDb);
+      const row = screen.tables.find((t) => t.table === probe);
+      expect(row?.vacuumTriggerRows).toBe(1000);
+      // A table with nothing of its own takes the server's defaults (50 + 0.2 x reltuples).
+      const plain = screen.tables.find((t) => t.table === "conversations");
+      expect(plain?.vacuumTriggerRows).toBeGreaterThanOrEqual(50);
+    } finally {
+      await suDb.$executeRawUnsafe(`DROP TABLE ${probe}`);
+    }
   });
 
   test("a series never has more points than the window has snapshots, so a run is not drawn as a gap", () => {

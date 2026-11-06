@@ -196,46 +196,75 @@ export async function readStatements(
   try {
     // Its own transaction: a server that does not preload the library errors here, and that error
     // aborts the transaction it runs in.
-    const rows = await plainWithin(base, budget, async (tx) => {
+    return await plainWithin(base, budget, async (tx) => {
       await tx.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
-      await takeStatsRole(tx);
-      return tx.$queryRawUnsafe<
-        {
-          userid: bigint;
-          dbid: bigint;
-          queryid: bigint;
-          query: string | null;
-          calls: bigint;
-          total_exec_time: number;
-          rows: bigint;
-          stats_since: Date | null;
-        }[]
-      >(
-        `SELECT userid::bigint AS userid, dbid::bigint AS dbid, queryid, query, calls,
-              total_exec_time, rows, ${since} AS stats_since
-         FROM pg_stat_statements
-        WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-          AND queryid IS NOT NULL ${top}
-        ORDER BY total_exec_time DESC
-        LIMIT ${MAX_ENTRIES}`,
-      );
+      return readStatementsIn(tx, since, top);
     });
-    return {
-      availability: { available: true },
-      entries: rows.map((r) => ({
-        userid: r.userid,
-        dbid: r.dbid,
-        queryid: r.queryid,
-        query: clipText(r.query ?? "", TEXT_MAX),
-        calls: Number(r.calls),
-        totalExecMs: Number(r.total_exec_time),
-        rows: Number(r.rows),
-        statsSince: r.stats_since,
-      })),
-    };
   } catch (err) {
     return { availability: availabilityOfError(err) };
   }
+}
+
+type RawStatement = {
+  userid: bigint;
+  dbid: bigint;
+  queryid: bigint;
+  query: string | null;
+  calls: bigint;
+  total_exec_time: number;
+  rows: bigint;
+  stats_since: Date | null;
+};
+
+// The read itself, in the caller's transaction. A statement whose role this one cannot see comes
+// back with no text and no queryid; when the statistics grant is missing (a managed server where
+// bootstrap could not grant pg_read_all_stats), that is every statement of the fleet path. Counting
+// only the visible ones would read the slowest as fast, so the read is unreadable instead.
+export async function readStatementsIn(
+  tx: Pick<PrismaClient, "$queryRaw" | "$queryRawUnsafe" | "$executeRawUnsafe">,
+  since: string,
+  top: string,
+): Promise<
+  | { availability: { available: true }; entries: StatementEntry[] }
+  | { availability: { available: false; reason: "unreadable" } }
+> {
+  await takeStatsRole(tx);
+  const here =
+    "dbid = (SELECT oid FROM pg_database WHERE datname = current_database())";
+  const [blind] = await tx.$queryRawUnsafe<{ hidden: bigint }[]>(
+    `SELECT count(*)::bigint AS hidden FROM pg_stat_statements
+      WHERE ${here} AND queryid IS NULL ${top}`,
+  );
+  const hidden = Number(blind?.hidden ?? 0);
+  if (hidden > 0) {
+    logger.warn(
+      { hidden },
+      "database screen: pg_stat_statements unreadable, statements of other roles are hidden (GRANT pg_read_all_stats to the runtime role)",
+    );
+    return { availability: { available: false, reason: "unreadable" } };
+  }
+  const rows = await tx.$queryRawUnsafe<RawStatement[]>(
+    `SELECT userid::bigint AS userid, dbid::bigint AS dbid, queryid, query, calls,
+          total_exec_time, rows, ${since} AS stats_since
+     FROM pg_stat_statements
+    WHERE ${here}
+      AND queryid IS NOT NULL ${top}
+    ORDER BY total_exec_time DESC
+    LIMIT ${MAX_ENTRIES}`,
+  );
+  return {
+    availability: { available: true },
+    entries: rows.map((r) => ({
+      userid: r.userid,
+      dbid: r.dbid,
+      queryid: r.queryid,
+      query: clipText(r.query ?? "", TEXT_MAX),
+      calls: Number(r.calls),
+      totalExecMs: Number(r.total_exec_time),
+      rows: Number(r.rows),
+      statsSince: r.stats_since,
+    })),
+  };
 }
 
 // What a failed read of pg_stat_statements means: not preloaded, or unreadable for another reason.

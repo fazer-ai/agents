@@ -25,6 +25,7 @@ import {
   deltasOf,
   lastAvailability,
   pruneDatabaseScreen,
+  readStatementsIn,
   resetSnapshotState,
   type StatementEntry,
   setLastAvailabilityForTest,
@@ -882,6 +883,51 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     setLastAvailabilityForTest({ available: false, reason: "not_loaded" });
     expect(await databaseScreenTick(Date.now(), appDb)).toBe(0);
   });
+
+  test.skipIf(!dbUp)(
+    "statements of a role this one cannot see make the read unreadable, not a fast measurement",
+    async () => {
+      const read = (withHidden: boolean) =>
+        suDb
+          .$transaction(async (tx) => {
+            // A view shaped like pg_stat_statements: a visible fast statement and, when asked, the row
+            // a role without pg_read_all_stats gets for another role's slow one (no text, no queryid).
+            await tx.$executeRawUnsafe("CREATE SCHEMA pss_probe");
+            await tx.$executeRawUnsafe(
+              `CREATE VIEW pss_probe.pg_stat_statements AS
+               SELECT * FROM (VALUES
+                 (10::oid, (SELECT oid FROM pg_database WHERE datname = current_database()),
+                  1::bigint, 'SELECT 1'::text, 5::bigint, 1.0::float8, 5::bigint, true),
+                 (11::oid, (SELECT oid FROM pg_database WHERE datname = current_database()),
+                  NULL::bigint, '<insufficient privilege>'::text, 5::bigint, 900000.0::float8, 5::bigint, ${withHidden})
+               ) AS v(userid, dbid, queryid, query, calls, total_exec_time, rows, toplevel)`,
+            );
+            await tx.$executeRawUnsafe("SET LOCAL search_path = pss_probe");
+            const out = await readStatementsIn(
+              tx as unknown as PrismaClient,
+              "NULL::timestamptz",
+              "AND toplevel",
+            );
+            // Rolled back: the probe schema never outlives the test.
+            throw Object.assign(new Error("rollback"), { out });
+          })
+          .catch(
+            (e: { out?: Awaited<ReturnType<typeof readStatementsIn>> }) =>
+              e.out,
+          );
+      const blind = await read(true);
+      expect(blind?.availability).toEqual({
+        available: false,
+        reason: "unreadable",
+      });
+      // Only the hidden row changes the answer: without it the same view reads normally.
+      const seen = await read(false);
+      expect(seen?.availability).toEqual({ available: true });
+      expect(
+        seen && "entries" in seen ? seen.entries.map((e) => e.query) : null,
+      ).toEqual(["SELECT 1"]);
+    },
+  );
 
   test("the version-dependent columns are read from the installed view, not from the server version", async () => {
     const seen = await suDb

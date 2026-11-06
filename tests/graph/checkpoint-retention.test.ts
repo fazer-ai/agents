@@ -1277,6 +1277,21 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     );
   });
 
+  // `bun --hot` keeps the holder across builds, so one made before the skip set existed gets it on
+  // first use, or the first pass that skips a thread fails announcing it.
+  test("a holder kept from a build without the skip set gets one", () => {
+    const key = Symbol.for("fazerai.checkpointRetention");
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    const saved = g[key];
+    g[key] = { timer: null, running: false, stopped: false };
+    try {
+      retention.stopCheckpointRetention();
+      expect((g[key] as { skipped?: unknown }).skipped).toBeInstanceOf(Set);
+    } finally {
+      g[key] = saved;
+    }
+  });
+
   // The announcement runs after the pass returned, out of its background context; the writes it starts
   // must still draw from the background pool, not the one customer turns use.
   test("the announcement of a stuck thread writes from the background pool", async () => {

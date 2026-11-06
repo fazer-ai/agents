@@ -567,6 +567,8 @@ function holder(): Holder {
     stopped: false,
     skipped: new Set(),
   };
+  // A holder `bun --hot` kept from a build without the field.
+  g[KEY].skipped ??= new Set();
   return g[KEY];
 }
 

@@ -292,6 +292,9 @@ const IS_AGENT_TURN = {
   nudge: true,
   guardrail: true,
   tts_normalize: true,
+  // The `customer_choice` precondition's judge, on the agent's own model, inside the turn whose tool
+  // call it decides.
+  choice_check: true,
   memory_compact: true,
   vision: false,
   // The OBSERVE job classifying a conversation the agent watches: a model call on a

@@ -1294,10 +1294,17 @@ const preconditionCondition = z.looseObject({
   ).optional(),
 });
 
+// Discriminated by `kind`, so a refused field is told at its own path inside the kind it belongs to
+// (the write boundary trims and names it) instead of the union being told whole.
+const condition = z.discriminatedUnion("kind", [
+  preconditionCondition,
+  z.looseObject({ kind: z.literal("customer_choice") }),
+]);
+
 const toolPreconditions = guardableToolKeys(
   z.union([
-    preconditionCondition,
-    z.array(preconditionCondition).min(1).max(TOOL_PRECONDITION_CONDITIONS_MAX),
+    condition,
+    z.array(condition).min(1).max(TOOL_PRECONDITION_CONDITIONS_MAX),
     // NOTE: NULL, and it is the only way to REMOVE a rule over this surface. The merge treats each
     // tool's value as a replacement and an absent key as "leave it alone", so without a tombstone
     // there is no deletion at all — an empty object just replaces the rule with an unparseable one.
@@ -1308,7 +1315,7 @@ const toolPreconditions = guardableToolKeys(
     z.null(),
   ]),
 ).describe(
-  `per-tool precondition, keyed by the name the model calls (native, toolpack, HTTP, code, \`mcp__<server>__<tool>\`); \`null\` removes one. One condition, or a list of up to ${TOOL_PRECONDITION_CONDITIONS_MAX} that must ALL hold. \`key\` is the attribute that must be set on \`scope\`, \`equals\` the required value (omit for any). Unmet, the call does not run and the model is told what is missing.`,
+  `per-tool precondition, keyed by the name the model calls (native, toolpack, HTTP, code, \`mcp__<server>__<tool>\`); \`null\` removes one. One condition, or a list of up to ${TOOL_PRECONDITION_CONDITIONS_MAX} that must ALL hold. \`key\` is the attribute that must be set on \`scope\`, \`equals\` the required value (omit for any). \`customer_choice\`: the customer said or confirmed every value of the call. Unmet, the call does not run and the model is told what is missing.`,
 );
 
 // What a monitoring agent does with what it reads. Descriptions kept short: the MCP schema ceiling

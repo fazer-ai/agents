@@ -197,7 +197,7 @@ export function buildDocumentTools(
     // two start disagreeing about what the model will actually be offered.
     const name = documentToolName(selection.slug);
     const description =
-      `Issue and send the customer a "${selection.name}" as a PDF attached to your reply.` +
+      `Issue a "${selection.name}" for exactly what the customer chose, and send it as a PDF attached to your reply. Every line is summed into one total, so never list alternatives the customer has not chosen between: when the customer has not chosen, ask in text and call this after they answer.` +
       (selection.description ? ` ${selection.description}` : "") +
       " The document is generated from the template the operator authored, numbered, and attached to this turn's answer — so say what you are sending, and do not restate the prices in text unless the customer asked for them there.";
 

@@ -1182,6 +1182,7 @@
     "noData": "Sem dados ainda.",
     "node": {
       "agent": "Resposta do agente",
+      "choiceCheck": "Conferência da escolha do cliente",
       "decision": "API de decisão",
       "guardrail": "Guardrail",
       "memoryCompact": "Compactação de memória",
@@ -2763,10 +2764,11 @@
     "toolPreconditions": {
       "add": "Adicionar precondição",
       "addCondition": "Adicionar condição",
-      "andUntilAttribute": "e até que o atributo",
+      "andUntil": "e até que",
       "block": "Bloquear",
-      "description": "Bloqueia uma ferramenta até que todos os atributos da conversa ou do contato que você listar tenham valor. O agente é informado do motivo e segue a conversa; nada é dito ao cliente.",
-      "descriptionDecisions": "Bloqueia uma ferramenta até que todos os atributos da conversa ou do contato que você listar tenham valor. A ação da regra não roda e a recusa fica registrada nos logs; nada é dito ao cliente.",
+      "customerChoiceHelp": "Cada chamada é conferida com as mensagens do cliente: se um valor dela (qual opção, quantas unidades, qual dia) não foi dito nem confirmado pelo cliente, ela não roda e o agente pergunta. Valores fora das palavras do cliente são julgados pelo próprio modelo do agente, cobrado numa linha própria.",
+      "description": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor, ou o cliente ter escolhido os valores com que o agente a chama. O agente é informado do motivo e segue a conversa; nada é dito ao cliente.",
+      "descriptionDecisions": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor. A ação da regra não roda e a recusa fica registrada nos logs; nada é dito ao cliente.",
       "empty": "Nenhuma precondição. Sem ela, o agente usa qualquer uma das suas ferramentas quando achar adequado.",
       "equals": "Valor exigido",
       "equalsMissing": "Enquanto o valor estiver em branco, a regra só exige que o atributo tenha algum valor.",
@@ -2780,6 +2782,9 @@
       "groupToolpack": "Integrações",
       "key": "Atributo",
       "keyPlaceholder": "chave do atributo",
+      "kind": "Tipo de condição",
+      "kindAttribute": "o atributo",
+      "kindCustomerChoice": "o cliente tenha escolhido os valores da chamada",
       "match": "Condição",
       "matchAny": "tenha qualquer valor",
       "matchEquals": "seja igual a",
@@ -2792,7 +2797,7 @@
       "title": "Precondições de ferramenta",
       "tool": "Ferramenta",
       "toolGone": "{{tool}} não está entre as ferramentas do agente: foi renomeada, removida ou desativada. Esta regra não bloqueia nada.",
-      "untilAttribute": "até que o atributo"
+      "until": "até que"
     },
     "tools": {
       "clear": "Limpar",
@@ -4857,6 +4862,7 @@
     "modelShare": "{{pct}}% do turno esperando o modelo",
     "node": {
       "agent": "agente",
+      "choiceCheck": "conferência da escolha do cliente",
       "decision": "API de decisão",
       "guardrail": "verificação de guardrails",
       "memoryCompact": "resumo de memória",

@@ -43,4 +43,41 @@ describe("the Tools tab's wording", () => {
     );
     expect(screen.queryAllByText(/is told why/).length).toBeGreaterThan(0);
   });
+
+  // A rule's action carries no transcript, so a choice condition there refuses every time: the kind
+  // is not offered on questions and rules.
+  test("the customer's choice is offered only where a model turn calls the tool", () => {
+    const rows = [
+      {
+        tool: "t",
+        conditions: [{ scope: "conversation" as const, key: "k", equals: "" }],
+      },
+    ];
+    const choiceOption = () =>
+      screen.queryAllByRole("option", {
+        name: "the customer has chosen the values of the call",
+      });
+    render(
+      <ToolPreconditionsEditor
+        agentId="1"
+        rows={rows}
+        onChange={() => {}}
+        guardableTools={[]}
+        assembledTools={new Set(["t"])}
+        decides
+      />,
+    );
+    expect(choiceOption()).toHaveLength(0);
+    cleanup();
+    render(
+      <ToolPreconditionsEditor
+        agentId="1"
+        rows={rows}
+        onChange={() => {}}
+        guardableTools={[]}
+        assembledTools={new Set(["t"])}
+      />,
+    );
+    expect(choiceOption()).toHaveLength(1);
+  });
 });

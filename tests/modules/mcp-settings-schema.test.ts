@@ -264,10 +264,18 @@ describe("agent_settings_set argument schema", () => {
       | Record<string, unknown>
       | undefined;
     if (!value) throw new Error("toolPreconditions publishes no rule shape");
-    const branches = Array.isArray(value.anyOf)
-      ? (value.anyOf as Record<string, unknown>[])
-      : [value];
-    const object = branches.find((b) => b.type === "object") as {
+    const flat = (b: Record<string, unknown>): Record<string, unknown>[] => [
+      b,
+      ...((b.anyOf ?? b.oneOf ?? []) as Record<string, unknown>[]).flatMap(
+        flat,
+      ),
+    ];
+    const object = flat(value).find(
+      (b) =>
+        b.type === "object" &&
+        (b.properties as { kind?: { const?: unknown } } | undefined)?.kind
+          ?.const === "attribute",
+    ) as {
       properties: Record<string, { pattern?: string }>;
     };
     expect(object.properties.key?.pattern).toBe("\\S");

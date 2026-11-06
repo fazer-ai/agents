@@ -393,6 +393,12 @@ the one place that sees every name at once, so `dropDuplicateToolNames` decides 
 wins, which puts the built-ins first, the loser is dropped rather than fatal (one bad name must not
 take a whole agent down), and the names that lost are logged for the operator who can rename them.
 
+### What the model reads, and the choice it has not been given
+
+The tool's description opens with a fixed sentence before the template's own description: issue the document **for exactly what the customer chose**, every line is **summed into one total**, so alternatives the customer has not chosen between are never listed, and when the customer has not chosen the model asks in text and calls after the answer. The second half is there because the totals are computed by the renderer (above): a model that writes the catalog's three packages as three line items is not offering a menu, it is issuing a quote for all three.
+
+The sentence alone does not hold it. Measured with `gpt-5.4-mini` on a request for "the quote for the sessions" with three packages in the catalog, a single request was answered with the document 10 of 10 times before the change and 3 of 10 after it; across a five-turn conversation where the customer chooses on the fourth, the document still went out before the choice in 10 of 10 conversations with or without it. A rule in the system prompt, a stronger template description and an attribute precondition the model writes itself all lost to the same turn. What holds is the `customer_choice` precondition on `send_<slug>` (docs/graph.md, Tool preconditions): the runtime refuses a call whose values the customer did not say or confirm, the model is told to ask, and nothing reaches the approval queue.
+
 ## Transports
 
 - **Console** — Components → Document templates. Create from a ready-made starter (quote, proposal,

@@ -629,6 +629,83 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
     });
   });
 
+  test("a condition switched to the customer's choice is saved as that kind, beside an attribute", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            calendar_check_availability: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "dia",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a condition" }),
+    );
+    const kinds = screen.getAllByRole("combobox", { name: "Condition type" });
+    expect(kinds).toHaveLength(2);
+    fireEvent.change(kinds[1] as HTMLElement, {
+      target: { value: "customer_choice" },
+    });
+    // NOTE: the attribute fields leave that condition, and only that one.
+    expect(screen.getAllByRole("combobox", { name: "Attribute" })).toHaveLength(
+      1,
+    );
+    expect(
+      screen.getByText(/checked against the customer's messages/),
+    ).toBeTruthy();
+    const saved = await savedPreconditions(stub);
+    expect(saved).toEqual({
+      calendar_check_availability: [
+        { kind: "attribute", scope: "conversation", key: "dia" },
+        { kind: "customer_choice" },
+      ],
+    });
+    expect(
+      readToolPreconditions({ toolPreconditions: saved })
+        .calendar_check_availability,
+    ).toEqual([
+      { kind: "attribute", scope: "conversation", key: "dia" },
+      { kind: "customer_choice" },
+    ]);
+  });
+
+  test("a stored choice rule renders as that kind and saves back unchanged", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            calendar_check_availability: { kind: "customer_choice" },
+            busca_por_cpf: { kind: "attribute", scope: "contact", key: "cpf" },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    const kinds = (await screen.findAllByRole("combobox", {
+      name: "Condition type",
+    })) as HTMLSelectElement[];
+    expect(kinds.map((k) => k.value).sort()).toEqual([
+      "attribute",
+      "customer_choice",
+    ]);
+    fireEvent.click(
+      screen.getAllByRole("button", {
+        name: "Remove precondition",
+      })[1] as HTMLElement,
+    );
+    expect(await savedPreconditions(stub)).toEqual({
+      calendar_check_availability: { kind: "customer_choice" },
+    });
+  });
+
   test("removing one of three conditions saves the other two and leaves the other tool alone", async () => {
     const cond = (key: string) => ({
       kind: "attribute",
@@ -678,9 +755,7 @@ describe("the Tools tab offers every granted tool, and flags a rule on one that 
       { catalog, grants },
     );
     await renderEditor(stub, "tools");
-    expect(await screen.findAllByText("and until the attribute")).toHaveLength(
-      1,
-    );
+    expect(await screen.findAllByText("and until")).toHaveLength(1);
     const rules = await screen.findAllByRole("button", {
       name: "Remove precondition",
     });

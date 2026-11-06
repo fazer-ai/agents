@@ -54,6 +54,8 @@ export interface HandoffUiState {
 
 // One condition of a tool's rule, as the editor holds it.
 export interface ToolPreconditionCondition {
+  // Absent is "attribute", the kind every condition had before the customer's choice existed.
+  kind?: "attribute" | "customer_choice";
   scope: "conversation" | "contact";
   key: string;
   equals: string;

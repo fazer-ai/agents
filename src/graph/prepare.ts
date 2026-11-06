@@ -12,6 +12,7 @@ import {
   type ResolveCaseHold,
   resolveCaseHoldFor,
 } from "@/graph/resolve-labels";
+import { type ChoiceCheck, choiceCheck } from "@/graph/tools/customer-choice";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWriteReporter } from "@/graph/tools/label-writes";
 import {
@@ -1371,6 +1372,9 @@ export interface ToolBuildDeps {
   // Flow telemetry context for THIS turn. When present, an MCP discovery failure is surfaced as a
   // flowlog warn (visible in the Logs page; paged on inbox traffic) instead of only a stdout log.
   flow?: FlowContext;
+  // The `customer_choice` judge's model factory and ledger writer, injectable like the turn's own.
+  makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
+  persistUsage?: UsagePersist;
 }
 
 // Native Chatwoot tools + allowlisted custom HTTP tools + allowlisted MCP tools. buildNativeTools
@@ -1990,6 +1994,7 @@ export async function buildToolset(
     // otherwise lose the cover that ask gives it.
     ctx.stillWanted,
     ctx.onNoEffect,
+    customerChoiceCheck(cfg, ctx, deps),
   );
   if (dropped.length > 0) {
     // NOTE: The operator is the only one who can fix this, and the symptom they would otherwise see
@@ -2090,6 +2095,56 @@ export function buildCallbacks(
     updateRoot: args.updateRoot,
   });
   return langfuse ? [usage, langfuse] : [usage];
+}
+
+// The `customer_choice` judge runs on the agent's OWN model and key, so the condition needs no
+// configuration of its own, and is billed under its own ledger node inside the turn that called the
+// tool. Pinned like the speech rewrite: temperature 0 and no reasoning effort, since the answer is a
+// YES or a NO the customer is waiting on.
+export function customerChoiceCheck(
+  cfg: AgentConfig,
+  ctx: ToolsetCtx,
+  deps: ToolBuildDeps,
+): ChoiceCheck {
+  const mc = (): ResolvedModelConfig => ({
+    provider: cfg.mc.provider,
+    model: cfg.mc.model,
+    apiKey: cfg.apiKey,
+    baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+    temperature: 0,
+  });
+  let built: BaseChatModel | null | undefined;
+  return choiceCheck({
+    timezone: cfg.timezone,
+    model: () => {
+      if (built !== undefined) return built;
+      try {
+        built = cfg.apiKey ? (deps.makeModel ?? createChatModel)(mc()) : null;
+      } catch (err) {
+        logger.warn(
+          { err, agentId: String(cfg.agentId) },
+          "customer choice: the agent's model is not runnable, so a guarded call is refused",
+        );
+        built = null;
+      }
+      return built;
+    },
+    callbacks: () =>
+      deps.flow
+        ? buildCallbacks(cfg, {
+            tenantId: ctx.tenantId,
+            threadId: ctx.threadId,
+            base: ctx.base,
+            persistUsage: deps.persistUsage,
+            node: "choice_check",
+            billedModel: mc(),
+            turnId: deps.flow.turnId,
+            source: deps.flow.source,
+            anonymous: deps.flow.anonymous,
+            updateRoot: false,
+          })
+        : [],
+  });
 }
 
 export interface SpeechNormalizerArgs {

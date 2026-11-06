@@ -2,8 +2,8 @@ import { clipText } from "@/lib/text";
 import { CONTACT_AUTH_RANGES } from "@/modules/agents/number-ranges";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 import {
-  parseToolPrecondition,
-  type ToolPrecondition,
+  type AttributePrecondition,
+  parseAttributePrecondition,
 } from "@/modules/agents/tool-preconditions";
 
 // Per-agent contact authorization gate, read from the free-form `agent.settings.contactAuth` bag
@@ -30,7 +30,7 @@ export type ContactAuthCondition =
   // The contact's mirrored phone (compared by digits, so `+55 (11) 9...` and `5511 9...` are one
   // number) or its operator identifier is on the list.
   | { kind: "allowlist"; phones: string[]; identifiers: string[] }
-  | ToolPrecondition
+  | AttributePrecondition
   // The conversation is a WhatsApp group or a one-to-one chat (the fork's `group_type`).
   | { kind: "conversation_type"; type: ContactAuthConversationType }
   // The conversation carries this label, stored lowercased as Chatwoot stores label titles.
@@ -132,7 +132,7 @@ function parseCondition(raw: unknown): ContactAuthCondition | null {
       ? { kind: "label", label: label.toLowerCase() }
       : null;
   }
-  return parseToolPrecondition(raw);
+  return parseAttributePrecondition(raw);
 }
 
 function listEntries(c: ContactAuthCondition): number {

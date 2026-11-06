@@ -108,8 +108,20 @@ async function publishedPreconditionRule(): Promise<{
       | { anyOf?: Record<string, unknown>[]; type?: string }
       | undefined;
     if (!rule) throw new Error("toolPreconditions publishes no rule shape");
-    const branches = rule.anyOf ?? [rule];
-    return (branches.find((b) => b.type === "object") ?? {}) as {
+    // The conditions are a union by `kind`, published as a nested oneOf/anyOf: the attribute
+    // kind is the one with fields.
+    const flat = (b: Record<string, unknown>): Record<string, unknown>[] => [
+      b,
+      ...((b.anyOf ?? b.oneOf ?? []) as Record<string, unknown>[]).flatMap(
+        flat,
+      ),
+    ];
+    return (flat(rule).find(
+      (b) =>
+        b.type === "object" &&
+        (b.properties as { kind?: { const?: unknown } } | undefined)?.kind
+          ?.const === "attribute",
+    ) ?? {}) as {
       properties?: Record<string, unknown>;
     };
   } finally {

@@ -31,6 +31,10 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     guardrail: "covered-by-the-unit",
     // Speech normalization, inside a turn that was allowed.
     tts_normalize: "covered-by-the-unit",
+    // The `customer_choice` judge, inside the tool call of a turn that was allowed. Gating it would
+    // refuse the call it decides (a judge that cannot answer fails closed), so a tenant past its
+    // ceiling mid-turn would see the agent ask again for a choice the customer already made.
+    choice_check: "covered-by-the-unit",
     // Memory compaction runs from its own `MEMORY_COMPACT` job, outside any turn, and is out of the
     // ceiling by DECISION: refusing it does not save tokens, it moves them into the next turn's
     // history. So a tenant past its ceiling keeps paying for compaction (see docs/spend-ceiling.md).

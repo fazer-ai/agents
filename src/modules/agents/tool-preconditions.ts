@@ -21,17 +21,24 @@ export interface PreconditionState {
   contactAttributes: Record<string, unknown>;
 }
 
-// One kind today, written as a union tagged by `kind` so readers handle the next one. No condition
-// over the message history: a tool cannot reach the graph state outside a Pregel run, and the mirror
-// holds no message bodies (docs/graph.md).
+// The named attribute carries a value (any non-blank value), or equals a given one.
+export type AttributePrecondition = {
+  kind: "attribute";
+  scope: "conversation" | "contact";
+  key: string;
+  equals?: string;
+};
+
+// Every value the call's arguments choose on the customer's behalf (which option, how many, which
+// day) was said or confirmed by the customer. Judged per call against the customer's own messages in
+// the graph state the tool node hands the tool (graph/tools/customer-choice.ts), so it holds only
+// where a call comes from a model turn: a rule's action and a voice call carry no transcript, and
+// there it refuses.
+export type CustomerChoicePrecondition = { kind: "customer_choice" };
+
 export type ToolPrecondition =
-  // The named attribute carries a value (any non-blank value), or equals a given one.
-  {
-    kind: "attribute";
-    scope: "conversation" | "contact";
-    key: string;
-    equals?: string;
-  };
+  | AttributePrecondition
+  | CustomerChoicePrecondition;
 
 const SCOPES = new Set(["conversation", "contact"]);
 function str(v: unknown): string | null {
@@ -41,6 +48,18 @@ function str(v: unknown): string | null {
 // Exported because the WRITE boundary needs the same parse the runtime uses. Two parsers is how a
 // value gets accepted by the API and then ignored by the turn.
 export function parseToolPrecondition(raw: unknown): ToolPrecondition | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if ((raw as Record<string, unknown>).kind === "customer_choice") {
+    return { kind: "customer_choice" };
+  }
+  return parseAttributePrecondition(raw);
+}
+
+// The attribute kind alone, for the contact-authorization rule, whose gate runs before any turn and
+// has no transcript to judge a choice against.
+export function parseAttributePrecondition(
+  raw: unknown,
+): AttributePrecondition | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const c = raw as Record<string, unknown>;
   if (c.kind === "attribute") {
@@ -140,10 +159,14 @@ export function unmetPreconditions(
   return conds.filter((c) => !evaluatePrecondition(c, state));
 }
 
+// A choice condition is UNMET here: this reads attributes only, and a caller that judges choices
+// (graph/tools/precondition.ts) takes them out first. Every other caller has no transcript to judge
+// against, and a precondition fails closed.
 export function evaluatePrecondition(
   cond: ToolPrecondition,
   state: PreconditionState,
 ): boolean {
+  if (cond.kind === "customer_choice") return false;
   const bag =
     cond.scope === "conversation"
       ? state.conversationAttributes
@@ -177,14 +200,23 @@ export function unmetPreconditionMessage(
   unmet: readonly ToolPrecondition[],
 ): string {
   const what = unmet.map((cond) =>
-    cond.equals === undefined
-      ? `the ${cond.scope} attribute \`${cond.key}\` to be set`
-      : `the ${cond.scope} attribute \`${cond.key}\` to be \`${cond.equals}\``,
+    cond.kind === "customer_choice"
+      ? "the customer to have chosen every value in this call"
+      : cond.equals === undefined
+        ? `the ${cond.scope} attribute \`${cond.key}\` to be set`
+        : `the ${cond.scope} attribute \`${cond.key}\` to be \`${cond.equals}\``,
   );
   if (what.length === 1) {
     return `\`${toolName}\` was not run: it requires ${what[0]}, and it is not. Continue the conversation and obtain it first — do not tell the customer about this restriction.`;
   }
   return `\`${toolName}\` was not run: it requires ${what.join("; ")}, and none of these holds yet. Continue the conversation and obtain all of them first — do not tell the customer about this restriction.`;
+}
+
+// The refusal of a call whose values the customer has not chosen. The values are quoted back so the
+// model asks about THEM: a model that wrote every option of the catalog into one call, or picked one
+// itself, otherwise asks something vaguer or calls again with the same arguments.
+export function unchosenValuesMessage(toolName: string, args: unknown): string {
+  return `\`${toolName}\` was not run: it requires the customer to have chosen every value in this call, and these values include a choice the customer has not made yet (${JSON.stringify(args)}). Ask the customer to choose, in plain words, and call it again after they answer. Do not say it was done, and do not tell the customer about this restriction.`;
 }
 
 // Which names may carry a rule: any name a tool of any source can be called by (native, toolpack,

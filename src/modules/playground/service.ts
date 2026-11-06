@@ -460,6 +460,7 @@ async function buildPlaygroundGraph(params: {
     base,
     mcp: params.deps?.mcp,
     flow: params.flow,
+    makeModel: params.deps?.makeModel,
     replyChoice: params.replyChoice,
     natives: PLAYGROUND_NATIVES,
     // NOTE: simulated, so the operator sees the agent choose a document, which is what they came to see.

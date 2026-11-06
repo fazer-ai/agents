@@ -1130,6 +1130,7 @@
     "noData": "No data yet.",
     "node": {
       "agent": "Agent reply",
+      "choiceCheck": "Customer choice check",
       "decision": "Decision API",
       "guardrail": "Guardrail",
       "memoryCompact": "Memory compaction",
@@ -2677,10 +2678,11 @@
     "toolPreconditions": {
       "add": "Add a precondition",
       "addCondition": "Add a condition",
-      "andUntilAttribute": "and until the attribute",
+      "andUntil": "and until",
       "block": "Block",
-      "description": "Block a tool until every conversation or contact attribute you list holds a value. The agent is told why and continues the conversation; nothing is said to the customer.",
-      "descriptionDecisions": "Block a tool until every conversation or contact attribute you list holds a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
+      "customerChoiceHelp": "Each call is checked against the customer's messages: when a value of the call (which option, how many, which day) was not said or confirmed by the customer, it does not run and the agent asks. Values not in the customer's words are judged by the agent's own model, billed on its own line.",
+      "description": "Block a tool until every condition you list holds: a conversation or contact attribute with a value, or the customer having chosen the values the agent calls it with. The agent is told why and continues the conversation; nothing is said to the customer.",
+      "descriptionDecisions": "Block a tool until every condition you list holds: a conversation or contact attribute with a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
       "empty": "No preconditions. Without one, the agent may use any of its tools whenever it sees fit.",
       "equals": "Required value",
       "equalsMissing": "While the value is blank, the rule asks only that the attribute has some value.",
@@ -2694,6 +2696,9 @@
       "groupToolpack": "Integrations",
       "key": "Attribute",
       "keyPlaceholder": "attribute key",
+      "kind": "Condition type",
+      "kindAttribute": "the attribute",
+      "kindCustomerChoice": "the customer has chosen the values of the call",
       "match": "Condition",
       "matchAny": "has any value",
       "matchEquals": "equals",
@@ -2706,7 +2711,7 @@
       "title": "Tool preconditions",
       "tool": "Tool",
       "toolGone": "{{tool}} is not among the agent's tools: it was renamed, removed or turned off. This rule guards nothing.",
-      "untilAttribute": "until the attribute"
+      "until": "until"
     },
     "tools": {
       "clear": "Clear",
@@ -4680,6 +4685,7 @@
     "modelShare": "{{pct}}% of the turn waiting on the model",
     "node": {
       "agent": "agent",
+      "choiceCheck": "customer choice check",
       "decision": "decision API",
       "guardrail": "guardrail check",
       "memoryCompact": "memory summary",

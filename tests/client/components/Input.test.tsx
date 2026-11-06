@@ -49,11 +49,27 @@ describe("Input secret", () => {
     expect(attrs(box())).toEqual(MANAGER_IGNORE);
   });
 
-  test("a real password field stays a password field for the managers", () => {
+  test("a real password field carries the autocomplete its caller declared, and no opt-out", () => {
     render(
-      withI18n(<Input aria-label="Field" type="password" showPasswordToggle />),
+      withI18n(
+        <Input
+          aria-label="Field"
+          type="password"
+          showPasswordToggle
+          autoComplete="current-password"
+        />,
+      ),
     );
-    expect(box().getAttribute("autocomplete")).toBe("new-password");
+    expect(box().getAttribute("autocomplete")).toBe("current-password");
     expect(Object.values(attrs(box())).every((v) => v === null)).toBe(true);
+  });
+
+  test("a masked field that declares nothing does not compile", () => {
+    const undeclared = (
+      // @ts-expect-error: a masked field says whether it is a current password, a new one, or a secret
+      <Input aria-label="Field" type="password" showPasswordToggle />
+    );
+    render(withI18n(undeclared));
+    expect(box().getAttribute("autocomplete")).toBe(null);
   });
 });

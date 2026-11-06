@@ -28,10 +28,20 @@ const PASSWORD_MANAGER_IGNORE = {
   "data-form-type": "other",
 } as const;
 
+// A masked field says what it holds, because a password manager reads that and nothing else: the
+// user's current password (fill it), a new one (generate and save it), one it must not touch
+// (`off`), or a secret that is no password at all. There is no default, so a new masked field
+// cannot inherit an answer that is wrong for it.
 type PasswordToggleInputProps = BaseInputProps & {
   showPasswordToggle: true;
   type: "password";
-};
+} & (
+    | { secret: true; autoComplete?: never }
+    | {
+        secret?: false;
+        autoComplete: "current-password" | "new-password" | "off";
+      }
+  );
 
 type RegularInputProps = BaseInputProps & {
   showPasswordToggle?: false;
@@ -84,13 +94,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             {...(secret ? PASSWORD_MANAGER_IGNORE : undefined)}
             ref={ref}
             type={showPasswordToggle && showPassword ? "text" : type}
-            autoComplete={
-              secret
-                ? "off"
-                : showPasswordToggle
-                  ? (autoComplete ?? "new-password")
-                  : autoComplete
-            }
+            autoComplete={secret ? "off" : autoComplete}
             aria-invalid={hasError || undefined}
             id={props.id ?? field.controlId}
             aria-labelledby={props["aria-labelledby"] ?? field.labelledById}

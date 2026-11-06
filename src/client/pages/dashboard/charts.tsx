@@ -1,10 +1,10 @@
-import { useId, useMemo, useRef } from "react";
+import { X } from "lucide-react";
+import { useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bar,
   BarChart,
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ReferenceArea,
@@ -13,14 +13,17 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { Tooltip as Hint } from "@/client/components/Tooltip";
 import { useTheme } from "@/client/contexts/ThemeContext";
 import {
+  arrangeSeries,
   CATEGORICAL_SLOTS,
-  foldStacked,
+  lineSummary,
   OTHER_KEY,
   type SeriesDef,
-  type TooltipItem,
-  tooltipRows,
+  stackDetail,
+  stackSummary,
+  type TooltipSummary,
 } from "./chart-series";
 import type { DayState } from "./useStream";
 
@@ -261,7 +264,6 @@ function StateLegend({
 // nothing: without a value to scale, the chart has no vertical axis, and the bands of the days still
 // loading or with no data have nothing to be drawn against.
 const NONE = "__none";
-const NO_KEYS = new Set<string>();
 
 function plotted(data: ChartRow[], series: SeriesDef[]): ChartRow[] {
   return series.length > 0 ? data : data.map((r) => ({ ...r, [NONE]: 0 }));
@@ -277,67 +279,98 @@ function dayLabel(lang: string) {
   return (key: string) => f.format(new Date(`${key}T00:00:00`));
 }
 
-// The most rows a tooltip lists before it sums the rest into one line, so it stays shorter than the
-// chart whatever the series count.
+// The most lines a tooltip lists, the "Other" line included, so it stays shorter than the chart
+// whatever the series count.
 const TOOLTIP_ROWS = 6;
 
 type TooltipEntry = {
   dataKey?: unknown;
-  name?: unknown;
   value?: unknown;
-  color?: string;
   payload?: ChartRow;
 };
 
-// The day, then the series with a value on it, largest first: a short stroke of the series colour,
-// its name, and the value, which is what the reader came for. A stacked chart adds the day's total
-// and the sum of the rows it leaves out; a line chart adds neither, since its values do not add up.
-function TooltipCard({
-  entries,
-  p,
-  head,
-  format,
-  stacked,
-  contextKeys,
-  describe,
-}: {
-  entries: readonly TooltipEntry[];
-  p: ReturnType<typeof useChartPalette>;
-  head: string;
-  format: (v: number) => string;
-  stacked: boolean;
-  contextKeys: Set<string>;
-  describe?: (item: TooltipItem, entry: TooltipEntry) => string;
-}) {
+function useChartText() {
   const { t } = useTranslation();
-  const row = entries[0]?.payload;
-  const ready = !row?.state || row.state === "ready";
-  const identified: TooltipItem[] = [];
-  const byKey = new Map<string, TooltipEntry>();
-  let context = 0;
-  for (const e of entries) {
-    const key = String(e.dataKey ?? "");
-    if (key === NONE) continue;
-    if (contextKeys.has(key)) {
-      if (typeof e.value === "number") context++;
-      continue;
-    }
-    byKey.set(key, e);
-    identified.push({
-      key,
-      label: String(e.name ?? key),
-      color: e.color ?? p.other,
-      value: e.value,
-    });
-  }
-  const { rows, rest } = tooltipRows(identified, TOOLTIP_ROWS, !stacked);
-  const total = stacked
-    ? identified.reduce(
-        (a, it) => a + (typeof it.value === "number" ? it.value : 0),
-        0,
-      )
-    : null;
-  const more = rest.count + context;
+  return {
+    total: (value: string) =>
+      t("dashboard.chart.total", "Day total {{value}}", { value }),
+    others: (count: number) =>
+      t("dashboard.chart.otherLines", "Others ({{count}})", { count }),
+    clickForAll: t("dashboard.chart.clickForAll", "Click to see every series"),
+    close: t("dashboard.chart.closeDetail", "Close the day's detail"),
+  };
+}
+
+// The values of a payload by series key, as recharts hands them to the tooltip.
+function valuesOf(entries: readonly TooltipEntry[]): Map<string, unknown> {
+  return new Map(entries.map((e) => [String(e.dataKey ?? ""), e.value]));
+}
+
+// A summary of the day, in the order the chart draws it top to bottom: a short stroke of the series
+// colour, its name and its value; the "Other" group in one line; on a stack, the day's total in the
+// header and a hint that a click shows everything.
+function TooltipCard({
+  head,
+  total,
+  summary,
+  describe,
+  hint,
+  p,
+}: {
+  head: string;
+  total: string | null;
+  summary: TooltipSummary | null;
+  describe: (row: TooltipSummary["rows"][number]) => string;
+  hint: string | null;
+  p: ReturnType<typeof useChartPalette>;
+}) {
+  const text = useChartText();
+  const other = summary?.other;
+  const otherLine = other ? (
+    <li
+      key={OTHER_KEY}
+      data-series-key={OTHER_KEY}
+      className="flex items-center justify-between gap-4"
+    >
+      <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
+        <span
+          aria-hidden="true"
+          className="inline-block h-0.5 w-3 shrink-0 rounded-full"
+          style={{ background: p.other }}
+        />
+        <span className="truncate">{text.others(other.count)}</span>
+      </span>
+      {other.value !== null && (
+        <span className="font-medium tabular-nums">
+          {describe({
+            key: OTHER_KEY,
+            label: "",
+            color: p.other,
+            value: other.value,
+          })}
+        </span>
+      )}
+    </li>
+  ) : null;
+  const rows = (summary?.rows ?? []).map((r) => (
+    <li
+      key={r.key}
+      data-series-key={r.key}
+      className="flex items-center justify-between gap-4"
+    >
+      <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
+        <span
+          aria-hidden="true"
+          className="inline-block h-0.5 w-3 shrink-0 rounded-full"
+          style={{ background: r.color }}
+        />
+        <span className="truncate">{r.label}</span>
+      </span>
+      <span className="font-medium tabular-nums">{describe(r)}</span>
+    </li>
+  ));
+  // A stack's group sits on top of it; a line chart's group has no place, so it closes the list.
+  const ordered = total !== null ? [otherLine, ...rows] : [...rows, otherLine];
   return (
     <div
       className="flex max-w-72 min-w-44 flex-col gap-1 rounded-lg px-3 py-2 text-xs shadow-lg"
@@ -349,49 +382,91 @@ function TooltipCard({
     >
       <div className="flex items-baseline justify-between gap-4">
         <span className="recharts-tooltip-label">{head}</span>
-        {ready && total !== null && (
-          <span className="font-medium tabular-nums">
-            {t("dashboard.chart.total", "Day total")} {format(total)}
-          </span>
+        {total !== null && (
+          <span className="font-medium tabular-nums">{text.total(total)}</span>
         )}
       </div>
-      {ready && rows.length > 0 && (
-        <ul className="flex flex-col gap-0.5">
-          {rows.map((r) => (
-            <li key={r.key} className="flex items-center justify-between gap-4">
-              <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-0.5 w-3 shrink-0 rounded-full"
-                  style={{ background: r.color }}
-                />
-                <span className="truncate">{r.label}</span>
-              </span>
-              <span className="font-medium tabular-nums">
-                {describe
-                  ? describe(r, byKey.get(r.key) ?? {})
-                  : format(r.value)}
-              </span>
-            </li>
-          ))}
-        </ul>
+      {summary && (rows.length > 0 || otherLine) && (
+        <ul className="flex flex-col gap-0.5">{ordered}</ul>
       )}
-      {ready && more > 0 && (
-        <p className="text-text-muted">
-          {stacked && context === 0
-            ? t("dashboard.chart.moreWithSum", "+{{count}} more · {{value}}", {
-                count: more,
-                value: format(rest.sum),
-              })
-            : t("dashboard.chart.more", "+{{count}} more", { count: more })}
-        </p>
-      )}
+      {hint && <p className="text-text-muted">{hint}</p>}
     </div>
   );
 }
 
-// Above the legend, which recharts draws later in the same box.
+// Above the chart's own layers, which recharts draws later in the same box.
 const TOOLTIP_WRAPPER = { zIndex: 10, outline: "none" } as const;
+
+interface LegendItem {
+  key: string;
+  label: string;
+  color: string;
+  // The names inside the "Other" group, shown when the entry is hovered or focused.
+  members?: string[];
+}
+
+// The chart's legend, in the order given: the key carries the series colour, the name wears text
+// ink, legible on both themes. The "Other" entry names its members on hover and on focus.
+function SeriesLegend({
+  items,
+  mark,
+  p,
+}: {
+  items: LegendItem[];
+  mark: "bar" | "line";
+  p: ReturnType<typeof useChartPalette>;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <ul
+      data-testid="chart-legend"
+      className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs"
+    >
+      {items.map((it) => {
+        const entry = (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              data-legend-key
+              className={
+                mark === "bar"
+                  ? "inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                  : "inline-block h-0.5 w-3.5 shrink-0 rounded-full"
+              }
+              style={{ background: it.color }}
+            />
+            <span style={{ color: p.textSecondary }}>{it.label}</span>
+          </span>
+        );
+        return (
+          <li key={it.key} data-series-key={it.key}>
+            {it.members ? (
+              <Hint
+                content={
+                  <ul data-testid="chart-legend-members">
+                    {it.members.map((m) => (
+                      <li key={m}>{m}</li>
+                    ))}
+                  </ul>
+                }
+              >
+                <span
+                  // biome-ignore lint/a11y/noNoninteractiveTabindex: the group's members are read on focus, like on hover.
+                  tabIndex={0}
+                  className="focus-visible:ring-accent-soft cursor-help rounded-sm focus-visible:ring-2 focus-visible:outline-none"
+                >
+                  {entry}
+                </span>
+              </Hint>
+            ) : (
+              entry
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 // One line per series over the days of the window. `compare` names, per series, the key holding the
 // previous period's value at the same position, which the tooltip shows beside the current one.
@@ -419,19 +494,49 @@ export function LineTrend({
   const p = useChartPalette();
   const day = useMemo(() => dayLabel(lang), [lang]);
   const text = useDayStateText();
+  const chartText = useChartText();
   const ids = usePatternIds();
   const stateOf = new Map(data.map((r) => [r.day, r.state]));
   const settled = useSettledMax(
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
-  const { t } = useTranslation();
+  const arranged = arrangeSeries(data, series, CATEGORICAL_SLOTS, false);
+  const colorOf = (key: string) =>
+    p.series[arranged.slot.get(key) ?? 0] ?? p.other;
   // Past the palette, a line keeps its place and its click but no identity: rates do not add up into
-  // an "Other".
-  const contextKeys = new Set(
-    series.slice(CATEGORICAL_SLOTS).map((s) => s.key),
-  );
+  // an "Other", so the group is drawn as neutral context lines under one name.
+  const groupName = chartText.others(arranged.folded.length);
   // The dot's own click runs before the chart's, which is the one that knows the day.
   const hitSeries = useRef<string | null>(null);
+  const describeRow = (r: { key: string; value: number }, row?: ChartRow) => {
+    const current = format(r.value);
+    const prevKey = compare?.[r.key];
+    if (!prevKey || !compareLabel) return current;
+    const prev = row?.[prevKey];
+    return `${current} (${compareLabel}: ${
+      typeof prev === "number" ? format(prev) : "—"
+    })`;
+  };
+  const line = (s: SeriesDef, context: boolean) => (
+    <Line
+      key={s.key}
+      type="monotone"
+      dataKey={s.key}
+      name={context ? groupName : s.label}
+      stroke={context ? p.other : colorOf(s.key)}
+      strokeWidth={context ? 1 : 2}
+      strokeOpacity={context ? 0.6 : 1}
+      // A context line keeps a small dot, so a value with no neighbour still shows.
+      dot={{ r: context ? 1.5 : 2 }}
+      activeDot={{
+        r: 5,
+        onClick: () => {
+          hitSeries.current = s.key;
+        },
+      }}
+      isAnimationActive={false}
+    />
+  );
   return (
     <div className="flex w-full flex-col gap-2">
       <div style={{ height }} className="relative w-full">
@@ -474,45 +579,47 @@ export function LineTrend({
               // Every series is null on a day under a band, and the tooltip is what says why.
               filterNull={false}
               wrapperStyle={TOOLTIP_WRAPPER}
-              content={({ active, label, payload }) =>
-                !active || label === undefined ? null : (
+              content={({ active, label, payload }) => {
+                if (!active || label === undefined) return null;
+                const entries = (payload ?? []) as readonly TooltipEntry[];
+                const values = valuesOf(entries);
+                const row = entries[0]?.payload;
+                const ready = !row?.state || row.state === "ready";
+                const context = arranged.folded.filter(
+                  (s) => typeof values.get(s.key) === "number",
+                ).length;
+                return (
                   <TooltipCard
-                    entries={(payload ?? []) as readonly TooltipEntry[]}
-                    p={p}
                     head={withState(
                       day(String(label)),
                       stateOf.get(String(label)),
                       text,
                     )}
-                    format={format}
-                    stacked={false}
-                    contextKeys={contextKeys}
-                    describe={(item, entry) => {
-                      const current = format(item.value as number);
-                      const prevKey = compare?.[item.key];
-                      if (!prevKey || !compareLabel) return current;
-                      const prev = entry.payload?.[prevKey];
-                      return `${current} (${compareLabel}: ${
-                        typeof prev === "number" ? format(prev) : "\u2014"
-                      })`;
-                    }}
+                    total={null}
+                    summary={
+                      ready
+                        ? lineSummary(
+                            arranged.kept.map((s) => ({
+                              key: s.key,
+                              label: s.label,
+                              color: colorOf(s.key),
+                              value: values.get(s.key),
+                            })),
+                            context,
+                            TOOLTIP_ROWS,
+                          )
+                        : null
+                    }
+                    describe={(r) => describeRow(r, row)}
+                    hint={null}
+                    p={p}
                   />
-                )
-              }
-            />
-            <Legend
-              wrapperStyle={{ fontSize: 12, color: p.axis }}
-              // In the order the series are drawn, so "Other" closes the list.
-              itemSorter={null}
-              // The key carries the series colour; the name wears text ink, legible on both themes.
-              formatter={(value) => (
-                <span style={{ color: p.textSecondary }}>{value}</span>
-              )}
+                );
+              }}
             />
             {series.length === 0 && (
               <Line
                 dataKey={NONE}
-                legendType="none"
                 tooltipType="none"
                 stroke="none"
                 dot={false}
@@ -520,36 +627,32 @@ export function LineTrend({
                 isAnimationActive={false}
               />
             )}
-            {series.map((s, i) => (
-              <Line
-                key={s.key}
-                type="monotone"
-                dataKey={s.key}
-                name={
-                  i >= CATEGORICAL_SLOTS
-                    ? t("dashboard.chart.otherLines", "Others ({{count}})", {
-                        count: contextKeys.size,
-                      })
-                    : s.label
-                }
-                legendType={i > CATEGORICAL_SLOTS ? "none" : "line"}
-                stroke={i < CATEGORICAL_SLOTS ? p.series[i] : p.other}
-                strokeWidth={i < CATEGORICAL_SLOTS ? 2 : 1}
-                strokeOpacity={i < CATEGORICAL_SLOTS ? 1 : 0.6}
-                // A context line keeps a small dot, so a value with no neighbour still shows.
-                dot={{ r: i < CATEGORICAL_SLOTS ? 2 : 1.5 }}
-                activeDot={{
-                  r: 5,
-                  onClick: () => {
-                    hitSeries.current = s.key;
-                  },
-                }}
-                isAnimationActive={false}
-              />
-            ))}
+            {arranged.folded.map((s) => line(s, true))}
+            {arranged.kept.map((s) => line(s, false))}
           </LineChart>
         </ResponsiveContainer>
       </div>
+      <SeriesLegend
+        mark="line"
+        p={p}
+        items={[
+          ...arranged.kept.map((s) => ({
+            key: s.key,
+            label: s.label,
+            color: colorOf(s.key),
+          })),
+          ...(arranged.folded.length > 0
+            ? [
+                {
+                  key: OTHER_KEY,
+                  label: groupName,
+                  color: p.other,
+                  members: arranged.folded.map((s) => s.label),
+                },
+              ]
+            : []),
+        ]}
+      />
       <StateLegend data={data} p={p} ids={ids} />
     </div>
   );
@@ -565,7 +668,127 @@ function withState(
   return label;
 }
 
-// Bars per day, stacked by segment, so a day's bar is its total and each segment its share.
+// The detail of the day a stack was clicked on: every series, the "Other" group's members included,
+// top to bottom as drawn, each with its value and its share of the day, and a way to close it.
+function DayDetail({
+  row,
+  head,
+  kept,
+  folded,
+  colorOf,
+  format,
+  lang,
+  onClose,
+  p,
+}: {
+  row: ChartRow;
+  head: string;
+  kept: SeriesDef[];
+  folded: SeriesDef[];
+  colorOf: (key: string) => string;
+  format: (v: number) => string;
+  lang: string;
+  onClose: () => void;
+  p: ReturnType<typeof useChartPalette>;
+}) {
+  const text = useChartText();
+  const pf = new Intl.NumberFormat(lang, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  });
+  const ready = !row.state || row.state === "ready";
+  const detail = stackDetail(row, kept, folded);
+  const line = (
+    key: string,
+    label: string,
+    value: number,
+    share: number | null,
+    color: string | null,
+    member: boolean,
+  ) => (
+    <li
+      key={key}
+      data-series-key={key}
+      className="flex items-center justify-between gap-4 py-0.5"
+    >
+      <span
+        className="text-text-secondary inline-flex min-w-0 items-center gap-1.5"
+        style={member ? { paddingLeft: "1.25rem" } : undefined}
+      >
+        {color && (
+          <span
+            aria-hidden="true"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+            style={{ background: color }}
+          />
+        )}
+        <span className="truncate">{label}</span>
+      </span>
+      <span className="flex shrink-0 items-baseline gap-3 tabular-nums">
+        <span className="text-text-primary font-medium">{format(value)}</span>
+        <span className="text-text-muted w-14 text-right">
+          {share === null ? "—" : pf.format(share)}
+        </span>
+      </span>
+    </li>
+  );
+  return (
+    <section
+      data-testid="chart-day-detail"
+      aria-label={head}
+      className="border-border bg-bg-tertiary flex flex-col gap-2 rounded-lg border px-3 py-2 text-xs"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-text-primary font-medium">{head}</span>
+        <span className="flex items-center gap-2">
+          {ready && (
+            <span className="text-text-primary font-medium tabular-nums">
+              {text.total(format(detail.total))}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={text.close}
+            className="text-text-muted hover:text-text-primary rounded-sm p-0.5"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </span>
+      </div>
+      {ready && (
+        <ul className="flex flex-col">
+          {detail.group &&
+            line(
+              OTHER_KEY,
+              text.others(folded.length),
+              detail.group.value,
+              detail.group.share,
+              p.other,
+              false,
+            )}
+          {detail.rows.map((r) =>
+            line(
+              r.key,
+              r.label,
+              r.value,
+              r.share,
+              r.member ? null : colorOf(r.key),
+              r.member,
+            ),
+          )}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Bars per day, stacked by segment, so a day's bar is its total and each segment its share. The
+// largest series over the window sits at the base and "Other" on top; clicking a day opens its
+// detail under the chart.
 export function StackedBars({
   data,
   series,
@@ -584,30 +807,41 @@ export function StackedBars({
   const p = useChartPalette();
   const day = useMemo(() => dayLabel(lang), [lang]);
   const text = useDayStateText();
+  const chartText = useChartText();
   const ids = usePatternIds();
   const stateOf = new Map(data.map((r) => [r.day, r.state]));
-  const { t } = useTranslation();
-  const drawn = foldStacked(
-    data,
-    series,
-    CATEGORICAL_SLOTS,
-    t("dashboard.chart.other", "Other"),
-  );
+  const arranged = arrangeSeries(data, series, CATEGORICAL_SLOTS, true);
+  const colorOf = (key: string) =>
+    key === OTHER_KEY
+      ? p.other
+      : (p.series[arranged.slot.get(key) ?? 0] ?? p.other);
+  const groupName = chartText.others(arranged.folded.length);
+  const drawn: SeriesDef[] = [
+    ...arranged.kept,
+    ...(arranged.folded.length > 0
+      ? [{ key: OTHER_KEY, label: groupName }]
+      : []),
+  ];
   const settled = useSettledMax(
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
+  const [picked, setPicked] = useState<string | null>(null);
+  const pickedRow = picked ? data.find((r) => r.day === picked) : undefined;
   return (
     <div className="flex w-full flex-col gap-2">
       <div style={{ height }} className="relative w-full">
         <StatePatterns ids={ids} p={p} />
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
-            data={plotted(drawn.rows, drawn.series)}
+            data={plotted(arranged.rows, drawn)}
             margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
             onClick={(e) => {
               const label = (e as { activeLabel?: string } | null)?.activeLabel;
-              if (onPick && typeof label === "string") onPick(label);
+              if (typeof label !== "string") return;
+              setPicked((cur) => (cur === label ? null : label));
+              onPick?.(label);
             }}
+            style={{ cursor: "pointer" }}
           >
             <CartesianGrid
               stroke={p.grid}
@@ -634,54 +868,98 @@ export function StackedBars({
               filterNull={false}
               cursor={{ fill: p.grid, opacity: 0.4 }}
               wrapperStyle={TOOLTIP_WRAPPER}
-              content={({ active, label, payload }) =>
-                !active || label === undefined ? null : (
+              content={({ active, label, payload }) => {
+                if (!active || label === undefined) return null;
+                const entries = (payload ?? []) as readonly TooltipEntry[];
+                const values = valuesOf(entries);
+                const row = entries[0]?.payload;
+                const ready = !row?.state || row.state === "ready";
+                const total = drawn.reduce((a, s) => {
+                  const v = values.get(s.key);
+                  return a + (typeof v === "number" ? v : 0);
+                }, 0);
+                return (
                   <TooltipCard
-                    entries={(payload ?? []) as readonly TooltipEntry[]}
-                    p={p}
                     head={withState(
                       day(String(label)),
                       stateOf.get(String(label)),
                       text,
                     )}
-                    format={format}
-                    stacked
-                    contextKeys={NO_KEYS}
+                    total={ready && drawn.length > 0 ? format(total) : null}
+                    summary={
+                      ready
+                        ? stackSummary(
+                            arranged.kept.map((s) => ({
+                              key: s.key,
+                              label: s.label,
+                              color: colorOf(s.key),
+                              value: values.get(s.key),
+                            })),
+                            arranged.folded.length > 0
+                              ? {
+                                  count: arranged.folded.length,
+                                  value: values.get(OTHER_KEY),
+                                }
+                              : null,
+                            TOOLTIP_ROWS,
+                          )
+                        : null
+                    }
+                    describe={(r) => format(r.value)}
+                    hint={
+                      ready && drawn.length > 0 ? chartText.clickForAll : null
+                    }
+                    p={p}
                   />
-                )
-              }
+                );
+              }}
             />
-            <Legend
-              wrapperStyle={{ fontSize: 12, color: p.axis }}
-              // In the order the series are drawn, so "Other" closes the list.
-              itemSorter={null}
-              // The key carries the series colour; the name wears text ink, legible on both themes.
-              formatter={(value) => (
-                <span style={{ color: p.textSecondary }}>{value}</span>
-              )}
-            />
-            {drawn.series.length === 0 && (
+            {drawn.length === 0 && (
               <Bar
                 dataKey={NONE}
-                legendType="none"
                 tooltipType="none"
                 isAnimationActive={false}
               />
             )}
-            {drawn.series.map((s, i) => (
+            {drawn.map((s) => (
               <Bar
                 key={s.key}
                 dataKey={s.key}
                 name={s.label}
                 stackId="day"
-                fill={s.key === OTHER_KEY ? p.other : p.series[i]}
+                fill={colorOf(s.key)}
                 isAnimationActive={false}
               />
             ))}
           </BarChart>
         </ResponsiveContainer>
       </div>
+      <SeriesLegend
+        mark="bar"
+        p={p}
+        items={drawn.map((s) => ({
+          key: s.key,
+          label: s.label,
+          color: colorOf(s.key),
+          ...(s.key === OTHER_KEY
+            ? { members: [...arranged.folded].reverse().map((f) => f.label) }
+            : {}),
+        }))}
+      />
       <StateLegend data={data} p={p} ids={ids} />
+      {pickedRow && (
+        <DayDetail
+          row={pickedRow}
+          head={withState(day(pickedRow.day), pickedRow.state, text)}
+          kept={arranged.kept}
+          folded={arranged.folded}
+          colorOf={colorOf}
+          format={format}
+          lang={lang}
+          onClose={() => setPicked(null)}
+          p={p}
+        />
+      )}
     </div>
   );
 }

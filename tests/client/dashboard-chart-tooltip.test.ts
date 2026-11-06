@@ -8,6 +8,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import i18next from "i18next";
 import { createElement } from "react";
@@ -22,8 +23,8 @@ import {
 } from "@/client/pages/dashboard/charts";
 
 // A CHART WITH MORE SERIES THAN COLOURS. Eleven segments a day: the legend names at most eight
-// entries, each in a colour no other entry has, and the tooltip lists the largest rows of the day
-// with the rest summed in one line, drawn above the legend.
+// entries, each in a colour no other entry has, in the order of the stack; the tooltip summarises
+// the day top to bottom as drawn, with one "Others" line; a click opens the day's every series.
 
 const WIDTH = 600;
 const HEIGHT = 260;
@@ -110,33 +111,39 @@ async function hover(container: HTMLElement, i: number, days: number) {
 
 function legend(container: HTMLElement) {
   return [
-    ...container.querySelectorAll<HTMLElement>(".recharts-legend-item"),
+    ...container.querySelectorAll<HTMLElement>(
+      '[data-testid="chart-legend"] > li',
+    ),
   ].map((li) => ({
+    key: li.dataset.seriesKey ?? "",
     text: li.textContent ?? "",
-    color: (() => {
-      const icon = li.querySelector("path");
-      const fill = icon?.getAttribute("fill");
-      return fill && fill !== "none"
-        ? fill
-        : (icon?.getAttribute("stroke") ?? "");
-    })(),
+    color:
+      li.querySelector<HTMLElement>("[data-legend-key]")?.style.background ??
+      "",
+    ink: li.querySelector<HTMLElement>("[data-legend-key] + span")?.style.color,
   }));
 }
 
+async function legendOf(container: HTMLElement) {
+  return waitFor(() => {
+    const l = legend(container);
+    if (l.length === 0) throw new Error("no legend yet");
+    return l;
+  });
+}
+
+const token = (name: string) =>
+  document.documentElement.style.getPropertyValue(name);
+
 // The names wear text ink; only the keys carry the series colours.
-function expectTextInkNames(container: HTMLElement, count: number) {
-  const names = [
-    ...container.querySelectorAll<HTMLElement>(
-      ".recharts-legend-item-text span",
-    ),
-  ].map((n) => n.style.color);
-  expect(names).toHaveLength(count);
-  expect(new Set(names)).toEqual(
-    new Set([
-      document.documentElement.style.getPropertyValue("--color-text-secondary"),
-    ]),
+function expectTextInkNames(items: ReturnType<typeof legend>) {
+  expect(new Set(items.map((i) => i.ink))).toEqual(
+    new Set([token("--color-text-secondary")]),
   );
 }
+
+const lines = (root: Element) =>
+  [...root.querySelectorAll("li")].map((li) => li.textContent);
 
 function renderChart(
   el: typeof StackedBars | typeof LineTrend,
@@ -149,118 +156,248 @@ function renderChart(
       createElement(
         ThemeProvider,
         null,
-        createElement(el as typeof LineTrend, props),
+        createElement(
+          TooltipProvider,
+          null,
+          createElement(el as typeof LineTrend, props),
+        ),
       ),
     ),
   );
 }
 
+const stacked = { data, series, lang: "en", format: String };
+
 describe("a stacked chart with more series than colours", () => {
   for (const theme of ["dark", "light"] as const)
-    test(`folds the smallest into one Other and gives every entry a colour of its own (${theme})`, async () => {
+    test(`reads its legend from the base of the stack, Others last, each entry in a colour of its own (${theme})`, async () => {
       setTheme(theme);
-      const { container } = renderChart(StackedBars, {
-        data,
-        series,
-        lang: "en",
-        format: String,
-      });
-      const items = await waitFor(() => {
-        const l = legend(container);
-        if (l.length === 0) throw new Error("no legend yet");
-        return l;
-      });
-      // The legend follows the stack, with Other last.
+      const { container } = renderChart(StackedBars, stacked);
+      const items = await legendOf(container);
       expect(items.map((i) => i.text)).toEqual([
-        "Node 4",
-        "Node 5",
-        "Node 6",
-        "Node 7",
-        "Node 8",
-        "Node 9",
         "Node 10",
-        "Other",
+        "Node 9",
+        "Node 8",
+        "Node 7",
+        "Node 6",
+        "Node 5",
+        "Node 4",
+        "Others (4)",
       ]);
       expect(new Set(items.map((i) => i.color)).size).toBe(items.length);
-      expectTextInkNames(container, items.length);
-      // "Other" has no identity: it takes the neutral ink, not a ninth hue.
-      expect(items.at(-1)?.color).toBe(
-        document.documentElement.style.getPropertyValue("--color-text-muted"),
-      );
+      expectTextInkNames(items);
+      // "Others" has no identity: it takes the neutral ink, not a ninth hue.
+      expect(items.at(-1)?.color).toBe(token("--color-text-muted"));
+      // The colour follows the series, not its rank: Node 4 comes first among the kept in the
+      // caller's order, so it wears the first colour though it sits last in the legend.
+      expect(items[6]?.color).toBe(token("--color-chart-1"));
+      expect(items[0]?.color).toBe(token("--color-chart-7"));
     });
 
-  test("lists the day's largest rows, the rest in one line, and the total", async () => {
-    const { container } = renderChart(StackedBars, {
-      data,
-      series,
-      lang: "en",
-      format: String,
-    });
+  test("summarises the day top to bottom as drawn, with one Others line on top and the total in the header", async () => {
+    const { container } = renderChart(StackedBars, stacked);
     const tip = await hover(container, 1, 2);
-    const rows = [...tip.querySelectorAll("li")].map((li) => li.textContent);
-    // Other (1+2+3+4 = 10) ties Node 9 and sits after it; Node 6..4 (7..5) are summed away.
-    expect(rows).toEqual([
-      "Node 1011",
-      "Node 910",
-      "Other10",
-      "Node 89",
+    // Node 4 and Node 5 (5 and 6) join the group (1+2+3+4 = 10), which sits right above them.
+    expect(lines(tip)).toEqual([
+      "Others (6)21",
+      "Node 67",
       "Node 78",
+      "Node 89",
+      "Node 910",
+      "Node 1011",
     ]);
-    expect(tip.textContent).toContain("+3 more · 18");
-    expect(tip.textContent).toContain(
-      `Day total ${11 + 10 + 9 + 8 + 7 + 6 + 5 + 10}`,
-    );
+    expect(tip.textContent).toContain("Day total 66");
+    expect(tip.textContent).toContain("Click to see every series");
+    expect(tip.textContent).not.toContain("more");
     expect(tip.style.zIndex).toBe("10");
   });
 
-  test("a day with a series at zero leaves it out of the tooltip", async () => {
-    const few = series.slice(0, 4);
+  test("keeps the same order on every day, whatever that day's values", async () => {
+    // B outweighs A on the first day, A outweighs B over the window: A is the base on both days.
+    const skewed: ChartRow[] = data.map((r, d) => ({
+      day: r.day,
+      state: "ready",
+      a: d === 0 ? 1 : 10,
+      b: d === 0 ? 5 : 1,
+    }));
     const { container } = renderChart(StackedBars, {
-      data,
-      series: few,
-      lang: "en",
-      format: String,
+      ...stacked,
+      data: skewed,
+      series: [
+        { key: "a", label: "A" },
+        { key: "b", label: "B" },
+      ],
+    });
+    expect((await legendOf(container)).map((i) => i.text)).toEqual(["A", "B"]);
+    expect(lines(await hover(container, 0, 2))).toEqual(["B5", "A1"]);
+    expect(lines(await hover(container, 1, 2))).toEqual(["B1", "A10"]);
+  });
+
+  test("a day with a series at zero leaves it out of the tooltip", async () => {
+    const { container } = renderChart(StackedBars, {
+      ...stacked,
+      series: series.slice(0, 4),
     });
     const tip = await hover(container, 0, 2);
-    const rows = [...tip.querySelectorAll("li")].map((li) => li.textContent);
-    expect(rows).toEqual(["Node 23", "Node 12", "Node 01"]);
-    expect(tip.textContent).not.toContain("more");
+    expect(lines(tip)).toEqual(["Node 01", "Node 12", "Node 23"]);
+    expect(tip.textContent).not.toContain("Others");
+  });
+
+  test("a click opens the day's every series, the group's members included, with shares, and closes", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await hover(container, 1, 2);
+    const wrapper = container.querySelector(".recharts-wrapper") as Element;
+    fireEvent.click(wrapper, { clientX: centerOf(1, 2), clientY: HEIGHT / 2 });
+    const detail = await waitFor(() => {
+      const d = container.querySelector('[data-testid="chart-day-detail"]');
+      if (!d) throw new Error("no detail yet");
+      return d;
+    });
+    const keys = [...detail.querySelectorAll("li")].map(
+      (li) => (li as HTMLElement).dataset.seriesKey,
+    );
+    expect(keys).toEqual([
+      "__other",
+      "n0",
+      "n3",
+      "n1",
+      "n2",
+      "n4",
+      "n5",
+      "n6",
+      "n7",
+      "n8",
+      "n9",
+      "n10",
+    ]);
+    expect(lines(detail)[0]).toBe("Others (4)1015.2%");
+    expect(lines(detail).at(-1)).toBe("Node 101116.7%");
+    expect(detail.textContent).toContain("Day total 66");
+    fireEvent.click(
+      detail.querySelector(
+        'button[aria-label="Close the day\'s detail"]',
+      ) as Element,
+    );
+    await waitFor(() => {
+      if (container.querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("still open");
+    });
+  });
+
+  test("Escape closes the detail too", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await hover(container, 1, 2);
+    const wrapper = container.querySelector(".recharts-wrapper") as Element;
+    fireEvent.click(wrapper, { clientX: centerOf(1, 2), clientY: HEIGHT / 2 });
+    const detail = await waitFor(() => {
+      const d = container.querySelector('[data-testid="chart-day-detail"]');
+      if (!d) throw new Error("no detail yet");
+      return d;
+    });
+    fireEvent.keyDown(detail, { key: "Escape" });
+    expect(
+      container.querySelector('[data-testid="chart-day-detail"]'),
+    ).toBeNull();
+  });
+
+  test("the Others legend entry names its members on focus", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await legendOf(container);
+    const other = container.querySelector(
+      '[data-testid="chart-legend"] > li[data-series-key="__other"] [tabindex="0"]',
+    ) as HTMLElement;
+    fireEvent.focus(other);
+    const members = await waitFor(() => {
+      const m = document.querySelector('[data-testid="chart-legend-members"]');
+      if (!m) throw new Error("no members yet");
+      return m;
+    });
+    // Top to bottom, as the group's members would stack: the smallest first, like the day detail.
+    expect(lines(members)).toEqual(["Node 0", "Node 3", "Node 1", "Node 2"]);
   });
 });
 
 describe("a line chart with more series than colours", () => {
-  test("draws the lines past the palette as one unnamed group, and does not add them up", async () => {
+  test("draws the lines past the palette as one group, last in the legend, and does not add them up", async () => {
     const { container } = renderChart(LineTrend, {
       data,
       series: series.slice(0, 10),
       lang: "en",
       format: String,
     });
-    const items = await waitFor(() => {
-      const l = legend(container);
-      if (l.length === 0) throw new Error("no legend yet");
-      return l;
-    });
+    const items = await legendOf(container);
     expect(items.map((i) => i.text)).toEqual([
-      ...series.slice(0, 8).map((s) => s.label),
-      "Others (2)",
+      "Node 9",
+      "Node 8",
+      "Node 7",
+      "Node 6",
+      "Node 5",
+      "Node 4",
+      "Node 2",
+      "Others (3)",
     ]);
     expect(new Set(items.map((i) => i.color)).size).toBe(items.length);
-    expectTextInkNames(container, items.length);
+    expectTextInkNames(items);
     const tip = await hover(container, 1, 2);
-    expect(tip.querySelectorAll("li")).toHaveLength(5);
-    expect(tip.textContent).toContain("+5 more");
+    // The day's highest first, as the lines sit; what does not fit joins the group, last.
+    expect(lines(tip)).toEqual([
+      "Node 910",
+      "Node 89",
+      "Node 78",
+      "Node 67",
+      "Node 56",
+      "Others (5)",
+    ]);
     expect(tip.textContent).not.toContain("·");
     expect(tip.textContent).not.toContain("Total");
+    expect(tip.textContent).not.toContain("Click");
+  });
+
+  test("lists a day by that day's values, so the order follows the lines where they cross", async () => {
+    const crossing: ChartRow[] = data.map((r, d) => ({
+      day: r.day,
+      state: "ready",
+      a: d === 0 ? 0.9 : 0.1,
+      b: d === 0 ? 0.2 : 0.8,
+    }));
+    const { container } = renderChart(LineTrend, {
+      data: crossing,
+      series: [
+        { key: "a", label: "A" },
+        { key: "b", label: "B" },
+      ],
+      lang: "en",
+      format: String,
+    });
+    expect((await legendOf(container)).map((i) => i.text)).toEqual(["A", "B"]);
+    expect(lines(await hover(container, 0, 2))).toEqual(["A0.9", "B0.2"]);
+    expect(lines(await hover(container, 1, 2))).toEqual(["B0.8", "A0.1"]);
+  });
+
+  test("a click on a point opens no day detail", async () => {
+    const { container } = renderChart(LineTrend, {
+      data,
+      series: series.slice(0, 3),
+      lang: "en",
+      format: String,
+    });
+    await hover(container, 1, 2);
+    fireEvent.click(container.querySelector(".recharts-wrapper") as Element, {
+      clientX: centerOf(1, 2),
+      clientY: HEIGHT / 2,
+    });
+    expect(
+      container.querySelector('[data-testid="chart-day-detail"]'),
+    ).toBeNull();
   });
 });
 
 describe("a context line with a single value", () => {
   test("still marks the value", async () => {
-    // Node 9 is a context line with a value on the first day only: no segment to draw.
+    // Node 9 is a context line with a small value on the first day only: no segment to draw.
     const lone: ChartRow[] = data.map((r, d) => ({
       ...r,
-      n9: d === 0 ? 5 : null,
+      n9: d === 0 ? 0.5 : null,
     }));
     const { container } = renderChart(LineTrend, {
       data: lone,
@@ -271,7 +408,8 @@ describe("a context line with a single value", () => {
     const dots = await waitFor(() => {
       const groups = container.querySelectorAll(".recharts-line-dots");
       if (groups.length < 10) throw new Error("dots not drawn yet");
-      return groups[9]?.querySelectorAll("circle") ?? [];
+      // The context lines are drawn first, under the kept ones, smallest last.
+      return groups[2]?.querySelectorAll("circle") ?? [];
     });
     expect(dots.length).toBe(1);
   });
@@ -294,9 +432,7 @@ describe("a line at zero", () => {
       compareLabel: "previous",
     });
     const tip = await hover(container, 1, 2);
-    expect([...tip.querySelectorAll("li")].map((li) => li.textContent)).toEqual(
-      ["Resolution0 (previous: 0.8)"],
-    );
+    expect(lines(tip)).toEqual(["Resolution0 (previous: 0.8)"]);
   });
 });
 
@@ -349,11 +485,16 @@ describe("the context lines of a line chart", () => {
       format: String,
     });
     const names = await waitFor(() => {
-      const lines = [...container.querySelectorAll(".recharts-line-curve")];
-      if (lines.length < 11) throw new Error("lines not drawn yet");
-      return lines.map((l) => l.getAttribute("name"));
+      const curves = [...container.querySelectorAll(".recharts-line-curve")];
+      if (curves.length < 11) throw new Error("lines not drawn yet");
+      return curves.map((l) => l.getAttribute("name"));
     });
-    expect(names.slice(8)).toEqual(["Others (3)", "Others (3)", "Others (3)"]);
+    expect(names.slice(0, 4)).toEqual([
+      "Others (4)",
+      "Others (4)",
+      "Others (4)",
+      "Others (4)",
+    ]);
   });
 });
 
@@ -366,8 +507,8 @@ describe("a line chart within the palette", () => {
       format: String,
     });
     const tip = await hover(container, 1, 2);
-    expect(tip.querySelectorAll("li")).toHaveLength(5);
-    expect(tip.textContent).toContain("+3 more");
+    expect(lines(tip)).toHaveLength(6);
+    expect(lines(tip).at(-1)).toBe("Others (3)");
     expect(tip.textContent).not.toContain("·");
   });
 });

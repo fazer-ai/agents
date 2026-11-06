@@ -1,11 +1,7 @@
-// Which series a dashboard chart draws in a colour of its own, and what its tooltip lists. Kept out
-// of the components so the rules are a table, not a render.
-//
-// A chart has CATEGORICAL_SLOTS distinct hues and never cycles them: past that count, a stacked
-// chart folds its smallest series (by their total over the window) into one "Other" in a neutral
-// colour, since a stack's segments add up; a line chart cannot add rates, so its later series are
-// drawn as neutral context lines with no identity of their own. The table view and the CSV are built
-// by the callers from the unfolded series, so they keep every one.
+// Which series a dashboard chart draws in a colour of its own, in what order, and what its tooltip
+// and its day detail list: ranked once per window by total, the smallest past the palette grouped
+// into one "Other", always last; a colour follows the series, never its rank. Every vertical list
+// reads the chart as drawn, top to bottom. The rules and the reasons are in docs/dashboard.md.
 
 export const OTHER_KEY = "__other";
 
@@ -30,38 +26,47 @@ export function windowTotal(rows: Row[], key: string): number {
   return sum;
 }
 
-// The series a stacked chart keeps, in the caller's order (a colour follows its series, not its
-// rank), and the ones folded into "Other". Folding one series alone would only rename it, so a chart
-// over the limit keeps one slot fewer and "Other" always holds two or more.
-export function foldStacked<T extends Row>(
+export interface Arranged<T> {
+  // The series drawn in a colour of their own, largest window total first (the base of a stack).
+  kept: SeriesDef[];
+  // The "Other" group, largest first; empty when everything fits the palette.
+  folded: SeriesDef[];
+  // The palette slot of each kept series.
+  slot: Map<string, number>;
+  // The rows, with the group's sum under OTHER_KEY when `sum` was asked and there is a group.
+  rows: T[];
+}
+
+// Ranks a chart's series by window total (a tie keeps the caller's order) and splits off the group.
+// Grouping one series alone would only rename it, so a chart over the limit keeps one slot fewer and
+// the group always holds two or more.
+export function arrangeSeries<T extends Row>(
   rows: T[],
   series: SeriesDef[],
   slots: number,
-  otherLabel: string,
-): { series: SeriesDef[]; rows: T[]; folded: SeriesDef[] } {
-  if (series.length <= slots) return { series, rows, folded: [] };
-  const keep = slots - 1;
+  sum: boolean,
+): Arranged<T> {
   const ranked = series
     .map((s, i) => ({ s, i, total: windowTotal(rows, s.key) }))
     .sort((a, b) => b.total - a.total || a.i - b.i);
-  const kept = new Set(ranked.slice(0, keep).map((r) => r.s.key));
-  const folded = series.filter((s) => !kept.has(s.key));
-  const out = rows.map((r) => {
-    let sum: number | null = null;
-    for (const s of folded) {
-      const v = numeric(r[s.key]);
-      if (v !== null) sum = (sum ?? 0) + v;
-    }
-    return { ...r, [OTHER_KEY]: sum };
-  });
-  return {
-    series: [
-      ...series.filter((s) => kept.has(s.key)),
-      { key: OTHER_KEY, label: otherLabel },
-    ],
-    rows: out,
-    folded,
-  };
+  const keep = series.length <= slots ? series.length : slots - 1;
+  const kept = ranked.slice(0, keep);
+  const folded = ranked.slice(keep).map((r) => r.s);
+  const slot = new Map(
+    [...kept].sort((a, b) => a.i - b.i).map((r, n) => [r.s.key, n] as const),
+  );
+  const out =
+    sum && folded.length > 0
+      ? rows.map((r) => {
+          let total: number | null = null;
+          for (const s of folded) {
+            const v = numeric(r[s.key]);
+            if (v !== null) total = (total ?? 0) + v;
+          }
+          return { ...r, [OTHER_KEY]: total };
+        })
+      : rows;
+  return { kept: kept.map((r) => r.s), folded, slot, rows: out };
 }
 
 export interface TooltipItem {
@@ -69,35 +74,113 @@ export interface TooltipItem {
   label: string;
   color: string;
   value: unknown;
-  // What the row shows; the value alone when absent.
-  text?: string;
 }
 
-// The rows of a tooltip: the series with a value on that day, the largest first, at most `max` of
-// them, and what is left over as a count and a sum. A zero segment of a stack is nothing to show; a
-// zero on a line (a rate that fell to 0%) is a value, so `keepZero` keeps it.
-export function tooltipRows(
-  items: TooltipItem[],
-  max: number,
-  keepZero = false,
-): {
+export interface TooltipSummary {
   rows: (TooltipItem & { value: number })[];
-  rest: { count: number; sum: number };
-} {
-  const present = items
-    .map((it, i) => ({ it, i, v: numeric(it.value) }))
+  // The one "Other" line: how many series it holds, and their sum on a stack (null on a line chart,
+  // whose values do not add up). Null when the group has nothing to show that day.
+  other: { count: number; value: number | null } | null;
+}
+
+// A stack's tooltip, top to bottom as the stack is drawn: "Other" first, then the kept series from
+// the top layer down to the base. `kept` comes base first. A zero segment is not drawn and not
+// listed. Past `max` lines, the layers nearest the group (the smallest kept) join it.
+export function stackSummary(
+  kept: TooltipItem[],
+  group: { count: number; value: unknown } | null,
+  max: number,
+): TooltipSummary {
+  const present = kept
+    .map((it) => ({ ...it, value: numeric(it.value) }))
     .filter(
-      (x): x is { it: TooltipItem; i: number; v: number } =>
-        x.v !== null && (keepZero || x.v !== 0),
-    )
-    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v) || a.i - b.i);
-  const shown = present.length > max ? max - 1 : present.length;
-  const rest = present.slice(shown);
+      (it): it is TooltipItem & { value: number } =>
+        it.value !== null && it.value !== 0,
+    );
+  const groupValue = group ? numeric(group.value) : null;
+  const groupShown = !!group && groupValue !== null && groupValue !== 0;
+  const room =
+    present.length + (groupShown ? 1 : 0) > max ? max - 1 : present.length;
+  const shown = present.slice(0, room);
+  const cut = present.slice(room);
+  const count = (group?.count ?? 0) + cut.length;
+  const value =
+    (groupShown ? (groupValue ?? 0) : 0) + cut.reduce((a, r) => a + r.value, 0);
   return {
-    rows: present.slice(0, shown).map((x) => ({ ...x.it, value: x.v })),
-    rest: {
-      count: rest.length,
-      sum: rest.reduce((a, x) => a + x.v, 0),
-    },
+    rows: shown.reverse(),
+    other: groupShown || cut.length > 0 ? { count, value } : null,
+  };
+}
+
+// A line chart's tooltip, top to bottom as the lines sit on that day: the highest value first. A
+// zero is a value there (a rate that fell to 0%). The context lines and whatever does not fit `max`
+// form the one "Other" line, last, with no value.
+export function lineSummary(
+  kept: TooltipItem[],
+  context: number,
+  max: number,
+): TooltipSummary {
+  const present = kept
+    .map((it, i) => ({ it: { ...it, value: numeric(it.value) }, i }))
+    .filter(
+      (x): x is { it: TooltipItem & { value: number }; i: number } =>
+        x.it.value !== null,
+    )
+    .sort((a, b) => b.it.value - a.it.value || a.i - b.i)
+    .map((x) => x.it);
+  const room =
+    present.length + (context > 0 ? 1 : 0) > max ? max - 1 : present.length;
+  const count = context + present.length - room;
+  return {
+    rows: present.slice(0, room),
+    other: count > 0 ? { count, value: null } : null,
+  };
+}
+
+export interface DetailRow {
+  key: string;
+  label: string;
+  value: number;
+  share: number | null;
+  // True for a series inside the "Other" group, listed under it.
+  member: boolean;
+}
+
+// The day detail of a stack: every series, top to bottom as drawn, the group's members under its
+// own line (smallest first, as they would stack), each with its value and its share of the day.
+export function stackDetail(
+  row: Row,
+  kept: SeriesDef[],
+  folded: SeriesDef[],
+): { total: number; group: DetailRow | null; rows: DetailRow[] } {
+  const total = [...kept, ...folded].reduce(
+    (a, s) => a + (numeric(row[s.key]) ?? 0),
+    0,
+  );
+  const line = (s: SeriesDef, member: boolean): DetailRow => {
+    const value = numeric(row[s.key]) ?? 0;
+    return {
+      key: s.key,
+      label: s.label,
+      value,
+      share: total > 0 ? value / total : null,
+      member,
+    };
+  };
+  const members = [...folded].reverse().map((s) => line(s, true));
+  const groupValue = members.reduce((a, r) => a + r.value, 0);
+  return {
+    total,
+    group:
+      folded.length > 0
+        ? {
+            key: OTHER_KEY,
+            label: "",
+            value: groupValue,
+            share: total > 0 ? groupValue / total : null,
+            member: false,
+          }
+        : null,
+    rows: [...members, ...[...kept].reverse().map((s) => line(s, false))],
   };
 }

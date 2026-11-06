@@ -1,28 +1,53 @@
 import { describe, expect, test } from "bun:test";
 import {
-  foldStacked,
+  arrangeSeries,
+  lineSummary,
   OTHER_KEY,
-  tooltipRows,
+  stackDetail,
+  stackSummary,
 } from "@/client/pages/dashboard/chart-series";
 
 const series = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ key: `s${i}`, label: `S${i}` }));
 
-describe("foldStacked", () => {
-  test("a chart within the palette draws every series as given", () => {
-    const rows = [{ day: "d1", s0: 1, s1: 2 }];
-    const out = foldStacked(rows, series(2), 8, "Other");
-    expect(out.series).toEqual(series(2));
-    expect(out.rows).toBe(rows);
+const item = (key: string, value: unknown) => ({
+  key,
+  label: key.toUpperCase(),
+  color: `c-${key}`,
+  value,
+});
+
+describe("arrangeSeries", () => {
+  test("within the palette, every series is kept, largest window total first, colours by caller order", () => {
+    const rows = [
+      { day: "d1", s0: 1, s1: 5, s2: 3 },
+      { day: "d2", s0: 1, s1: 0, s2: 3 },
+    ];
+    const out = arrangeSeries(rows, series(3), 8, true);
+    expect(out.kept.map((s) => s.key)).toEqual(["s2", "s1", "s0"]);
     expect(out.folded).toEqual([]);
+    expect([...out.slot]).toEqual([
+      ["s0", 0],
+      ["s1", 1],
+      ["s2", 2],
+    ]);
+    // Nothing to sum, so the rows are the caller's.
+    expect(out.rows).toBe(rows);
+  });
+
+  test("a tie keeps the caller's order", () => {
+    const rows = [{ s0: 2, s1: 2, s2: 2 }];
+    expect(
+      arrangeSeries(rows, series(3), 8, false).kept.map((s) => s.key),
+    ).toEqual(["s0", "s1", "s2"]);
   });
 
   test("exactly as many series as colours folds nothing", () => {
     const rows = [Object.fromEntries(series(8).map((s) => [s.key, 1]))];
-    expect(foldStacked(rows, series(8), 8, "Other").folded).toEqual([]);
+    expect(arrangeSeries(rows, series(8), 8, true).folded).toEqual([]);
   });
 
-  test("past the palette, the smallest series by window total fold into Other, and the rest keep their order", () => {
+  test("past the palette, the smallest by window total form the group, largest first, and the rows carry its sum", () => {
     // s0 is the largest on the first day and among the smallest over the window.
     const totals = [10, 3, 40, 50, 60, 70, 80, 90, 100, 1, 2];
     const rows = [
@@ -31,94 +56,146 @@ describe("foldStacked", () => {
         series(11).map((s, i) => [s.key, i === 0 ? 0 : totals[i]]),
       ),
     ];
-    const out = foldStacked(rows, series(11), 8, "Other");
-    expect(out.folded.map((s) => s.key)).toEqual(["s0", "s1", "s9", "s10"]);
-    expect(out.series.map((s) => s.key)).toEqual([
-      "s2",
-      "s3",
-      "s4",
-      "s5",
-      "s6",
-      "s7",
+    const out = arrangeSeries(rows, series(11), 8, true);
+    expect(out.kept.map((s) => s.key)).toEqual([
       "s8",
-      OTHER_KEY,
+      "s7",
+      "s6",
+      "s5",
+      "s4",
+      "s3",
+      "s2",
     ]);
-    expect(out.series.at(-1)?.label).toBe("Other");
-    expect(out.rows[0]?.[OTHER_KEY]).toBe(10);
-    expect(out.rows[1]?.[OTHER_KEY]).toBe(3 + 1 + 2);
+    expect(out.folded.map((s) => s.key)).toEqual(["s0", "s1", "s10", "s9"]);
+    // Colour follows the caller's order among the kept, not the rank.
+    expect(out.slot.get("s2")).toBe(0);
+    expect(out.slot.get("s8")).toBe(6);
+    expect(out.rows.map((r) => r[OTHER_KEY])).toEqual([10, 6]);
   });
 
-  test("one series over the palette still folds two, so Other never renames a single series", () => {
+  test("a day where no folded series has a value sums to null, not zero", () => {
     const rows = [
-      Object.fromEntries(series(9).map((s, i) => [s.key, 100 - i])),
+      Object.fromEntries(series(9).map((s, i) => [s.key, i < 7 ? 5 : null])),
+      Object.fromEntries(series(9).map((s) => [s.key, 1])),
     ];
-    const out = foldStacked(rows, series(9), 8, "Other");
-    expect(out.folded.map((s) => s.key)).toEqual(["s7", "s8"]);
-    expect(out.series).toHaveLength(8);
-  });
-
-  test("a day where every folded series is null keeps Other null, so a band day stays blank", () => {
-    const rows = [
-      Object.fromEntries(series(10).map((s) => [s.key, null])),
-      Object.fromEntries(series(10).map((s, i) => [s.key, i])),
-    ];
-    const out = foldStacked(rows, series(10), 8, "Other");
+    const out = arrangeSeries(rows, series(9), 8, true);
     expect(out.rows[0]?.[OTHER_KEY]).toBeNull();
-    expect(out.rows[1]?.[OTHER_KEY]).toBe(0 + 1 + 2);
+    expect(out.rows[1]?.[OTHER_KEY]).toBe(2);
   });
 
-  test("a tie in window totals keeps the earlier series", () => {
+  test("a line chart is not summed", () => {
     const rows = [Object.fromEntries(series(9).map((s) => [s.key, 1]))];
-    const out = foldStacked(rows, series(9), 8, "Other");
-    expect(out.folded.map((s) => s.key)).toEqual(["s7", "s8"]);
+    const out = arrangeSeries(rows, series(9), 8, false);
+    expect(out.folded).toHaveLength(2);
+    expect(out.rows).toBe(rows);
   });
 });
 
-describe("tooltipRows", () => {
-  const item = (key: string, value: unknown) => ({
-    key,
-    label: key.toUpperCase(),
-    color: "#000",
-    value,
-  });
-
-  test("lists the series with a value, largest first, and leaves zero and null out", () => {
-    const out = tooltipRows(
-      [item("a", 1), item("b", 0), item("c", null), item("d", 5), item("e", 3)],
+describe("stackSummary", () => {
+  test("reads the stack top to bottom: the group first, then the kept from the top layer to the base", () => {
+    const out = stackSummary(
+      [item("a", 9), item("b", 5), item("c", 2)],
+      { count: 3, value: 1.5 },
       6,
     );
-    expect(out.rows.map((r) => r.key)).toEqual(["d", "e", "a"]);
-    expect(out.rest).toEqual({ count: 0, sum: 0 });
+    expect(out.rows.map((r) => r.key)).toEqual(["c", "b", "a"]);
+    expect(out.other).toEqual({ count: 3, value: 1.5 });
   });
 
-  test("past the limit, the last slot becomes the count and sum of the rest", () => {
-    const items = Array.from({ length: 11 }, (_, i) => item(`k${i}`, i + 1));
-    const out = tooltipRows(items, 6);
-    expect(out.rows.map((r) => r.value)).toEqual([11, 10, 9, 8, 7]);
-    expect(out.rest).toEqual({ count: 6, sum: 1 + 2 + 3 + 4 + 5 + 6 });
-  });
-
-  test("exactly the limit lists every row with nothing left over", () => {
-    const items = Array.from({ length: 6 }, (_, i) => item(`k${i}`, i + 1));
-    const out = tooltipRows(items, 6);
-    expect(out.rows).toHaveLength(6);
-    expect(out.rest.count).toBe(0);
-  });
-
-  test("a line keeps a zero, which is a value there", () => {
-    const out = tooltipRows(
-      [item("a", 0), item("b", null), item("c", 2)],
+  test("a series at zero or with no value that day is not listed", () => {
+    const out = stackSummary(
+      [item("a", 9), item("b", 0), item("c", null)],
+      null,
       6,
-      true,
     );
-    expect(out.rows.map((r) => [r.key, r.value])).toEqual([
-      ["c", 2],
-      ["a", 0],
+    expect(out.rows.map((r) => r.key)).toEqual(["a"]);
+    expect(out.other).toBeNull();
+  });
+
+  test("a group at zero that day is not shown", () => {
+    expect(stackSummary([item("a", 1)], { count: 2, value: 0 }, 6).other).toBe(
+      null,
+    );
+  });
+
+  test("past the limit, the layers nearest the group join it, and the lines never exceed it", () => {
+    const kept = [6, 5, 4, 3, 2, 1, 0.5].map((v, i) => item(`k${i}`, v));
+    const out = stackSummary(kept, { count: 4, value: 0.25 }, 6);
+    expect(out.rows.map((r) => r.key)).toEqual(["k4", "k3", "k2", "k1", "k0"]);
+    expect(out.other).toEqual({ count: 6, value: 1.75 });
+    expect(out.rows.length + 1).toBe(6);
+  });
+
+  test("past the limit with no group, the cut still forms one", () => {
+    const kept = [6, 5, 4, 3, 2, 1, 0.5].map((v, i) => item(`k${i}`, v));
+    const out = stackSummary(kept, null, 6);
+    expect(out.rows).toHaveLength(5);
+    expect(out.other).toEqual({ count: 2, value: 1.5 });
+  });
+
+  test("exactly at the limit, nothing is cut", () => {
+    const kept = [6, 5, 4, 3, 2].map((v, i) => item(`k${i}`, v));
+    const out = stackSummary(kept, { count: 2, value: 1 }, 6);
+    expect(out.rows).toHaveLength(5);
+    expect(out.other).toEqual({ count: 2, value: 1 });
+  });
+});
+
+describe("lineSummary", () => {
+  test("reads the lines top to bottom on that day: the highest value first, a zero kept", () => {
+    const out = lineSummary(
+      [item("a", 0.2), item("b", 0.9), item("c", 0), item("d", null)],
+      0,
+      6,
+    );
+    expect(out.rows.map((r) => r.key)).toEqual(["b", "a", "c"]);
+    expect(out.other).toBeNull();
+  });
+
+  test("a tie keeps the legend's order", () => {
+    expect(
+      lineSummary([item("a", 1), item("b", 1)], 0, 6).rows.map((r) => r.key),
+    ).toEqual(["a", "b"]);
+  });
+
+  test("the context lines and what does not fit form one group, last, with no value", () => {
+    const kept = [1, 2, 3, 4, 5, 6, 7].map((v, i) => item(`k${i}`, v));
+    const out = lineSummary(kept, 3, 6);
+    expect(out.rows.map((r) => r.key)).toEqual(["k6", "k5", "k4", "k3", "k2"]);
+    expect(out.other).toEqual({ count: 5, value: null });
+  });
+});
+
+describe("stackDetail", () => {
+  test("lists every series top to bottom, the group's members under its line, with shares of the day", () => {
+    const row = { a: 6, b: 3, x: 0.5, y: 0.5, z: null };
+    const out = stackDetail(
+      row,
+      [
+        { key: "a", label: "A" },
+        { key: "b", label: "B" },
+      ],
+      [
+        { key: "x", label: "X" },
+        { key: "y", label: "Y" },
+        { key: "z", label: "Z" },
+      ],
+    );
+    expect(out.total).toBe(10);
+    expect(out.group).toMatchObject({ key: OTHER_KEY, value: 1, share: 0.1 });
+    expect(out.rows.map((r) => [r.key, r.value, r.share, r.member])).toEqual([
+      ["z", 0, 0, true],
+      ["y", 0.5, 0.05, true],
+      ["x", 0.5, 0.05, true],
+      ["b", 3, 0.3, false],
+      ["a", 6, 0.6, false],
     ]);
   });
 
-  test("equal values keep the series order", () => {
-    const out = tooltipRows([item("a", 2), item("b", 2), item("c", 3)], 6);
-    expect(out.rows.map((r) => r.key)).toEqual(["c", "a", "b"]);
+  test("a day at zero has no shares", () => {
+    const out = stackDetail({ a: 0 }, [{ key: "a", label: "A" }], []);
+    expect(out.total).toBe(0);
+    expect(out.group).toBeNull();
+    expect(out.rows[0]?.share).toBeNull();
   });
 });

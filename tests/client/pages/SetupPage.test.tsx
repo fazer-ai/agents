@@ -113,6 +113,31 @@ describe("SetupPage", () => {
       expect(screen.getByTestId("location-search").textContent).toBe("");
     });
   });
+
+  test("the token is not a password field, and the admin passwords still are", () => {
+    renderAt("/setup?token=abc123");
+    const token = screen.getByLabelText("Setup token") as HTMLInputElement;
+    expect(token.type).toBe("text");
+    expect(token.getAttribute("autocomplete")).toBe("off");
+    expect(token.getAttribute("data-1p-ignore")).toBe("");
+    expect(token.getAttribute("data-lpignore")).toBe("true");
+    expect(token.getAttribute("data-bwignore")).toBe("");
+    expect(token.getAttribute("data-form-type")).toBe("other");
+
+    const passwords = [
+      screen.getByLabelText("Password"),
+      screen.getByLabelText("Confirm Password"),
+    ] as HTMLInputElement[];
+    expect(passwords.map((p) => p.type)).toEqual(["password", "password"]);
+    expect(passwords.map((p) => p.getAttribute("autocomplete"))).toEqual([
+      "new-password",
+      "new-password",
+    ]);
+    expect(passwords.map((p) => p.getAttribute("data-1p-ignore"))).toEqual([
+      null,
+      null,
+    ]);
+  });
 });
 
 test("a refusal about the hidden setup token is read out, not swallowed", async () => {

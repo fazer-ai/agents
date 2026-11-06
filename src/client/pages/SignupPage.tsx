@@ -179,6 +179,7 @@ export function SignupPage() {
               id="password"
               type="password"
               showPasswordToggle
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -205,6 +206,7 @@ export function SignupPage() {
               id="confirmPassword"
               type="password"
               showPasswordToggle
+              autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required

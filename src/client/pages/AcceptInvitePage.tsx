@@ -289,6 +289,7 @@ export function AcceptInvitePage() {
                     id="password"
                     type="password"
                     showPasswordToggle
+                    autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
@@ -313,6 +314,7 @@ export function AcceptInvitePage() {
                     id="confirmPassword"
                     type="password"
                     showPasswordToggle
+                    autoComplete="new-password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     required
@@ -335,6 +337,7 @@ export function AcceptInvitePage() {
                   id="password"
                   type="password"
                   showPasswordToggle
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required

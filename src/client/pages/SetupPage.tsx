@@ -223,6 +223,7 @@ export function SetupPage() {
               id="password"
               type="password"
               showPasswordToggle
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -251,6 +252,7 @@ export function SetupPage() {
               id="confirmPassword"
               type="password"
               showPasswordToggle
+              autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required
@@ -270,8 +272,9 @@ export function SetupPage() {
               </label>
               <Input
                 id="token"
-                type="password"
-                showPasswordToggle
+                type="text"
+                secret
+                spellCheck={false}
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 required

@@ -1818,6 +1818,7 @@ export function ChannelsPage() {
             <Input
               type="password"
               showPasswordToggle
+              secret
               value={adminToken}
               onChange={(e) => setAdminToken(e.target.value)}
             />
@@ -1914,6 +1915,7 @@ export function ChannelsPage() {
             <Input
               type="password"
               showPasswordToggle
+              secret
               value={newToken}
               onChange={(e) => setNewToken(e.target.value)}
             />

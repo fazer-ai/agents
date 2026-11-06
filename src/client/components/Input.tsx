@@ -12,12 +12,36 @@ type BaseInputProps = Omit<
   errorMessage?: string;
   helperText?: string;
   wrapperClassName?: string;
+  /**
+   * The value is a secret that is not the user's sign-in password (a setup token, an API key):
+   * password managers must neither offer a saved password for it nor offer to save it as one.
+   */
+  secret?: boolean;
 };
 
+// The opt-outs 1Password, LastPass, Bitwarden and Dashlane read, in that order. `autocomplete="off"`
+// alone does not stop them on a masked field.
+const PASSWORD_MANAGER_IGNORE = {
+  "data-1p-ignore": "",
+  "data-lpignore": "true",
+  "data-bwignore": "",
+  "data-form-type": "other",
+} as const;
+
+// A masked field says what it holds, because a password manager reads that and nothing else: the
+// user's current password (fill it), a new one (generate and save it), one it must not touch
+// (`off`), or a secret that is no password at all. There is no default, so a new masked field
+// cannot inherit an answer that is wrong for it.
 type PasswordToggleInputProps = BaseInputProps & {
   showPasswordToggle: true;
   type: "password";
-};
+} & (
+    | { secret: true; autoComplete?: never }
+    | {
+        secret?: false;
+        autoComplete: "current-password" | "new-password" | "off";
+      }
+  );
 
 type RegularInputProps = BaseInputProps & {
   showPasswordToggle?: false;
@@ -37,6 +61,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       showPasswordToggle,
       type,
       autoComplete,
+      secret,
       ...props
     },
     ref,
@@ -66,13 +91,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             // message goes unannounced. Anything a caller may legitimately
             // override is folded into the computation instead of racing it.
             {...props}
+            {...(secret ? PASSWORD_MANAGER_IGNORE : undefined)}
             ref={ref}
             type={showPasswordToggle && showPassword ? "text" : type}
-            autoComplete={
-              showPasswordToggle
-                ? (autoComplete ?? "new-password")
-                : autoComplete
-            }
+            autoComplete={secret ? "off" : autoComplete}
             aria-invalid={hasError || undefined}
             id={props.id ?? field.controlId}
             aria-labelledby={props["aria-labelledby"] ?? field.labelledById}

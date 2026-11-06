@@ -155,6 +155,16 @@ test("with passkeys on, the button and the email field's suggestions are there",
   await waitFor(() => expect(autofillStarts).toBe(1));
 });
 
+test("the password field asks the password manager for the saved password, not a new one", async () => {
+  passkeysEnabled = false;
+  renderLogin();
+  const password = document.getElementById("password");
+  expect(password?.getAttribute("type") ?? null).toBe("password");
+  expect(password?.getAttribute("autocomplete") ?? null).toBe(
+    "current-password",
+  );
+});
+
 test("the button signs in and leaves /login", async () => {
   passkeysEnabled = true;
   renderLogin();

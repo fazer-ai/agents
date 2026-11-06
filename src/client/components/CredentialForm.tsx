@@ -1042,6 +1042,7 @@ export function CredentialForm({
                   <Input
                     type="password"
                     showPasswordToggle
+                    secret
                     placeholder={isUpdate ? "••••••••" : undefined}
                     value={fieldValues[f.key] ?? ""}
                     onChange={(e) => {
@@ -1096,6 +1097,7 @@ export function CredentialForm({
             <Input
               type="password"
               showPasswordToggle
+              secret
               placeholder={isUpdate ? "••••••••" : undefined}
               value={value}
               onChange={(e) => {

@@ -33,7 +33,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     );
     return new Response(
       JSON.stringify({
-        invite: { email: "g@x.test", role: "AGENT", existingAccount: true },
+        invite: { email: "g@x.test", role: "AGENT", existingAccount },
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
@@ -56,6 +56,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return realFetch(input as RequestInfo | URL, init);
 }) as typeof fetch;
 
+let existingAccount = true;
 let signedInAs: { email: string } | null = null;
 let logoutAnswer = true;
 let logouts = 0;
@@ -110,6 +111,7 @@ describe("accepting an invitation by signing in", () => {
     inviteQueries.length = 0;
     accepted.length = 0;
     signedInAs = null;
+    existingAccount = true;
     logoutAnswer = true;
     logouts = 0;
   });
@@ -119,6 +121,29 @@ describe("accepting an invitation by signing in", () => {
       configurable: true,
       value: realLocation,
     });
+  });
+
+  // What the password manager is told each box holds: the account's password to fill when the
+  // invitee already has one, a new one to generate and save when the invitation creates it.
+  const passwordBoxes = () =>
+    [...document.querySelectorAll("input[type=password]")].map(
+      (el) => `${el.id}:${el.getAttribute("autocomplete")}`,
+    );
+
+  test("an existing account's password box asks for the saved password", async () => {
+    renderAt("/accept-invite?token=tok-1685");
+    await screen.findByText("Current password");
+    expect(passwordBoxes()).toEqual(["password:current-password"]);
+  });
+
+  test("a new account's password boxes ask for a new password", async () => {
+    existingAccount = false;
+    renderAt("/accept-invite?token=tok-1685");
+    await screen.findByText("Confirm Password");
+    expect(passwordBoxes()).toEqual([
+      "password:new-password",
+      "confirmPassword:new-password",
+    ]);
   });
 
   test("parks the invitation in the tab and goes to sign in, with no token on the URL", async () => {

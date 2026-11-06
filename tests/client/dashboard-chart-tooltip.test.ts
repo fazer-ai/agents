@@ -510,6 +510,28 @@ describe("a stacked chart with more series than colours", () => {
       if (!members()) throw new Error("no members yet");
     });
     expect(document.activeElement).toBe(trigger);
+    fireEvent.keyDown(members() as HTMLElement, { key: "Escape" });
+    await waitFor(() => {
+      if (members()) throw new Error("still open");
+    });
+    // An opening with no key and no pointer press before it, as a hover or a screen reader does it,
+    // after a keyboard one: the keyboard's intent was spent on its own opening.
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(trigger);
+    const again = await waitFor(() => {
+      const m = members();
+      if (!m) throw new Error("no members yet");
+      return m;
+    });
+    fireEvent.keyDown(again, { key: "Escape" });
+    await waitFor(() => {
+      if (members()) throw new Error("still open");
+    });
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      if (!members()) throw new Error("no members yet");
+    });
+    expect(document.activeElement).toBe(trigger);
   });
 
   test("the Others members follow a new ranking, two series with one name included", async () => {

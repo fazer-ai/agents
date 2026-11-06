@@ -467,7 +467,9 @@ function MembersList({
   const list = useRef<HTMLUListElement>(null);
   useLayoutEffect(() => {
     const el = list.current;
+    // Read once per opening: the next one, by hover or by a click, starts without it.
     if (fromKeyboard.current) el?.focus({ preventScroll: true });
+    fromKeyboard.current = false;
     return () => {
       if (el?.contains(document.activeElement)) trigger.current?.focus();
     };

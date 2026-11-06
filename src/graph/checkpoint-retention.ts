@@ -416,6 +416,22 @@ export function retainCheckpoints(
         checkpoint_blobs: 0,
         bytes: 0,
       };
+      // The wait after an attempt that may have written: `pauseMs`, or as long as the WAL the instance
+      // wrote since `walBefore` takes at the budget's rate. A failed attempt counts too, since the
+      // tables a batch committed before its failing one stay deleted and a rolled-back delete writes
+      // WAL as well.
+      const pace = async (walBefore: number | null, startedAt: number) => {
+        let wait = pauseMs;
+        const walAfter = await readWal();
+        if (pacing && walBefore !== null && walAfter !== null)
+          wait = Math.max(
+            wait,
+            ((walAfter - walBefore) / pacing.budgetBytesPerSec) * 1000 -
+              (Date.now() - startedAt),
+          );
+        wait = Math.min(wait, RETENTION_MAX_PAUSE_MS);
+        if (wait > 0) await sleep(wait);
+      };
       let cursor: string | null = "";
       let probes = fullProbes;
       while (cursor !== null) {
@@ -428,6 +444,7 @@ export function retainCheckpoints(
           res = await retainCheckpointBatch(pool, cursor, { ...opts, probes });
         } catch (err) {
           if (!retryable(err)) throw err;
+          await pace(walBefore, startedAt);
           if (probes > 1) {
             probes = Math.ceil(probes / 2);
             continue;
@@ -445,16 +462,7 @@ export function retainCheckpoints(
         for (const id of res.threads) threads.add(id);
         cursor = res.next;
         if (res.threads.length === 0) continue;
-        let wait = pauseMs;
-        const walAfter = await readWal();
-        if (pacing && walBefore !== null && walAfter !== null)
-          wait = Math.max(
-            wait,
-            ((walAfter - walBefore) / pacing.budgetBytesPerSec) * 1000 -
-              (Date.now() - startedAt),
-          );
-        wait = Math.min(wait, RETENTION_MAX_PAUSE_MS);
-        if (wait > 0) await sleep(wait);
+        await pace(walBefore, startedAt);
       }
       totals.threads = threads.size;
       return totals;
@@ -465,27 +473,31 @@ export function retainCheckpoints(
 // The threads skipped by this pass that the previous pass skipped too, announced on `dead_letter`
 // (the stage alert channels subscribe to; a pino line reaches nobody) at `warn`, since the next pass
 // tries again and nothing was lost. One skip is usually a lock that went away; two in a row is a
-// thread the pass cannot prune, and every pass leaves it whole until someone looks.
+// thread the pass cannot prune, and every pass leaves it whole until someone looks. On the background
+// pool, like the pass: the flow-log writes and alert dispatches it starts outlive the call, and must
+// not take connections from the customer turns.
 export function announceStuckThreads(
   previous: ReadonlySet<string>,
   current: readonly string[],
   base?: PrismaClient,
 ): string[] {
   const stuck = current.filter((id) => previous.has(id));
-  for (const id of stuck) {
-    const tenantId = threadOwner(id)?.tenantId;
-    if (tenantId === undefined) continue;
-    emitDeadLetter({
-      tenantId,
-      unit: "checkpoint_retention",
-      level: "warn",
-      error:
-        "checkpoint retention: a thread failed two passes in a row and was left whole",
-      detail: { passes: 2 },
-      threadId: id,
-      base,
-    });
-  }
+  runInPoolClass("background", () => {
+    for (const id of stuck) {
+      const tenantId = threadOwner(id)?.tenantId;
+      if (tenantId === undefined) continue;
+      emitDeadLetter({
+        tenantId,
+        unit: "checkpoint_retention",
+        level: "warn",
+        error:
+          "checkpoint retention: a thread failed two passes in a row and was left whole",
+        detail: { passes: 2 },
+        threadId: id,
+        base,
+      });
+    }
+  });
   return stuck;
 }
 

@@ -29,6 +29,7 @@ import {
   deleteCheckpointThreads,
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
+import { currentPoolClass, type PoolClass } from "@/lib/pool-class";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogRows } from "@/tests/utils/flowlog";
 import { until } from "@/tests/utils/poll";
@@ -841,6 +842,58 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     expect(Math.max(...slept)).toBeLessThanOrEqual(5_000);
   });
 
+  // A batch that fails on its last table already committed the tables before it, and a rolled-back
+  // delete writes WAL too: the retry waits for that WAL like a batch that succeeded, or repeated
+  // failures delete at full speed.
+  test("a batch that fails still waits for the WAL it wrote before the retry", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    const events: string[] = [];
+    let failed = false;
+    const failingOnce = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                if (sql.includes("DELETE FROM langgraph.checkpoint_blobs")) {
+                  events.push("blobs");
+                  if (!failed) {
+                    failed = true;
+                    throw Object.assign(new Error("statement timeout"), {
+                      code: "57014",
+                    });
+                  }
+                }
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    let wal = 0;
+    await retainCheckpoints(failingOnce, {
+      pauseMs: 0,
+      graceMs: 0,
+      scope: only(id),
+      base: appDb,
+      pacing: {
+        budgetBytesPerSec: 1_000,
+        readWal: async () => {
+          wal += 5_000;
+          return wal;
+        },
+        sleep: async (ms: number) => {
+          events.push(`sleep ${ms >= 4_000 ? "paced" : ms}`);
+        },
+      },
+    });
+    expect(await rowsOf(id)).toEqual(prunedThreeOld);
+    expect(events.slice(0, 3)).toEqual(["blobs", "sleep paced", "blobs"]);
+  });
+
   // An instance whose own traffic alone writes past the budget would otherwise hold the pass for as
   // long as that traffic lasts between two batches: the wait has a ceiling, and the pass still moves.
   test("the wait after a batch never passes a minute", async () => {
@@ -1065,5 +1118,24 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     expect((rows[0]?.detail as { unit?: string } | null)?.unit).toBe(
       "checkpoint_retention",
     );
+  });
+
+  // The announcement runs after the pass returned, out of its background context; the writes it starts
+  // must still draw from the background pool, not the one customer turns use.
+  test("the announcement of a stuck thread writes from the background pool", async () => {
+    const seen: PoolClass[] = [];
+    const recording = new Proxy(
+      {},
+      {
+        get() {
+          seen.push(currentPoolClass());
+          throw new Error("not a database");
+        },
+      },
+    ) as PrismaClient;
+    const twice = thread();
+    retention.announceStuckThreads(new Set([twice]), [twice], recording);
+    await until("the announcement touched the database", () => seen.length > 0);
+    expect(new Set(seen)).toEqual(new Set(["background"]));
   });
 });

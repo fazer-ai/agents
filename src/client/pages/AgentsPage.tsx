@@ -53,6 +53,13 @@ const CREATE_AGENT_FIELDS = ["name"] as const;
 
 type AgentKind = "text" | "voice";
 
+/**
+ * Whether the create modal offers the call agent. When it does not, a new agent is a text agent;
+ * call agents that already exist keep their editor, badge and inbox picker, and the API still
+ * creates one with `kind: "voice"`.
+ */
+const OFFER_VOICE_AGENT = false;
+
 export function AgentsPage() {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -466,42 +473,44 @@ export function AgentsPage() {
         }
       >
         <div className="flex flex-col gap-4">
-          <FormField
-            label={t("agents.kind", "What it answers")}
-            description={t(
-              "agents.kindHint",
-              "The type is set at creation. For the other one, create another agent.",
-            )}
-          >
-            <ChoiceCards
-              value={kind}
-              onChange={setKind}
-              aria-label={t("agents.kind", "What it answers")}
-              className="sm:grid-cols-2"
-              options={[
-                {
-                  value: "text",
-                  icon: MessageSquare,
-                  title: t("agents.kindText", "Messages"),
-                  hint: t(
-                    "agents.kindTextHint",
-                    "Answers conversations by text, and by voice note when audio replies are on.",
-                  ),
-                  testId: "kind-text",
-                },
-                {
-                  value: "voice",
-                  icon: Phone,
-                  title: t("agents.kindVoice", "WhatsApp calls"),
-                  hint: t(
-                    "agents.kindVoiceHint",
-                    "Talks by voice with whoever calls your WhatsApp. You will need a key from a voice provider.",
-                  ),
-                  testId: "kind-voice",
-                },
-              ]}
-            />
-          </FormField>
+          {OFFER_VOICE_AGENT && (
+            <FormField
+              label={t("agents.kind", "What it answers")}
+              description={t(
+                "agents.kindHint",
+                "The type is set at creation. For the other one, create another agent.",
+              )}
+            >
+              <ChoiceCards
+                value={kind}
+                onChange={setKind}
+                aria-label={t("agents.kind", "What it answers")}
+                className="sm:grid-cols-2"
+                options={[
+                  {
+                    value: "text",
+                    icon: MessageSquare,
+                    title: t("agents.kindText", "Messages"),
+                    hint: t(
+                      "agents.kindTextHint",
+                      "Answers conversations by text, and by voice note when audio replies are on.",
+                    ),
+                    testId: "kind-text",
+                  },
+                  {
+                    value: "voice",
+                    icon: Phone,
+                    title: t("agents.kindVoice", "WhatsApp calls"),
+                    hint: t(
+                      "agents.kindVoiceHint",
+                      "Talks by voice with whoever calls your WhatsApp. You will need a key from a voice provider.",
+                    ),
+                    testId: "kind-voice",
+                  },
+                ]}
+              />
+            </FormField>
+          )}
           <FormField
             label={t("agents.name", "Name")}
             required

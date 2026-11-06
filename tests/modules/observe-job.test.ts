@@ -2284,9 +2284,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const judged: string[] = [];
+    const heldBackground: number[] = [];
     class LabelsOnce {
       async invoke(msgs: { content: unknown }[]): Promise<AIMessage> {
         judged.push(String(msgs[1]?.content));
+        heldBackground.push(modelPermitReading().heldBackground);
         return new AIMessage("NO");
       }
       bindTools(_tools: unknown) {
@@ -2323,14 +2325,28 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         appDb,
         {
           makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
+            stubClient(
+              [
+                message(1, "quero cancelar", "incoming", {
+                  created_at: 1_793_800_000,
+                }),
+              ],
+              [],
+              log,
+            ),
           makeModel: () => new LabelsOnce() as unknown as BaseChatModel,
         },
       );
       expect(log.labelsWritten).toEqual([]);
       expect(judged).toHaveLength(1);
-      expect(judged[0]).toContain("<customer>\nquero cancelar\n</customer>");
+      // NOTE: dated, as the line was written: 1_793_800_000 is 2026-11-04 13:46 UTC, 10:46 in the
+      // agent's default zone.
+      expect(judged[0]).toContain(
+        '<customer sent="04/11/2026 10:46">\nquero cancelar\n</customer>',
+      );
       expect(judged[0]).not.toContain("Turno de observação");
+      // NOTE: queued as the tick's own model call is, behind customer replies.
+      expect(heldBackground).toEqual([1]);
     } finally {
       await suDb.agent.update({
         where: { id: agentId },

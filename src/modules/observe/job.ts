@@ -1005,6 +1005,9 @@ export async function readObserveEvidence(p: {
   const transcript = transcriptFromRows(rows, p.windowMessages, {
     ownBotIds,
     whatsappProvider: conv?.inbox?.provider ?? null,
+    // NOTE: kept for the `customer_choice` judge, which reads each message against the day it was
+    // written; the prompt renders the lines undated, since it passes no timezone.
+    dated: true,
   });
   // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
   // the operator wiped is not part of this one either.
@@ -1650,7 +1653,13 @@ export async function runObserve(
             ? { conversationLabelsRead: { labels: current, at: labelsAskedAt } }
             : {}),
         },
-        { buildNativeTools, mcp: deps.mcp, flow, makeModel: deps.makeModel },
+        {
+          buildNativeTools,
+          mcp: deps.mcp,
+          flow,
+          makeModel: deps.makeModel,
+          modelPriority: "background",
+        },
       ),
       deadline,
     );

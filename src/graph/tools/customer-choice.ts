@@ -9,6 +9,7 @@ import { HISTORY_DATE_FORMAT } from "@/graph/history-dates";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { DEFAULT_TIMEZONE, formatParts, partsInTimezone } from "@/graph/time";
+import type { PermitClass } from "@/lib/semaphore";
 import {
   type DatedContextMessage,
   unclippedContext,
@@ -54,6 +55,17 @@ export function choiceTranscript(
       toolResultChars: TOOL_RESULT_CHARS_MAX,
     }),
   );
+}
+
+// What the tools returned in a graph state, alone: the part of the state a caller's own transcript
+// does not carry.
+function toolResultsOf(
+  messages: readonly BaseMessage[] | undefined,
+): DatedContextMessage[] {
+  if (!Array.isArray(messages)) return [];
+  return unclippedContext(messages, TRANSCRIPT_MESSAGES_MAX, {
+    toolResultChars: TOOL_RESULT_CHARS_MAX,
+  }).filter((m) => m.role === "tool");
 }
 
 // The bound, for a window read from the graph state or handed in by a caller whose state is not the
@@ -133,6 +145,7 @@ export async function judgeChoice(
   input: string,
   callbacks: BaseCallbackHandler[],
   turn?: AbortSignal,
+  priority?: PermitClass,
 ): Promise<boolean> {
   const res = await runModelCall(
     (deadline) =>
@@ -149,7 +162,7 @@ export async function judgeChoice(
           metadata: {},
         },
       ),
-    { deadlineMs: CHOICE_JUDGE_DEADLINE_MS, signal: turn },
+    { deadlineMs: CHOICE_JUDGE_DEADLINE_MS, signal: turn, priority },
   );
   return /^\s*\**\s*yes\b/i.test(contentToText(res.content));
 }
@@ -180,12 +193,18 @@ export function choiceCheck(deps: {
   clock?: () => { now: Date; timezone?: string };
   // The turn's deadline, when it has one (a scheduler job's, an observer tick's).
   signal?: () => AbortSignal | undefined;
-  // The conversation, when the caller's graph state is not it (the observer).
+  // The conversation, when the caller's graph state is not it (the observer). What the tools
+  // returned in this graph run still comes from the state.
   transcript?: () => DatedContextMessage[];
+  // The model permit class of the turn: an observer's tick waits behind customer replies.
+  priority?: PermitClass;
 }): ChoiceCheck {
   return async (req) => {
     const transcript = deps.transcript
-      ? boundedTranscript(deps.transcript())
+      ? boundedTranscript([
+          ...deps.transcript(),
+          ...toolResultsOf(req.messages),
+        ])
       : choiceTranscript(req.messages);
     if (!transcript) {
       return {
@@ -212,6 +231,7 @@ export function choiceCheck(deps: {
         }),
         deps.callbacks(),
         signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+        deps.priority,
       );
       return yes ? { chosen: true } : { chosen: false, reason: "unmet" };
     } catch (err) {

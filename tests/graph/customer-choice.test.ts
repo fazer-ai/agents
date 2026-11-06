@@ -18,6 +18,7 @@ import {
   nudgeMessage,
   sentAtStamp,
 } from "@/graph/markers";
+import { modelPermitReading } from "@/graph/model-limit";
 import { type AgentConfig, customerChoiceCheck } from "@/graph/prepare";
 import {
   type ChoiceCheck,
@@ -448,6 +449,75 @@ describe("what the judge reads", () => {
     );
     expect(asked).not.toContain("Turno de observação");
   });
+
+  test("beside a handed-in transcript, what the tools returned in the graph run", async () => {
+    const model = new UsageReportingModel(["NO"]);
+    const check = choiceCheck({
+      model: () => model as unknown as BaseChatModel,
+      callbacks: () => [],
+      transcript: () => [
+        { role: "customer", text: "cancela a de terça", at: null },
+      ],
+    });
+    await check({
+      tool: "calendar_cancel_event",
+      description: "d",
+      args: { eventId: "ev-9" },
+      messages: [
+        new HumanMessage("prompt do observador"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "calendar_list_events", args: {}, id: "c1" }],
+        }),
+        new ToolMessage({
+          content: '[{"id":"ev-9","start":"terça 10:00"}]',
+          tool_call_id: "c1",
+          name: "calendar_list_events",
+        }),
+      ],
+    });
+    const asked = String(model.calls[0]);
+    expect(asked).toContain(
+      '<customer>\ncancela a de terça\n</customer>\n<tool name="calendar_list_events">\n[{"id":"ev-9","start":"terça 10:00"}]\n</tool>',
+    );
+    expect(asked).not.toContain("prompt do observador");
+  });
+
+  test.each([
+    ["background", 1],
+    [undefined, 0],
+  ] as const)(
+    "the judge queues in the turn's permit class (%s)",
+    async (priority, held) => {
+      const seen: number[] = [];
+      const reading = {
+        invoke: async () => {
+          seen.push(modelPermitReading().heldBackground);
+          return new AIMessage("NO");
+        },
+      };
+      const check = customerChoiceCheck(
+        {
+          agentId: 5n,
+          mc: { provider: "openai", model: "gpt-5.4-mini" },
+          apiKey: "sk-agent",
+          promptOpts: { now: new Date() },
+        } as unknown as AgentConfig,
+        { tenantId: 1n, threadId: "t-1" } as never,
+        {
+          makeModel: () => reading as unknown as BaseChatModel,
+          ...(priority ? { modelPriority: priority } : {}),
+        } as never,
+      );
+      await check({
+        tool: "x",
+        description: "d",
+        args: TEN,
+        messages: [new HumanMessage("o do meio")],
+      });
+      expect(seen).toEqual([held]);
+    },
+  );
 
   test("a toolset hands the judge the transcript its context carries", async () => {
     const judge = new UsageReportingModel(["NO"]);

@@ -1382,6 +1382,8 @@ export interface ToolBuildDeps {
   // The scheduler job's signal, for a tool that makes its own model call (the `customer_choice`
   // judge): a job past its deadline starts no call, as the turn's own model does not.
   signal?: AbortSignal;
+  // The permit class of that call, the turn's own (BuildAgentGraphParams.modelPriority).
+  modelPriority?: PermitClass;
   // Swaps tools of the assembled list before the precondition wrapper goes on (the playground's
   // canned results), so a stand-in is refused by the same rules as the tool it replaces.
   replaceTools?: (
@@ -2134,6 +2136,7 @@ export function customerChoiceCheck(
       timezone: cfg.promptOpts.timezone ?? cfg.timezone,
     }),
     transcript: ctx.choiceTranscript,
+    priority: deps.modelPriority,
     signal: () => {
       const turn = [ctx.expiresOn, deps.signal].filter(
         (s): s is AbortSignal => s !== undefined,

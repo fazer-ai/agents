@@ -55,10 +55,10 @@ export async function readDatabaseView(
   base: PrismaClient = metricsPrisma,
   sampling: boolean = config.alertWorker.enabled,
 ): Promise<DatabaseViewDto> {
-  const [screen, health] = await Promise.all([
-    readDatabaseScreen(window, base),
-    readInstanceHealth(sampling, base),
-  ]);
+  // One after the other: on a metrics pool of one connection, a read started beside the screen's
+  // long aggregate would time out waiting for it, well inside the screen's own budget.
+  const health = await readInstanceHealth(sampling, base);
+  const screen = await readDatabaseScreen(window, base);
   const signals = DATABASE_SIGNALS.flatMap((name) => {
     const s = health.signals.find((x) => x.signal === name);
     if (!s) return [];

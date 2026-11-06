@@ -1404,6 +1404,52 @@ describe.skipIf(!dbUp)("the screen's summary figures", () => {
     }
   });
 
+  test("growth over a window needs a snapshot near its start, or reads as unknown", async () => {
+    const now = Date.now();
+    // One snapshot of `conversations`, 58 minutes old: the start of a 1h window, the end of a 7d one.
+    await suDb.dbTableSnapshot.create({
+      data: {
+        takenAt: new Date(now - 58 * MIN),
+        tableName: "conversations",
+        totalBytes: 1n,
+        liveTuples: 0n,
+        deadTuples: 0n,
+      },
+    });
+    const hour = await readDatabaseScreen("1h", appDb, now);
+    const week = await readDatabaseScreen("7d", appDb, now);
+    const growth = (s: typeof hour) =>
+      s.tables.find((t) => t.table === "conversations")?.growthBytes;
+    expect(growth(hour)).not.toBeNull();
+    expect(growth(week)).toBeNull();
+    expect(week.size.growthBytes).toBeNull();
+  });
+
+  test("the view's two reads never hold the metrics pool at once", async () => {
+    // With METRICS_POOL_MAX=1 a read waiting behind the other times out on its own wait, well inside
+    // the screen's budget: the two run one after the other.
+    let open = 0;
+    let overlapped = false;
+    const base = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop !== "$transaction") return Reflect.get(target, prop, receiver);
+        return async (...args: unknown[]) => {
+          open++;
+          if (open > 1) overlapped = true;
+          try {
+            return await (
+              target.$transaction as unknown as (...a: unknown[]) => unknown
+            ).apply(target, args);
+          } finally {
+            open--;
+          }
+        };
+      },
+    });
+    await readDatabaseView("1h", base, false);
+    expect(overlapped).toBe(false);
+  });
+
   test("the view carries both statement signals, each with its threshold and state", async () => {
     const view = await readDatabaseView("1h", appDb, false);
     expect(view.signals.map((s) => s.signal)).toEqual([...DATABASE_SIGNALS]);

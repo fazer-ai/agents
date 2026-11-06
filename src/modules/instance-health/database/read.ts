@@ -336,6 +336,12 @@ export function deadRows(
   };
 }
 
+// How late after a window's start its growth baseline may be taken: a tenth of the window, and never
+// less than two snapshot intervals, so a missed snapshot does not blank the 1h figure.
+export function growthBaselineSlackMs(windowMs: number): number {
+  return Math.max(2 * SNAPSHOT_INTERVAL_MS, windowMs / 10);
+}
+
 export async function readDatabaseScreen(
   window: WindowKey,
   base: PrismaClient = metricsPrisma,
@@ -464,6 +470,11 @@ export async function readDatabaseScreen(
     >`SELECT current_setting('autovacuum_vacuum_threshold')::float8 AS threshold,
              current_setting('autovacuum_vacuum_scale_factor')::float8 AS scale`;
 
+    // Growth is measured from a snapshot near the window's start: a later one would report the minutes
+    // since it as the window's growth (a 7d window on an instance a day old). Without one, unknown.
+    const baselineUntil = new Date(
+      from.getTime() + growthBaselineSlackMs(WINDOWS[window]),
+    );
     const tableRows = await db.$queryRaw<
       {
         table_name: string;
@@ -481,6 +492,7 @@ export async function readDatabaseScreen(
              s.last_autovacuum, s.last_autoanalyze, s.seq_scan, s.idx_scan,
              (SELECT ts.total_bytes FROM db_table_snapshots ts
                WHERE ts.table_name = t.table_name AND ts.taken_at >= ${from}
+                 AND ts.taken_at <= ${baselineUntil}
                ORDER BY ts.taken_at ASC LIMIT 1) AS first_bytes
         FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
         CROSS JOIN LATERAL (

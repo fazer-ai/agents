@@ -173,6 +173,8 @@ function stateBands(
           ? {
               value: r.state === "loading" ? text.loading : text.noData,
               position: "insideTop",
+              // Drawn in a layer of its own, above the day columns, so it lets the click through too.
+              className: "pointer-events-none",
               fill: r.state === "loading" ? p.loading : p.noData,
               fontSize: 11,
             }
@@ -848,6 +850,7 @@ function DayDetail({
   format,
   lang,
   onClose,
+  box,
   p,
 }: {
   row: ChartRow;
@@ -858,6 +861,8 @@ function DayDetail({
   format: (v: number) => string;
   lang: string;
   onClose: () => void;
+  // The detail's own element, which its chart reads to tell its detail from another chart's.
+  box: RefObject<HTMLElement | null>;
   p: ReturnType<typeof useChartPalette>;
 }) {
   const text = useChartText();
@@ -867,20 +872,25 @@ function DayDetail({
   });
   const ready = !row.state || row.state === "ready";
   const detail = stackDetail(row, kept, folded);
-  const box = useRef<HTMLElement>(null);
   // The click that opened it left the focus on the chart, so Escape is heard on the whole page, and
   // the focus moves in for a keyboard or a screen reader to land on the day.
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
-  }, []);
+  }, [box]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // A popup above it (the Others list) takes its own Escape first and marks it handled.
-      if (e.key === "Escape" && !e.defaultPrevented) onClose();
+      // A popup above it (the Others list) takes its own Escape first and marks it handled, and an
+      // Escape pressed inside another chart's detail is that one's.
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const at = document.activeElement;
+      const elsewhere =
+        at?.closest('[data-testid="chart-day-detail"]') &&
+        !box.current?.contains(at);
+      if (!elsewhere) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, box]);
   const line = (
     key: string,
     label: string,
@@ -1009,11 +1019,10 @@ export function StackedBars({
   );
   const [picked, setPicked] = useState<string | null>(null);
   const dayButtons = useRef(new Map<string, HTMLButtonElement>());
+  const detailBox = useRef<HTMLElement>(null);
   // Closing the detail from inside it hands the focus back to its day, where the arrows go on.
   const closeDetail = useCallback(() => {
-    const inside = document.activeElement?.closest(
-      '[data-testid="chart-day-detail"]',
-    );
+    const inside = detailBox.current?.contains(document.activeElement);
     if (inside && picked) dayButtons.current.get(picked)?.focus();
     setPicked(null);
   }, [picked]);
@@ -1172,6 +1181,7 @@ export function StackedBars({
           format={format}
           lang={lang}
           onClose={closeDetail}
+          box={detailBox}
           p={p}
         />
       )}

@@ -615,6 +615,63 @@ describe("the day a stacked chart's detail opens", () => {
     expect(head(await openDetail(container))).toBe("Jan 2");
   });
 
+  test("with two charts open, Escape in one closes that one and hands the focus to its own day", async () => {
+    const { container } = render(
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(
+              "div",
+              null,
+              createElement(
+                "div",
+                { "data-chart": "first" },
+                createElement(StackedBars, stacked),
+              ),
+              createElement(
+                "div",
+                { "data-chart": "second" },
+                createElement(StackedBars, stacked),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    const chart = (which: string) =>
+      container.querySelector(`[data-chart="${which}"]`) as HTMLElement;
+    await clickDay(chart("first"), "2026-01-01");
+    await openDetail(chart("first"));
+    const keys = await waitFor(() => {
+      const b = [
+        ...chart("second").querySelectorAll<HTMLButtonElement>(
+          "fieldset button",
+        ),
+      ];
+      if (b.length !== 2) throw new Error("no day keys yet");
+      return b;
+    });
+    keys[1]?.focus();
+    fireEvent.click(keys[1] as HTMLElement);
+    const second = await openDetail(chart("second"));
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: "Escape" });
+    await waitFor(() => {
+      if (chart("second").querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("still open");
+    });
+    expect(document.activeElement).toBe(keys[1] as HTMLElement);
+    expect(
+      chart("first").querySelector('[data-testid="chart-day-detail"]'),
+    ).not.toBeNull();
+  });
+
   test("takes the focus once when it opens, not again on every redraw", async () => {
     const tree = (rows: ChartRow[]) =>
       createElement(
@@ -692,6 +749,24 @@ describe("the day a stacked chart's detail opens", () => {
     await clickDay(container, "2026-01-02");
     detail = await openDetail(container);
     expect(head(detail)).toMatch(/^Jan 2 · no data/);
+  });
+
+  test("a click on a band's own label lets it through too", async () => {
+    const banded: ChartRow[] = [1, 2, 3].map(
+      (d) => ({ day: `2026-01-0${d}`, state: "loading" }) as ChartRow,
+    );
+    const { container } = renderChart(StackedBars, {
+      ...stacked,
+      data: [...banded, { ...(data[1] as ChartRow), day: "2026-01-04" }],
+    });
+    const label = await waitFor(() => {
+      const t = [...container.querySelectorAll("text")].find(
+        (el) => el.textContent === "loading",
+      );
+      if (!t) throw new Error("no band label yet");
+      return t;
+    });
+    expect(label.closest(".pointer-events-none")).not.toBeNull();
   });
 
   test("is the day of the Others segment clicked", async () => {

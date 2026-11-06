@@ -47,6 +47,7 @@ export function useChartPalette() {
       tooltipBg: cssVar("--color-bg-secondary", "#111111"),
       tooltipBorder: cssVar("--color-border-hover", "#333333"),
       text: cssVar("--color-text-primary", "#eeeeee"),
+      textSecondary: cssVar("--color-text-secondary", "#a3a3a3"),
       // A day still loading, and a day with no data for good: the same tokens in both themes.
       loading: cssVar("--color-info", "#828fff"),
       loadingSoft: cssVar("--color-info-soft", "#5e6ad233"),
@@ -503,6 +504,10 @@ export function LineTrend({
               wrapperStyle={{ fontSize: 12, color: p.axis }}
               // In the order the series are drawn, so "Other" closes the list.
               itemSorter={null}
+              // The key carries the series colour; the name wears text ink, legible on both themes.
+              formatter={(value) => (
+                <span style={{ color: p.textSecondary }}>{value}</span>
+              )}
             />
             {series.length === 0 && (
               <Line
@@ -531,7 +536,8 @@ export function LineTrend({
                 stroke={i < CATEGORICAL_SLOTS ? p.series[i] : p.other}
                 strokeWidth={i < CATEGORICAL_SLOTS ? 2 : 1}
                 strokeOpacity={i < CATEGORICAL_SLOTS ? 1 : 0.6}
-                dot={i < CATEGORICAL_SLOTS ? { r: 2 } : false}
+                // A context line keeps a small dot, so a value with no neighbour still shows.
+                dot={{ r: i < CATEGORICAL_SLOTS ? 2 : 1.5 }}
                 activeDot={{
                   r: 5,
                   onClick: () => {
@@ -649,6 +655,10 @@ export function StackedBars({
               wrapperStyle={{ fontSize: 12, color: p.axis }}
               // In the order the series are drawn, so "Other" closes the list.
               itemSorter={null}
+              // The key carries the series colour; the name wears text ink, legible on both themes.
+              formatter={(value) => (
+                <span style={{ color: p.textSecondary }}>{value}</span>
+              )}
             />
             {drawn.series.length === 0 && (
               <Bar

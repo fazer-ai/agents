@@ -123,6 +123,21 @@ function legend(container: HTMLElement) {
   }));
 }
 
+// The names wear text ink; only the keys carry the series colours.
+function expectTextInkNames(container: HTMLElement, count: number) {
+  const names = [
+    ...container.querySelectorAll<HTMLElement>(
+      ".recharts-legend-item-text span",
+    ),
+  ].map((n) => n.style.color);
+  expect(names).toHaveLength(count);
+  expect(new Set(names)).toEqual(
+    new Set([
+      document.documentElement.style.getPropertyValue("--color-text-secondary"),
+    ]),
+  );
+}
+
 function renderChart(
   el: typeof StackedBars | typeof LineTrend,
   props: Parameters<typeof StackedBars>[0],
@@ -163,6 +178,7 @@ describe("a stacked chart with more series than colours", () => {
         "Other",
       ]);
       expect(new Set(items.map((i) => i.color)).size).toBe(items.length);
+      expectTextInkNames(container, items.length);
       // "Other" has no identity: it takes the neutral ink, not a ninth hue.
       expect(items.at(-1)?.color).toBe(
         document.documentElement.style.getPropertyValue("--color-text-muted"),
@@ -226,11 +242,34 @@ describe("a line chart with more series than colours", () => {
       "Others (2)",
     ]);
     expect(new Set(items.map((i) => i.color)).size).toBe(items.length);
+    expectTextInkNames(container, items.length);
     const tip = await hover(container, 1, 2);
     expect(tip.querySelectorAll("li")).toHaveLength(5);
     expect(tip.textContent).toContain("+5 more");
     expect(tip.textContent).not.toContain("·");
     expect(tip.textContent).not.toContain("Total");
+  });
+});
+
+describe("a context line with a single value", () => {
+  test("still marks the value", async () => {
+    // Node 9 is a context line with a value on the first day only: no segment to draw.
+    const lone: ChartRow[] = data.map((r, d) => ({
+      ...r,
+      n9: d === 0 ? 5 : null,
+    }));
+    const { container } = renderChart(LineTrend, {
+      data: lone,
+      series: series.slice(0, 10),
+      lang: "en",
+      format: String,
+    });
+    const dots = await waitFor(() => {
+      const groups = container.querySelectorAll(".recharts-line-dots");
+      if (groups.length < 10) throw new Error("dots not drawn yet");
+      return groups[9]?.querySelectorAll("circle") ?? [];
+    });
+    expect(dots.length).toBe(1);
   });
 });
 

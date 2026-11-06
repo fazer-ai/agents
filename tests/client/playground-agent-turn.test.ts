@@ -469,7 +469,7 @@ describe("guardrailTraceLabel", () => {
               ],
             }
           : path === "/api/auth/me"
-            ? { user: { id: "1", email: "a@b.c", role: "ADMIN" } }
+            ? { user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" } }
             : { sessions: [] };
       return new Response(JSON.stringify(body), {
         headers: { "Content-Type": "application/json" },

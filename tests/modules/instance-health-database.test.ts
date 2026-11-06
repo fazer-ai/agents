@@ -48,6 +48,7 @@ import {
 import {
   setSignalDetail,
   signalDetail,
+  statementLine,
 } from "@/modules/instance-health/details";
 import { firingSummary } from "@/modules/instance-health/evaluator";
 import {
@@ -633,6 +634,30 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     );
     expect("plannedAs" in result ? result.plannedAs : result.error).toBe(
       "fleet role",
+    );
+  });
+
+  test("a stored statement keeps its line breaks, so a `--` comment still ends where it did", async () => {
+    resetStatementTimeouts();
+    const sql =
+      'SELECT "id" -- the comment ends here\n  FROM "agents" WHERE "kind" = $1';
+    await flushStatementTimeouts(appDb, [
+      {
+        at: Date.now(),
+        sql,
+        label: "job:FOLLOWUP_SWEEP",
+        tenantId: "1",
+        fleet: false,
+        budgetMs: 5000,
+      },
+    ]);
+    const [row] = await suDb.dbStatementTimeout.findMany({
+      where: { fingerprint: statementFingerprint(sql) },
+    });
+    expect(row?.statement).toBe(sql);
+    // The alert's one line leaves the comment out instead of running the rest of the SQL into it.
+    expect(statementLine(sql)).toBe(
+      'SELECT "id" FROM "agents" WHERE "kind" = $1',
     );
   });
 

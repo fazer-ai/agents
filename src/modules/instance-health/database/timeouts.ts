@@ -204,7 +204,9 @@ export async function flushStatementTimeouts(
           data: {
             occurredAt: new Date(ev.at),
             fingerprint,
-            statement: clipText(normalizeStatement(ev.sql), STATEMENT_MAX),
+            // As sent, line breaks kept: a `--` comment ends at its line, and the copy is the
+            // statement whose plan is shown. Only the fingerprint is taken on one line.
+            statement: clipText(ev.sql.trim(), STATEMENT_MAX),
             label: ev.label,
             scopeTenantId,
             fleet: ev.fleet,

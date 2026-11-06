@@ -22,10 +22,15 @@ export function signalDetail(signal: string): string | null {
   return details().get(signal) ?? null;
 }
 
-// A statement in one line an alert can carry: whitespace collapsed, cut at a length a chat message
-// keeps readable.
+// A statement in one line an alert can carry: comments dropped, whitespace collapsed, cut at a length
+// a chat message keeps readable.
 export function statementLine(sql: string, max = 200): string {
-  const one = sql.replace(/\s+/g, " ").trim();
+  // A `--` comment runs to its line's end: joined onto one line it would swallow the rest, so it is
+  // left out. Values arrive as `$N`, so no quoted text carries a `--`.
+  const one = sql
+    .replace(/--[^\n]*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   return one.length > max ? `${clipText(one, max - 1)}…` : one;
 }
 

@@ -2137,6 +2137,7 @@ export function customerChoiceCheck(
     }),
     transcript: ctx.choiceTranscript,
     priority: deps.modelPriority,
+    reference: () => cfg.systemPrompt,
     signal: () => {
       const turn = [ctx.expiresOn, deps.signal].filter(
         (s): s is AbortSignal => s !== undefined,

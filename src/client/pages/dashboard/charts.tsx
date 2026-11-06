@@ -319,7 +319,7 @@ function TooltipCard({
     const key = String(e.dataKey ?? "");
     if (key === NONE) continue;
     if (contextKeys.has(key)) {
-      if (typeof e.value === "number" && e.value !== 0) context++;
+      if (typeof e.value === "number") context++;
       continue;
     }
     byKey.set(key, e);
@@ -330,7 +330,7 @@ function TooltipCard({
       value: e.value,
     });
   }
-  const { rows, rest } = tooltipRows(identified, TOOLTIP_ROWS);
+  const { rows, rest } = tooltipRows(identified, TOOLTIP_ROWS, !stacked);
   const total = stacked
     ? identified.reduce(
         (a, it) => a + (typeof it.value === "number" ? it.value : 0),

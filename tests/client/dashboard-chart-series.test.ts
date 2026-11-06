@@ -105,6 +105,18 @@ describe("tooltipRows", () => {
     expect(out.rest.count).toBe(0);
   });
 
+  test("a line keeps a zero, which is a value there", () => {
+    const out = tooltipRows(
+      [item("a", 0), item("b", null), item("c", 2)],
+      6,
+      true,
+    );
+    expect(out.rows.map((r) => [r.key, r.value])).toEqual([
+      ["c", 2],
+      ["a", 0],
+    ]);
+  });
+
   test("equal values keep the series order", () => {
     const out = tooltipRows([item("a", 2), item("b", 2), item("c", 3)], 6);
     expect(out.rows.map((r) => r.key)).toEqual(["c", "a", "b"]);

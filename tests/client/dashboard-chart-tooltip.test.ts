@@ -140,13 +140,17 @@ function expectTextInkNames(container: HTMLElement, count: number) {
 
 function renderChart(
   el: typeof StackedBars | typeof LineTrend,
-  props: Parameters<typeof StackedBars>[0],
+  props: Parameters<typeof LineTrend>[0],
 ) {
   return render(
     createElement(
       I18nextProvider,
       { i18n },
-      createElement(ThemeProvider, null, createElement(el, props)),
+      createElement(
+        ThemeProvider,
+        null,
+        createElement(el as typeof LineTrend, props),
+      ),
     ),
   );
 }
@@ -270,6 +274,29 @@ describe("a context line with a single value", () => {
       return groups[9]?.querySelectorAll("circle") ?? [];
     });
     expect(dots.length).toBe(1);
+  });
+});
+
+describe("a line at zero", () => {
+  test("shows the zero with its previous-period value", async () => {
+    const rows: ChartRow[] = data.map((r) => ({
+      day: r.day,
+      state: "ready",
+      rate: 0,
+      ratePrev: 0.8,
+    }));
+    const { container } = renderChart(LineTrend, {
+      data: rows,
+      series: [{ key: "rate", label: "Resolution" }],
+      lang: "en",
+      format: String,
+      compare: { rate: "ratePrev" },
+      compareLabel: "previous",
+    });
+    const tip = await hover(container, 1, 2);
+    expect([...tip.querySelectorAll("li")].map((li) => li.textContent)).toEqual(
+      ["Resolution0 (previous: 0.8)"],
+    );
   });
 });
 

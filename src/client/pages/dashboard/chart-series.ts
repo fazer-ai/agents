@@ -74,10 +74,12 @@ export interface TooltipItem {
 }
 
 // The rows of a tooltip: the series with a value on that day, the largest first, at most `max` of
-// them, and what is left over as a count and a sum.
+// them, and what is left over as a count and a sum. A zero segment of a stack is nothing to show; a
+// zero on a line (a rate that fell to 0%) is a value, so `keepZero` keeps it.
 export function tooltipRows(
   items: TooltipItem[],
   max: number,
+  keepZero = false,
 ): {
   rows: (TooltipItem & { value: number })[];
   rest: { count: number; sum: number };
@@ -86,7 +88,7 @@ export function tooltipRows(
     .map((it, i) => ({ it, i, v: numeric(it.value) }))
     .filter(
       (x): x is { it: TooltipItem; i: number; v: number } =>
-        x.v !== null && x.v !== 0,
+        x.v !== null && (keepZero || x.v !== 0),
     )
     .sort((a, b) => Math.abs(b.v) - Math.abs(a.v) || a.i - b.i);
   const shown = present.length > max ? max - 1 : present.length;

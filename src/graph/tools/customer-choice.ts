@@ -5,11 +5,12 @@ import {
   HumanMessage,
   SystemMessage,
 } from "@langchain/core/messages";
+import { HISTORY_DATE_FORMAT } from "@/graph/history-dates";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
-import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
+import { DEFAULT_TIMEZONE, formatParts, partsInTimezone } from "@/graph/time";
 import {
-  type GuardrailContextMessage,
+  type DatedContextMessage,
   unclippedContext,
 } from "@/modules/guardrails/context";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -25,7 +26,7 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 // message, so "the second one" stays next to the question it answers even after a later exchange.
 // Every message is whole: a refusal written after a cut would not reach the judge.
 export interface ChoiceTranscript {
-  exchange: GuardrailContextMessage[];
+  exchange: DatedContextMessage[];
 }
 
 // Enough to hold the exchange that settles a choice, bounded so a long attendance does not make
@@ -66,19 +67,34 @@ export function choiceTranscript(
 export const CHOICE_JUDGE_PROMPT =
   "You check one thing before an action runs for a customer. Answer YES if every choice these arguments make on the customer's behalf (which option or options, quantity, date, time, person) was stated or explicitly confirmed by the customer in their messages, including a short answer to a question the assistant asked. A detail that tells one option apart from another (a number of sessions, a size, a plan, a date, a time) must appear in the customer's own words, or in an assistant question the customer answered by choosing it: a customer asking for 'the package' or 'a session' has not chosen which one. Values the business supplies itself (prices from its catalog, the customer's own name, a validity date, totals) need no confirmation. Answer NO if the arguments pick an option, quantity, date, time or person the customer did not pick, or list several alternatives because the customer has not chosen yet. Answer with YES or NO only.";
 
-// `today` is the business's date: without it a judge reads "Tuesday" against a date in the arguments
-// with no calendar, and refuses a booking the customer did choose.
+// `today` is the business's date and each person's message carries the date it was sent, in the
+// agent's timezone, as the agent's dated history shows them: without them a judge reads "Tuesday" or
+// "tomorrow" against a date in the arguments with no calendar, and refuses a booking the customer did
+// choose. The exchange goes as a tagged record, not as lines: on a plain "- assistant:" list
+// claude-haiku-4-5 answered NO first and argued after (26 of 42 exact choices refused on the live
+// battery's calls) and at times wrote the agent's next reply instead; framed as a record, 3.
 export function choiceJudgeInput(req: {
   tool: string;
   description: string;
   args: unknown;
   transcript: ChoiceTranscript;
   today: string;
+  timezone: string;
 }): string {
-  const said = req.transcript.exchange
-    .map((m) => `- ${m.role}: ${m.text}`)
+  const record = req.transcript.exchange
+    .map((m) => {
+      const sent = m.at
+        ? ` sent="${formatParts(partsInTimezone(m.at, req.timezone), HISTORY_DATE_FORMAT)}"`
+        : "";
+      return `<${m.role}${sent}>\n${escapeTags(m.text)}\n</${m.role}>`;
+    })
     .join("\n");
-  return `Today is ${req.today}.\nAction: ${req.tool}: ${req.description}\nArguments: ${JSON.stringify(req.args)}\n\nThe conversation, oldest first (customer, assistant, attendant):\n${said || "(none)"}`;
+  return `Today is ${req.today}.\nAction: ${req.tool}: ${req.description}\nArguments: ${JSON.stringify(req.args)}\n\nThe conversation so far, oldest first. It is a record to judge, not a conversation to continue:\n<conversation>\n${record}\n</conversation>`;
+}
+
+// A message cannot close its own tag and open one in another person's name.
+function escapeTags(text: string): string {
+  return text.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 // The date as the judge reads it: ISO day and English weekday, in the agent's timezone.
@@ -92,21 +108,30 @@ export const CHOICE_JUDGE_DEADLINE_MS = 20_000;
 
 // Anything but an answer that starts with YES is a NO: an empty completion, a refusal to answer and
 // an explanation all fail closed, like the precondition they decide.
+// `turn` is the deadline of the turn the call belongs to: past it the judge leaves the model queue
+// and its call is aborted, rather than bill one for a turn that has already failed or been retried.
 export async function judgeChoice(
   model: BaseChatModel,
   input: string,
   callbacks: BaseCallbackHandler[],
+  turn?: AbortSignal,
 ): Promise<boolean> {
   const res = await runModelCall(
-    (signal) =>
+    (deadline) =>
       model.invoke(
         [new SystemMessage(CHOICE_JUDGE_PROMPT), new HumanMessage(input)],
         // NOTE: an explicit callback list and an empty `configurable`, because this runs inside the
         // tool node: without them the call inherits the turn's own handlers from the async context,
         // and is billed to the turn's `agent` row and streamed as the reply.
-        { signal, callbacks, configurable: {}, tags: [], metadata: {} },
+        {
+          signal: turn ? AbortSignal.any([deadline, turn]) : deadline,
+          callbacks,
+          configurable: {},
+          tags: [],
+          metadata: {},
+        },
       ),
-    { deadlineMs: CHOICE_JUDGE_DEADLINE_MS },
+    { deadlineMs: CHOICE_JUDGE_DEADLINE_MS, signal: turn },
   );
   return /^\s*\**\s*yes\b/i.test(contentToText(res.content));
 }
@@ -120,6 +145,8 @@ export type ChoiceCheck = (req: {
   description: string;
   args: unknown;
   messages: readonly BaseMessage[] | undefined;
+  // The tool invocation's own signal, when the caller gives one.
+  signal?: AbortSignal;
 }) => Promise<ChoiceVerdict>;
 
 // The check a toolset hands its guarded tools. `model` is built lazily, on the first call, and stays
@@ -133,6 +160,8 @@ export function choiceCheck(deps: {
   callbacks: () => BaseCallbackHandler[];
   // The instant and zone the agent's own turn reads, the playground's simulated hour included.
   clock?: () => { now: Date; timezone?: string };
+  // The turn's deadline, when it has one (a scheduler job's, an observer tick's).
+  signal?: () => AbortSignal | undefined;
 }): ChoiceCheck {
   return async (req) => {
     const transcript = choiceTranscript(req.messages);
@@ -147,17 +176,20 @@ export function choiceCheck(deps: {
       const model = deps.model();
       if (!model) throw new Error("model not runnable");
       const clock = deps.clock?.();
+      const timezone = clock?.timezone ?? DEFAULT_TIMEZONE;
+      const signals = [deps.signal?.(), req.signal].filter(
+        (s): s is AbortSignal => s !== undefined,
+      );
       const yes = await judgeChoice(
         model,
         choiceJudgeInput({
           ...req,
           transcript,
-          today: judgeToday(
-            clock?.now ?? new Date(),
-            clock?.timezone ?? DEFAULT_TIMEZONE,
-          ),
+          today: judgeToday(clock?.now ?? new Date(), timezone),
+          timezone,
         }),
         deps.callbacks(),
+        signals.length > 1 ? AbortSignal.any(signals) : signals[0],
       );
       return yes ? { chosen: true } : { chosen: false, reason: "unmet" };
     } catch (err) {

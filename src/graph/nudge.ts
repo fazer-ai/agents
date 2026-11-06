@@ -1842,7 +1842,12 @@ async function runAgentNudgeBody(
                 return handed ? "handed" : "failed";
               },
             },
-            { buildNativeTools, mcp: params.deps?.mcp, flow },
+            {
+              buildNativeTools,
+              mcp: params.deps?.mcp,
+              flow,
+              signal: params.signal,
+            },
           ),
         );
 

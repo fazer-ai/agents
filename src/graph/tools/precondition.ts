@@ -118,6 +118,7 @@ export function guardedTool(
             args,
             messages: (config as { state?: { messages?: unknown } } | undefined)
               ?.state?.messages as never,
+            signal: (config as { signal?: AbortSignal } | undefined)?.signal,
           })
         : ({
             chosen: false,

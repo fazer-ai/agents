@@ -7,6 +7,7 @@ import {
   isNudgeTurn,
   isSystemMarker,
   lastStampedConversationId,
+  stampedSentAt,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { DATA_FENCE } from "@/graph/nudge";
@@ -56,9 +57,15 @@ export function guardrailContext(
   limit: number,
 ): GuardrailContextMessage[] {
   return unclippedContext(messages, limit).map((c) => ({
-    ...c,
+    role: c.role,
     text: clipText(c.text, CONTEXT_MESSAGE_MAX),
   }));
+}
+
+// A person's message carries the instant it was sent when the thread stored one, as the agent's
+// dated history reads it; the agent's own lines are never dated.
+export interface DatedContextMessage extends GuardrailContextMessage {
+  at: Date | null;
 }
 
 // The same window with every message whole, for a reader that must not decide on a prefix of what
@@ -66,8 +73,8 @@ export function guardrailContext(
 export function unclippedContext(
   messages: readonly BaseMessage[],
   limit: number,
-): GuardrailContextMessage[] {
-  const out: GuardrailContextMessage[] = [];
+): DatedContextMessage[] {
+  const out: DatedContextMessage[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
     const m = messages[i];
     if (!m) break;
@@ -77,13 +84,13 @@ export function unclippedContext(
       // NOTE: ingestion folds the divider into the customer's first message of the attendance.
       if (text.startsWith(CONVERSATION_DIVIDER))
         text = text.slice(CONVERSATION_DIVIDER.length).trim();
-      if (text) out.push({ role: "customer", text });
+      if (text) out.push({ role: "customer", text, at: stampedSentAt(m) });
       break;
     }
     if (isHumanAgentTurn(m)) {
       if (text.startsWith(HUMAN_AGENT_NOTE))
         text = text.slice(HUMAN_AGENT_NOTE.length).trim();
-      if (text) out.push({ role: "attendant", text });
+      if (text) out.push({ role: "attendant", text, at: stampedSentAt(m) });
       continue;
     }
     if (isSystemMarker(m) || isNudge(m) || !text) continue;
@@ -92,8 +99,9 @@ export function unclippedContext(
     // record, so it stays out rather than putting words the customer may never have read in context.
     if (type === "ai" && ((m as AIMessage).tool_calls?.length ?? 0) > 0)
       continue;
-    if (type === "human") out.push({ role: "customer", text });
-    else if (type === "ai") out.push({ role: "assistant", text });
+    if (type === "human")
+      out.push({ role: "customer", text, at: stampedSentAt(m) });
+    else if (type === "ai") out.push({ role: "assistant", text, at: null });
   }
   return out.reverse();
 }

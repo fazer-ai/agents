@@ -1162,6 +1162,7 @@ async function runTurnBody(
       flow,
       makeModel: params.deps?.makeModel,
       persistUsage: params.deps?.persistUsage,
+      signal: params.signal,
     },
   );
 

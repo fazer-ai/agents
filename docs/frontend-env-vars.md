@@ -11,7 +11,7 @@ The `define` substitution happens at `bun run build` time, so every layer betwee
 
 1. Declare in `build.ts` under `define` (see above)
 2. Read via `src/client/lib/env.ts` (see above)
-3. In `Dockerfile`, add an `ARG name=""` + `ENV name=$name` pair **before** the `RUN bun run build` step (see `BUN_PUBLIC_CDN_URL` at lines 16-17)
+3. In `Dockerfile`, add an `ARG name=""` + `ENV name=$name` pair in the `build` stage, **before** the `RUN bun run build` step (see `BUN_PUBLIC_CDN_URL` there). Repeat the pair in the `runtime` stage only when the server also reads the variable at runtime, as it does `BUN_PUBLIC_EDITION`: an `ARG` does not cross stages
 4. In `.github/workflows/publish_github_package.yml`, wire it in **both** places: the `Build frontend assets` step's `env:` block (used for R2 asset upload) **and** the `docker/build-push-action`'s `build-args:` block (used for the image build). Missing either one leaves that half of the pipeline shipping an empty value
 5. Add the matching secret in GitHub repo settings (`secrets.BUN_PUBLIC_X`)
 

@@ -147,8 +147,11 @@ jobs:
             ${{ env.GITHUB_REPO }}:latest
             ${{ env.GITHUB_REPO }}:${{ github.sha }}
             ${{ env.GITHUB_REPO }}:${{ github.ref_name }}
-          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+          # NOTE: registry cache, not gha: this workflow runs on a release, so on a tag ref, and a
+          # GitHub Actions cache written from a tag is visible only to that tag and the default
+          # branch. With gha every release started cold and shipped every layer again.
+          cache-from: type=registry,ref=${{ env.GITHUB_REPO }}:buildcache-${{ env.PLATFORM_PAIR }}
+          cache-to: type=registry,ref=${{ env.GITHUB_REPO }}:buildcache-${{ env.PLATFORM_PAIR }},mode=max,ignore-error=true
 
       # NOTE: same build, Blacksmith flavor — layer cache is persisted by Blacksmith itself
       # (sticky disks), so the gha cache-from/to pair is intentionally absent here.

@@ -95,31 +95,63 @@ export function runtimeZoneProbes(): ZoneProbe[] {
   ];
 }
 
+// Each probe's whole read, a pool's first connection and the checkpointer's setup included, gets
+// this long. Boot awaits the check before starting any worker, and a server that accepts a
+// connection and then stops answering would otherwise hold the process there with nothing logged.
+export const ZONE_PROBE_TIMEOUT_MS = 5_000;
+
+export class ZoneProbeTimeoutError extends Error {
+  constructor(pool: string, ms: number) {
+    super(`the ${pool} pool did not answer its time zone within ${ms}ms`);
+    this.name = "ZoneProbeTimeoutError";
+  }
+}
+
+async function bounded(probe: ZoneProbe, ms: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      probe.read(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new ZoneProbeTimeoutError(probe.pool, ms)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Throws SessionZoneError naming every pool whose session is not UTC. Returns the pools that could
-// not be read, which never hide another pool's refusal.
+// not be read in time, which never hide another pool's refusal. The probes run side by side, so the
+// check costs one probe's bound, not the sum.
 export async function assertSessionZones(
   probes: ZoneProbe[],
+  timeoutMs: number = ZONE_PROBE_TIMEOUT_MS,
 ): Promise<{ unchecked: { pool: string; error: unknown }[] }> {
+  const read = await Promise.allSettled(
+    probes.map((probe) => bounded(probe, timeoutMs)),
+  );
   const offenders: string[] = [];
   const unchecked: { pool: string; error: unknown }[] = [];
-  for (const probe of probes) {
-    let tz: string;
-    try {
-      tz = await probe.read();
-    } catch (error) {
-      unchecked.push({ pool: probe.pool, error });
-      continue;
-    }
-    if (!isUtcZone(tz)) offenders.push(`${probe.pool} (${tz})`);
-  }
+  read.forEach((outcome, i) => {
+    const pool = (probes[i] as ZoneProbe).pool;
+    if (outcome.status === "rejected")
+      unchecked.push({ pool, error: outcome.reason });
+    else if (!isUtcZone(outcome.value))
+      offenders.push(`${pool} (${outcome.value})`);
+  });
   if (offenders.length > 0) throw new SessionZoneError(offenders.join(", "));
   return { unchecked };
 }
 
 export async function checkSessionZoneAtBoot(
   probes: ZoneProbe[] = runtimeZoneProbes(),
+  timeoutMs: number = ZONE_PROBE_TIMEOUT_MS,
 ): Promise<void> {
-  const { unchecked } = await assertSessionZones(probes);
+  const { unchecked } = await assertSessionZones(probes, timeoutMs);
   for (const { pool, error } of unchecked) {
     logger.warn(
       { error },

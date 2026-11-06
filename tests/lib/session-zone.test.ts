@@ -10,8 +10,10 @@ import {
 } from "@/api/lib/pool-options";
 import {
   assertSessionZones,
+  checkSessionZoneAtBoot,
   isUtcZone,
   SessionZoneError,
+  ZoneProbeTimeoutError,
 } from "@/lib/db-session-zone";
 import { withSessionOptions, withSessionZoneInUrl } from "@/lib/session-zone";
 import { readDatabaseSignals } from "@/modules/instance-health/sampler";
@@ -184,6 +186,53 @@ describe("the boot check of the session zone", () => {
       },
     ]);
     expect(unchecked.map((u) => u.pool)).toEqual(["metrics"]);
+  });
+
+  test("a pool that never answers is reported within its bound, and the others are still judged", async () => {
+    const never = () => new Promise<string>(() => {});
+    // An unbounded probe would hold the test forever; this turns that into a failure that names it.
+    const within = <T>(p: Promise<T>, ms: number) =>
+      Promise.race([
+        p,
+        Bun.sleep(ms).then(() => {
+          throw new Error(`the check did not return within ${ms}ms`);
+        }),
+      ]);
+    await expect(
+      within(
+        assertSessionZones(
+          [
+            { pool: "checkpointer", read: never },
+            { pool: "main", read: async () => "UTC" },
+            { pool: "ack", read: async () => "Asia/Tokyo" },
+          ],
+          50,
+        ),
+        2_000,
+      ),
+    ).rejects.toThrow("ack (Asia/Tokyo)");
+    const started = Date.now();
+    const { unchecked } = await within(
+      assertSessionZones(
+        [
+          { pool: "checkpointer", read: never },
+          { pool: "metrics", read: never },
+          { pool: "main", read: async () => "UTC" },
+        ],
+        400,
+      ),
+      2_000,
+    );
+    expect(unchecked.map((u) => u.pool)).toEqual(["checkpointer", "metrics"]);
+    expect(unchecked[0]?.error).toBeInstanceOf(ZoneProbeTimeoutError);
+    // Side by side: two stalled pools cost one bound, not two.
+    expect(Date.now() - started).toBeLessThan(750);
+    await expect(
+      within(
+        checkSessionZoneAtBoot([{ pool: "checkpointer", read: never }], 50),
+        2_000,
+      ),
+    ).resolves.toBeUndefined();
   });
 
   test("a zone at offset 0 only part of the year is not UTC", () => {

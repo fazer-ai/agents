@@ -8,6 +8,7 @@ Chat with a configured agent straight from the console — no Chatwoot, no webho
 
 - Loads the agent config with `loadAgentConfig(..., { ignoreDisabled: true })` — the `enabled` toggle only gates production auto-replies, so the playground tests config regardless. Dummy `instanceId=0n`/`conversationId=0` → no mirror row → empty contact/prompt vars.
 - Builds the toolset with only the **utility** native tools (`UTILITY_NATIVE_TOOL_NAMES`: calculator, get_current_time), excluding the native **conversation** tools (handoff/resolve/…) since there is no conversation to act on, while keeping knowledge, HTTP, code, MCP and integration tools live. A code tool runs for real here, like calculator and the clock: its sandbox has no external side effect, and a simulated verdict would be one the production agent never computes. A dummy client satisfies the type and is never called.
+- An operator's `toolMocks` (a canned result per tool name) replace the tool inside the toolset build, before the precondition wrapper (`ToolBuildDeps.replaceTools`), so a mocked tool is still refused by the rules the operator wrote on it, attribute or `customer_choice` (`docs/graph.md`, Tool preconditions). Testing a rule with a mock shows the refusal production gives, never the canned result.
 - Screens the message and the reply through the agent's guardrails (below), then invokes the graph on a **fenced** playground thread and returns `{ reply, threadId, trace, sources }`.
 
 ### Multimodal capability gating (STT / vision / TTS)

@@ -1375,6 +1375,11 @@ export interface ToolBuildDeps {
   // The `customer_choice` judge's model factory and ledger writer, injectable like the turn's own.
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
   persistUsage?: UsagePersist;
+  // Swaps tools of the assembled list before the precondition wrapper goes on (the playground's
+  // canned results), so a stand-in is refused by the same rules as the tool it replaces.
+  replaceTools?: (
+    tools: StructuredToolInterface[],
+  ) => StructuredToolInterface[];
 }
 
 // Native Chatwoot tools + allowlisted custom HTTP tools + allowlisted MCP tools. buildNativeTools
@@ -1967,7 +1972,7 @@ export async function buildToolset(
   // document, HTTP, MCP, toolpack and RAG at once. An agent with no preconditions gets the same
   // array back, untouched.
   const guarded = applyToolPreconditions(
-    tools,
+    deps.replaceTools ? deps.replaceTools(tools) : tools,
     cfg.toolPreconditions,
     preconditionStateLoader({
       base: ctx.base,
@@ -2119,7 +2124,9 @@ export function customerChoiceCheck(
     model: () => {
       if (built !== undefined) return built;
       try {
-        built = cfg.apiKey ? (deps.makeModel ?? createChatModel)(mc()) : null;
+        // NOTE: no key is not a reason to refuse here: an `openai-compatible` endpoint may run keyless,
+        // and the factory is what knows which configurations are runnable.
+        built = (deps.makeModel ?? createChatModel)(mc());
       } catch (err) {
         logger.warn(
           { err, agentId: String(cfg.agentId) },

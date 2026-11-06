@@ -87,6 +87,8 @@ export function buildDetachedToolset(
     flow: FlowContext | undefined;
     // The `customer_choice` judge's model factory (ToolBuildDeps.makeModel).
     makeModel?: ToolBuildDeps["makeModel"];
+    // The playground's mocks (ToolBuildDeps.replaceTools).
+    replaceTools?: ToolBuildDeps["replaceTools"];
     // Where `reply_as_text` records its choice. The turn passes the one its delivery
     // reads; the listing passes a throwaway, so the panel shows the tool the model is offered. Absent
     // on the simulated follow-up, which, like production's nudge, is never offered the tool.
@@ -151,6 +153,7 @@ export function buildDetachedToolset(
       mcp: params.mcp,
       flow: params.flow,
       makeModel: params.makeModel,
+      replaceTools: params.replaceTools,
     },
   );
 }

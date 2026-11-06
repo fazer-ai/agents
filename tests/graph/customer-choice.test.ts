@@ -13,6 +13,7 @@ import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import {
   conversationDividerMessage,
+  conversationStamp,
   humanAgentMessage,
   nudgeMessage,
 } from "@/graph/markers";
@@ -194,7 +195,7 @@ describe("a choice-guarded tool in a real graph turn", () => {
     );
     expect(calls).toHaveLength(1);
     expect(judge.calls[0]).toContain("Prefere 8, 10 ou 12 sessões?");
-    expect(judge.calls[0]).toContain("- o do meio");
+    expect(judge.calls[0]).toContain("- customer: o do meio");
   });
 
   test("a judge that fails refuses the call (fail closed) and the line says unreadable", async () => {
@@ -258,32 +259,53 @@ describe("a choice-guarded tool in a real graph turn", () => {
 });
 
 describe("literallyChosen", () => {
-  const said = ["Quero o PACOTE fisioterapia 10 Sessões!", "valor 1450"];
+  const said = "Quero o PACOTE fisioterapia 10 Sessões! valor 1450";
   test.each([
-    ["every value folded and found", TEN, true],
-    ["one value missing", ALL_THREE, false],
+    ["every value folded and found", said, TEN, true],
+    ["one value missing", said, ALL_THREE, false],
     [
       "a boolean leaf goes to the judge",
+      said,
       { name: "10 sessoes", urgent: true },
       false,
     ],
     [
       "a null leaf goes to the judge",
+      said,
       { name: "10 sessoes", note: null },
       false,
     ],
-    ["a partial word is not a match", { name: "sess" }, false],
-    ["nothing to find is not a pass", { name: "  " }, false],
-    ["no arguments is not a pass", {}, false],
-  ])("%s", (_label, args, expected) => {
-    expect(literallyChosen(args, said)).toBe(expected);
+    ["a partial word is not a match", said, { name: "sess" }, false],
+    ["nothing to find is not a pass", said, { name: "  " }, false],
+    ["no arguments is not a pass", said, {}, false],
+    // A mention is not a choice: each of these names every value and chooses none of them.
+    ["a refusal", "não quero o premium", { plan: "premium" }, false],
+    [
+      "a refusal in English",
+      "I do not want premium",
+      { plan: "premium" },
+      false,
+    ],
+    [
+      "a question about the options",
+      "qual a diferença entre o básico e o premium?",
+      { plans: ["básico", "premium"] },
+      false,
+    ],
+    [
+      "an either-or",
+      "o básico ou o premium",
+      { plans: ["básico", "premium"] },
+      false,
+    ],
+  ])("%s", (_label, latest, args, expected) => {
+    expect(literallyChosen(args, latest)).toBe(expected);
   });
 });
 
 describe("choiceTranscript", () => {
-  test("only the customer's words of the open attendance, with the question before the latest one", () => {
+  test("the open attendance in order, with the system's own notes and tool chatter left out", () => {
     const t = choiceTranscript([
-      new HumanMessage("mensagem de um atendimento antigo"),
       conversationDividerMessage(7, "oi, quero um orçamento"),
       nudgeMessage("diretriz do operador", 7),
       humanAgentMessage(7, "palavras do atendente"),
@@ -295,13 +317,81 @@ describe("choiceTranscript", () => {
       new HumanMessage("o de 10"),
     ]);
     expect(t).toEqual({
-      customer: ["oi, quero um orçamento", "o de 10"],
-      lastQuestion: "8, 10 ou 12?",
+      exchange: [
+        { role: "customer", text: "oi, quero um orçamento" },
+        { role: "attendant", text: "palavras do atendente" },
+        { role: "assistant", text: "8, 10 ou 12?" },
+        { role: "customer", text: "o de 10" },
+      ],
+      latest: "o de 10",
+    });
+  });
+
+  test("an earlier attendance is cut by its stamp, even with no divider between them", () => {
+    const t = choiceTranscript([
+      new HumanMessage({
+        content: "quero o de 12",
+        additional_kwargs: conversationStamp(6),
+      }),
+      new AIMessage("Feito."),
+      new HumanMessage({
+        content: "me manda o orçamento",
+        additional_kwargs: conversationStamp(7),
+      }),
+    ]);
+    expect(t).toEqual({
+      exchange: [{ role: "customer", text: "me manda o orçamento" }],
+      latest: "me manda o orçamento",
     });
   });
 
   test("a call with no graph state has no transcript", () => {
     expect(choiceTranscript(undefined)).toBeNull();
+  });
+});
+
+describe("what the judge reads", () => {
+  test("an answer stays next to its own question after a later exchange", async () => {
+    const model = new UsageReportingModel(["YES"]);
+    const check = choiceCheck({
+      model: () => model as unknown as BaseChatModel,
+      callbacks: () => [],
+    });
+    await check({
+      tool: "agendar",
+      description: "d",
+      args: { pacote: "12 sessões", turno: "manhã" },
+      messages: [
+        new HumanMessage("quero agendar"),
+        new AIMessage("10 ou 12 sessões?"),
+        new HumanMessage("o segundo"),
+        new AIMessage("manhã ou tarde?"),
+        new HumanMessage("o primeiro"),
+      ],
+    });
+    expect(model.calls[0]).toContain(
+      "- assistant: 10 ou 12 sessões?\n- customer: o segundo\n- assistant: manhã ou tarde?\n- customer: o primeiro",
+    );
+  });
+
+  test("a value only an earlier message named goes to the judge, which may know it was dropped", async () => {
+    const model = new UsageReportingModel(["NO"]);
+    const check = choiceCheck({
+      model: () => model as unknown as BaseChatModel,
+      callbacks: () => [],
+    });
+    const verdict = await check({
+      tool: "x",
+      description: "d",
+      args: { plan: "premium" },
+      messages: [
+        new HumanMessage("quero o premium"),
+        new AIMessage("Certo."),
+        new HumanMessage("pensando melhor, deixa pra lá"),
+      ],
+    });
+    expect(model.calls).toHaveLength(1);
+    expect(verdict).toEqual({ chosen: false, reason: "unmet" });
   });
 });
 
@@ -429,19 +519,25 @@ describe("the judge a toolset builds", () => {
     expect(rows[0]?.promptTokens).toBe(90);
   });
 
-  test("an agent with no key refuses without building a model", async () => {
+  // An `openai-compatible` endpoint may run keyless, so no key is not the guard's reason to refuse:
+  // the factory decides, and a factory that cannot build refuses.
+  test.each([
+    ["builds", true],
+    ["throws", false],
+  ])("an agent with no key asks the factory, which %s", async (_l, builds) => {
     let built = 0;
     const check = customerChoiceCheck(
       {
         agentId: 5n,
-        mc: { provider: "openai", model: "gpt-5.4-mini" },
+        mc: { provider: "openai-compatible", model: "local" },
         apiKey: "",
-        credentialBaseUrl: null,
+        credentialBaseUrl: "http://llm.internal/v1",
       } as unknown as AgentConfig,
       { tenantId: 1n, threadId: "t-1" } as never,
       {
         makeModel: () => {
           built++;
+          if (!builds) throw new Error("not runnable");
           return new UsageReportingModel(["YES"]) as unknown as BaseChatModel;
         },
       } as never,
@@ -452,8 +548,8 @@ describe("the judge a toolset builds", () => {
       args: TEN,
       messages: [new HumanMessage("o do meio")],
     });
-    expect(verdict.chosen).toBe(false);
-    expect(built).toBe(0);
+    expect(built).toBe(1);
+    expect(verdict.chosen).toBe(builds);
   });
 });
 

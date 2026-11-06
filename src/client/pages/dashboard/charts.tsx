@@ -273,6 +273,10 @@ function StateLegend({
 // loading or with no data have nothing to be drawn against.
 const NONE = "__none";
 
+// The plot's horizontal room inside the chart box: the value axis on the left, the margin on the right.
+const AXIS_WIDTH = 64;
+const RIGHT_MARGIN = 12;
+
 function plotted(data: ChartRow[], series: SeriesDef[]): ChartRow[] {
   return series.length > 0 ? data : data.map((r) => ({ ...r, [NONE]: 0 }));
 }
@@ -583,7 +587,7 @@ export function LineTrend({
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={plotted(data, series)}
-            margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
+            margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
             onClick={(e) => {
               const label = (e as { activeLabel?: string } | null)?.activeLabel;
               const hit = hitSeries.current ?? undefined;
@@ -610,7 +614,7 @@ export function LineTrend({
               stroke={p.axis}
               tick={{ fill: p.axis, fontSize: 11 }}
               tickFormatter={format}
-              width={64}
+              width={AXIS_WIDTH}
               domain={[0, settled]}
             />
             {stateBands(data, ids, p, text)}
@@ -707,6 +711,19 @@ function withState(
   return label;
 }
 
+// The day under a click, read from where it landed. Recharts names the day only once a hover has
+// made it active, which a tap or a click with no movement before it never does.
+function dayUnder(event: unknown, rows: ChartRow[]): string | undefined {
+  const target = (event as { target?: unknown } | undefined)?.target;
+  const clientX = (event as { clientX?: unknown } | undefined)?.clientX;
+  if (!(target instanceof Element) || typeof clientX !== "number") return;
+  const box = target.closest(".recharts-wrapper")?.getBoundingClientRect();
+  if (!box || rows.length === 0) return;
+  const band = (box.width - AXIS_WIDTH - RIGHT_MARGIN) / rows.length;
+  const i = Math.floor((clientX - box.left - AXIS_WIDTH) / band);
+  return i >= 0 && i < rows.length ? rows[i]?.day : undefined;
+}
+
 // The detail of the day a stack was clicked on: every series, the "Other" group's members included,
 // top to bottom as drawn, each with its value and its share of the day, and a way to close it.
 function DayDetail({
@@ -743,7 +760,8 @@ function DayDetail({
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // A popup above it (the Others list) takes its own Escape first and marks it handled.
+      if (e.key === "Escape" && !e.defaultPrevented) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -893,9 +911,11 @@ export function StackedBars({
             // group draws a new chart rather than a legend that disagrees with the stack.
             key={drawn.map((s) => s.key).join("|")}
             data={plotted(arranged.rows, drawn)}
-            margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
-            onClick={(e) => {
-              const label = (e as { activeLabel?: string } | null)?.activeLabel;
+            margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
+            onClick={(e, event) => {
+              const label =
+                (e as { activeLabel?: string } | null)?.activeLabel ??
+                dayUnder(event, arranged.rows);
               if (typeof label !== "string") return;
               setPicked((cur) => (cur === label ? null : label));
               onPick?.(label);
@@ -918,7 +938,7 @@ export function StackedBars({
               stroke={p.axis}
               tick={{ fill: p.axis, fontSize: 11 }}
               tickFormatter={format}
-              width={64}
+              width={AXIS_WIDTH}
               domain={[0, settled]}
             />
             {stateBands(data, ids, p, text)}

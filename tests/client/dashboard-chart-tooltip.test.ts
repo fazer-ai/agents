@@ -336,6 +336,56 @@ describe("a stacked chart with more series than colours", () => {
     });
   });
 
+  test("a click with no hover before it, like a tap, still opens the day it landed on", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    const wrapper = await waitFor(() => {
+      const w = container.querySelector(".recharts-wrapper");
+      if (!w || !container.querySelector(".recharts-surface"))
+        throw new Error("no chart yet");
+      return w;
+    });
+    fireEvent.click(wrapper, { clientX: centerOf(0, 2), clientY: HEIGHT / 2 });
+    const detail = await waitFor(() => {
+      const d = container.querySelector('[data-testid="chart-day-detail"]');
+      if (!d) throw new Error("no detail yet");
+      return d;
+    });
+    // The first day: Node 3 is at zero there, so the group is 1 + 2 + 3 + 0 of a 62 total.
+    expect(lines(detail)[0]).toBe("Others (4)69.7%");
+  });
+
+  test("Escape on an open Others list closes the list and leaves the day detail open", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await hover(container, 1, 2);
+    fireEvent.click(container.querySelector(".recharts-wrapper") as Element, {
+      clientX: centerOf(1, 2),
+      clientY: HEIGHT / 2,
+    });
+    await waitFor(() => {
+      if (!container.querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("no detail yet");
+    });
+    fireEvent.click(
+      container.querySelector(
+        '[data-testid="chart-legend"] > li[data-series-key="__other"] button',
+      ) as HTMLElement,
+    );
+    await waitFor(() => {
+      if (!document.querySelector('[data-testid="chart-legend-members"]'))
+        throw new Error("no members yet");
+    });
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+    await waitFor(() => {
+      if (document.querySelector('[data-testid="chart-legend-members"]'))
+        throw new Error("list still open");
+    });
+    expect(
+      container.querySelector('[data-testid="chart-day-detail"]'),
+    ).not.toBeNull();
+  });
+
   test("Escape closes the detail from wherever the focus is after the click", async () => {
     const { container } = renderChart(StackedBars, stacked);
     await hover(container, 1, 2);

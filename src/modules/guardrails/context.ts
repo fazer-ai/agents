@@ -1,4 +1,8 @@
-import type { AIMessage, BaseMessage } from "@langchain/core/messages";
+import type {
+  AIMessage,
+  BaseMessage,
+  ToolMessage,
+} from "@langchain/core/messages";
 import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
@@ -56,23 +60,30 @@ export function guardrailContext(
   messages: readonly BaseMessage[],
   limit: number,
 ): GuardrailContextMessage[] {
-  return unclippedContext(messages, limit).map((c) => ({
-    role: c.role,
-    text: clipText(c.text, CONTEXT_MESSAGE_MAX),
-  }));
+  const out: GuardrailContextMessage[] = [];
+  for (const c of unclippedContext(messages, limit))
+    if (c.role !== "tool")
+      out.push({ role: c.role, text: clipText(c.text, CONTEXT_MESSAGE_MAX) });
+  return out;
 }
 
 // A person's message carries the instant it was sent when the thread stored one, as the agent's
-// dated history reads it; the agent's own lines are never dated.
-export interface DatedContextMessage extends GuardrailContextMessage {
+// dated history reads it; the agent's own lines are never dated. A `tool` entry is what a tool
+// returned, present only when the reader asks for it.
+export interface DatedContextMessage {
+  role: GuardrailContextRole | "tool";
+  text: string;
   at: Date | null;
+  tool?: string;
 }
 
 // The same window with every message whole, for a reader that must not decide on a prefix of what
-// someone said.
+// someone said. `toolResultChars` also takes in each tool result, cut to that many characters: they
+// are no one's words, and a reader may need them to tell which record an id in a call names.
 export function unclippedContext(
   messages: readonly BaseMessage[],
   limit: number,
+  opts?: { toolResultChars?: number },
 ): DatedContextMessage[] {
   const out: DatedContextMessage[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
@@ -94,6 +105,16 @@ export function unclippedContext(
       continue;
     }
     if (isSystemMarker(m) || isNudge(m) || !text) continue;
+    if (type === "tool") {
+      if (opts?.toolResultChars)
+        out.push({
+          role: "tool",
+          text: clipText(text, opts.toolResultChars),
+          at: null,
+          tool: (m as ToolMessage).name ?? "",
+        });
+      continue;
+    }
     // NOTE: only a message that calls nothing is a reply. Text beside a call is the agent thinking
     // between rounds, or a reply the runtime recovers only under conditions the thread does not
     // record, so it stays out rather than putting words the customer may never have read in context.

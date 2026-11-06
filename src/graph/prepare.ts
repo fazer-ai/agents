@@ -99,6 +99,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
+import type { DatedContextMessage } from "@/modules/guardrails/context";
 import {
   type GuardrailsConfig,
   guardrailCredentialRef,
@@ -1176,6 +1177,9 @@ export interface ToolsetCtx {
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
   // screens it on this path. See ToolCtx.screenCustomerText.
   screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
+  // The conversation for the `customer_choice` judge, when the graph state is not it: the observer's
+  // graph reads one rendered prompt, which would read as a single customer message.
+  choiceTranscript?: () => DatedContextMessage[];
   // The caller's whole-turn deadline, when it has one (the observer's tick). Reaches the Chatwoot
   // client as `expiresOn` and the HTTP tools as the same signal, so a handler that outlives the
   // budget cannot still write. Absent on a reactive turn, which has no deadline.
@@ -2129,6 +2133,7 @@ export function customerChoiceCheck(
       now: cfg.promptOpts.now,
       timezone: cfg.promptOpts.timezone ?? cfg.timezone,
     }),
+    transcript: ctx.choiceTranscript,
     signal: () => {
       const turn = [ctx.expiresOn, deps.signal].filter(
         (s): s is AbortSignal => s !== undefined,

@@ -2266,6 +2266,79 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
+  // The tick's graph reads one rendered prompt (frame, notes, transcript), which is not what the
+  // customer said: the choice judge reads the transcript the tick read, by role.
+  test("a customer_choice rule is judged on the conversation, not on the tick's prompt", async () => {
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          toolPreconditions: { set_labels: { kind: "customer_choice" } },
+        } as never,
+      },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const judged: string[] = [];
+    class LabelsOnce {
+      async invoke(msgs: { content: unknown }[]): Promise<AIMessage> {
+        judged.push(String(msgs[1]?.content));
+        return new AIMessage("NO");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "set_labels",
+                      args: { add: ["cancelamento"] },
+                      id: "l1",
+                    },
+                  ],
+                })
+              : new AIMessage("pronto");
+          },
+        };
+      }
+    }
+    try {
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new LabelsOnce() as unknown as BaseChatModel,
+        },
+      );
+      expect(log.labelsWritten).toEqual([]);
+      expect(judged).toHaveLength(1);
+      expect(judged[0]).toContain("<customer>\nquero cancelar\n</customer>");
+      expect(judged[0]).not.toContain("Turno de observação");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings as never },
+      });
+    }
+  });
+
   test("a label call that changed nothing leaves the tick retryable", async () => {
     // No label moved, so no POST left: the dispatch was counted on the way in and the tick may
     // safely run again.

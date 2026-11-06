@@ -1612,6 +1612,22 @@ export async function runObserve(
           conversationId,
           threadId,
           expiresOn: deadline,
+          // NOTE: the conversation the tick read, by role: the graph's own state is one rendered
+          // prompt, and a choice judged on it would be the whole frame read as the customer's words.
+          // A `decisions` rule's action keeps no transcript, and refuses, as a rule's action does.
+          ...(decisions
+            ? {}
+            : {
+                choiceTranscript: () =>
+                  transcript.map((l) => ({
+                    role:
+                      l.role === "customer" || l.role === "assistant"
+                        ? l.role
+                        : "attendant",
+                    text: l.text,
+                    at: l.at ?? null,
+                  })),
+              }),
           // NOTE: the burst's triggering message, exposed to HTTP and code tools as {{message_id}}
           // as on a reactive turn. Null on an `on_resolve` tick: the placeholder is then absent, as
           // for a nudge.
@@ -1634,7 +1650,7 @@ export async function runObserve(
             ? { conversationLabelsRead: { labels: current, at: labelsAskedAt } }
             : {}),
         },
-        { buildNativeTools, mcp: deps.mcp, flow },
+        { buildNativeTools, mcp: deps.mcp, flow, makeModel: deps.makeModel },
       ),
       deadline,
     );

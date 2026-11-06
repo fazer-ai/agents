@@ -5,7 +5,7 @@ import {
   AIMessage,
   type BaseMessage,
   HumanMessage,
-  type ToolMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
@@ -393,6 +393,91 @@ describe("what the judge reads", () => {
     );
   });
 
+  // A customer names a file; the call carries the id a lookup returned for it.
+  test("what a tool returned, by name and cut, beside what people said", async () => {
+    const model = new UsageReportingModel(["YES"]);
+    const check = choiceCheck({
+      model: () => model as unknown as BaseChatModel,
+      callbacks: () => [],
+    });
+    await check({
+      tool: "drive_send_file",
+      description: "d",
+      args: { fileId: "f-42" },
+      messages: [
+        new HumanMessage("me manda o contrato.pdf"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "drive_find_file", args: {}, id: "c1" }],
+        }),
+        new ToolMessage({
+          content: `[{"id":"f-42","name":"contrato.pdf"}]${"x".repeat(5000)}`,
+          tool_call_id: "c1",
+          name: "drive_find_file",
+        }),
+      ],
+    });
+    const asked = String(model.calls[0]);
+    expect(asked).toContain(
+      '<tool name="drive_find_file">\n[{"id":"f-42","name":"contrato.pdf"}]',
+    );
+    expect(asked.length).toBeLessThan(5000);
+    expect(asked.indexOf("<customer>")).toBeLessThan(asked.indexOf("<tool "));
+  });
+
+  // The observer's graph reads one rendered prompt; its transcript is what the judge reads.
+  test("a transcript the caller hands in replaces the graph state", async () => {
+    const model = new UsageReportingModel(["NO"]);
+    const check = choiceCheck({
+      model: () => model as unknown as BaseChatModel,
+      callbacks: () => [],
+      transcript: () => [
+        { role: "customer", text: "quero o de 10", at: null },
+        { role: "attendant", text: "anotado", at: null },
+      ],
+    });
+    await check({
+      tool: "x",
+      description: "d",
+      args: { plan: "10" },
+      messages: [new HumanMessage(`Turno de observação ${"y".repeat(30_000)}`)],
+    });
+    const asked = String(model.calls[0]);
+    expect(asked).toContain(
+      "<customer>\nquero o de 10\n</customer>\n<attendant>\nanotado\n</attendant>",
+    );
+    expect(asked).not.toContain("Turno de observação");
+  });
+
+  test("a toolset hands the judge the transcript its context carries", async () => {
+    const judge = new UsageReportingModel(["NO"]);
+    const check = customerChoiceCheck(
+      {
+        agentId: 5n,
+        mc: { provider: "openai", model: "gpt-5.4-mini" },
+        apiKey: "sk-agent",
+        promptOpts: { now: new Date() },
+      } as unknown as AgentConfig,
+      {
+        tenantId: 1n,
+        threadId: "t-1",
+        choiceTranscript: () => [
+          { role: "customer", text: "o de 12", at: null },
+        ],
+      } as never,
+      { makeModel: () => judge as unknown as BaseChatModel } as never,
+    );
+    await check({
+      tool: "x",
+      description: "d",
+      args: TEN,
+      messages: [new HumanMessage("o prompt inteiro do observador")],
+    });
+    expect(String(judge.calls[0])).toContain(
+      "<customer>\no de 12\n</customer>",
+    );
+  });
+
   test("a message cannot close its own tag and speak in another role", async () => {
     const model = new UsageReportingModel(["NO"]);
     const check = choiceCheck({
@@ -475,7 +560,9 @@ describe("the judge is told the business's date", () => {
       args: { data: "2026-11-10" },
       messages: [new HumanMessage("terça às 8h")],
     });
-    expect(model.calls[0]).toContain("Today is 2026-11-05 (Thursday).");
+    expect(model.calls[0]).toContain(
+      "Today is 2026-11-05 (Thursday), in America/Sao_Paulo;",
+    );
   });
 });
 
@@ -513,7 +600,9 @@ describe("the judge a toolset builds reads the turn's own clock", () => {
       args: { data: "2027-03-02" },
       messages: [new HumanMessage("amanhã de manhã")],
     });
-    expect(asked[0]).toContain("Today is 2027-03-01 (Monday).");
+    expect(asked[0]).toContain(
+      "Today is 2027-03-01 (Monday), in America/Los_Angeles;",
+    );
   });
 });
 

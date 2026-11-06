@@ -56,11 +56,12 @@ export const RETENTION_WAL_SHARE = 0.5;
 export const RETENTION_MAX_PAUSE_MS = 60_000;
 
 // What paces the pass: how many bytes of WAL a second the instance may write while it runs, and how
-// to read the instance's WAL position. `sleep` is the test's seam.
+// to read the instance's WAL position. `sleep` and `now` are the test's seams.
 export interface RetentionPacing {
   budgetBytesPerSec: number;
   readWal: () => Promise<number>;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 // The budget from the server's own settings: Postgres requests a checkpoint once about
@@ -433,29 +434,32 @@ export function retainCheckpoints(
         totals.bytes += res.bytes;
         for (const id of res.threads) threads.add(id);
       };
-      // The wait after an attempt that may have written: `pauseMs`, or as long as the WAL the instance
-      // wrote since the mark takes at the budget's rate, less the time since the mark. The mark is the
-      // reading taken before the last wait, so the WAL the instance's own traffic writes while the
-      // pass sleeps counts against the next batch. A failed attempt waits too, since the tables a batch
-      // committed before its failing one stay deleted and a rolled-back delete writes WAL as well.
-      let mark: { wal: number; at: number } | null = null;
+      // The wait after an attempt that may have written, on a virtual clock: each byte of instance WAL
+      // since the last reading pushes `ready` forward at the budget's rate, from now when the pass is
+      // not behind, and the pass waits until `ready`. The instance's own traffic during a sleep counts,
+      // and one wait never pays for two batches. Between `pauseMs` and RETENTION_MAX_PAUSE_MS, with the
+      // debt held to that ceiling. A failed attempt waits too: the tables committed before its failing
+      // one stay deleted, and a rolled-back delete writes WAL as well.
+      const now = pacing?.now ?? Date.now;
+      let lastWal: number | null = null;
+      let ready = 0;
       const markNow = async () => {
-        const wal = await readWal();
-        mark = wal === null ? null : { wal, at: Date.now() };
+        lastWal = await readWal();
       };
       const pace = async () => {
         let wait = pauseMs;
-        const before = mark;
-        const walAfter = await readWal();
-        const at = Date.now();
-        if (pacing && before !== null && walAfter !== null)
-          wait = Math.max(
-            wait,
-            ((walAfter - before.wal) / pacing.budgetBytesPerSec) * 1000 -
-              (at - before.at),
+        const wal = await readWal();
+        const at = now();
+        if (pacing && lastWal !== null && wal !== null) {
+          ready = Math.min(
+            Math.max(ready, at) +
+              ((wal - lastWal) / pacing.budgetBytesPerSec) * 1000,
+            at + RETENTION_MAX_PAUSE_MS,
           );
+          wait = Math.max(wait, ready - at);
+        }
+        lastWal = wal;
         wait = Math.min(wait, RETENTION_MAX_PAUSE_MS);
-        mark = walAfter === null ? null : { wal: walAfter, at };
         if (wait > 0) await sleep(wait);
       };
       let cursor: string | null = "";
@@ -463,7 +467,7 @@ export function retainCheckpoints(
       while (cursor !== null) {
         if (opts.shouldStop?.()) break;
         await beforeBatch();
-        if (mark === null) await markNow();
+        if (lastWal === null) await markNow();
         let res: RetentionBatch;
         try {
           res = await retainCheckpointBatch(pool, cursor, { ...opts, probes });

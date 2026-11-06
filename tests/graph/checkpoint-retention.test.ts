@@ -819,12 +819,17 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
   // writes full-page images, and on production the pass pushed past `max_wal_size` every minute,
   // forcing a checkpoint each time and stalling every other connection. After a batch it waits until
   // the WAL written since the batch began, at the budget's rate, has had its time.
+  // Batch after batch, on a clock that moves only while the pass sleeps: each wait is the WAL of its
+  // own batch at the budget's rate, so the pass holds the budget over the run, never twice it by
+  // letting one wait pay for the next batch too.
   test("after a batch the pass waits for the WAL it wrote to fit the budget", async () => {
     const id = thread();
     await seedRows(id, threeOld);
     let wal = 0;
+    let clock = 1_000_000;
     const slept: number[] = [];
     await pass([id], {
+      rows: 1,
       pacing: {
         budgetBytesPerSec: 1_000,
         readWal: async () => {
@@ -833,14 +838,71 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
         },
         sleep: async (ms: number) => {
           slept.push(ms);
+          clock += ms;
         },
+        now: () => clock,
       },
     } as Parameters<typeof retainCheckpoints>[1]);
     expect(await rowsOf(id)).toEqual(prunedThreeOld);
-    expect(slept.length).toBeGreaterThan(0);
-    expect(Math.max(...slept)).toBeGreaterThanOrEqual(4_000);
-    expect(Math.max(...slept)).toBeLessThanOrEqual(5_000);
+    expect(slept.length).toBeGreaterThan(1);
+    for (const ms of slept) expect(ms).toBe(5_000);
   });
+
+  // The property the pacing exists for, measured on the real clock: over a run of fast batches, the WAL
+  // written divided by the time the pass took stays within the budget. A wait that also paid for the
+  // next batch would let every second batch go without one, close to twice the budget.
+  test("over consecutive batches the pass writes no faster than the budget", async () => {
+    const id = thread();
+    const cps = Array.from(
+      { length: 12 },
+      (_, i) => `c${String(i).padStart(2, "0")}`,
+    );
+    await seedRows(id, {
+      checkpoints: cps.map(
+        (c, i) =>
+          ["", c, i ? (cps[i - 1] ?? null) : null, { messages: String(i) }] as [
+            string,
+            string,
+            string | null,
+            Record<string, string>,
+          ],
+      ),
+      blobs: cps.map(
+        (_, i) => ["", "messages", String(i)] as [string, string, string],
+      ),
+      writes: cps.map((c) => ["", c, "messages"] as [string, string, string]),
+    });
+    // Each reading is 5 kB past the last, so each batch writes 5 kB; at 20 kB/s that is 250 ms a
+    // batch, far longer than a batch of one row takes.
+    const budget = 20_000;
+    let wal = 0;
+    const first = { wal: 0, at: 0 };
+    let readings = 0;
+    await pass([id], {
+      rows: 1,
+      pacing: {
+        budgetBytesPerSec: budget,
+        readWal: async () => {
+          wal += 5_000;
+          readings++;
+          if (readings === 1) {
+            first.wal = wal;
+            first.at = performance.now();
+          }
+          return wal;
+        },
+      },
+    } as Parameters<typeof retainCheckpoints>[1]);
+    const seconds = (performance.now() - first.at) / 1000;
+    expect(await rowsOf(id)).toEqual({
+      checkpoints: ["/c11"],
+      blobs: ["/messages/11"],
+      writes: ["/c11/messages"],
+    });
+    expect(readings).toBeGreaterThan(8);
+    const rate = (wal - first.wal) / seconds;
+    expect(rate).toBeLessThanOrEqual(budget * 1.15);
+  }, 30_000);
 
   // A batch that fails on its last table already committed the tables before it, and a rolled-back
   // delete writes WAL too: the retry waits for that WAL like a batch that succeeded, or repeated

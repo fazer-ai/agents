@@ -121,6 +121,11 @@ export function OAuthConsentPage() {
           "oauth.consent.scope.mcpRead",
           "Read your data (conversations, agents, settings)",
         );
+      case "mcp:editor":
+        return t(
+          "oauth.consent.scope.mcpEditor",
+          "Edit agents and knowledge-base content on your behalf",
+        );
       case "mcp:write":
         return t(
           "oauth.consent.scope.mcpWrite",

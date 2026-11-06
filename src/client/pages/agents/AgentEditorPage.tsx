@@ -50,6 +50,7 @@ import {
 import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
 import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
+import { useAuth } from "@/client/contexts/AuthContext";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
@@ -74,6 +75,7 @@ import {
   settlesRefusal,
 } from "@/client/lib/fieldRefusal";
 import { importWarningMessage } from "@/client/lib/importWarningMessage";
+import { isAdminRole } from "@/client/lib/roles";
 import { serverNowDate } from "@/client/lib/serverClock";
 import { afterTrapRelease } from "@/client/lib/unsavedGuard";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
@@ -851,6 +853,8 @@ export function AgentEditorPage() {
 
 function AgentEditor() {
   const { t, i18n } = useTranslation();
+  const { user } = useAuth();
+  const canAdminister = isAdminRole(user?.role);
   const { showToast } = useToast();
   const navigate = useNavigate();
   const { id = "", tab: tabParam } = useParams();
@@ -1138,11 +1142,18 @@ function AgentEditor() {
   // and a link straight to Questions and rules would be sent to General before it could exist.
   useEffect(() => {
     if (loading) return;
-    const hidden = voiceAgent
-      ? !VOICE_AGENT_TABS.has(tab)
-      : watcher
-        ? !watcherTabKeys(engine).has(tab)
-        : tab === "decisions" || tab === "call";
+    const roleHidden =
+      !canAdminister &&
+      ["call", "channels", "tools", "knowledge", "channelRedirect"].includes(
+        tab,
+      );
+    const hidden =
+      roleHidden ||
+      (voiceAgent
+        ? !VOICE_AGENT_TABS.has(tab)
+        : watcher
+          ? !watcherTabKeys(engine).has(tab)
+          : tab === "decisions" || tab === "call");
     if (hidden) {
       navigate(
         `/agents/${id}/general${
@@ -1156,6 +1167,7 @@ function AgentEditor() {
     voiceAgent,
     watcher,
     engine,
+    canAdminister,
     tab,
     id,
     navigate,
@@ -4261,27 +4273,30 @@ function AgentEditor() {
       Object.assign(fields, {
         name: name.trim(),
         systemPrompt,
-        enabled,
-        mode: agentMode,
+        ...(canAdminister ? { enabled, mode: agentMode } : {}),
       });
       blocks(behaviorEdits());
     } else if (identity) {
       Object.assign(
         fields,
         decides
-          ? { name: name.trim(), enabled, mode: agentMode }
+          ? {
+              name: name.trim(),
+              ...(canAdminister ? { enabled, mode: agentMode } : {}),
+            }
           : {
               name: name.trim(),
               systemPrompt,
-              enabled,
-              mode: agentMode,
+              ...(canAdminister ? { enabled, mode: agentMode } : {}),
               modelConfig: buildModelConfig(),
             },
       );
     }
     if (has("behavior")) {
-      fields.businessHoursId = businessHoursId || null;
-      fields.followUpHoursId = followUpHoursId || null;
+      if (canAdminister) {
+        fields.businessHoursId = businessHoursId || null;
+        fields.followUpHoursId = followUpHoursId || null;
+      }
       blocks(behaviorEdits());
     }
     let setupBlock: unknown;
@@ -4683,11 +4698,23 @@ function AgentEditor() {
       icon: RadioTower,
     },
   ];
-  const visibleTabs = voiceAgent
+  const modeTabs = voiceAgent
     ? tabs.filter((item) => VOICE_AGENT_TABS.has(item.key))
     : watcher
       ? tabs.filter((item) => watcherTabKeys(engine).has(item.key))
       : tabs.filter((item) => item.key !== "decisions" && item.key !== "call");
+  const visibleTabs = canAdminister
+    ? modeTabs
+    : modeTabs.filter(
+        (item) =>
+          ![
+            "call",
+            "channels",
+            "tools",
+            "knowledge",
+            "channelRedirect",
+          ].includes(item.key),
+      );
   // The header's last crumb is drawn from the URL, which keeps its tab while an edit is unsaved
   // (agents#1647), so it names the tab on screen instead.
   useBreadcrumbLabel(
@@ -4768,33 +4795,37 @@ function AgentEditor() {
                     {t("editor.discardAll", "Discard all")}
                   </Button>
                 )}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    const suggested = t(
-                      "editor.cloneDefaultName",
-                      "{{name}} (copy)",
-                      { name },
-                    );
-                    cloneNameDefaultRef.current = suggested;
-                    setCloneName(suggested);
-                    // NOTE: The component outlives the dialog, so a mark from the last session is still held here.
-                    cloneRefusal.clear();
-                    cloneModal.open();
-                  }}
-                >
-                  <Copy className="h-4 w-4" aria-hidden="true" />
-                  {t("editor.clone", "Clone")}
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => exportModal.open()}
-                >
-                  <Download className="h-4 w-4" aria-hidden="true" />
-                  {t("editor.export", "Export")}
-                </Button>
+                {canAdminister && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const suggested = t(
+                        "editor.cloneDefaultName",
+                        "{{name}} (copy)",
+                        { name },
+                      );
+                      cloneNameDefaultRef.current = suggested;
+                      setCloneName(suggested);
+                      // NOTE: The component outlives the dialog, so a mark from the last session is still held here.
+                      cloneRefusal.clear();
+                      cloneModal.open();
+                    }}
+                  >
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                    {t("editor.clone", "Clone")}
+                  </Button>
+                )}
+                {canAdminister && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => exportModal.open()}
+                  >
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    {t("editor.export", "Export")}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -5103,7 +5134,8 @@ function AgentEditor() {
                       : undefined
                   }
                   onOpenPlayground={watcher ? undefined : openPlayground}
-                  onDelete={askDelete}
+                  onDelete={canAdminister ? askDelete : undefined}
+                  canAdminister={canAdminister}
                   previewVars={playgroundChat.promptVars}
                   catalog={voiceAgent ? voiceToolCatalog(catalog) : catalog}
                   grants={grants}
@@ -5349,6 +5381,7 @@ function AgentEditor() {
                 langfuseSendContent={langfuseSendContent}
                 savedObservability={savedObservability}
                 hours={hours}
+                canManageSchedules={canAdminister}
                 businessHoursId={businessHoursId}
                 setBusinessHoursId={setBusinessHoursId}
                 awayEnabled={awayEnabled}

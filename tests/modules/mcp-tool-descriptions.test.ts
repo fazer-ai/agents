@@ -99,6 +99,42 @@ describe("scope contract", () => {
       [...readOnly].filter((n) => /(_set|_create|_update|_delete)$/.test(n)),
     ).toEqual([]);
   });
+
+  test("an editor token sees only agent and knowledge-content writes", async () => {
+    const editor = await listedFor(["mcp:read", "mcp:editor"]);
+    for (const name of [
+      "prompt_set",
+      "agent_settings_set",
+      "agent_update",
+      "knowledge_document_create",
+      "knowledge_document_update",
+      "knowledge_document_delete",
+      "knowledge_document_retry",
+      "knowledge_reindex",
+      "knowledge_approve",
+      "knowledge_reject",
+      "knowledge_requeue",
+      "knowledge_edit",
+    ]) {
+      expect([name, editor.has(name)]).toEqual([name, true]);
+    }
+    for (const name of [
+      "agent_create",
+      "agent_delete",
+      "agent_tools_set",
+      "knowledge_create",
+      "knowledge_update",
+      "knowledge_delete",
+      "knowledge_source_set",
+      "knowledge_source_sync",
+      "knowledge_source_remove",
+      "tenant_update",
+      "tenant_settings_update",
+      "credential_create",
+    ]) {
+      expect([name, editor.has(name)]).toEqual([name, false]);
+    }
+  });
 });
 
 // Headroom is small on purpose, so the next append is a decision. What stays in the prose is only

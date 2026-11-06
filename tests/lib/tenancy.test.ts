@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   authorize,
+  canEditAgentsRole,
   isAdminRole,
   resolveRequestTenantContext,
   roleAtLeast,
@@ -11,12 +12,21 @@ import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 const superAdmin = { id: 1n, tenantId: null, role: "SUPER_ADMIN" as const };
 const tenantAdmin = { id: 2n, tenantId: 3n, role: "TENANT_ADMIN" as const };
+const editor = {
+  id: 3n,
+  userId: 3n,
+  tenantId: 3n,
+  role: "EDITOR" as const,
+};
 const agent = { id: 4n, tenantId: 3n, role: "AGENT" as const };
 
 describe("role hierarchy", () => {
-  test("roleAtLeast respects SUPER_ADMIN > TENANT_ADMIN > AGENT", () => {
+  test("roleAtLeast respects SUPER_ADMIN > TENANT_ADMIN > EDITOR > AGENT", () => {
     expect(roleAtLeast("SUPER_ADMIN", "TENANT_ADMIN")).toBe(true);
     expect(roleAtLeast("TENANT_ADMIN", "TENANT_ADMIN")).toBe(true);
+    expect(roleAtLeast("EDITOR", "EDITOR")).toBe(true);
+    expect(roleAtLeast("EDITOR", "TENANT_ADMIN")).toBe(false);
+    expect(roleAtLeast("AGENT", "EDITOR")).toBe(false);
     expect(roleAtLeast("AGENT", "TENANT_ADMIN")).toBe(false);
     expect(roleAtLeast(undefined, "AGENT")).toBe(false);
   });
@@ -24,8 +34,16 @@ describe("role hierarchy", () => {
   test("isAdminRole is true only for elevated roles", () => {
     expect(isAdminRole("SUPER_ADMIN")).toBe(true);
     expect(isAdminRole("TENANT_ADMIN")).toBe(true);
+    expect(isAdminRole("EDITOR")).toBe(false);
     expect(isAdminRole("AGENT")).toBe(false);
     expect(isAdminRole(null)).toBe(false);
+  });
+
+  test("canEditAgentsRole includes editors and administrators", () => {
+    expect(canEditAgentsRole("SUPER_ADMIN")).toBe(true);
+    expect(canEditAgentsRole("TENANT_ADMIN")).toBe(true);
+    expect(canEditAgentsRole("EDITOR")).toBe(true);
+    expect(canEditAgentsRole("AGENT")).toBe(false);
   });
 });
 
@@ -43,6 +61,8 @@ describe("authorize", () => {
     expect(() =>
       authorize({ tenantId: 3n, userId: 2n, role: "TENANT_ADMIN" }, 9n),
     ).toThrow();
+    expect(() => authorize(editor, 3n)).not.toThrow();
+    expect(() => authorize(editor, 9n)).toThrow();
     expect(() =>
       authorize({ tenantId: 3n, userId: 2n, role: "AGENT" }, null),
     ).toThrow();

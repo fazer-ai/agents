@@ -30,6 +30,7 @@ function userOrThrow(
 // decoupled from the API-key token module.
 function scopesForRole(role: UserRole): McpScope[] {
   const out: McpScope[] = ["mcp:read"];
+  if (roleAtLeast(role, "EDITOR")) out.push("mcp:editor");
   if (roleAtLeast(role, "TENANT_ADMIN")) out.push("mcp:write");
   if (role === "SUPER_ADMIN") out.push("mcp:admin");
   return out.filter((s): s is McpScope =>

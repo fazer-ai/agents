@@ -128,6 +128,7 @@
     "documentWhereBlock": "block \"{{id}}\"",
     "documentWouldBeBlank": "This document would be blank: with the values given, no block prints anything.",
     "documentWouldBeBlankNoLetterhead": "This document would be blank: the company letterhead it printed is no longer configured.",
+    "editorAgentScope": "Editors cannot change agent activation, resource bindings, credentials, or endpoints.",
     "emailDomainNotAllowed": "Email domain is not allowed",
     "emailInUse": "Email already in use",
     "embeddingEmpty": "The embedding credential is empty.",

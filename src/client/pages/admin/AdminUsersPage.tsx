@@ -171,7 +171,10 @@ export function AdminUsersPage() {
     fetchUsers(1, search);
   };
 
-  const handleToggleRole = async (user: AdminUser) => {
+  const handleRoleChange = async (
+    user: AdminUser,
+    newRole?: "AGENT" | "EDITOR" | "TENANT_ADMIN",
+  ) => {
     // NOTE: A fleet administrator belongs to no tenant, and the row that would replace theirs cannot
     // exist without one, so this demote is a question before it is a write. Everyone else keeps the
     // tenant they already have, and stays one click.
@@ -183,7 +186,7 @@ export function AdminUsersPage() {
       });
       return;
     }
-    const newRole = isAdminRole(user.role) ? "AGENT" : "TENANT_ADMIN";
+    if (!newRole || newRole === user.role) return;
     // The role is held per tenant: in the fleet view a person has a row per membership, and the
     // write names the one this row is. A tenant admin's write is fenced to their tenant.
     const { data, error } = await api.api.admin
@@ -468,17 +471,11 @@ export function AdminUsersPage() {
                     users.map((user) => {
                       const isSelf = user.id === currentUser?.id;
                       const disabled = isSelf && isAdminRole(user.role);
-                      const isAdmin = isAdminRole(user.role);
                       const tooltip = disabled
                         ? t("admin.cannotDemoteSelf", "Cannot demote yourself")
                         : user.role === "SUPER_ADMIN"
                           ? t("admin.removeSuperAdmin", "Remove super admin")
-                          : isAdmin
-                            ? t("admin.demoteTooltip", "Demote to agent")
-                            : t(
-                                "admin.promoteTooltip",
-                                "Promote to tenant admin",
-                              );
+                          : t("admin.changeRole", "Change role");
                       return (
                         <tr
                           key={`${user.id}:${user.tenantId ?? "fleet"}`}
@@ -510,39 +507,59 @@ export function AdminUsersPage() {
                           <td className="px-2 py-3">
                             <div className="flex items-center gap-1">
                               <Tooltip content={tooltip} side="top">
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleRole(user)}
-                                  disabled={disabled}
-                                  className={cn(
-                                    "border-border inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors",
-                                    {
-                                      "bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary":
-                                        !disabled,
-                                      "bg-bg-tertiary text-text-muted cursor-not-allowed opacity-50":
-                                        disabled,
-                                    },
-                                  )}
-                                  aria-label={tooltip}
-                                >
-                                  {isAdmin ? (
-                                    <>
-                                      <ShieldOff
-                                        className="h-3 w-3"
-                                        aria-hidden="true"
-                                      />
-                                      {t("admin.demote", "Demote")}
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Shield
-                                        className="h-3 w-3"
-                                        aria-hidden="true"
-                                      />
-                                      {t("admin.promote", "Promote")}
-                                    </>
-                                  )}
-                                </button>
+                                {user.role === "SUPER_ADMIN" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRoleChange(user)}
+                                    disabled={disabled}
+                                    className={cn(
+                                      "border-border inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors",
+                                      {
+                                        "bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary":
+                                          !disabled,
+                                        "bg-bg-tertiary text-text-muted cursor-not-allowed opacity-50":
+                                          disabled,
+                                      },
+                                    )}
+                                    aria-label={tooltip}
+                                  >
+                                    <ShieldOff
+                                      className="h-3 w-3"
+                                      aria-hidden="true"
+                                    />
+                                    {t("admin.demote", "Demote")}
+                                  </button>
+                                ) : (
+                                  <select
+                                    aria-label={tooltip}
+                                    value={user.role}
+                                    onChange={(event) =>
+                                      void handleRoleChange(
+                                        user,
+                                        event.target.value as
+                                          | "AGENT"
+                                          | "EDITOR"
+                                          | "TENANT_ADMIN",
+                                      )
+                                    }
+                                    disabled={disabled}
+                                    className={cn(
+                                      "border-border bg-bg-tertiary text-text-secondary rounded border px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors",
+                                      disabled &&
+                                        "text-text-muted cursor-not-allowed opacity-50",
+                                    )}
+                                  >
+                                    <option value="AGENT">
+                                      {t("role.agent", "Agent")}
+                                    </option>
+                                    <option value="EDITOR">
+                                      {t("role.editor", "Editor")}
+                                    </option>
+                                    <option value="TENANT_ADMIN">
+                                      {t("role.tenantAdmin", "Tenant admin")}
+                                    </option>
+                                  </select>
+                                )}
                               </Tooltip>
                               <Tooltip
                                 content={

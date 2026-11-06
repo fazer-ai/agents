@@ -14,7 +14,7 @@ import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
-import { isAdminRole } from "@/client/lib/roles";
+import { canEditAgentsRole } from "@/client/lib/roles";
 import { ApprovalHistory } from "@/client/pages/approvals/ApprovalHistory";
 import { KnowledgeApprovals } from "@/client/pages/resources/KnowledgeApprovals";
 
@@ -31,7 +31,7 @@ type PendingRequest = NonNullable<PendingResp["data"]>["requests"][number];
 export function ApprovalsPage() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
-  const isAdmin = isAdminRole(user?.role);
+  const canEdit = canEditAgentsRole(user?.role);
   const { count, setKnowledgeCount, refresh } = usePendingApprovals();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") === "history" ? "history" : "pending";
@@ -133,7 +133,7 @@ export function ApprovalsPage() {
             {t("approvalQueue.title", "Approvals")}
           </h1>
           <p className="text-text-muted text-sm">
-            {isAdmin
+            {canEdit
               ? t(
                   "approvalQueue.subtitleAdmin",
                   "Documents waiting for the team, and knowledge suggestions the agents made.",
@@ -257,7 +257,7 @@ export function ApprovalsPage() {
         </section>
       )}
 
-      {tab === "pending" && isAdmin && (
+      {tab === "pending" && canEdit && (
         <section className="flex flex-col gap-3">
           <h2 className="text-text-primary text-sm font-medium">
             {t("approvalQueue.knowledge", "Knowledge suggestions")}

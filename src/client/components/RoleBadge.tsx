@@ -5,11 +5,12 @@ import { cn } from "@/client/lib/utils";
 // The one rendering of a role, wherever the console shows one (users table, pending invitations,
 // profile, user menu), so the same role never reads as two different things. A role is not a
 // status, so no tone here is a warning or an error.
-type Role = "SUPER_ADMIN" | "TENANT_ADMIN" | "AGENT";
+type Role = "SUPER_ADMIN" | "TENANT_ADMIN" | "EDITOR" | "AGENT";
 
 const VARIANT = {
   SUPER_ADMIN: "purple",
   TENANT_ADMIN: "primary",
+  EDITOR: "info",
   AGENT: "secondary",
 } as const;
 
@@ -21,6 +22,8 @@ export function useRoleLabel(): (role: string) => string {
         return t("role.superAdmin", "Super admin");
       case "TENANT_ADMIN":
         return t("role.tenantAdmin", "Tenant admin");
+      case "EDITOR":
+        return t("role.editor", "Editor");
       default:
         return t("role.agent", "Agent");
     }

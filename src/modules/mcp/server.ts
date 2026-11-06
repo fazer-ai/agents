@@ -476,8 +476,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         "conversations (read, hand off, re-engage); plus integrations, A/B experiments, " +
         "business hours, branding, vault credentials (referenced by name/id — secrets are never " +
         "returned), API keys, webhooks, alert channels, and audit/metrics/logs.\n\n" +
-        "Access is scoped by the caller's granted scopes: mcp:read for reads, mcp:write for " +
-        "changes, mcp:admin for tenant management. Write tools preview a diff and apply NOTHING " +
+        "Access is scoped by the caller's granted scopes: mcp:read for reads, mcp:editor for " +
+        "agent and knowledge-content authoring, mcp:write for tenant changes, and mcp:admin for " +
+        "fleet management. Write tools preview a diff and apply NOTHING " +
         "unless dry_run is false (omitting dry_run previews) — run once to preview, then again with " +
         "dry_run:false to commit. All ids are tenant-scoped. Call whoami first to see the " +
         "authenticated tenant, role and scopes.\n\n" +
@@ -1660,7 +1661,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
   // `mcp:read` is a real token; registering these in the read block alone pointed that client at
   // a tool it could neither list nor call. They stay visible to a read-only token too, which is
   // what the `*_schema` sweep in tests/modules/mcp-tool-descriptions.test.ts asserts.
-  if (hasScope(principal, "mcp:read") || hasScope(principal, "mcp:write")) {
+  if (
+    hasScope(principal, "mcp:read") ||
+    hasScope(principal, "mcp:editor") ||
+    hasScope(principal, "mcp:write")
+  ) {
     // NOTE: The authoring contract, served on demand like document_template_schema: only a caller
     // actually writing a body needs it.
     registerTenantTool(
@@ -1692,6 +1697,267 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await documentTemplateSchema(eff)),
+    );
+  }
+
+  // An Editor gets the authoring subset without receiving the broad administrator write surface.
+  // Administrators register these same tools in the full mcp:write block below.
+  if (hasScope(principal, "mcp:editor") && !hasScope(principal, "mcp:write")) {
+    registerTenantTool(
+      server,
+      principal,
+      "prompt_set",
+      {
+        description:
+          "Set an agent's system prompt. Previews a diff and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          agent_id: z.string(),
+          system_prompt: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          agent_id: string;
+          system_prompt: string;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await promptSet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "agent_settings_set",
+      {
+        description:
+          "Patch an agent's behavior configuration. Credential and endpoint changes are not permitted for Editors. Previews a normalized diff and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          agent_id: z.string(),
+          ...BEHAVIOR_PATCH_ARGS_SHAPE,
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: BehaviorPatchArgs & { agent_id: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await agentSettingsSet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "agent_update",
+      {
+        description:
+          "Update an agent's editable fields. Editors cannot change activation, mode, schedules, credentials, providers, or endpoints. Previews a diff and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          agent_id: z.string(),
+          name: z.string().optional(),
+          transfer_with_summary: z.boolean().optional(),
+          model_config: z.record(z.string(), z.unknown()).optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          agent_id: string;
+          name?: string;
+          transfer_with_summary?: boolean;
+          model_config?: Record<string, unknown>;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await agentUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_document_create",
+      {
+        description:
+          "Ingest a text document into an existing knowledge base. The document is queued for async embedding. Previews and creates NOTHING unless dry_run is false.",
+        inputSchema: {
+          knowledge_base_id: z.string(),
+          title: z.string(),
+          text: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          knowledge_base_id: string;
+          title: string;
+          text: string;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await knowledgeDocumentCreate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_document_delete",
+      {
+        description:
+          "Delete a knowledge-base document and its chunks. Previews and deletes NOTHING unless dry_run is false.",
+        inputSchema: {
+          document_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { document_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await knowledgeDocumentDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_document_update",
+      {
+        description:
+          "Edit a document's title and/or text in place. A changed title or text is re-embedded. Previews and changes NOTHING unless dry_run is false.",
+        inputSchema: {
+          document_id: z.string(),
+          title: z.string().optional(),
+          text: z.string().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          document_id: string;
+          title?: string;
+          text?: string;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await knowledgeDocumentUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_document_retry",
+      {
+        description:
+          "Re-queue a failed document for embedding. Previews and acts ONLY when dry_run is false.",
+        inputSchema: {
+          document_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { document_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await knowledgeDocumentRetry(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_reindex",
+      {
+        description:
+          "Bulk-index an existing knowledge base. Previews counts and any prerequisite block, and acts ONLY when dry_run is false.",
+        inputSchema: {
+          knowledge_base_id: z.string(),
+          include_failed: z.boolean().optional(),
+          include_indexed: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          knowledge_base_id: string;
+          include_failed?: boolean;
+          include_indexed?: boolean;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await knowledgeReindex(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_approve",
+      {
+        description:
+          "Approve a pending knowledge suggestion. Previews the item and acts ONLY when dry_run is false.",
+        inputSchema: {
+          approval_id: z.string(),
+          as_new: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { approval_id: string; as_new?: boolean; dry_run?: boolean },
+        eff,
+      ) => writeContent(await knowledgeApprove(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_reject",
+      {
+        description:
+          "Reject a pending knowledge suggestion with an optional reason. Previews and acts ONLY when dry_run is false.",
+        inputSchema: {
+          approval_id: z.string(),
+          reason: z.string().max(1000).optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { approval_id: string; reason?: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await knowledgeReject(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_requeue",
+      {
+        description:
+          "Return a discarded suggestion to the pending list. Previews and acts ONLY when dry_run is false.",
+        inputSchema: {
+          approval_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { approval_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await knowledgeRequeue(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_edit",
+      {
+        description:
+          "Edit a pending knowledge suggestion before approval. Previews and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          approval_id: z.string(),
+          title: z.string().optional(),
+          content: z.string().optional(),
+          rationale: z.string().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          approval_id: string;
+          title?: string;
+          content?: string;
+          rationale?: string;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await knowledgeEdit(eff, args)),
     );
   }
 

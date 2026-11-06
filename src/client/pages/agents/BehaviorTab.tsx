@@ -428,6 +428,7 @@ interface BehaviorTabProps {
   // AgentEditorPage and passed as answers -- see the note on the type.
   refusals: BehaviorRefusals;
   hours: Hours[];
+  canManageSchedules?: boolean;
   businessHoursId: string;
   setBusinessHoursId: (v: string) => void;
   awayEnabled: boolean;
@@ -1630,6 +1631,7 @@ export function BehaviorTab({
   companyName,
   refusals,
   hours,
+  canManageSchedules = true,
   businessHoursId,
   setBusinessHoursId,
   awayEnabled,
@@ -2157,6 +2159,7 @@ export function BehaviorTab({
         value={followUpHoursId}
         onChange={setFollowUpHoursId}
         schedules={hours.map(toScheduleOption)}
+        disabled={!canManageSchedules}
         emptyLabel={t(
           "editor.followUpHoursDefault",
           "Follow agent's main schedule",
@@ -2217,6 +2220,7 @@ export function BehaviorTab({
                 value={businessHoursId}
                 onChange={setBusinessHoursId}
                 schedules={hours.map(toScheduleOption)}
+                disabled={!canManageSchedules}
                 emptyLabel={t("editor.always", "Always on")}
                 aria-label={t("editor.businessHours", "Business hours")}
                 onScheduleSaved={(savedId) => {

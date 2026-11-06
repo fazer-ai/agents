@@ -3,6 +3,7 @@ import type { AuthUser } from "@/api/lib/auth";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
 import { emailEquals } from "@/lib/email-match";
+import { isAdminRole, roleAtLeast } from "@/lib/roles";
 import { asSuperAdmin, runScoped } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 
@@ -91,14 +92,27 @@ export function requireSessionUser(row: PersonRow): AuthUser {
   return user;
 }
 
-// Whether the person holds an administrative role anywhere: SUPER_ADMIN, or TENANT_ADMIN in at least
-// one tenant. Read where an account's power, not one membership's, is what matters (the Google-link
-// block in google.service.ts).
+// Whether the person administers the fleet or at least one tenant. Read where an account's power,
+// not one membership's, is what matters (the Google-link block in google.service.ts).
 export function isAdminAnywhere(row: {
   isSuperAdmin: boolean;
   memberships: readonly { role: UserRole }[];
 }): boolean {
-  return row.isSuperAdmin || row.memberships.some((m) => m.role !== "AGENT");
+  return (
+    row.isSuperAdmin ||
+    row.memberships.some((membership) => isAdminRole(membership.role))
+  );
+}
+
+// Whether the person holds any role above AGENT in the fleet or at least one tenant.
+export function hasElevatedRoleAnywhere(row: {
+  isSuperAdmin: boolean;
+  memberships: readonly { role: UserRole }[];
+}): boolean {
+  return (
+    row.isSuperAdmin ||
+    row.memberships.some((membership) => roleAtLeast(membership.role, "EDITOR"))
+  );
 }
 
 export async function getUserByEmail(email: string) {

@@ -2,13 +2,17 @@ import { BookOpen, FileText, Pencil, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Card, DataBoundary, EmptyState } from "@/client/components";
+import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { isAdminRole } from "@/client/lib/roles";
 import { KnowledgeApprovals } from "./KnowledgeApprovals";
 import { useResourcesContext } from "./ResourcesContext";
 import { type Base, useKnowledgeManager } from "./useKnowledgeManager";
 
 export function KnowledgePanel() {
   const { t } = useTranslation();
+  const { user } = useAuth();
+  const isAdmin = isAdminRole(user?.role);
   const { setApprovalsCount } = useResourcesContext();
   const [bases, setBases] = useState<Base[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,6 +42,8 @@ export function KnowledgePanel() {
   const km = useKnowledgeManager({
     onChanged: load,
     allowDocumentEdits: true,
+    allowSourceEdits: isAdmin,
+    showSource: isAdmin,
   });
 
   return (
@@ -51,10 +57,12 @@ export function KnowledgePanel() {
             "Knowledge bases your agents can search to answer questions.",
           )}
         </p>
-        <Button size="sm" onClick={() => km.openCreate()}>
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {t("knowledge.add", "New base")}
-        </Button>
+        {isAdmin && (
+          <Button size="sm" onClick={() => km.openCreate()}>
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            {t("knowledge.add", "New base")}
+          </Button>
+        )}
       </div>
 
       <DataBoundary
@@ -66,10 +74,17 @@ export function KnowledgePanel() {
           <EmptyState
             icon={BookOpen}
             title={t("knowledge.emptyTitle", "No knowledge bases yet")}
-            description={t(
-              "knowledge.emptyDesc",
-              "Create one and ingest your FAQs, docs or product info.",
-            )}
+            description={
+              isAdmin
+                ? t(
+                    "knowledge.emptyDesc",
+                    "Create one and ingest your FAQs, docs or product info.",
+                  )
+                : t(
+                    "knowledge.emptyEditorDesc",
+                    "Ask a tenant administrator to create a knowledge base.",
+                  )
+            }
           />
         }
       >
@@ -103,22 +118,26 @@ export function KnowledgePanel() {
                   <FileText className="h-4 w-4" aria-hidden="true" />
                   {t("knowledge.documents", "Documents")}
                 </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => km.openEdit(b)}
-                  aria-label={t("common.edit", "Edit")}
-                >
-                  <Pencil className="h-4 w-4" aria-hidden="true" />
-                </Button>
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onClick={() => km.askDelete(b)}
-                  aria-label={t("common.delete", "Delete")}
-                >
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                </Button>
+                {isAdmin && (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => km.openEdit(b)}
+                      aria-label={t("common.edit", "Edit")}
+                    >
+                      <Pencil className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => km.askDelete(b)}
+                      aria-label={t("common.delete", "Delete")}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </>
+                )}
               </div>
             </Card>
           ))}

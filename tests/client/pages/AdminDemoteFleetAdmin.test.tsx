@@ -134,6 +134,19 @@ async function clickDemote(email: string, label: string) {
   fireEvent.click(within(row as HTMLElement).getByLabelText(label));
 }
 
+async function changeRole(email: string, role: string) {
+  const rows = (await screen.findAllByText(email)).map(
+    (cell) => cell.closest("tr") as HTMLElement,
+  );
+  const row = rows.find(
+    (candidate) =>
+      within(candidate).queryAllByLabelText("Change role").length > 0,
+  );
+  fireEvent.change(within(row as HTMLElement).getByLabelText("Change role"), {
+    target: { value: role },
+  });
+}
+
 beforeEach(() => {
   USERS = BASE_USERS;
   patches = [];
@@ -219,18 +232,18 @@ describe("demoting from the users tab", () => {
     );
   });
 
-  // NOTE: one click, and the write names the membership this row IS: a person holds a role per
+  // NOTE: one selection, and the write names the membership this row IS: a person holds a role per
   // tenant, so the fleet view re-roles the one on screen and not whichever the server guesses.
-  test("a tenant administrator is demoted in one click, naming the membership on the row", async () => {
+  test("a tenant administrator can become an editor, naming the membership on the row", async () => {
     mount();
-    await clickDemote("boss@acme.test", "Demote to agent");
+    await changeRole("boss@acme.test", "EDITOR");
     await waitFor(() => {
       expect(patches.length).toBe(1);
     });
     expect(JSON.stringify(patches[0])).toBe(
       JSON.stringify({
         id: "11",
-        body: { role: "AGENT", tenantId: "42" },
+        body: { role: "EDITOR", tenantId: "42" },
       }),
     );
     expect(screen.queryAllByRole("dialog").length).toBe(0);

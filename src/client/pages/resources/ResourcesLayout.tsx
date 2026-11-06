@@ -12,9 +12,11 @@ import {
   Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { NavLink, Outlet } from "react-router";
+import { Navigate, NavLink, Outlet, useLocation } from "react-router";
 import { PageContainer } from "@/client/components";
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
+import { useAuth } from "@/client/contexts/AuthContext";
+import { isAdminRole } from "@/client/lib/roles";
 import { cn } from "@/client/lib/utils";
 import { ResourcesContext } from "./ResourcesContext";
 
@@ -67,12 +69,23 @@ const TABS: { to: string; labelKey: string; icon: LucideIcon; badge?: true }[] =
 
 export function ResourcesLayout() {
   const { t } = useTranslation();
+  const { user } = useAuth();
+  const location = useLocation();
+  const isAdmin = isAdminRole(user?.role);
   // The pending-suggestions count is owned by the shared ApprovalsProvider (it also feeds the sidebar
   // badge), so the Knowledge tab badge and the approval queue stay in sync with it.
   const {
     knowledgeCount: approvalsCount,
     setKnowledgeCount: setApprovalsCount,
   } = usePendingApprovals();
+
+  if (!isAdmin && location.pathname !== "/resources/knowledge") {
+    return <Navigate to="/resources/knowledge" replace />;
+  }
+
+  const tabs = isAdmin
+    ? TABS
+    : TABS.filter((tab) => tab.to === "/resources/knowledge");
 
   return (
     <ResourcesContext.Provider value={{ approvalsCount, setApprovalsCount }}>
@@ -98,7 +111,7 @@ export function ResourcesLayout() {
           // and -mb-px then triggers a spurious vertical scrollbar. Pinning y to hidden prevents it.
           className="border-border -mb-px flex gap-1 overflow-x-auto overflow-y-hidden border-b"
         >
-          {TABS.map((tab) => {
+          {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
               <NavLink
@@ -131,5 +144,15 @@ export function ResourcesLayout() {
         <Outlet />
       </PageContainer>
     </ResourcesContext.Provider>
+  );
+}
+
+export function ResourcesIndex() {
+  const { user } = useAuth();
+  return (
+    <Navigate
+      to={isAdminRole(user?.role) ? "/resources/tools" : "/resources/knowledge"}
+      replace
+    />
   );
 }

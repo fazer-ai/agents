@@ -26,6 +26,7 @@
     "allTenantsShort": "Todos",
     "cannotDeleteSelf": "Não é possível excluir a si mesmo",
     "cannotDemoteSelf": "Não é possível rebaixar a si mesmo",
+    "changeRole": "Alterar papel",
     "createdAt": "Criado em",
     "createTenant": "Criar tenant",
     "deleteUser": "Excluir usuário",
@@ -34,15 +35,12 @@
     "deleteUserError": "Não foi possível excluir o usuário.",
     "deleteUserWarning": "Isto exclui permanentemente {{email}} e revoga o acesso. Não pode ser desfeito.",
     "demote": "Rebaixar",
-    "demoteTooltip": "Rebaixar para agente",
     "email": "Email",
     "filterByTenant": "Filtrar por tenant",
     "inviteUser": "Convidar usuário",
     "lastLogin": "Último Login",
     "name": "Nome",
     "noUsers": "Nenhum usuário encontrado",
-    "promote": "Promover",
-    "promoteTooltip": "Promover a admin do tenant",
     "removeSuperAdmin": "Remover super admin",
     "removeSuperAdminKeeps": "{{email}} deixa de administrar a instalação inteira e mantém os acessos que já tinha:",
     "removeSuperAdminNoTenant": "{{email}} deixa de administrar a instalação inteira. Essa pessoa ainda não pertence a nenhum tenant, então escolha onde ela fica e com qual papel.",
@@ -3493,6 +3491,7 @@
       "pending": "A credencial de embedding existe mas nunca foi preenchida. Preencha em Componentes e indexe novamente."
     },
     "emptyDesc": "Crie uma e adicione seus FAQs, documentos ou informações de produto.",
+    "emptyEditorDesc": "Peça a um administrador do tenant para criar uma base de conhecimento.",
     "emptyTitle": "Nenhuma base de conhecimento ainda",
     "fileHint": "PDF, DOCX, TXT, MD, CSV",
     "fileLabel": "Arquivo",
@@ -3952,6 +3951,7 @@
       "redirectTo": "Redireciona para",
       "scope": {
         "mcpAdmin": "Administração global (identidade visual)",
+        "mcpEditor": "Editar agentes e conteúdos das bases de conhecimento em seu nome",
         "mcpRead": "Ler seus dados (conversas, agentes, configurações)",
         "mcpWrite": "Alterar configurações de agentes em seu nome"
       },
@@ -4605,6 +4605,7 @@
   },
   "role": {
     "agent": "Agente",
+    "editor": "Editor",
     "superAdmin": "Super admin",
     "tenantAdmin": "Admin do tenant"
   },

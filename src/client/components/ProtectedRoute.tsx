@@ -4,13 +4,14 @@ import { Navigate, useLocation } from "react-router";
 import { Layout } from "@/client/components/Layout";
 import { TenantDeepLink } from "@/client/components/TenantDeepLink";
 import { useAuth } from "@/client/contexts/AuthContext";
-import { isAdminRole } from "@/client/lib/roles";
+import { type ClientRole, roleAtLeast } from "@/client/lib/roles";
 import { useSessionRetry } from "@/client/lib/useSessionRetry";
 import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 interface ProtectedRouteProps {
   children: ReactNode;
   requireAdmin?: boolean;
+  requireRole?: ClientRole;
   // Without the console's sidebar and header: a dashboard's TV mode fills the screen on its own.
   bare?: boolean;
 }
@@ -18,6 +19,7 @@ interface ProtectedRouteProps {
 export function ProtectedRoute({
   children,
   requireAdmin = false,
+  requireRole,
   bare = false,
 }: ProtectedRouteProps) {
   const { user, loading } = useAuth();
@@ -40,11 +42,12 @@ export function ProtectedRoute({
     return <Navigate to={loginUrl} replace />;
   }
 
-  // NOTE: non-admins (AGENT) have no dashboard, and "/" is the dashboard, so bounce them to their
-  // primary surface instead of looping back to "/". The role is the one held in the ACTIVE tenant, so
-  // a link to a tenant where the person IS an administrator goes through to the switch below, and
-  // meets this gate again after the reload with the role held there.
-  if (requireAdmin && !isAdminRole(user.role)) {
+  // The minimum rank keeps a restricted member off surfaces their active membership cannot reach.
+  // A link to another tenant is allowed through only when that membership also meets this rank; the
+  // gate runs again after the tenant switch reloads the session.
+  const minimumRole =
+    requireRole ?? (requireAdmin ? "TENANT_ADMIN" : undefined);
+  if (minimumRole && !roleAtLeast(user.role, minimumRole)) {
     const requested = new URLSearchParams(location.search).get(
       SWITCH_TENANT_PARAM,
     );
@@ -54,7 +57,7 @@ export function ProtectedRoute({
     if (user.tenants === undefined) {
       return <SessionPending />;
     }
-    if (!switchesToAdministeredTenant(requested, user)) {
+    if (!switchesToAllowedTenant(requested, user, minimumRole)) {
       return <Navigate to="/conversations" replace />;
     }
   }
@@ -70,13 +73,14 @@ export function ProtectedRoute({
   );
 }
 
-function switchesToAdministeredTenant(
+function switchesToAllowedTenant(
   requested: string | null,
   user: { tenantId: string | null; tenants?: { id: string; role: string }[] },
+  minimumRole: ClientRole,
 ): boolean {
   if (!requested || requested === user.tenantId) return false;
   return (user.tenants ?? []).some(
-    (m) => m.id === requested && isAdminRole(m.role),
+    (m) => m.id === requested && roleAtLeast(m.role, minimumRole),
   );
 }
 

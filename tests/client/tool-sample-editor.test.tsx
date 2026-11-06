@@ -353,7 +353,12 @@ describe("the auth context", () => {
   test("keeps the merged-into user in step with the one setter", async () => {
     globalThis.fetch = (async () =>
       json({
-        user: { id: "u1", email: "op@example.com", name: "Op", role: "ADMIN" },
+        user: {
+          id: "u1",
+          email: "op@example.com",
+          name: "Op",
+          role: "TENANT_ADMIN",
+        },
       })) as unknown as typeof fetch;
     let auth = null as ReturnType<typeof useAuth> | null;
     function Probe() {

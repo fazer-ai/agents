@@ -4,6 +4,7 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { i18n as I18n } from "i18next";
 import { MemoryRouter, Route, Routes } from "react-router";
+import type { ClientRole } from "@/client/lib/roles";
 import { nativeToolAnchor } from "@/client/pages/agents/editorTabs";
 import { focusableIn } from "@/client/pages/agents/saveAttempt";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
@@ -69,12 +70,17 @@ export interface EditorStub {
 
 export function stubEditorApi(
   seed: EditorAgent,
-  opts: { catalog?: Record<string, unknown>; grants?: unknown[] } = {},
+  opts: {
+    catalog?: Record<string, unknown>;
+    grants?: unknown[];
+    userRole?: ClientRole | null;
+  } = {},
 ): EditorStub {
   // NOTE: every editor opens in a fresh tab: what another file left in storage (a tenant, a remembered
   // choice) would otherwise change what this one renders.
   sessionStorage.clear();
   localStorage.clear();
+  const userRole = opts.userRole === undefined ? "TENANT_ADMIN" : opts.userRole;
   const id = seed.id ?? "41";
   const stub: EditorStub = {
     writes: [],
@@ -139,7 +145,19 @@ export function stubEditorApi(
       stub.writes.push({ method, path, body });
     const answered = stub.override?.(method, path, body);
     if (answered) return await answered;
-    if (path === "/api/auth/me") return json({ user: null });
+    if (path === "/api/auth/me") {
+      return json({
+        user: userRole
+          ? {
+              id: "7",
+              email: "editor@example.com",
+              name: "Editor",
+              role: userRole,
+              tenantId: "1",
+            }
+          : null,
+      });
+    }
     if (path === `/api/v1/agents/${id}/tool-selections`) {
       if (method === "PUT") replaceGrants(body.grants);
       return json(selection());

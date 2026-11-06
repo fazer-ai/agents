@@ -43,7 +43,9 @@ export function InviteUserModal({
 }) {
   const { t } = useTranslation();
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<"AGENT" | "TENANT_ADMIN">("AGENT");
+  const [role, setRole] = useState<"AGENT" | "EDITOR" | "TENANT_ADMIN">(
+    "AGENT",
+  );
   const [tenantId, setTenantId] = useState("");
   const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -221,10 +223,11 @@ export function InviteUserModal({
               value={role}
               disabled={loading}
               onChange={(e) =>
-                setRole(e.target.value as "AGENT" | "TENANT_ADMIN")
+                setRole(e.target.value as "AGENT" | "EDITOR" | "TENANT_ADMIN")
               }
             >
               <option value="AGENT">{t("role.agent", "Agent")}</option>
+              <option value="EDITOR">{t("role.editor", "Editor")}</option>
               <option value="TENANT_ADMIN">
                 {t("role.tenantAdmin", "Tenant admin")}
               </option>

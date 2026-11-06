@@ -51,6 +51,8 @@ The call is the billed ledger node `suggestion_review`, gated by the spend ceili
 
 ## What a person can do
 
+The tenant `EDITOR` role can maintain documents in existing knowledge bases and process this queue across REST, the console, and the `mcp:editor` MCP scope. Creating or deleting a base, changing its metadata, embedding configuration, or sync source still requires a tenant administrator.
+
 - **Approve.** When the item carries `replacesDocumentId`, approving updates that document in place (`updateDocument`, reindexed). If the document is gone, moved to another base or became synced, the call returns `replace-unavailable` without claiming the item. The listing reports this as `replaceUnavailable`, the screen then offers only "Approve as a new document", and the MCP `knowledge_approve` refuses in both preview and apply until `as_new` is passed. A target deleted or synced between that check and the write still lands as a new document, since the claim already won; any other failure of the update is an error, because it may come after the update committed. `asNew` (REST `{asNew: true}`, MCP `as_new`) skips the replacement and creates a new document.
 - **Reject**, with an optional reason (at most 1000 characters). The reason is stored on the item and shown to the reviewer for later proposals; it is never written to the audit row.
 - **Requeue** a discarded item: `DISCARDED` to `PENDING`, no audit row.

@@ -195,7 +195,9 @@ function stubAuth() {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/auth/me")) {
-      return json({ user: { id: "1", email: "a@b.c", role: "ADMIN" } });
+      return json({
+        user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" },
+      });
     }
     return json({});
   }) as typeof fetch;
@@ -227,7 +229,9 @@ async function grantOnCreate(observing: boolean): Promise<unknown> {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/auth/me")) {
-      return json({ user: { id: "1", email: "a@b.c", role: "ADMIN" } });
+      return json({
+        user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" },
+      });
     }
     if (url.includes("/integrations/catalog")) {
       return json({

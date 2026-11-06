@@ -15,7 +15,12 @@ import { api } from "@/client/lib/api";
 
 // Supported MCP scopes (must match MCP_SCOPES server-side). mcp:admin is honored only for a
 // SUPER_ADMIN user at grant time, but a client MAY be allowed to request it.
-const MCP_SCOPES = ["mcp:read", "mcp:write", "mcp:admin"] as const;
+const MCP_SCOPES = [
+  "mcp:read",
+  "mcp:editor",
+  "mcp:write",
+  "mcp:admin",
+] as const;
 
 // The keys of the body this modal writes, which are the names the route refuses by (`refused
 // body.name`, `refused body.redirectUris.0`). The URI list is one Textarea, and an element-level

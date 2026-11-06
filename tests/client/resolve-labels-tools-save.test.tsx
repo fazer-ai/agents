@@ -81,7 +81,7 @@ function stubApi(): string[] {
     asked.push(`${method} ${url.pathname}`);
     const routes: Record<string, unknown> = {
       "GET /api/auth/me": {
-        user: { id: "1", email: "a@b.c", role: "ADMIN" },
+        user: { id: "1", email: "a@b.c", role: "TENANT_ADMIN" },
       },
       "GET /api/v1/agents/1": { agent: AGENT },
       "GET /api/v1/agents/1/tool-selections": {

@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import type { ElementType, SVGProps } from "react";
 import { GithubIcon } from "@/client/components/icons/GithubIcon";
-import { isAdminRole } from "@/client/lib/roles";
+import { type ClientRole, isAdminRole, roleAtLeast } from "@/client/lib/roles";
 
 // ElementType (not ComponentType) so it fits lucide's ForwardRefExotic
 // components, inline React icons, and `<img>`-based brand marks without
@@ -32,7 +32,7 @@ export interface NavItem {
   labelKey: string;
   defaultLabel: string;
   icon: NavItemIcon;
-  // NOTE: bump to requiredRole if more roles are added
+  requiredRole?: ClientRole;
   requireAdmin?: boolean;
   // Optional count badge driven by a named source. "approvals" => everything waiting on this person
   // (usePendingApprovals): document approvals, plus pending KB suggestions for an admin. The sidebar
@@ -108,7 +108,7 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.agents",
     defaultLabel: "Agents",
     icon: Bot,
-    requireAdmin: true,
+    requiredRole: "EDITOR",
   },
   {
     to: "/approvals",
@@ -122,7 +122,7 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.resources",
     defaultLabel: "Components",
     icon: LibraryBig,
-    requireAdmin: true,
+    requiredRole: "EDITOR",
   },
   {
     to: "/dashboards",
@@ -191,7 +191,11 @@ export function filterNavItems(
   items: NavItem[],
   role: string | undefined,
 ): NavItem[] {
-  return items.filter((item) => !item.requireAdmin || isAdminRole(role));
+  return items.filter(
+    (item) =>
+      (!item.requireAdmin || isAdminRole(role)) &&
+      (!item.requiredRole || roleAtLeast(role, item.requiredRole)),
+  );
 }
 
 export interface FooterLink {

@@ -757,7 +757,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         },
       };
     },
-    // NOTE: hierarchical gate — SUPER_ADMIN > TENANT_ADMIN > AGENT. `requireRole:
+    // NOTE: hierarchical gate: SUPER_ADMIN > TENANT_ADMIN > EDITOR > AGENT. `requireRole:
     // "TENANT_ADMIN"` admits TENANT_ADMIN and SUPER_ADMIN.
     requireRole(min: UserRole | undefined) {
       if (!min) return;

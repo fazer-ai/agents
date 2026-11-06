@@ -39,7 +39,9 @@ export function DemoteFleetAdminModal({
 }) {
   const { t } = useTranslation();
   const [tenantId, setTenantId] = useState("");
-  const [role, setRole] = useState<"AGENT" | "TENANT_ADMIN">("AGENT");
+  const [role, setRole] = useState<"AGENT" | "EDITOR" | "TENANT_ADMIN">(
+    "AGENT",
+  );
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const target = modal.payload;
@@ -143,10 +145,11 @@ export function DemoteFleetAdminModal({
                 value={role}
                 disabled={loading}
                 onChange={(e) =>
-                  setRole(e.target.value as "AGENT" | "TENANT_ADMIN")
+                  setRole(e.target.value as "AGENT" | "EDITOR" | "TENANT_ADMIN")
                 }
               >
                 <option value="AGENT">{t("role.agent", "Agent")}</option>
+                <option value="EDITOR">{t("role.editor", "Editor")}</option>
                 <option value="TENANT_ADMIN">
                   {t("role.tenantAdmin", "Tenant admin")}
                 </option>

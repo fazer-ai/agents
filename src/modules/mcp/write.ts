@@ -34,6 +34,7 @@ import {
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import {
+  assertAgentUpdateAllowedForRole,
   assertCredentialRefsUsable,
   assertDecisionActionArgsUsable,
   assertPromptSize,
@@ -164,6 +165,25 @@ export function gate(principal: VerifiedToken): TenantContext | WriteResult {
   return ctxOf(principal);
 }
 
+// Editor gate: agent authoring and knowledge-content maintenance are available to the dedicated
+// editor scope as well as to the broader administrator write scope. Tool registration still exposes
+// only the editor-safe subset to a token that does not hold mcp:write.
+export function editorGate(
+  principal: VerifiedToken,
+): TenantContext | WriteResult {
+  if (!hasScope(principal, "mcp:editor") && !hasScope(principal, "mcp:write")) {
+    return err(
+      "insufficient_scope: this tool requires the mcp:editor or mcp:write scope",
+    );
+  }
+  if (principal.tenantId === null) {
+    return err(
+      "no tenant target: the token must be scoped to a tenant (a SUPER_ADMIN must target one)",
+    );
+  }
+  return ctxOf(principal);
+}
+
 // Admin gate: mcp:admin scope present AND a tenant target. For fleet/super-admin-only operations that
 // still act on one tenant (e.g. Chatwoot server + account management, whose shared-token probe would
 // otherwise leak other tenants' accounts). A tenant-scoped mcp:write token is NOT enough.
@@ -213,9 +233,13 @@ export function readGate(
 export function authoringGate(
   principal: VerifiedToken,
 ): TenantContext | WriteResult {
-  if (!hasScope(principal, "mcp:read") && !hasScope(principal, "mcp:write")) {
+  if (
+    !hasScope(principal, "mcp:read") &&
+    !hasScope(principal, "mcp:editor") &&
+    !hasScope(principal, "mcp:write")
+  ) {
     return err(
-      "insufficient_scope: this tool requires the mcp:read or mcp:write scope",
+      "insufficient_scope: this tool requires the mcp:read, mcp:editor, or mcp:write scope",
     );
   }
   if (principal.tenantId === null) {
@@ -418,7 +442,7 @@ export async function promptSet(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
 
   const agentId = parseMcpId(args.agent_id, "agent_id");
@@ -565,7 +589,7 @@ export async function agentSettingsSet(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
 
   const agentId = parseMcpId(args.agent_id, "agent_id");
@@ -637,6 +661,12 @@ export async function agentSettingsSet(
       }
     }
     const current = await getAgent(ctx, agentId, base);
+    assertAgentUpdateAllowedForRole(
+      ctx,
+      { settings: patch as Record<string, unknown> },
+      false,
+      { modelConfig: current.modelConfig, settings: current.settings },
+    );
     const before = dropOutputOnlyInputFields(
       readBehaviorSettings(current.settings),
     );

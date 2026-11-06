@@ -10,7 +10,7 @@ import {
 import { useLocation } from "react-router";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
-import { isAdminRole } from "@/client/lib/roles";
+import { canEditAgentsRole } from "@/client/lib/roles";
 
 interface ApprovalsContextValue {
   // Everything waiting on this person: the document approvals (any role) plus, for an admin, the
@@ -43,7 +43,7 @@ const ApprovalsContext = createContext<ApprovalsContextValue>({
 // turns with no realtime event.
 export function ApprovalsProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const isAdmin = isAdminRole(user?.role);
+  const canEdit = canEditAgentsRole(user?.role);
   const signedIn = !!user;
   const [knowledgeCount, setKnowledgeCount] = useState(0);
   const [documentCount, setDocumentCount] = useState(0);
@@ -66,7 +66,7 @@ export function ApprovalsProvider({ children }: { children: ReactNode }) {
         if (data && current()) setDocumentCount(data.total);
       })
       .catch(() => {});
-    if (!isAdmin) {
+    if (!canEdit) {
       setKnowledgeCount(0);
       return;
     }
@@ -76,7 +76,7 @@ export function ApprovalsProvider({ children }: { children: ReactNode }) {
         if (data && current()) setKnowledgeCount(data.approvals.length);
       })
       .catch(() => {});
-  }, [isAdmin, signedIn]);
+  }, [canEdit, signedIn]);
 
   // Refetch on mount, when the principal changes, and on each navigation.
   // biome-ignore lint/correctness/useExhaustiveDependencies: location.pathname is an intentional trigger — re-fetch the counts whenever the user navigates (approvals arrive server-side with no realtime event).

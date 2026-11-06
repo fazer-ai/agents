@@ -40,6 +40,7 @@ import { vaultFillUrl } from "./console-links";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   diffFields,
+  editorGate,
   err,
   gate,
   ok,
@@ -258,7 +259,7 @@ export async function knowledgeDocumentCreate(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
@@ -310,7 +311,7 @@ export async function knowledgeDocumentDelete(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
@@ -348,7 +349,7 @@ export async function knowledgeDocumentUpdate(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
@@ -414,7 +415,7 @@ export async function knowledgeDocumentRetry(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
@@ -456,7 +457,7 @@ export async function knowledgeReindex(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
@@ -521,7 +522,7 @@ export async function knowledgeApprove(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
@@ -565,7 +566,7 @@ export async function knowledgeReject(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
@@ -601,7 +602,7 @@ export async function knowledgeRequeue(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
@@ -637,7 +638,7 @@ export async function knowledgeEdit(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
+  const ctx = editorGate(principal);
   if ("ok" in ctx) return ctx;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;

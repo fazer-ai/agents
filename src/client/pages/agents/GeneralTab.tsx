@@ -81,7 +81,8 @@ interface GeneralTabProps {
   onOpenPlayground?: () => void;
   // Opens the strong-confirm delete flow (owned by the editor page). Rendered as a danger zone at
   // the end of this tab instead of a header button.
-  onDelete: () => void;
+  onDelete?: () => void;
+  canAdminister?: boolean;
   // Simulated context-var values shared with the playground (its "Prompt variables" panel), so the
   // preview and a playground turn resolve {{nome_contato}} etc. to the SAME values. Blank entries
   // fall back to the built-in examples / real company+agent.
@@ -129,6 +130,7 @@ export function GeneralTab({
   onDiscard,
   onOpenPlayground,
   onDelete,
+  canAdminister = true,
   previewVars,
   availability,
   catalog,
@@ -252,16 +254,19 @@ export function GeneralTab({
             onCheckedChange={setEnabled}
             label={t("common.enabled", "Enabled")}
             className="h-10 shrink-0"
+            disabled={!canAdminister}
           />
         </div>
         <FormField label={t("editor.mode", "Mode")} group>
-          <ChoiceCards
-            value={mode}
-            onChange={setMode}
-            aria-label={t("editor.mode", "Mode")}
-            className={voice ? "sm:grid-cols-2" : "sm:grid-cols-3"}
-            options={modeOptions}
-          />
+          <fieldset disabled={!canAdminister} className="contents">
+            <ChoiceCards
+              value={mode}
+              onChange={setMode}
+              aria-label={t("editor.mode", "Mode")}
+              className={voice ? "sm:grid-cols-2" : "sm:grid-cols-3"}
+              options={modeOptions}
+            />
+          </fieldset>
         </FormField>
         {!watcher && !voice && instructions}
       </Card>
@@ -290,6 +295,7 @@ export function GeneralTab({
             <FormField label={t("editor.provider", "Provider")}>
               <Select
                 value={model.provider}
+                disabled={!canAdminister}
                 onChange={(e) => {
                   const provider = e.target.value;
                   // Switching provider invalidates the previous model id, so jump to the new
@@ -336,6 +342,7 @@ export function GeneralTab({
                 defaultCreateType={credentialCompat.model(model.provider)[0]}
                 testBaseUrl={modelCredBaseUrl ? undefined : model.baseURL}
                 ariaLabel={t("editor.credential", "API key")}
+                disabled={!canAdminister}
               />
             </FormField>
             <FormField
@@ -498,7 +505,7 @@ export function GeneralTab({
                 onChange={(e) =>
                   setModel({ ...model, baseURL: e.target.value })
                 }
-                disabled={!!modelCredBaseUrl}
+                disabled={!canAdminister || !!modelCredBaseUrl}
                 placeholder="https://api.provider.com/v1"
               />
             </FormField>
@@ -519,28 +526,30 @@ export function GeneralTab({
         onOpenPlayground={onOpenPlayground}
       />
 
-      <Card className="border-error/40 flex flex-col gap-3">
-        <div>
-          <h3 className="text-error text-sm font-medium">
-            {t("editor.dangerZone", "Danger zone")}
-          </h3>
-          <p className="text-text-muted text-xs">
-            {t(
-              "editor.dangerZoneHint",
-              "Permanently delete this agent. This cannot be undone.",
-            )}
-          </p>
-        </div>
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={onDelete}
-          className="self-start"
-        >
-          <Trash2 className="h-4 w-4" aria-hidden="true" />
-          {t("editor.deleteAgent", "Delete agent")}
-        </Button>
-      </Card>
+      {onDelete && (
+        <Card className="border-error/40 flex flex-col gap-3">
+          <div>
+            <h3 className="text-error text-sm font-medium">
+              {t("editor.dangerZone", "Danger zone")}
+            </h3>
+            <p className="text-text-muted text-xs">
+              {t(
+                "editor.dangerZoneHint",
+                "Permanently delete this agent. This cannot be undone.",
+              )}
+            </p>
+          </div>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={onDelete}
+            className="self-start"
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+            {t("editor.deleteAgent", "Delete agent")}
+          </Button>
+        </Card>
+      )}
 
       {/* Expand-to-modal view: the SAME editor/preview toggle, taller, sharing the lifted
           prompt state so edits here and inline stay in sync. */}

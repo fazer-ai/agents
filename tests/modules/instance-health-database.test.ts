@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { requestContext } from "@/api/lib/i18n";
 import config from "@/config";
+import { MetricsTooSlowError } from "@/lib/errors";
 import {
   drainStatementTimeouts,
   resetStatementTimeouts,
@@ -1498,8 +1499,31 @@ describe.skipIf(!dbUp)("the screen's summary figures", () => {
       },
       () => readDatabaseView("1h", base, false),
     );
-    await expect(late).rejects.toBeInstanceOf(DeadlinePassedError);
+    await expect(late).rejects.toBeInstanceOf(MetricsTooSlowError);
     expect(opened).toBe(0);
+  });
+
+  test("a read that runs out of the metrics budget answers as too slow, not as a failure", async () => {
+    // A statement cancelled by its budget mid-read (57014), as an aggregate over a long window is.
+    const base = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop !== "$transaction") return Reflect.get(target, prop, receiver);
+        return async () => {
+          // The shape the driver adapter gives it.
+          throw Object.assign(
+            new Error("canceling statement due to statement timeout"),
+            {
+              meta: {
+                driverAdapterError: { cause: { originalCode: "57014" } },
+              },
+            },
+          );
+        };
+      },
+    });
+    await expect(readDatabaseView("1h", base, false)).rejects.toBeInstanceOf(
+      MetricsTooSlowError,
+    );
   });
 
   test("the view carries both statement signals, each with its threshold and state", async () => {

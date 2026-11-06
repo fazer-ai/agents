@@ -1,8 +1,12 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
-import { DeadlinePassedError } from "@/lib/tenancy";
-import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
+import {
+  isOverMetricsBudget,
+  metricsBudget,
+  metricsDeadline,
+  metricsTooSlow,
+} from "@/modules/analytics/budget";
 import { type InstanceSignalDto, readInstanceHealth } from "../read";
 import {
   type DatabaseScreenDto,
@@ -58,18 +62,25 @@ export async function readDatabaseView(
   sampling: boolean = config.alertWorker.enabled,
 ): Promise<DatabaseViewDto> {
   // One after the other: on a metrics pool of one connection, a read started beside the screen's
-  // long aggregate would time out waiting for it, well inside the screen's own budget.
-  // Both under the request's metrics deadline, the session lookup in front of the route included: a
-  // spent one opens nothing.
+  // long aggregate would time out waiting for it, well inside the screen's own budget. Both under the
+  // request's metrics deadline, the session lookup in front of the route included: a spent one opens
+  // nothing, and a read that runs out of it answers as too slow (503), like every metrics read.
   const deadline = metricsDeadline();
-  if (Date.now() >= deadline) throw new DeadlinePassedError();
-  const health = await readInstanceHealth(
-    sampling,
-    base,
-    Date.now(),
-    metricsBudget(deadline),
-  );
-  const screen = await readDatabaseScreen(window, base);
+  if (Date.now() >= deadline) throw metricsTooSlow(deadline);
+  let health: Awaited<ReturnType<typeof readInstanceHealth>>;
+  let screen: DatabaseScreenDto;
+  try {
+    health = await readInstanceHealth(
+      sampling,
+      base,
+      Date.now(),
+      metricsBudget(deadline),
+    );
+    screen = await readDatabaseScreen(window, base);
+  } catch (error) {
+    if (isOverMetricsBudget(error)) throw metricsTooSlow(deadline);
+    throw error;
+  }
   const signals = DATABASE_SIGNALS.flatMap((name) => {
     const s = health.signals.find((x) => x.signal === name);
     if (!s) return [];

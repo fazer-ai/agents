@@ -6,12 +6,19 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
-import type { ModelOverride } from "@/graph/model-override";
+import {
+  type ModelOverride,
+  resolveModelOverride,
+} from "@/graph/model-override";
 import {
   caseHoldOn,
   type ResolveCaseHold,
   resolveCaseHoldFor,
 } from "@/graph/resolve-labels";
+import {
+  choiceCheckOverridden,
+  readChoiceCheckConfig,
+} from "@/graph/tools/choice-check-settings";
 import { type ChoiceCheck, choiceCheck } from "@/graph/tools/customer-choice";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWriteReporter } from "@/graph/tools/label-writes";
@@ -421,6 +428,12 @@ export interface AgentConfig {
   suggestionReviewOverride: ModelOverride;
   suggestionReviewApiKey: string;
   suggestionReviewCredentialBaseUrl: string | null;
+  // The customer_choice judge's own model (agent.settings.choiceCheck), with the credential it names.
+  // Same shape and resolver as the reviewer's above, but an override that cannot run REFUSES the
+  // guarded call instead of letting it through.
+  choiceCheckOverride: ModelOverride;
+  choiceCheckApiKey: string;
+  choiceCheckCredentialBaseUrl: string | null;
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
@@ -715,6 +728,27 @@ export async function loadAgentConfig(
         "agent %s: suggestion review credentialRef %s did not resolve to an API key, so suggestions reach the queue unreviewed",
         String(args.agentId),
         reviewCfg.credentialRef,
+      );
+    }
+  }
+  // The choice judge's own credential: an unresolvable ref leaves the key empty, and every guarded
+  // call is then refused rather than judged on the agent's key.
+  const choiceCheckCfg = readChoiceCheckConfig(effSettings);
+  let choiceCheckApiKey = "";
+  let choiceCheckCredentialBaseUrl: string | null = null;
+  if (choiceCheckCfg.credentialRef) {
+    const cEntry = await tryResolveApiKeyEntry(
+      db,
+      choiceCheckCfg.credentialRef,
+    );
+    if (cEntry.state === "ok") {
+      choiceCheckApiKey = cEntry.secret;
+      choiceCheckCredentialBaseUrl = cEntry.baseUrl;
+    } else {
+      logger.warn(
+        "agent %s: choice check credentialRef %s did not resolve to an API key, so every choice-guarded call is refused",
+        String(args.agentId),
+        choiceCheckCfg.credentialRef,
       );
     }
   }
@@ -1118,6 +1152,9 @@ export async function loadAgentConfig(
     suggestionReviewOverride: reviewCfg,
     suggestionReviewApiKey,
     suggestionReviewCredentialBaseUrl,
+    choiceCheckOverride: choiceCheckCfg,
+    choiceCheckApiKey,
+    choiceCheckCredentialBaseUrl,
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
   };
@@ -2120,13 +2157,62 @@ export function customerChoiceCheck(
   ctx: ToolsetCtx,
   deps: ToolBuildDeps,
 ): ChoiceCheck {
-  const mc = (): ResolvedModelConfig => ({
-    provider: cfg.mc.provider,
-    model: cfg.mc.model,
-    apiKey: cfg.apiKey,
-    baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
-    temperature: 0,
-  });
+  // The agent's model and key unless `settings.choiceCheck` names another, resolved like every
+  // secondary call's override. Unlike the suggestion reviewer, an override that cannot run refuses the
+  // call (null below): falling back to the agent's model would send its key where the operator moved
+  // the check away from, and letting the call through would drop the guard.
+  const mc = (): ResolvedModelConfig | null => {
+    const o = cfg.choiceCheckOverride ?? {};
+    if (!choiceCheckOverridden(o)) {
+      return {
+        provider: cfg.mc.provider,
+        model: cfg.mc.model,
+        apiKey: cfg.apiKey,
+        baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+        temperature: 0,
+      };
+    }
+    const r = resolveModelOverride(
+      o,
+      {
+        provider: cfg.mc.provider,
+        model: cfg.mc.model,
+        baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+      },
+      { ownCredentialBaseURL: cfg.choiceCheckCredentialBaseUrl },
+    );
+    if (!r.runnable) {
+      logger.warn(
+        { agentId: String(cfg.agentId), reason: r.reason },
+        "customer choice: the judge's own model cannot run, so a guarded call is refused",
+      );
+      return null;
+    }
+    if (r.credential === "own" && !cfg.choiceCheckApiKey) {
+      logger.warn(
+        { agentId: String(cfg.agentId) },
+        "customer choice: the judge's own credential did not resolve, so a guarded call is refused",
+      );
+      return null;
+    }
+    return {
+      provider: r.provider as ModelConfig["provider"],
+      model: r.model,
+      apiKey:
+        r.credential === "own"
+          ? cfg.choiceCheckApiKey
+          : r.credential === "agent"
+            ? cfg.apiKey
+            : "",
+      baseURL: r.baseURL ?? undefined,
+      temperature: 0,
+    };
+  };
+  let resolvedMc: ResolvedModelConfig | null | undefined;
+  const judgeMc = (): ResolvedModelConfig | null => {
+    if (resolvedMc === undefined) resolvedMc = mc();
+    return resolvedMc;
+  };
   let built: BaseChatModel | null | undefined;
   return choiceCheck({
     // NOTE: the clock and zone the agent's own prompt rendered, so the playground's simulated hour
@@ -2147,9 +2233,10 @@ export function customerChoiceCheck(
     model: () => {
       if (built !== undefined) return built;
       try {
+        const resolved = judgeMc();
         // NOTE: no key is not a reason to refuse here: an `openai-compatible` endpoint may run keyless,
         // and the factory is what knows which configurations are runnable.
-        built = (deps.makeModel ?? createChatModel)(mc());
+        built = resolved ? (deps.makeModel ?? createChatModel)(resolved) : null;
       } catch (err) {
         logger.warn(
           { err, agentId: String(cfg.agentId) },
@@ -2167,7 +2254,7 @@ export function customerChoiceCheck(
             base: ctx.base,
             persistUsage: deps.persistUsage,
             node: "choice_check",
-            billedModel: mc(),
+            billedModel: judgeMc() ?? undefined,
             turnId: deps.flow.turnId,
             source: deps.flow.source,
             anonymous: deps.flow.anonymous,

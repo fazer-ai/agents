@@ -1689,6 +1689,11 @@
       "title": "Caixas de entrada",
       "toggleAria": "Atender {{inbox}} com este agente"
     },
+    "choiceCheck": {
+      "credentialHint": "Obrigatória quando a conferência usa outro fornecedor; sem chave própria, essas ferramentas são recusadas.",
+      "help": "O modelo que confere, antes de rodar uma ferramenta que exige a escolha do cliente, se o cliente escolheu cada valor da chamada. Por padrão é o próprio modelo do agente. Se o modelo definido aqui não conseguir rodar, essas ferramentas são recusadas.",
+      "title": "Modelo da conferência de escolha"
+    },
     "classifierSection": "Classificador",
     "classifierSectionHint": "O serviço que responde às perguntas sobre cada conversa.",
     "clone": "Clonar",
@@ -1699,6 +1704,7 @@
     "cloneTitle": "Clonar agente",
     "cloneUnsavedNote": "A clonagem usa a última versão salva; suas alterações não salvas não serão incluídas.",
     "configIssue": {
+      "choiceCheckModel": "A conferência de escolha tem um modelo próprio que não consegue rodar com a configuração atual, então toda ferramenta que exige a escolha do cliente é recusada. Confira fornecedor, modelo, chave e endpoint.",
       "contactAuthNoUrl": "A verificação de autorização está ligada, mas sem endereço para consultar. Sem ele a verificação falha em toda mensagem e o agente para de responder a todo mundo. Preencha a URL do endpoint, deixe uma regra decidir sozinha, ou desligue a verificação.",
       "contactAuthSilentRefusal": "Um contato recusado fica sem nada: nenhuma mensagem é enviada e a conversa não é aberta para ninguém, então ele fica sem resposta e só uma nota privada registra o que houve. Preencha “Mensagem para contato negado” ou ligue “Abrir conversas recusadas para humanos”.",
       "contactAuthUnlockHandoff": "O destravamento por código e a passagem para atendimento humano se anulam: a primeira recusa abre a conversa e a atribui, e uma conversa aberta não é mais da IA, então o código que o cliente mandar em seguida nunca chega à verificação. Desligue “Abrir conversas recusadas para humanos” para deixar o contato se destravar, ou desligue “Enviar o texto da mensagem do cliente” se um humano deve assumir toda conversa recusada.",
@@ -1725,6 +1731,7 @@
     "configIssueOutOfHoursBoth": "O Chatwoot e este agente enviam mensagens de fora do horário em {{inboxes}}, então o cliente recebe as duas. Os horários são configurados separadamente, e o do Chatwoot não inclui datas; eles também divergem em feriados.",
     "configIssueOutOfHoursChatwoot": "O Chatwoot envia uma mensagem de fora do horário em {{inboxes}}, mas este agente segue apenas o próprio horário. O cliente pode receber um aviso de que a empresa está fechada e ser atendido logo depois.",
     "configIssuePending": {
+      "choiceCheckModel": "A credencial da conferência de escolha está referenciada, mas ainda não foi preenchida, então toda ferramenta que exige a escolha do cliente é recusada.",
       "contactAuth": "A credencial da autorização do contato está referenciada, mas ainda não foi preenchida; a verificação falha e o agente fica em silêncio.",
       "decisions": "A chave de API do classificador está referenciada, mas ainda não foi preenchida, então este agente não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding ainda não foi preenchida.",
@@ -1743,6 +1750,7 @@
     "configIssueTextCap": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado.",
     "configIssueTextCapNoField": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado. Esta orientação não tem campo no console, então só pode ser encurtada pela API.",
     "configIssueUnresolved": {
+      "choiceCheckModel": "A credencial da conferência de escolha não existe mais, então toda ferramenta que exige a escolha do cliente é recusada.",
       "contactAuth": "A credencial da autorização do contato não existe mais; a verificação falha e o agente fica em silêncio.",
       "decisions": "A chave de API do classificador não existe mais, então este agente não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
@@ -1764,6 +1772,7 @@
     "configIssueWatcherModelUnresolved": "A credencial do modelo não existe mais, então este agente não consegue analisar as conversas que observa. Escolha outra.",
     "configIssueWatcherModelWrongKind": "A credencial do modelo é de um tipo que não pode ser usado como chave de API, então este agente não consegue analisar as conversas que observa. Escolha uma credencial que guarde uma única chave.",
     "configIssueWrongKind": {
+      "choiceCheckModel": "A credencial da conferência de escolha é de um tipo que não pode ser usado como chave de API, então toda ferramenta que exige a escolha do cliente é recusada. Escolha uma credencial que guarde uma única chave.",
       "contactAuth": "A credencial da autorização do contato é de um tipo que este produto nunca envia para outro serviço, então a verificação falha e o agente fica em silêncio. Escolha uma credencial capaz de autenticar uma requisição.",
       "decisions": "A credencial do classificador é de um tipo que não serve como chave de API, então este agente não decide nada. Escolha uma credencial que guarde uma única chave.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding é de um tipo que não pode ser usado como chave de API. Escolha uma credencial que guarde uma única chave.",
@@ -2766,7 +2775,7 @@
       "addCondition": "Adicionar condição",
       "andUntil": "e até que",
       "block": "Bloquear",
-      "customerChoiceHelp": "Cada chamada é conferida com as mensagens do cliente: se um valor dela (qual opção, quantas unidades, qual dia) não foi dito nem confirmado pelo cliente, ela não roda e o agente pergunta. Quem confere é o próprio modelo do agente, cobrado numa linha própria.",
+      "customerChoiceHelp": "Cada chamada é conferida com as mensagens do cliente: se um valor dela (qual opção, quantas unidades, qual dia) não foi dito nem confirmado pelo cliente, ela não roda e o agente pergunta. Por padrão quem confere é o próprio modelo do agente (dá para trocar logo abaixo), cobrado numa linha própria.",
       "description": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor, ou o cliente ter escolhido os valores com que o agente a chama. O agente é informado do motivo e segue a conversa; nada é dito ao cliente.",
       "descriptionDecisions": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor. A ação da regra não roda e a recusa fica registrada nos logs; nada é dito ao cliente.",
       "empty": "Nenhuma precondição. Sem ela, o agente usa qualquer uma das suas ferramentas quando achar adequado.",

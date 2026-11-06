@@ -165,6 +165,11 @@ import {
 } from "./callsFormState";
 import { fromChannelRedirectForm } from "./channelRedirectSave";
 import {
+  type ChoiceCheckState,
+  choiceCheckToForm,
+  choiceCheckToStored,
+} from "./choiceCheckFormState";
+import {
   contactAuthGateEmpty,
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
@@ -612,6 +617,7 @@ function readBehaviorState(a: Agent) {
     writableAttributes: readWritableAttributesState(s.setCustomAttribute),
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
+    choiceCheck: choiceCheckToForm(s),
     businessHoursId: a.businessHoursId ?? "",
     followUpHoursId: a.followUpHoursId ?? "",
     settings: s,
@@ -1252,6 +1258,10 @@ function AgentEditor() {
   const [toolPreconditions, setToolPreconditions] = useState<
     ToolPreconditionRow[]
   >([]);
+  // The customer_choice judge's own model, saved with the rules it serves (Tools tab).
+  const [choiceCheck, setChoiceCheck] = useState<ChoiceCheckState>(() =>
+    choiceCheckToForm({}),
+  );
   // Operator usage guidance for update_kanban_task (Tools-tab config). Persisted in
   // agent.settings.toolGuidance.update_kanban_task; synced only by syncToolConfig.
   const [updateKanbanTaskInstructions, setUpdateKanbanTaskInstructions] =
@@ -1457,6 +1467,7 @@ function AgentEditor() {
     "settings.contactAuth.credentialRef": contactAuth.credentialRef,
     "settings.memory.compaction.credentialRef": memory.credentialRef,
     "settings.knowledge.suggestionReview.credentialRef": review.credentialRef,
+    "settings.choiceCheck.credentialRef": choiceCheck.credentialRef,
     "settings.modelFallback.credentialRef": modelFallback.credentialRef,
     // NOTE: Through the writer: an untouched block goes out as stored, not as the form holds it.
     "settings.monitoring.decisions.credentialRef": decisionsBlockToStore(
@@ -1699,6 +1710,7 @@ function AgentEditor() {
     setLabelRemoval(b.labelRemoval);
     setWritableAttributes(b.writableAttributes);
     setToolPreconditions(b.toolPreconditions);
+    setChoiceCheck(b.choiceCheck);
     if (!keepGuidance) {
       setCrossInboxCase(b.crossInboxCase);
       setSendImage(b.sendImage);
@@ -2305,6 +2317,7 @@ function AgentEditor() {
     labelRemoval: typeof labelRemoval;
     writableAttributes: WritableAttributesState;
     toolPreconditions: typeof toolPreconditions;
+    choiceCheck: ChoiceCheckState;
     grants: GrantState[];
     review: SuggestionReviewState;
   };
@@ -2348,6 +2361,7 @@ function AgentEditor() {
     labelRemoval,
     writableAttributes,
     toolPreconditions,
+    choiceCheck,
     grants,
     review,
   };
@@ -2356,6 +2370,7 @@ function AgentEditor() {
     SnapForm,
     | "handoff"
     | "toolPreconditions"
+    | "choiceCheck"
     | "protectedLabels"
     | "allowedLabels"
     | "outsideAllowedLabels"
@@ -2408,6 +2423,7 @@ function AgentEditor() {
       labelRemoval: b.labelRemoval,
       writableAttributes: b.writableAttributes,
       toolPreconditions: b.toolPreconditions,
+      choiceCheck: b.choiceCheck,
       grants: mapGrants(syncedGrants),
       review: suggestionReviewToForm(a.settings),
     };
@@ -2493,6 +2509,7 @@ function AgentEditor() {
         writableAttributes: serializeWritableAttributes(f.writableAttributes),
         updateKanbanTaskInstructions: guidance.updateKanbanTaskInstructions,
         toolPreconditions: f.toolPreconditions,
+        choiceCheck: f.choiceCheck,
         crossInboxCase: guidance.crossInboxCase,
         sendImage: guidance.sendImage,
         resolveConversation: guidance.resolveConversation,
@@ -2843,6 +2860,10 @@ function AgentEditor() {
   // t('editor.configIssuePending.suggestionReviewModel', 'The suggestion-reviewer credential is referenced but not filled in yet, so knowledge suggestions reach the queue unreviewed.')
   // t('editor.configIssueUnresolved.suggestionReviewModel', 'The suggestion-reviewer credential no longer exists, so knowledge suggestions reach the queue unreviewed.')
   // t('editor.configIssueWrongKind.suggestionReviewModel', 'The suggestion-reviewer credential is a type that cannot be used as an API key, so knowledge suggestions reach the queue unreviewed. Pick a credential that holds a single key.')
+  // t('editor.configIssue.choiceCheckModel', 'A separate model is set for the choice check but its configuration cannot run, so every tool that requires the customer\'s choice is refused. Check its provider, model, key and endpoint.')
+  // t('editor.configIssuePending.choiceCheckModel', 'The choice-check credential is referenced but not filled in yet, so every tool that requires the customer\'s choice is refused.')
+  // t('editor.configIssueUnresolved.choiceCheckModel', 'The choice-check credential no longer exists, so every tool that requires the customer\'s choice is refused.')
+  // t('editor.configIssueWrongKind.choiceCheckModel', 'The choice-check credential is a type that cannot be used as an API key, so every tool that requires the customer\'s choice is refused. Pick a credential that holds a single key.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
   // t('editor.configIssueUnresolved.decisions', 'The classifier\'s API key no longer exists, so this agent decides nothing.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
@@ -2961,6 +2982,9 @@ function AgentEditor() {
       suggestionReviewToForm(syncedAgentRef.current?.settings).credentialRef,
     ),
     savedModelFallbackCredentialBaseURL: savedModelFallbackCredBaseUrl,
+    savedChoiceCheckCredentialBaseURL: vaultBaseUrl(
+      choiceCheckToForm(syncedAgentRef.current?.settings).credentialRef,
+    ),
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
     ttsNormalizeModel: tts.normalizeModel,
@@ -3653,6 +3677,7 @@ function AgentEditor() {
       kanban: kanbanJson,
       toolGuidance: toolGuidanceJson,
       toolPreconditions: toolPreconditionsJson,
+      choiceCheck: choiceCheckToStored(choiceCheck),
       setLabels: {
         ...existingSetLabels,
         protected: protectedList,
@@ -3687,6 +3712,7 @@ function AgentEditor() {
         g.updateKanbanTaskInstructions,
       ],
       toolPreconditions: src.toolPreconditions,
+      choiceCheck: src.choiceCheck,
       setLabels: [
         src.protectedLabels,
         src.allowedLabels,
@@ -3781,6 +3807,7 @@ function AgentEditor() {
       kanban: kanbanJson,
       toolGuidance: toolGuidanceJson,
       toolPreconditions: toolPreconditionsJson,
+      choiceCheck: choiceCheckToStored(src.choiceCheck),
       setLabels: {
         ...existingSetLabels,
         protected: protectedList,
@@ -3816,6 +3843,7 @@ function AgentEditor() {
         handoff,
         guidance: savedGuidance,
         toolPreconditions,
+        choiceCheck,
         protectedLabels,
         allowedLabels,
         outsideAllowedLabels,
@@ -3838,6 +3866,7 @@ function AgentEditor() {
       handoff,
       guidance: formGuidance,
       toolPreconditions,
+      choiceCheck,
       protectedLabels,
       allowedLabels,
       outsideAllowedLabels,
@@ -5199,6 +5228,22 @@ function AgentEditor() {
                   updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                   toolPreconditions={toolPreconditions}
                   setToolPreconditions={setToolPreconditions}
+                  choiceCheck={choiceCheck}
+                  setChoiceCheck={setChoiceCheck}
+                  agentModel={{
+                    provider: modelAfterSave.provider,
+                    credentialRef: modelAfterSave.credentialRef,
+                    baseURL: modelAfterSaveBaseUrl,
+                  }}
+                  choiceCheckCredBaseUrl={vaultBaseUrl(
+                    choiceCheck.credentialRef,
+                  )}
+                  choiceCheckCredentialError={
+                    refusal.at(
+                      "settings.choiceCheck.credentialRef",
+                      currentRef.current["settings.choiceCheck.credentialRef"],
+                    ) ?? undefined
+                  }
                   setUpdateKanbanTaskInstructions={
                     setUpdateKanbanTaskInstructions
                   }

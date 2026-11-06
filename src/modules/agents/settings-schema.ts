@@ -917,6 +917,15 @@ const knowledge = z.looseObject({
     .optional(),
 });
 
+// The customer_choice judge's model, as an override of the agent's (`resolveModelOverride`). All four
+// absent judges on the agent's model; one that cannot run refuses every guarded call.
+const choiceCheck = z.looseObject({
+  provider: oneOf(MODEL_PROVIDERS).nullable().optional(),
+  model: z.string().nullable().optional(),
+  credentialRef: credentialRef(),
+  baseURL: baseURL(),
+});
+
 const modelFallback = z.looseObject({
   // Where the turn goes when the agent's own provider cannot take it (`resolveModelOverride`). Unlike
   // its siblings, absent does NOT mean the agent's model (that is the provider that just failed): a
@@ -1408,6 +1417,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   setLabels: setLabels.optional(),
   setCustomAttribute: setCustomAttribute.optional(),
   toolPreconditions: toolPreconditions.optional(),
+  choiceCheck: choiceCheck.optional(),
   monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;
 

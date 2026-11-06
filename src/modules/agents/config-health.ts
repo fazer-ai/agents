@@ -10,7 +10,12 @@ import {
 } from "@/graph/fallback-settings";
 import { modelConfigSchema } from "@/graph/model-config";
 import { resolveModelOverride } from "@/graph/model-override";
+import {
+  choiceCheckOverridden,
+  readChoiceCheckConfig,
+} from "@/graph/tools/choice-check-settings";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
+import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import {
   type Schedule,
@@ -65,6 +70,8 @@ export type ConfigIssueKey =
   // The knowledge suggestion reviewer's own model is set and cannot run: suggestions reach the
   // queue unreviewed, with nothing else saying so.
   | "suggestionReviewModel"
+  // The customer_choice judge's own model is set and cannot run: every choice-guarded call is refused.
+  | "choiceCheckModel"
   | "modelFallback"
   | "vision"
   | "decisions"
@@ -209,6 +216,8 @@ export interface ConfigHealthInput {
   savedMemoryCredentialBaseURL?: string | null;
   // The same, for the saved suggestion reviewer credential.
   savedSuggestionReviewCredentialBaseURL?: string | null;
+  // The same, for the saved choice judge credential.
+  savedChoiceCheckCredentialBaseURL?: string | null;
   savedModelFallbackCredentialBaseURL?: string | null;
   sttEnabled: boolean;
   sttCredentialRef: string;
@@ -701,6 +710,58 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       credIssue(
         reviewResolution !== null && Boolean(review.credentialRef),
         review.credentialRef ?? "",
+        "apiKey",
+        vault,
+      ),
+    );
+  }
+  // The choice judge's own model, judged like the reviewer, and only while some tool has a
+  // customer_choice rule: with none, nothing calls the judge.
+  const choice = readChoiceCheckConfig(input.settings);
+  const choiceUsed = Object.values(readToolPreconditions(input.settings)).some(
+    (conds) => conds.some((c) => c.kind === "customer_choice"),
+  );
+  const choiceResolution =
+    choiceUsed && choiceCheckOverridden(choice)
+      ? resolveModelOverride(
+          choice,
+          {
+            provider: input.savedModelProvider,
+            model: "",
+            baseURL: input.savedModelBaseURL ?? null,
+          },
+          {
+            ownCredentialBaseURL:
+              input.savedChoiceCheckCredentialBaseURL ?? null,
+            isUsableBaseURL: isValidHttpUrl,
+          },
+        )
+      : null;
+  const choiceIssue: ConfigIssue = {
+    key: "choiceCheckModel",
+    tab: "tools",
+    sectionId: "tools-preconditions",
+  };
+  const choiceEndpointOwed = endpointCouldStillArrive(
+    endpointsKnown,
+    { provider: choice.provider, credentialRef: choice.credentialRef },
+    {
+      provider: input.savedModelProvider,
+      credentialRef: input.savedModelCredentialRef,
+    },
+  );
+  if (
+    choiceResolution !== null &&
+    !choiceResolution.runnable &&
+    !(choiceEndpointOwed && choiceResolution.reason === "endpoint_unusable")
+  ) {
+    issues.push(choiceIssue);
+  } else {
+    push(
+      choiceIssue,
+      credIssue(
+        choiceResolution !== null && Boolean(choice.credentialRef),
+        choice.credentialRef ?? "",
         "apiKey",
         vault,
       ),

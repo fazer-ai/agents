@@ -41,6 +41,8 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   memoryModel: "degraded",
   // Suggestions still reach the queue, unreviewed.
   suggestionReviewModel: "degraded",
+  // The agent still answers; every choice-guarded tool is refused.
+  choiceCheckModel: "degraded",
   // The one override whose whole purpose is the day the primary fails.
   modelFallback: "degraded",
   vision: "degraded",

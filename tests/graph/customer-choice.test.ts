@@ -715,7 +715,8 @@ describe("the judge reads the business's own catalog", () => {
         apiKey: "sk-agent",
         timezone: "America/Sao_Paulo",
         promptOpts: {},
-        systemPrompt: "Catalog: 8 sessoes or 10 sessoes, each with its own price.",
+        systemPrompt:
+          "Catalog: 8 sessoes or 10 sessoes, each with its own price.",
       } as unknown as AgentConfig,
       { tenantId: 1n, threadId: "t-1" } as never,
       {
@@ -1010,6 +1011,120 @@ describe("the judge a toolset builds", () => {
     });
     expect(built).toBe(1);
     expect(verdict.chosen).toBe(builds);
+  });
+});
+
+describe("the judge on a model of its own (settings.choiceCheck)", () => {
+  const agentOn = (over: Record<string, unknown>) =>
+    ({
+      agentId: 5n,
+      mc: { provider: "anthropic", model: "claude-sonnet-5-5" },
+      apiKey: "sk-ant-agent",
+      credentialBaseUrl: null,
+      promptOpts: { now: new Date() },
+      choiceCheckOverride: {},
+      choiceCheckApiKey: "",
+      choiceCheckCredentialBaseUrl: null,
+      ...over,
+    }) as unknown as AgentConfig;
+  const judgeWith = async (cfg: AgentConfig) => {
+    const built: unknown[] = [];
+    const rows: { node: string | null; model: string }[] = [];
+    const check = customerChoiceCheck(
+      cfg,
+      { tenantId: 1n, threadId: "t-1" } as never,
+      {
+        flow: { tenantId: 1n, turnId: "turn-1", source: "inbox" },
+        makeModel: (mc: unknown) => {
+          built.push(mc);
+          return new UsageReportingModel(["YES"], {
+            input: 90,
+            output: 1,
+          }) as unknown as BaseChatModel;
+        },
+        persistUsage: async (row: (typeof rows)[number]) => {
+          rows.push(row);
+        },
+      } as never,
+    );
+    const verdict = await check({
+      tool: "send_orcamento",
+      description: "d",
+      args: TEN,
+      messages: [new HumanMessage("o do meio")],
+    });
+    return { verdict, built, rows };
+  };
+
+  test("another vendor on its own key judges, at temperature 0, and is what the ledger bills", async () => {
+    const { verdict, built, rows } = await judgeWith(
+      agentOn({
+        choiceCheckOverride: {
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          credentialRef: "vw://k",
+        },
+        choiceCheckApiKey: "sk-openai-judge",
+      }),
+    );
+    expect(verdict).toEqual({ chosen: true });
+    expect(built).toEqual([
+      {
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        apiKey: "sk-openai-judge",
+        baseURL: undefined,
+        temperature: 0,
+      },
+    ]);
+    expect(rows.map((r) => [r.node, r.model])).toEqual([
+      ["choice_check", "gpt-5.4-mini"],
+    ]);
+  });
+
+  test("a cheaper model of the agent's own vendor inherits the agent's key", async () => {
+    const { built } = await judgeWith(
+      agentOn({
+        choiceCheckOverride: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+        },
+      }),
+    );
+    expect(built).toEqual([
+      {
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        apiKey: "sk-ant-agent",
+        baseURL: undefined,
+        temperature: 0,
+      },
+    ]);
+  });
+
+  // Unlike the suggestion reviewer, which lets the proposal through, a judge that cannot run refuses:
+  // the guard would otherwise be off, and the agent's own key must not go where the operator moved
+  // the check away from.
+  test.each([
+    [
+      "another vendor with no key of its own",
+      { provider: "openai", model: "gpt-5.4-mini" },
+      "",
+    ],
+    ["a model with no provider", { model: "gpt-5.4-mini" }, ""],
+    [
+      "a credential that did not resolve",
+      { provider: "openai", model: "gpt-5.4-mini", credentialRef: "vw://gone" },
+      "",
+    ],
+    ["an unknown provider", { provider: "nope", model: "x" }, "sk"],
+  ])("%s refuses the call and builds nothing", async (_l, override, key) => {
+    const { verdict, built, rows } = await judgeWith(
+      agentOn({ choiceCheckOverride: override, choiceCheckApiKey: key }),
+    );
+    expect(verdict.chosen).toBe(false);
+    expect(built).toEqual([]);
+    expect(rows).toEqual([]);
   });
 });
 

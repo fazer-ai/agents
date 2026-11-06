@@ -3,6 +3,7 @@ import type { Locale } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import { canonicalVaultRef, formatVaultRef } from "@/client/lib/credentialRef";
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
+import { readChoiceCheckConfig } from "@/graph/tools/choice-check-settings";
 import { requireDbId } from "@/lib/db-id";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -247,6 +248,9 @@ export async function readAgentConfigHealth(
     ),
     savedModelFallbackCredentialBaseURL: vaultBaseUrl(
       readModelFallbackConfig(settings).credentialRef,
+    ),
+    savedChoiceCheckCredentialBaseURL: vaultBaseUrl(
+      readChoiceCheckConfig(settings).credentialRef,
     ),
     sttEnabled: stt.enabled,
     sttCredentialRef: stt.credentialRef ?? "",

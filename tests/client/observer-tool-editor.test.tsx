@@ -380,6 +380,19 @@ function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
               setUpdateKanbanTaskInstructions={noop}
               toolPreconditions={rows as never}
               setToolPreconditions={noop}
+              choiceCheck={{
+                provider: "",
+                model: "",
+                credentialRef: "",
+                baseURL: "",
+              }}
+              setChoiceCheck={noop}
+              agentModel={{
+                provider: "openai",
+                credentialRef: "",
+                baseURL: "",
+              }}
+              choiceCheckCredBaseUrl={null}
               mcpTools={{}}
               setMcpTools={noop}
               mcpInstructions={{}}

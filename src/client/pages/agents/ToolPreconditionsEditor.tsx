@@ -391,7 +391,7 @@ export function ToolPreconditionsEditor({
                             <p className="text-text-muted text-xs">
                               {t(
                                 "editor.toolPreconditions.customerChoiceHelp",
-                                "Each call is checked against the customer's messages: when a value of the call (which option, how many, which day) was not said or confirmed by the customer, it does not run and the agent asks. The agent's own model makes the check, billed on its own line.",
+                                "Each call is checked against the customer's messages: when a value of the call (which option, how many, which day) was not said or confirmed by the customer, it does not run and the agent asks. By default the agent's own model makes the check (it can be changed below), billed on its own line.",
                               )}
                             </p>
                           )}

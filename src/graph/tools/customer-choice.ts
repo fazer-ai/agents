@@ -6,6 +6,7 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 import { HISTORY_DATE_FORMAT } from "@/graph/history-dates";
+import { DATA_FENCE, isNudgeTurn } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { DEFAULT_TIMEZONE, formatParts, partsInTimezone } from "@/graph/time";
@@ -38,8 +39,9 @@ const TRANSCRIPT_MESSAGES_MAX = 40;
 export const TRANSCRIPT_CHARS_MAX = 24_000;
 const TOOL_RESULT_CHARS_MAX = 2000;
 
-// Null when there is nothing whole to read: no transcript (a rule's action, a voice call), or a
-// latest customer message longer than the bound, which the judge may not decide on a part of.
+// Null when there is nothing whole to read: no transcript (a rule's action, a voice call), a latest
+// customer message longer than the bound, which the judge may not decide on a part of, or a message
+// that cannot be told apart from a nudge.
 export function choiceTranscript(
   messages: readonly BaseMessage[] | undefined,
 ): ChoiceTranscript | null {
@@ -50,10 +52,22 @@ export function choiceTranscript(
   const { open } = selectClosedPrefix([...messages], {
     currentAttendanceClosed: false,
   });
+  // NOTE: the shared reader drops an unmarked human message carrying the data fence as a nudge from
+  // before the marker; it may also be a customer who typed the token, and a retraction dropped would
+  // leave an earlier choice standing, so this reader refuses rather than guess which it is.
+  if (open.some(isUnmarkedFenced)) return null;
   return boundedTranscript(
     unclippedContext(open, TRANSCRIPT_MESSAGES_MAX, {
       toolResultChars: TOOL_RESULT_CHARS_MAX,
     }),
+  );
+}
+
+function isUnmarkedFenced(m: BaseMessage): boolean {
+  return (
+    m.getType() === "human" &&
+    !isNudgeTurn(m) &&
+    contentToText(m.content).includes(DATA_FENCE)
   );
 }
 

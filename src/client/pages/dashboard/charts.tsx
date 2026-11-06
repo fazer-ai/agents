@@ -1,5 +1,12 @@
 import { X } from "lucide-react";
-import { useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bar,
@@ -16,6 +23,7 @@ import {
 import { Tooltip as Hint } from "@/client/components/Tooltip";
 import { useTheme } from "@/client/contexts/ThemeContext";
 import {
+  type Arranged,
   arrangeSeries,
   CATEGORICAL_SLOTS,
   lineSummary,
@@ -394,6 +402,27 @@ function TooltipCard({
   );
 }
 
+// The chart's series, ranked and grouped, with each kept series holding on to the palette slot it had
+// in the last render.
+function useArrangedSeries(
+  data: ChartRow[],
+  series: SeriesDef[],
+  sum: boolean,
+): Arranged<ChartRow> {
+  const slots = useRef<ReadonlyMap<string, number>>(new Map());
+  const arranged = arrangeSeries(
+    data,
+    series,
+    CATEGORICAL_SLOTS,
+    sum,
+    slots.current,
+  );
+  useEffect(() => {
+    slots.current = arranged.slot;
+  });
+  return arranged;
+}
+
 // Above the chart's own layers, which recharts draws later in the same box.
 const TOOLTIP_WRAPPER = { zIndex: 10, outline: "none" } as const;
 
@@ -500,7 +529,7 @@ export function LineTrend({
   const settled = useSettledMax(
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
-  const arranged = arrangeSeries(data, series, CATEGORICAL_SLOTS, false);
+  const arranged = useArrangedSeries(data, series, false);
   const colorOf = (key: string) =>
     p.series[arranged.slot.get(key) ?? 0] ?? p.other;
   // Past the palette, a line keeps its place and its click but no identity: rates do not add up into
@@ -698,6 +727,17 @@ function DayDetail({
   });
   const ready = !row.state || row.state === "ready";
   const detail = stackDetail(row, kept, folded);
+  const box = useRef<HTMLElement>(null);
+  // The click that opened it left the focus on the chart, so Escape is heard on the whole page, and
+  // the focus moves in for a keyboard or a screen reader to land on the day.
+  useEffect(() => {
+    box.current?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const line = (
     key: string,
     label: string,
@@ -735,11 +775,10 @@ function DayDetail({
   return (
     <section
       data-testid="chart-day-detail"
+      ref={box}
+      tabIndex={-1}
       aria-label={head}
-      className="border-border bg-bg-tertiary flex flex-col gap-2 rounded-lg border px-3 py-2 text-xs"
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
+      className="border-border bg-bg-tertiary flex flex-col gap-2 rounded-lg border px-3 py-2 text-xs outline-none"
     >
       <div className="flex items-center justify-between gap-4">
         <span className="text-text-primary font-medium">{head}</span>
@@ -810,7 +849,7 @@ export function StackedBars({
   const chartText = useChartText();
   const ids = usePatternIds();
   const stateOf = new Map(data.map((r) => [r.day, r.state]));
-  const arranged = arrangeSeries(data, series, CATEGORICAL_SLOTS, true);
+  const arranged = useArrangedSeries(data, series, true);
   const colorOf = (key: string) =>
     key === OTHER_KEY
       ? p.other
@@ -826,6 +865,7 @@ export function StackedBars({
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
   const [picked, setPicked] = useState<string | null>(null);
+  const closeDetail = useCallback(() => setPicked(null), []);
   const pickedRow = picked ? data.find((r) => r.day === picked) : undefined;
   return (
     <div className="flex w-full flex-col gap-2">
@@ -956,7 +996,7 @@ export function StackedBars({
           colorOf={colorOf}
           format={format}
           lang={lang}
-          onClose={() => setPicked(null)}
+          onClose={closeDetail}
           p={p}
         />
       )}

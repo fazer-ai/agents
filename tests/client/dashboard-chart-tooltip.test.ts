@@ -284,20 +284,56 @@ describe("a stacked chart with more series than colours", () => {
     });
   });
 
-  test("Escape closes the detail too", async () => {
+  test("Escape closes the detail from wherever the focus is after the click", async () => {
     const { container } = renderChart(StackedBars, stacked);
     await hover(container, 1, 2);
     const wrapper = container.querySelector(".recharts-wrapper") as Element;
     fireEvent.click(wrapper, { clientX: centerOf(1, 2), clientY: HEIGHT / 2 });
-    const detail = await waitFor(() => {
-      const d = container.querySelector('[data-testid="chart-day-detail"]');
-      if (!d) throw new Error("no detail yet");
-      return d;
+    await waitFor(() => {
+      if (!container.querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("no detail yet");
     });
-    fireEvent.keyDown(detail, { key: "Escape" });
-    expect(
-      container.querySelector('[data-testid="chart-day-detail"]'),
-    ).toBeNull();
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+    await waitFor(() => {
+      if (container.querySelector('[data-testid="chart-day-detail"]'))
+        throw new Error("still open");
+    });
+  });
+
+  test("a series falling into Others leaves every other series in its colour", async () => {
+    const { container, rerender } = renderChart(StackedBars, stacked);
+    const before = new Map(
+      (await legendOf(container)).map((i) => [i.key, i.color]),
+    );
+    // Node 7 drops to nothing and joins the group; Node 2, the largest of the group, takes its place.
+    // Node 2 comes first in the caller's order, so a fresh assignment would shift every colour.
+    const shifted: ChartRow[] = data.map((r) => ({ ...r, n7: 0 }));
+    rerender(
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(StackedBars, { ...stacked, data: shifted }),
+          ),
+        ),
+      ),
+    );
+    const after = await waitFor(() => {
+      const l = legend(container);
+      if (!l.some((i) => i.key === "n2")) throw new Error("not re-ranked yet");
+      return new Map(l.map((i) => [i.key, i.color]));
+    });
+    expect(after.has("n7")).toBe(false);
+    for (const key of ["n4", "n5", "n6", "n8", "n9", "n10"])
+      expect(after.get(key)).toBe(before.get(key));
+    expect(after.get("n2")).toBe(before.get("n7"));
   });
 
   test("the Others legend entry names its members on focus", async () => {

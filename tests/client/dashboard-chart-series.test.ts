@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   arrangeSeries,
+  assignSlots,
   lineSummary,
   OTHER_KEY,
   stackDetail,
@@ -88,6 +89,41 @@ describe("arrangeSeries", () => {
     const out = arrangeSeries(rows, series(9), 8, false);
     expect(out.folded).toHaveLength(2);
     expect(out.rows).toBe(rows);
+  });
+});
+
+describe("assignSlots", () => {
+  test("a first render gives the slots in the caller's order", () => {
+    expect([...assignSlots(["a", "b", "c"], new Map(), 8)]).toEqual([
+      ["a", 0],
+      ["b", 1],
+      ["c", 2],
+    ]);
+  });
+
+  test("a series that stays kept keeps its slot when another leaves, and a newcomer takes the free one", () => {
+    const before = assignSlots(["s0", "s1", "s2"], new Map(), 3);
+    const after = assignSlots(["s1", "s2", "s3"], before, 3);
+    expect(after.get("s1")).toBe(1);
+    expect(after.get("s2")).toBe(2);
+    expect(after.get("s3")).toBe(0);
+  });
+
+  test("a remembered slot past the palette is dropped", () => {
+    expect(assignSlots(["a"], new Map([["a", 9]]), 8).get("a")).toBe(0);
+  });
+});
+
+describe("arrangeSeries across renders", () => {
+  test("a series leaving the kept set moves no other series' colour", () => {
+    const rows = [Object.fromEntries(series(9).map((s, i) => [s.key, 10 - i]))];
+    const first = arrangeSeries(rows, series(9), 8, true);
+    // s0 falls to the bottom of the window; s7 enters the kept set.
+    const next = [{ ...rows[0], s0: 0 }];
+    const second = arrangeSeries(next, series(9), 8, true, first.slot);
+    for (const key of ["s1", "s2", "s3", "s4", "s5", "s6"])
+      expect(second.slot.get(key)).toBe(first.slot.get(key));
+    expect(second.slot.get("s7")).toBe(first.slot.get("s0"));
   });
 });
 

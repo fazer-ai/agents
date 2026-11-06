@@ -31,20 +31,45 @@ export interface Arranged<T> {
   kept: SeriesDef[];
   // The "Other" group, largest first; empty when everything fits the palette.
   folded: SeriesDef[];
-  // The palette slot of each kept series.
+  // The palette slot of each kept series, see assignSlots.
   slot: Map<string, number>;
   // The rows, with the group's sum under OTHER_KEY when `sum` was asked and there is a group.
   rows: T[];
 }
 
+// Gives each kept series a palette slot. A series that already had one keeps it, so a colour does
+// not move when another series joins or leaves the group, or a streamed day changes the ranking; a
+// newcomer takes the lowest free slot, in the caller's order.
+export function assignSlots(
+  keptInCallerOrder: string[],
+  previous: ReadonlyMap<string, number>,
+  slots: number,
+): Map<string, number> {
+  const slot = new Map<string, number>();
+  for (const key of keptInCallerOrder) {
+    const had = previous.get(key);
+    if (had !== undefined && had < slots) slot.set(key, had);
+  }
+  const taken = new Set(slot.values());
+  let free = 0;
+  for (const key of keptInCallerOrder) {
+    if (slot.has(key)) continue;
+    while (taken.has(free)) free++;
+    slot.set(key, free);
+    taken.add(free);
+  }
+  return slot;
+}
+
 // Ranks a chart's series by window total (a tie keeps the caller's order) and splits off the group.
 // Grouping one series alone would only rename it, so a chart over the limit keeps one slot fewer and
-// the group always holds two or more.
+// the group always holds two or more. `previous` is the slot map of the chart's last render.
 export function arrangeSeries<T extends Row>(
   rows: T[],
   series: SeriesDef[],
   slots: number,
   sum: boolean,
+  previous: ReadonlyMap<string, number> = new Map(),
 ): Arranged<T> {
   const ranked = series
     .map((s, i) => ({ s, i, total: windowTotal(rows, s.key) }))
@@ -52,8 +77,10 @@ export function arrangeSeries<T extends Row>(
   const keep = series.length <= slots ? series.length : slots - 1;
   const kept = ranked.slice(0, keep);
   const folded = ranked.slice(keep).map((r) => r.s);
-  const slot = new Map(
-    [...kept].sort((a, b) => a.i - b.i).map((r, n) => [r.s.key, n] as const),
+  const slot = assignSlots(
+    [...kept].sort((a, b) => a.i - b.i).map((r) => r.s.key),
+    previous,
+    slots,
   );
   const out =
     sum && folded.length > 0

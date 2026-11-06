@@ -1,0 +1,12 @@
+// Refuses, under src/, a `new Pool({…})` (also `new pg.Pool({…})`) or a `new PrismaPg({…})` whose
+// options do not pin the session time zone: a session that inherits the server's, the database's or
+// the role's zone shifts every `now()` written to or compared with a timestamp column by its offset.
+// Spread `withSessionOptions(url)` from src/lib/session-zone.ts. Options built elsewhere
+// (`new Pool(fn())`) are the builder's to pin and are not judged here.
+language js;
+
+JsNewExpression() as $new where {
+    $new <: r"(?s)new\s+(?:[\w$]+\s*\.\s*)?(?:Pool|PrismaPg)\s*\(\s*\{.*",
+    not $new <: r"(?s).*withSessionOptions\s*\(.*",
+    register_diagnostic(span = $new, message = "A pool pins its session time zone: spread `withSessionOptions(url)` (src/lib/session-zone.ts) into its options.")
+}

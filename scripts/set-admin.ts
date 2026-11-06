@@ -3,6 +3,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { emailEquals } from "@/lib/email-match";
 import { roleAtLeast } from "@/lib/roles";
+import { withSessionOptions } from "@/lib/session-zone";
 import { PrismaClient, type UserRole } from "../generated/prisma/client";
 
 export interface ExistingUserUpdatePlan {
@@ -72,7 +73,7 @@ async function main() {
     process.exit(1);
   }
   const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: databaseUrl }),
+    adapter: new PrismaPg(withSessionOptions(databaseUrl)),
   });
 
   try {

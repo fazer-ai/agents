@@ -14,6 +14,7 @@ import {
 } from "@/graph/checkpoint-retention";
 import { assertConnectionBudget } from "@/lib/db-budget";
 import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
+import { checkSessionZoneAtBoot } from "@/lib/db-session-zone";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
@@ -144,6 +145,10 @@ for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
 // NOTE: Fail fast if the runtime DB connection cannot uphold isolation; an outage only warns
 // (src/lib/db-guard.ts, checkRuntimeRoleAtBoot).
 await checkRuntimeRoleAtBoot();
+
+// NOTE: Fail fast if any pool's session is not in UTC, which shifts every `now()` against a
+// timestamp column; an outage only warns (src/lib/db-session-zone.ts).
+await checkSessionZoneAtBoot();
 
 if (config.env === "production" && config.ssrf.allowPrivateTargets) {
   logger.warn(

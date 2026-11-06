@@ -11,6 +11,7 @@
 
 import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { withSessionOptions } from "@/lib/session-zone";
 import { PRICE_OVERRIDE_PROVIDERS } from "@/modules/pricing/overrides";
 import { modelRates } from "@/modules/pricing/price";
 import {
@@ -111,7 +112,7 @@ async function main() {
     process.exit(1);
   }
   const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url }),
+    adapter: new PrismaPg(withSessionOptions(url)),
   });
   try {
     const report = await runReprice(prisma, opts);

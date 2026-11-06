@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { afterEach, beforeEach, jest } from "bun:test";
 import { configure } from "@testing-library/dom";
+import { withSessionZoneInUrl } from "@/lib/session-zone";
 import {
   CLONE_MARKER_ENV,
   ensureWorkerClone,
@@ -127,6 +128,17 @@ if (testSuUrl) {
     // /reset test's deleteThread would land). Forced onto the test DB like the line above.
     process.env.LANGGRAPH_DATABASE_URL = appUrl.toString();
   }
+}
+// The suite's own clients run in the app's pinned session zone too (src/lib/session-zone.ts), so a test
+// database whose server defaults to another zone does not shift what a test seeds or reads.
+for (const name of [
+  "MIGRATION_DATABASE_URL",
+  "TEST_MIGRATION_DATABASE_URL",
+  "TEST_APP_DATABASE_URL",
+  "LANGGRAPH_DATABASE_URL",
+] as const) {
+  const url = process.env[name];
+  if (url) process.env[name] = withSessionZoneInUrl(url);
 }
 // THE GATE. Everything above points the suite at the test database; this refuses to start when
 // there is nothing at the other end, because a suite that skips its database-backed half exits 0 and

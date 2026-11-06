@@ -7,6 +7,7 @@ import { encryptJson } from "@/api/lib/crypto";
 // marker (the feature in fix(conversations): surface tool-call errors). Connects via the superuser
 // URL to bypass RLS while writing explicit tenant_id rows (same approach as set-admin).
 import { emailEquals } from "@/lib/email-match";
+import { withSessionOptions } from "@/lib/session-zone";
 import { PrismaClient } from "../generated/prisma/client";
 
 const url = process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -15,7 +16,7 @@ if (!url) {
   process.exit(1);
 }
 const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: url }),
+  adapter: new PrismaPg(withSessionOptions(url)),
 });
 
 const EMAIL = "admin@fazer.ai";

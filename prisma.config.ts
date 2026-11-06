@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
+import { withSessionZoneInUrl } from "./src/lib/session-zone";
 
 // NOTE: Migrations / DDL run as a superuser-or-owner role (CREATE EXTENSION, enum and
 // role changes), which the runtime connection must NOT be (RLS would become a no-op).
@@ -8,10 +9,13 @@ import { defineConfig } from "prisma/config";
 const rawUrl =
   process.env["MIGRATION_DATABASE_URL"] ?? process.env["DATABASE_URL"];
 
-const databaseUrl = rawUrl?.replace(
+// The CLI's sessions run in the app's pinned zone too: a migration's `now()` lands in the same
+// columns the app reads as UTC.
+const portedUrl = rawUrl?.replace(
   "${POSTGRES_PORT}",
   process.env["POSTGRES_PORT"] ?? "5432",
 );
+const databaseUrl = portedUrl && withSessionZoneInUrl(portedUrl);
 
 export default defineConfig({
   schema: "prisma/schema.prisma",

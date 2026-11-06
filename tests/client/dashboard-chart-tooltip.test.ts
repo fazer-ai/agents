@@ -352,6 +352,8 @@ describe("a stacked chart with more series than colours", () => {
     });
     // Top to bottom, as the group's members would stack: the smallest first, like the day detail.
     expect(lines(members)).toEqual(["Node 0", "Node 3", "Node 1", "Node 2"]);
+    // A long group scrolls inside the room the screen has.
+    expect(members.closest(".overflow-y-auto")).not.toBeNull();
   });
 
   test("hides only the drawing from a screen reader: the legend and the day detail stay reachable", async () => {
@@ -597,4 +599,28 @@ describe("a line chart within the palette", () => {
     expect(lines(tip).at(-1)).toBe("Others (3)");
     expect(tip.textContent).not.toContain("·");
   });
+});
+
+// WCAG relative luminance, for the 3:1 a chart mark needs against the card it sits on.
+function luminance(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map((i) => {
+    const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * (r ?? 0) + 0.7152 * (g ?? 0) + 0.0722 * (b ?? 0);
+}
+
+describe("the chart colours", () => {
+  for (const theme of ["dark", "light"] as const)
+    test(`clear 3:1 against the card surface (${theme})`, () => {
+      setTheme(theme);
+      const card = luminance(token("--color-bg-secondary").trim());
+      const low = Array.from({ length: 8 }, (_, i) =>
+        token(`--color-chart-${i + 1}`).trim(),
+      ).filter((c) => {
+        const [hi, lo] = [luminance(c), card].sort((a, b) => b - a);
+        return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05) < 3;
+      });
+      expect(low).toEqual([]);
+    });
 });

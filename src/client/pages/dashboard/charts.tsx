@@ -474,6 +474,8 @@ function SeriesLegend({
                 label={it.label}
                 side="top"
                 align="center"
+                // A long group still fits the screen: the list scrolls inside the room Radix measures.
+                contentClassName="max-h-[min(20rem,var(--radix-popover-content-available-height))] overflow-y-auto"
                 content={
                   <ul data-testid="chart-legend-members">
                     {it.members.map((m) => (

@@ -25,6 +25,7 @@ import {
 } from "@/modules/mcp/write-channels";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnRowId } from "../utils/row-id";
 
 // A Chatwoot that answers the inbox-detail GET the way the fork does: 404 for an inbox that is not
 // there, 200 for one that is. `inbox_remove` is the one write whose PREVIEW asks, so the seam has to
@@ -647,9 +648,10 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   });
 
   test("inbox_bind dry-run refuses an agent that does not exist", async () => {
+    const missing = await burnRowId(suDb, "agents");
     const r = await inboxBind(
       principal({ tenantId: tenantA }),
-      { inbox_id: String(inboxA), agent_id: "42" },
+      { inbox_id: String(inboxA), agent_id: String(missing) },
       { base: appDb },
     );
     expect(r.ok).toBe(false);

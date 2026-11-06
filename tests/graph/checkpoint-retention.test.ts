@@ -848,6 +848,64 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     for (const ms of slept) expect(ms).toBe(5_000);
   });
 
+  // The wait after a failed batch of one can be long, and a reset can delete the thread during it: the
+  // thread skipped and reported is the one that failed, and the thread after it is still pruned.
+  test("a thread deleted while the pass waits after it failed is the one skipped, not the next", async () => {
+    const failing = thread();
+    const next = thread();
+    for (const id of [failing, next]) await seedRows(id, threeOld);
+    let failedAlone = false;
+    const failingThread = {
+      connect: async () => {
+        const client = await cp.connect();
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                const ids = params?.[0];
+                if (
+                  sql.includes("DELETE FROM langgraph.checkpoint_blobs") &&
+                  Array.isArray(ids) &&
+                  ids.includes(failing)
+                ) {
+                  failedAlone = ids.length === 1;
+                  throw Object.assign(new Error("statement timeout"), {
+                    code: "57014",
+                  });
+                }
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    const skipped: string[] = [];
+    let wal = 0;
+    await retainCheckpoints(failingThread, {
+      pauseMs: 0,
+      graceMs: 0,
+      probes: 1,
+      scope: only(failing, next),
+      base: appDb,
+      onSkip: (t) => skipped.push(t),
+      pacing: {
+        budgetBytesPerSec: 1,
+        readWal: async () => ++wal,
+        sleep: async () => {
+          if (!failedAlone) return;
+          failedAlone = false;
+          for (const t of CHECKPOINT_TABLES)
+            await cp.query(`DELETE FROM langgraph.${t} WHERE thread_id = $1`, [
+              failing,
+            ]);
+        },
+      },
+    });
+    expect(skipped).toEqual([failing]);
+    expect(await rowsOf(next)).toEqual(prunedThreeOld);
+  }, 60_000);
+
   // The property the pacing exists for, measured on the real clock: over a run of fast batches, the WAL
   // written divided by the time the pass took stays within the budget. A wait that also paid for the
   // next batch would let every second batch go without one, close to twice the budget.

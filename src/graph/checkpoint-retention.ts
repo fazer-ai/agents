@@ -106,13 +106,16 @@ export async function serverWalPacing(
   };
 }
 
-// The errors a smaller batch can get past: the batch's cut (statement timeout, or the deadline the
-// guard checks itself), a lock it waited on, and a deadlock it lost. Anything else (the connection,
-// a missing table) fails the pass as before.
 // What a batch that threw had already committed: one transaction per table, so the tables before the
 // failing one stay deleted, and the pass counts them although the batch never returned.
 const committedBefore = new WeakMap<object, RetentionBatch>();
+// The thread ids a batch that threw had walked, so a batch of one that fails names the thread that
+// failed, not whichever comes first in the key by the time the pass looks again.
+const walkedBefore = new WeakMap<object, string[]>();
 
+// The errors a smaller batch can get past: the batch's cut (statement timeout, or the deadline the
+// guard checks itself), a lock it waited on, and a deadlock it lost. Anything else (the connection,
+// a missing table) fails the pass as before.
 function retryable(err: unknown): boolean {
   if (err instanceof SweepDeadlineError) return true;
   const code = (err as { code?: unknown } | null)?.code;
@@ -297,72 +300,77 @@ export async function retainCheckpointBatch(
       }
     ).rows.map((r) => r.thread_id),
   );
-  const last = walked.at(-1);
-  const next = walked.length < probes || last === undefined ? null : last;
-  const inScope = walked.filter(scope);
-  const gone = await ownerlessThreads(inScope, opts.base);
-  const owned = inScope.filter((id) => !gone.has(id));
-  const result: RetentionBatch = {
-    deleted: none(),
-    bytes: 0,
-    threads: [],
-    probed: walked.length,
-    next,
-  };
-  if (owned.length === 0) return result;
-  // Every statement below has a path through the primary key, and the pass is housekeeping that must
-  // not read a whole table: on a small one the planner would rather scan it all. Local to each
-  // transaction.
-  const indexed = <T>(fn: (query: Bounded) => Promise<T>) =>
-    checkpointTransaction(pool, guard, async (query) => {
-      await query("SET LOCAL enable_seqscan = off", []);
-      return fn(query);
-    });
-  const newest = await indexed(
-    async (query) =>
-      (
-        (await query(NEWEST_CHECKPOINT_SQL, [owned])) as {
-          rows: { thread_id: string; ts: string | null }[];
-        }
-      ).rows,
-  );
-  // A thread with no checkpoint has no row here and nothing to resume from; its leftovers are the
-  // reconciler's or a teardown's, never this pass's.
-  const due = newest
-    .filter((r) => !withinGrace(r.ts, graceMs))
-    .map((r) => r.thread_id);
-  if (due.length === 0) return result;
-  const touched = new Set<string>();
-  let bounded = false;
-  // One transaction per table: a thread deleted whole (`deleteThread`, on a reset or a playground
-  // session) locks its tables in another order, and a transaction holding one table's rows while
-  // waiting on another's would deadlock with it. Each condition is read again when its statement runs,
-  // so a batch stopped between tables leaves rows a later one takes, never a thread missing its state.
-  for (const table of RETAIN_ORDER) {
-    let got: Awaited<ReturnType<typeof retainRows>>;
-    try {
-      got = await indexed((query) =>
-        retainRows(query, table, due, rows, budget),
-      );
-    } catch (err) {
-      result.threads = [...touched];
-      if (typeof err === "object" && err !== null)
-        committedBefore.set(err, result);
-      throw err;
+  try {
+    const last = walked.at(-1);
+    const next = walked.length < probes || last === undefined ? null : last;
+    const inScope = walked.filter(scope);
+    const gone = await ownerlessThreads(inScope, opts.base);
+    const owned = inScope.filter((id) => !gone.has(id));
+    const result: RetentionBatch = {
+      deleted: none(),
+      bytes: 0,
+      threads: [],
+      probed: walked.length,
+      next,
+    };
+    if (owned.length === 0) return result;
+    // Every statement below has a path through the primary key, and the pass is housekeeping that must
+    // not read a whole table: on a small one the planner would rather scan it all. Local to each
+    // transaction.
+    const indexed = <T>(fn: (query: Bounded) => Promise<T>) =>
+      checkpointTransaction(pool, guard, async (query) => {
+        await query("SET LOCAL enable_seqscan = off", []);
+        return fn(query);
+      });
+    const newest = await indexed(
+      async (query) =>
+        (
+          (await query(NEWEST_CHECKPOINT_SQL, [owned])) as {
+            rows: { thread_id: string; ts: string | null }[];
+          }
+        ).rows,
+    );
+    // A thread with no checkpoint has no row here and nothing to resume from; its leftovers are the
+    // reconciler's or a teardown's, never this pass's.
+    const due = newest
+      .filter((r) => !withinGrace(r.ts, graceMs))
+      .map((r) => r.thread_id);
+    if (due.length === 0) return result;
+    const touched = new Set<string>();
+    let bounded = false;
+    // One transaction per table: a thread deleted whole (`deleteThread`, on a reset or a playground
+    // session) locks its tables in another order, and a transaction holding one table's rows while
+    // waiting on another's would deadlock with it. Each condition is read again when its statement runs,
+    // so a batch stopped between tables leaves rows a later one takes, never a thread missing its state.
+    for (const table of RETAIN_ORDER) {
+      let got: Awaited<ReturnType<typeof retainRows>>;
+      try {
+        got = await indexed((query) =>
+          retainRows(query, table, due, rows, budget),
+        );
+      } catch (err) {
+        result.threads = [...touched];
+        if (typeof err === "object" && err !== null)
+          committedBefore.set(err, result);
+        throw err;
+      }
+      result.deleted[table] = got.n;
+      result.bytes += got.bytes;
+      for (const id of got.threads) touched.add(id);
+      if (got.more) bounded = true;
+      // The writes and blobs are checked against every checkpoint their thread still has, so while old
+      // checkpoints are left that check grows with their count (quadratic on a thread of thousands).
+      // They wait until the batch's threads are down to their newest checkpoints, a later batch.
+      if (table === "checkpoints" && got.more) break;
     }
-    result.deleted[table] = got.n;
-    result.bytes += got.bytes;
-    for (const id of got.threads) touched.add(id);
-    if (got.more) bounded = true;
-    // The writes and blobs are checked against every checkpoint their thread still has, so while old
-    // checkpoints are left that check grows with their count (quadratic on a thread of thousands).
-    // They wait until the batch's threads are down to their newest checkpoints, a later batch.
-    if (table === "checkpoints" && got.more) break;
+    result.threads = [...touched];
+    // A statement that reached its bound left rows of these threads: the next batch walks them again.
+    if (bounded) result.next = after;
+    return result;
+  } catch (err) {
+    if (typeof err === "object" && err !== null) walkedBefore.set(err, walked);
+    throw err;
   }
-  result.threads = [...touched];
-  // A statement that reached its bound left rows of these threads: the next batch walks them again.
-  if (bounded) result.next = after;
-  return result;
 }
 
 // The thread right after `after` in the key of `checkpoints`, the one a batch of one walks.
@@ -478,12 +486,19 @@ export function retainCheckpoints(
               ? committedBefore.get(err)
               : undefined;
           if (partial) add(partial);
+          // The thread a batch of one failed on, read before the wait: a reset during it would make the
+          // next thread in the key look like the one that failed.
+          const stuck: string | null =
+            probes > 1
+              ? null
+              : ((typeof err === "object" && err !== null
+                  ? walkedBefore.get(err)?.[0]
+                  : undefined) ?? (await threadAfter(pool, cursor)));
           await pace();
           if (probes > 1) {
             probes = Math.ceil(probes / 2);
             continue;
           }
-          const stuck = await threadAfter(pool, cursor);
           if (stuck === null) throw err;
           opts.onSkip?.(stuck, err);
           cursor = stuck;

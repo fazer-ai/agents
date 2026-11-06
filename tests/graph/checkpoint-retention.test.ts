@@ -16,6 +16,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import type { Pool } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { reconcileWalkSql } from "@/graph/checkpoint-reconcile";
 import * as retention from "@/graph/checkpoint-retention";
 import {
   RETAIN_SQL,
@@ -1276,6 +1277,96 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
       "checkpoint_retention",
     );
   });
+
+  // A playground thread is an operator's test: its line carries the playground source, which never
+  // pages, and an inbox thread keeps the inbox one.
+  test("a stuck playground thread is announced as playground traffic", async () => {
+    const playground = `${tenantId}:playground:1:${crypto.randomUUID()}`;
+    const inbox = thread();
+    retention.announceStuckThreads(
+      new Set([playground, inbox]),
+      [playground, inbox],
+      appDb,
+    );
+    await until(
+      "both announcements written",
+      async () =>
+        (
+          await flowLogRows(suDb, {
+            where: {
+              tenantId,
+              stage: "dead_letter",
+              threadId: { in: [playground, inbox] },
+            },
+            orderBy: { id: "asc" },
+          })
+        ).length === 2,
+    );
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "dead_letter",
+        threadId: { in: [playground, inbox] },
+      },
+      orderBy: { id: "asc" },
+    });
+    expect(Object.fromEntries(rows.map((r) => [r.threadId, r.source]))).toEqual(
+      { [playground]: "playground", [inbox]: "inbox" },
+    );
+  });
+
+  // After a walk of one thread timed out, the lookup of that thread runs under a deadline too: without
+  // one it repeats the scan that just timed out with nothing to stop it, holding the pass's lock.
+  test("the lookup after a timed-out walk runs under a statement timeout", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    let failedWalk = false;
+    const unbounded: string[] = [];
+    const recording = {
+      connect: async () => {
+        const client = await cp.connect();
+        let bounded = false;
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            if (prop === "query")
+              return async (sql: string, params?: unknown[]) => {
+                if (
+                  typeof sql === "string" &&
+                  sql.startsWith("SET LOCAL statement_timeout")
+                )
+                  bounded = true;
+                if (sql === "BEGIN") bounded = false;
+                if (
+                  typeof sql === "string" &&
+                  sql === reconcileWalkSql("checkpoints") &&
+                  params?.[1] === 1
+                ) {
+                  if (!failedWalk) {
+                    failedWalk = true;
+                    throw Object.assign(new Error("statement timeout"), {
+                      code: "57014",
+                    });
+                  }
+                  if (!bounded) unbounded.push(String(params?.[0]));
+                }
+                return target.query(sql, params);
+              };
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+      },
+    } as unknown as Pool;
+    await retainCheckpoints(recording, {
+      pauseMs: 0,
+      graceMs: 0,
+      probes: 1,
+      scope: only(id),
+      base: appDb,
+      onSkip: () => {},
+    });
+    expect(failedWalk).toBe(true);
+    expect(unbounded).toEqual([]);
+  }, 120_000);
 
   // `bun --hot` keeps the holder across builds, so one made before the skip set existed gets it on
   // first use, or the first pass that skips a thread fails announcing it.

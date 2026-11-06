@@ -378,9 +378,15 @@ async function threadAfter(
   pool: Pick<Pool, "connect">,
   after: string,
 ): Promise<string | null> {
+  // Bounded like a batch: it runs after a walk that just timed out, and unbounded it could hold the
+  // pass and its lock for as long as that scan takes. A failure here fails the pass.
+  const guard: BatchGuard = {
+    deadline: Date.now() + RETENTION_BATCH_MS,
+    beforeCommit: async () => {},
+  };
   const rows = await checkpointTransaction(
     pool,
-    undefined,
+    guard,
     async (query) =>
       (
         (await query(reconcileWalkSql("checkpoints"), [after, 1])) as {
@@ -531,10 +537,15 @@ export function announceStuckThreads(
   const stuck = current.filter((id) => previous.has(id));
   runInPoolClass("background", () => {
     for (const id of stuck) {
-      const tenantId = threadOwner(id)?.tenantId;
-      if (tenantId === undefined) continue;
+      const owner = threadOwner(id);
+      if (owner === null) continue;
       emitDeadLetter({
-        tenantId,
+        tenantId: owner.tenantId,
+        // A playground thread is an operator's test and never pages; a client thread is the host's.
+        source:
+          owner.kind === "playground" || owner.kind === "client"
+            ? owner.kind
+            : "inbox",
         unit: "checkpoint_retention",
         level: "warn",
         error:

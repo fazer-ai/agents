@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { emitFlowEvent } from "./service";
-import type { DeadUnit, FlowLevel } from "./stages";
+import type { DeadUnit, FlowLevel, FlowSource } from "./stages";
 
 // The one line a unit of work writes when it reaches a terminal failure: nothing happens
 // afterwards, so the state must announce itself on the Logs page and to alert channels, which
@@ -22,6 +22,9 @@ export function emitDeadLetter(args: {
   // The conversation thread the unit was working for, when it has one (a follow-up job does): it is
   // what the Logs page filters a conversation by. Absent for units that serve no conversation.
   threadId?: string | null;
+  // Which traffic the unit served, where it can tell: a playground unit is an operator's test and
+  // never pages (`pagesAlerts`). Inbox when absent.
+  source?: FlowSource;
   base?: PrismaClient;
 }): void {
   emitFlowEvent(
@@ -31,7 +34,7 @@ export function emitDeadLetter(args: {
       // do have their own hooks). This correlates the one line with itself; `turnId` is still
       // required, because it is what the Logs page groups by.
       turnId: crypto.randomUUID(),
-      source: "inbox",
+      source: args.source ?? "inbox",
       threadId: args.threadId ?? undefined,
       base: args.base,
     },

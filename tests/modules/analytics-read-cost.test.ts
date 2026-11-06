@@ -247,7 +247,9 @@ describe("the metrics pool's options", () => {
     const { connectionString } = withJitOff(
       "postgres://u:p@h:5432/db?options=",
     );
-    expect(parse(connectionString as string).options).toBe("-c jit=off");
+    expect(parse(connectionString as string).options).toBe(
+      "-c TimeZone=UTC -c jit=off",
+    );
   });
 
   test("an `options` the URL already carries is kept, and the JIT is turned off beside it", async () => {
@@ -257,7 +259,7 @@ describe("the metrics pool's options", () => {
     );
     const parsed = parse(connectionString as string);
     expect([parsed.options, parsed.password, parsed.database]).toEqual([
-      "-c search_path=x -c jit=off",
+      "-c search_path=x -c TimeZone=UTC -c jit=off",
       "p@ss",
       "db",
     ]);

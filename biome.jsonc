@@ -122,7 +122,16 @@
     },
     {
       "includes": ["src/**/*.ts", "tests/lint/.probe-src-*/**/*.ts"],
-      "plugins": ["./biome-plugins/require-pool-connect-bound.grit"]
+      "plugins": [
+        "./biome-plugins/require-pool-connect-bound.grit",
+        "./biome-plugins/require-pool-session-zone.grit"
+      ]
+    },
+    // The scripts an operator runs against a live database (set-admin, reprice-usage) open their own
+    // client, and its session zone is pinned like the app's.
+    {
+      "includes": ["scripts/**/*.ts"],
+      "plugins": ["./biome-plugins/require-pool-session-zone.grit"]
     },
     {
       "includes": [

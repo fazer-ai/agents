@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { encryptJson } from "@/api/lib/crypto";
 import { emailEquals } from "@/lib/email-match";
+import { withSessionOptions } from "@/lib/session-zone";
 import { PrismaClient } from "../generated/prisma/client";
 
 // Local-only volume seed for the dashboard (NOT for prod): one tenant with twelve months of traffic
@@ -21,7 +22,7 @@ if (!url) {
   process.exit(1);
 }
 const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: url }),
+  adapter: new PrismaPg(withSessionOptions(url)),
 });
 
 const EMAIL = "painel@local.test";

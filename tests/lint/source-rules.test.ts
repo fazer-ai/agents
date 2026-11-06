@@ -85,6 +85,14 @@ const PROBES: Record<string, string> = {
   [P("pool-built-elsewhere.ts")]:
     "declare const Pool: new (o: object) => object;\ndeclare function opts(): object;\nexport const p = new Pool(opts());\n",
 
+  // require-pool-session-zone
+  [P("zone-unpinned.ts")]:
+    "declare const Pool: new (o: object) => object;\ndeclare function connectTimeoutOption(): object;\nexport const p = new Pool({ max: 2, ...connectTimeoutOption() });\n",
+  [P("zone-adapter-unpinned.ts")]:
+    'declare const PrismaPg: new (o: object) => object;\nexport const a = new PrismaPg({ connectionString: "x", connectionTimeoutMillis: 5_000 });\n',
+  [P("zone-pinned.ts")]:
+    'declare const Pool: new (o: object) => object;\ndeclare function withSessionOptions(u: string): object;\nexport const p = new Pool({ ...withSessionOptions("x"), connectionTimeoutMillis: 5_000 });\n',
+
   // no-raw-violation-code
   [P("violation-eq.ts")]:
     'declare const e: { code?: string };\nexport const a = e.code === "P2002";\n',
@@ -234,6 +242,7 @@ const PROBES: Record<string, string> = {
 const RULES = {
   jsx: "A JSX comment documents the element below it",
   pool: "A pool's options bound its connect",
+  zone: "A pool pins its session time zone",
   close: "A no-op `onCloseRequest` does not block",
   bigint: "A caller's id is parsed, never cast",
   env: "The environment is read in",
@@ -366,6 +375,26 @@ describe("require-pool-connect-bound", () => {
   ])("a bounded pool, or options built elsewhere, pass (%s)", (name) => {
     expect(of(P(name), "pool")).toBe(0);
   });
+});
+
+describe("require-pool-session-zone", () => {
+  test.each([
+    ["zone-unpinned.ts"],
+    ["zone-adapter-unpinned.ts"],
+    ["pool-namespaced-unbounded.ts"],
+  ])(
+    "a pool whose options leave the session zone to the server is refused (%s)",
+    (name) => {
+      expect(of(P(name), "zone")).toBe(1);
+    },
+  );
+
+  test.each([["zone-pinned.ts"], ["pool-built-elsewhere.ts"]])(
+    "a pinned pool, or options built elsewhere, pass (%s)",
+    (name) => {
+      expect(of(P(name), "zone")).toBe(0);
+    },
+  );
 });
 
 describe("no-raw-violation-code", () => {

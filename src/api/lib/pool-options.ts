@@ -1,5 +1,6 @@
 import { Client, type ClientConfig } from "pg";
 import config from "@/config";
+import { withSessionOptions } from "@/lib/session-zone";
 
 // `lock_timeout` for a pool's connections, sent by `pg` as a startup parameter so it holds for
 // every statement, inside a transaction or not. Absent when `DB_LOCK_TIMEOUT_MS=0`, which leaves the
@@ -97,15 +98,15 @@ export function connectTimeoutOption(ms: number = CONNECT_TIMEOUT_MS): {
 }
 
 // The options of the runtime's own pools: the main and background Prisma pools (./prisma.ts) and the
-// LangGraph checkpointer's (src/graph/checkpointer.ts). Both bounds a turn relies on: the lock wait
-// of each statement, and the connect of each new connection. The wait for a free connection is
+// LangGraph checkpointer's (src/graph/checkpointer.ts): the pinned session zone, and both bounds a
+// turn relies on, the lock wait of each statement and the connect of each new connection. The wait for a free connection is
 // left unbounded on purpose (connectTimeoutOption above).
 export function runtimePoolOptions(
   connectionString: string | undefined,
   max: number,
 ) {
   return {
-    connectionString,
+    ...withSessionOptions(connectionString),
     max,
     ...lockTimeoutOption(),
     ...connectTimeoutOption(),
@@ -114,22 +115,12 @@ export function runtimePoolOptions(
 
 // The metrics reads are a few large aggregates, and the JIT compiles each of them again on every
 // request: on a month of a busy instance that compilation is most of a second per read, more than it
-// saves. Off for this pool only, whatever the server's `jit`. `pg` lets an `options` in the URL
-// replace this field, even an empty one, so one already there is kept and extended instead.
+// saves. Off for this pool only, whatever the server's `jit`, beside the session zone every pool pins.
 export function withJitOff(connectionString: string | undefined): {
   connectionString: string | undefined;
   options: string;
 } {
-  const url = connectionString
-    ? // biome-ignore lint/plugin/require-parse-input: not caller input, the deploy's DATABASE_URL
-      URL.parse(connectionString)
-    : null;
-  const own = url?.searchParams.get("options");
-  const options = own ? `${own} -c jit=off` : "-c jit=off";
-  if (!url || own === null || own === undefined)
-    return { connectionString, options };
-  url.searchParams.set("options", options);
-  return { connectionString: url.toString(), options };
+  return withSessionOptions(connectionString, ["-c jit=off"]);
 }
 
 // The options of the metrics reads' own pool (./prisma-metrics.ts), used by src/modules/analytics,
@@ -145,6 +136,32 @@ export function metricsPoolOptions(connectionString = config.databaseUrl) {
     max: config.metrics.poolMax,
     connectionTimeoutMillis: config.metrics.timeoutMs,
     statement_timeout: config.metrics.timeoutMs,
+    ...lockTimeoutOption(),
+  };
+}
+
+// The options of the Chatwoot webhook ack's own pool (./prisma-ack.ts). Bounded, both: the ack's
+// write is a batch transaction, which has no `maxWait` of its own, and a wait past Chatwoot's ~5s
+// budget is an escalated conversation whatever it ends in. Past these the write fails and the ack
+// answers 503, which Chatwoot retries.
+export function ackPoolOptions(connectionString = config.databaseUrl) {
+  return {
+    ...withSessionOptions(connectionString),
+    max: config.chatwoot.ackPoolMax,
+    connectionTimeoutMillis: 2_000,
+    statement_timeout: 2_000,
+  };
+}
+
+// The options of the instance health sampler's one connection (./prisma-instance-health.ts).
+export function instanceHealthPoolOptions(
+  connectionString = config.databaseUrl,
+) {
+  return {
+    ...withSessionOptions(connectionString),
+    max: 1,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 10_000,
     ...lockTimeoutOption(),
   };
 }

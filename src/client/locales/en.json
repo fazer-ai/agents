@@ -983,10 +983,18 @@
       "loadingDays_one": "loading · {{count}} day",
       "loadingDays_other": "loading · {{count}} days",
       "loadingTip": "computing…",
+      "more_one": "+{{count}} more",
+      "more_other": "+{{count}} more",
+      "moreWithSum_one": "+{{count}} more · {{value}}",
+      "moreWithSum_other": "+{{count}} more · {{value}}",
       "noData": "no data",
       "noDataDays_one": "no data · {{count}} day",
       "noDataDays_other": "no data · {{count}} days",
-      "noDataTip": "no data: retention cleared this day's Logs before it was kept"
+      "noDataTip": "no data: retention cleared this day's Logs before it was kept",
+      "other": "Other",
+      "otherLines_one": "Others ({{count}})",
+      "otherLines_other": "Others ({{count}})",
+      "total": "Day total"
     },
     "col": {
       "agent": "Agent",

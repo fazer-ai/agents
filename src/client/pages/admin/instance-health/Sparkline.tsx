@@ -48,7 +48,7 @@ export default function Sparkline({
         <YAxis hide domain={[0, top]} />
         <ReferenceLine
           y={threshold}
-          stroke={palette.series[3]}
+          stroke={palette.error}
           strokeDasharray="4 3"
           ifOverflow="extendDomain"
           zIndex={DefaultZIndexes.line + 1}
@@ -56,7 +56,7 @@ export default function Sparkline({
         <Line
           type="monotone"
           dataKey="value"
-          stroke={firing ? palette.series[3] : palette.series[0]}
+          stroke={firing ? palette.error : palette.accent}
           strokeWidth={1.5}
           dot={false}
           connectNulls={false}

@@ -14,6 +14,14 @@ import {
   YAxis,
 } from "recharts";
 import { useTheme } from "@/client/contexts/ThemeContext";
+import {
+  CATEGORICAL_SLOTS,
+  foldStacked,
+  OTHER_KEY,
+  type SeriesDef,
+  type TooltipItem,
+  tooltipRows,
+} from "./chart-series";
 import type { DayState } from "./useStream";
 
 // The dashboard's charts, in their own chunk (recharts is heavy and only this page draws). Colours
@@ -44,26 +52,20 @@ export function useChartPalette() {
       loadingSoft: cssVar("--color-info-soft", "#5e6ad233"),
       noData: cssVar("--color-warning", "#f2c94c"),
       noDataSoft: cssVar("--color-warning-soft", "#f2c94c24"),
-      // Neighbours differ in hue, not just in shade: the first two are the ones most charts use.
-      series: [
-        cssVar("--color-accent", "#3ea6ff"),
-        cssVar("--color-warning", "#eab308"),
-        cssVar("--color-success", "#22c55e"),
-        cssVar("--color-error", "#ef4444"),
-        cssVar("--color-purple", "#a78bfa"),
-        cssVar("--color-info", "#38bdf8"),
-        cssVar("--color-text-secondary", "#a3a3a3"),
-        cssVar("--color-text-muted", "#666666"),
-      ],
+      accent: cssVar("--color-accent", "#3ea6ff"),
+      error: cssVar("--color-error", "#ef4444"),
+      // Series colours in their fixed order, never cycled (chart-series.ts).
+      series: Array.from({ length: CATEGORICAL_SLOTS }, (_, i) =>
+        cssVar(`--color-chart-${i + 1}`, "#808080"),
+      ),
+      // What has no identity of its own: a stack's "Other", a line chart's context lines.
+      other: cssVar("--color-text-muted", "#666666"),
     }),
     [resolvedTheme],
   );
 }
 
-export interface SeriesDef {
-  key: string;
-  label: string;
-}
+export type { SeriesDef };
 
 export interface ChartRow {
   // Local day key, YYYY-MM-DD.
@@ -258,6 +260,7 @@ function StateLegend({
 // nothing: without a value to scale, the chart has no vertical axis, and the bands of the days still
 // loading or with no data have nothing to be drawn against.
 const NONE = "__none";
+const NO_KEYS = new Set<string>();
 
 function plotted(data: ChartRow[], series: SeriesDef[]): ChartRow[] {
   return series.length > 0 ? data : data.map((r) => ({ ...r, [NONE]: 0 }));
@@ -272,6 +275,122 @@ function dayLabel(lang: string) {
   const f = new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" });
   return (key: string) => f.format(new Date(`${key}T00:00:00`));
 }
+
+// The most rows a tooltip lists before it sums the rest into one line, so it stays shorter than the
+// chart whatever the series count.
+const TOOLTIP_ROWS = 6;
+
+type TooltipEntry = {
+  dataKey?: unknown;
+  name?: unknown;
+  value?: unknown;
+  color?: string;
+  payload?: ChartRow;
+};
+
+// The day, then the series with a value on it, largest first: a short stroke of the series colour,
+// its name, and the value, which is what the reader came for. A stacked chart adds the day's total
+// and the sum of the rows it leaves out; a line chart adds neither, since its values do not add up.
+function TooltipCard({
+  entries,
+  p,
+  head,
+  format,
+  stacked,
+  contextKeys,
+  describe,
+}: {
+  entries: readonly TooltipEntry[];
+  p: ReturnType<typeof useChartPalette>;
+  head: string;
+  format: (v: number) => string;
+  stacked: boolean;
+  contextKeys: Set<string>;
+  describe?: (item: TooltipItem, entry: TooltipEntry) => string;
+}) {
+  const { t } = useTranslation();
+  const row = entries[0]?.payload;
+  const ready = !row?.state || row.state === "ready";
+  const identified: TooltipItem[] = [];
+  const byKey = new Map<string, TooltipEntry>();
+  let context = 0;
+  for (const e of entries) {
+    const key = String(e.dataKey ?? "");
+    if (key === NONE) continue;
+    if (contextKeys.has(key)) {
+      if (typeof e.value === "number" && e.value !== 0) context++;
+      continue;
+    }
+    byKey.set(key, e);
+    identified.push({
+      key,
+      label: String(e.name ?? key),
+      color: e.color ?? p.other,
+      value: e.value,
+    });
+  }
+  const { rows, rest } = tooltipRows(identified, TOOLTIP_ROWS);
+  const total = stacked
+    ? identified.reduce(
+        (a, it) => a + (typeof it.value === "number" ? it.value : 0),
+        0,
+      )
+    : null;
+  const more = rest.count + context;
+  return (
+    <div
+      className="flex max-w-72 min-w-44 flex-col gap-1 rounded-lg px-3 py-2 text-xs shadow-lg"
+      style={{
+        background: p.tooltipBg,
+        border: `1px solid ${p.tooltipBorder}`,
+        color: p.text,
+      }}
+    >
+      <div className="flex items-baseline justify-between gap-4">
+        <span className="recharts-tooltip-label">{head}</span>
+        {ready && total !== null && rows.length > 1 && (
+          <span className="font-medium tabular-nums">
+            {t("dashboard.chart.total", "Day total")} {format(total)}
+          </span>
+        )}
+      </div>
+      {ready && rows.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {rows.map((r) => (
+            <li key={r.key} className="flex items-center justify-between gap-4">
+              <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-0.5 w-3 shrink-0 rounded-full"
+                  style={{ background: r.color }}
+                />
+                <span className="truncate">{r.label}</span>
+              </span>
+              <span className="font-medium tabular-nums">
+                {describe
+                  ? describe(r, byKey.get(r.key) ?? {})
+                  : format(r.value)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {ready && more > 0 && (
+        <p className="text-text-muted">
+          {stacked && context === 0
+            ? t("dashboard.chart.moreWithSum", "+{{count}} more · {{value}}", {
+                count: more,
+                value: format(rest.sum),
+              })
+            : t("dashboard.chart.more", "+{{count}} more", { count: more })}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Above the legend, which recharts draws later in the same box.
+const TOOLTIP_WRAPPER = { zIndex: 10, outline: "none" } as const;
 
 // One line per series over the days of the window. `compare` names, per series, the key holding the
 // previous period's value at the same position, which the tooltip shows beside the current one.
@@ -303,6 +422,12 @@ export function LineTrend({
   const stateOf = new Map(data.map((r) => [r.day, r.state]));
   const settled = useSettledMax(
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
+  );
+  const { t } = useTranslation();
+  // Past the palette, a line keeps its place and its click but no identity: rates do not add up into
+  // an "Other".
+  const contextKeys = new Set(
+    series.slice(CATEGORICAL_SLOTS).map((s) => s.key),
   );
   // The dot's own click runs before the chart's, which is the one that knows the day.
   const hitSeries = useRef<string | null>(null);
@@ -347,34 +472,38 @@ export function LineTrend({
             <Tooltip
               // Every series is null on a day under a band, and the tooltip is what says why.
               filterNull={false}
-              contentStyle={{
-                background: p.tooltipBg,
-                border: `1px solid ${p.tooltipBorder}`,
-                borderRadius: 8,
-                color: p.text,
-                fontSize: 12,
-              }}
-              labelFormatter={(l) =>
-                withState(day(String(l)), stateOf.get(String(l)), text)
-              }
-              formatter={(value, name, item) => {
-                const key = String(item.dataKey ?? "");
-                const current =
-                  typeof value === "number" ? format(value) : "\u2014";
-                const prevKey = compare?.[key];
-                const prev = prevKey
-                  ? (item.payload as ChartRow | undefined)?.[prevKey]
-                  : undefined;
-                const withPrev =
-                  prevKey && compareLabel
-                    ? `${current} (${compareLabel}: ${
+              wrapperStyle={TOOLTIP_WRAPPER}
+              content={({ active, label, payload }) =>
+                !active || label === undefined ? null : (
+                  <TooltipCard
+                    entries={(payload ?? []) as readonly TooltipEntry[]}
+                    p={p}
+                    head={withState(
+                      day(String(label)),
+                      stateOf.get(String(label)),
+                      text,
+                    )}
+                    format={format}
+                    stacked={false}
+                    contextKeys={contextKeys}
+                    describe={(item, entry) => {
+                      const current = format(item.value as number);
+                      const prevKey = compare?.[item.key];
+                      if (!prevKey || !compareLabel) return current;
+                      const prev = entry.payload?.[prevKey];
+                      return `${current} (${compareLabel}: ${
                         typeof prev === "number" ? format(prev) : "\u2014"
-                      })`
-                    : current;
-                return [withPrev, name];
-              }}
+                      })`;
+                    }}
+                  />
+                )
+              }
             />
-            <Legend wrapperStyle={{ fontSize: 12, color: p.axis }} />
+            <Legend
+              wrapperStyle={{ fontSize: 12, color: p.axis }}
+              // In the order the series are drawn, so "Other" closes the list.
+              itemSorter={null}
+            />
             {series.length === 0 && (
               <Line
                 dataKey={NONE}
@@ -391,10 +520,18 @@ export function LineTrend({
                 key={s.key}
                 type="monotone"
                 dataKey={s.key}
-                name={s.label}
-                stroke={p.series[i % p.series.length]}
-                strokeWidth={2}
-                dot={{ r: 2 }}
+                name={
+                  i === CATEGORICAL_SLOTS
+                    ? t("dashboard.chart.otherLines", "Others ({{count}})", {
+                        count: contextKeys.size,
+                      })
+                    : s.label
+                }
+                legendType={i > CATEGORICAL_SLOTS ? "none" : "line"}
+                stroke={i < CATEGORICAL_SLOTS ? p.series[i] : p.other}
+                strokeWidth={i < CATEGORICAL_SLOTS ? 2 : 1}
+                strokeOpacity={i < CATEGORICAL_SLOTS ? 1 : 0.6}
+                dot={i < CATEGORICAL_SLOTS ? { r: 2 } : false}
                 activeDot={{
                   r: 5,
                   onClick: () => {
@@ -443,6 +580,13 @@ export function StackedBars({
   const text = useDayStateText();
   const ids = usePatternIds();
   const stateOf = new Map(data.map((r) => [r.day, r.state]));
+  const { t } = useTranslation();
+  const drawn = foldStacked(
+    data,
+    series,
+    CATEGORICAL_SLOTS,
+    t("dashboard.chart.other", "Other"),
+  );
   const settled = useSettledMax(
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
@@ -452,7 +596,7 @@ export function StackedBars({
         <StatePatterns ids={ids} p={p} />
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
-            data={plotted(data, series)}
+            data={plotted(drawn.rows, drawn.series)}
             margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
             onClick={(e) => {
               const label = (e as { activeLabel?: string } | null)?.activeLabel;
@@ -483,23 +627,30 @@ export function StackedBars({
               // Every series is null on a day under a band, and the tooltip is what says why.
               filterNull={false}
               cursor={{ fill: p.grid, opacity: 0.4 }}
-              contentStyle={{
-                background: p.tooltipBg,
-                border: `1px solid ${p.tooltipBorder}`,
-                borderRadius: 8,
-                color: p.text,
-                fontSize: 12,
-              }}
-              labelFormatter={(l) =>
-                withState(day(String(l)), stateOf.get(String(l)), text)
+              wrapperStyle={TOOLTIP_WRAPPER}
+              content={({ active, label, payload }) =>
+                !active || label === undefined ? null : (
+                  <TooltipCard
+                    entries={(payload ?? []) as readonly TooltipEntry[]}
+                    p={p}
+                    head={withState(
+                      day(String(label)),
+                      stateOf.get(String(label)),
+                      text,
+                    )}
+                    format={format}
+                    stacked
+                    contextKeys={NO_KEYS}
+                  />
+                )
               }
-              formatter={(value, name) => [
-                typeof value === "number" ? format(value) : "\u2014",
-                name,
-              ]}
             />
-            <Legend wrapperStyle={{ fontSize: 12, color: p.axis }} />
-            {series.length === 0 && (
+            <Legend
+              wrapperStyle={{ fontSize: 12, color: p.axis }}
+              // In the order the series are drawn, so "Other" closes the list.
+              itemSorter={null}
+            />
+            {drawn.series.length === 0 && (
               <Bar
                 dataKey={NONE}
                 legendType="none"
@@ -507,13 +658,13 @@ export function StackedBars({
                 isAnimationActive={false}
               />
             )}
-            {series.map((s, i) => (
+            {drawn.series.map((s, i) => (
               <Bar
                 key={s.key}
                 dataKey={s.key}
                 name={s.label}
                 stackId="day"
-                fill={p.series[i % p.series.length]}
+                fill={s.key === OTHER_KEY ? p.other : p.series[i]}
                 isAnimationActive={false}
               />
             ))}

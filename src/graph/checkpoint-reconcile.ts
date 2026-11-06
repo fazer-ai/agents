@@ -19,6 +19,7 @@ import { getCheckpointPool } from "@/graph/checkpointer";
 import { parseDbId } from "@/lib/db-id";
 import { runInPoolClass } from "@/lib/pool-class";
 import { asSuperAdminOn } from "@/lib/tenancy";
+import { runWithWorkLabel } from "@/lib/work-label";
 
 // The periodic pass over the checkpoint threads whose owner is gone. A teardown deletes its threads
 // by prefix (checkpoint-sweep.ts), but only the ones that exist while it runs: a turn that writes
@@ -469,19 +470,23 @@ async function runPass(): Promise<void> {
 }
 
 // Arms the pass: the first one `firstDelayMs` after the boot, then every `intervalMs`. Idempotent.
+// The checkpoint reconcile and retention passes run as `checkpoints:retention`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
 export function startCheckpointReconciler(): void {
-  const h = holder();
-  if (h.timer !== null) return;
-  h.stopped = false;
-  const arm = (ms: number) => {
-    h.timer = setTimeout(() => {
-      void runPass().finally(() => {
-        if (!holder().stopped) arm(config.checkpointReconcile.intervalMs);
-      });
-    }, ms);
-    h.timer.unref?.();
-  };
-  arm(config.checkpointReconcile.firstDelayMs);
+  runWithWorkLabel("checkpoints:retention", () => {
+    const h = holder();
+    if (h.timer !== null) return;
+    h.stopped = false;
+    const arm = (ms: number) => {
+      h.timer = setTimeout(() => {
+        void runPass().finally(() => {
+          if (!holder().stopped) arm(config.checkpointReconcile.intervalMs);
+        });
+      }, ms);
+      h.timer.unref?.();
+    };
+    arm(config.checkpointReconcile.firstDelayMs);
+  });
 }
 
 // Stops arming passes, and makes the one in flight stop after its current batch.

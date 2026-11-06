@@ -337,10 +337,22 @@ async function fail(
 // failJob, and this returns, so the lane's slot is free whether or not the handler listened. Until the
 // handler does return, its row stays out of every claim in this process (./running.ts), so the retry
 // never runs beside it.
-export async function runClaimed(
+// The whole run carries the job's label, its outcome write and a late settle included: those
+// statements are the job's too, and a timeout in them names it (docs/logs.md, "Database").
+export function runClaimed(
   job: ClaimedJob,
   base: PrismaClient = basePrisma,
   opts: RunClaimedOptions = {},
+): Promise<void> {
+  return runWithWorkLabel(`job:${job.kind}`, () =>
+    runClaimedUnlabeled(job, base, opts),
+  );
+}
+
+async function runClaimedUnlabeled(
+  job: ClaimedJob,
+  base: PrismaClient,
+  opts: RunClaimedOptions,
 ): Promise<void> {
   // The shutdown drain waits for this run until its outcome is written, and at its bound ends it the
   // way the deadline does, so the row is failed for retry before the process exits.
@@ -398,16 +410,15 @@ async function runWithDeadline(
   markRunning(job.id);
   // The async wrapper turns a synchronous throw into a rejection, so the row always leaves the
   // running set.
-  // The label names the job on a statement that times out inside it (docs/logs.md, "Database").
-  const running = runInPoolClass(opts.poolClass ?? JOB_POOL[job.kind], () =>
-    runWithWorkLabel(`job:${job.kind}`, async () =>
+  const running = runInPoolClass(
+    opts.poolClass ?? JOB_POOL[job.kind],
+    async () =>
       handler(job, base, {
         signal: controller.signal,
         commit: () => {
           committed = true;
         },
       }),
-    ),
   );
   const lateChain = running
     .catch(() => null)
@@ -612,7 +623,19 @@ export interface TickOptions {
   claimTraffic?: boolean;
 }
 
-export async function runSchedulerTick(
+// The tick's own statements (the reap, the claims) run as `scheduler`; each job it starts runs as
+// `job:<KIND>` (runClaimed). A statement that times out names the work by it (docs/logs.md,
+// "Database").
+export function runSchedulerTick(
+  base: PrismaClient,
+  opts: TickOptions,
+): Promise<{ claimed: number; reaped: number }> {
+  return runWithWorkLabel("scheduler", () =>
+    runSchedulerTickUnlabeled(base, opts),
+  );
+}
+
+async function runSchedulerTickUnlabeled(
   base: PrismaClient,
   opts: TickOptions,
 ): Promise<{ claimed: number; reaped: number }> {
@@ -727,7 +750,16 @@ export interface ObserveTickOptions {
 // observers take no concurrency the scheduler did not already have and a claimed row never spends
 // its stale window waiting for capacity. The reaper stays on the shared tick. `settled` resolves
 // when every row this tick started has finished; the worker never waits on it, tests do.
-export async function runObserveTick(
+export function runObserveTick(
+  base: PrismaClient,
+  opts: ObserveTickOptions,
+): Promise<{ claimed: number; settled: Promise<void> }> {
+  return runWithWorkLabel("scheduler:observe", () =>
+    runObserveTickUnlabeled(base, opts),
+  );
+}
+
+async function runObserveTickUnlabeled(
   base: PrismaClient,
   opts: ObserveTickOptions,
 ): Promise<{ claimed: number; settled: Promise<void> }> {
@@ -810,7 +842,21 @@ export function trafficPermitsFree(gate: Semaphore): number {
 // so every claim is a start and the observe drain never queues behind a backlog. `waitMs` is how
 // long until the window admits another start when it is what stopped the claim; `wantsPermit`, that
 // a spending row may be due and waiting on a permit.
-export async function runTrafficTick(
+export function runTrafficTick(
+  base: PrismaClient,
+  opts: TrafficTickOptions,
+): Promise<{
+  claimed: number;
+  waitMs: number | null;
+  wantsPermit: boolean;
+  settled: Promise<void>;
+}> {
+  return runWithWorkLabel("scheduler:traffic", () =>
+    runTrafficTickUnlabeled(base, opts),
+  );
+}
+
+async function runTrafficTickUnlabeled(
   base: PrismaClient,
   opts: TrafficTickOptions,
 ): Promise<{
@@ -955,131 +1001,135 @@ export interface StartOptions {
 // Idempotent singleton (survives `bun --hot` reloads via globalThis, so no ghost timers). The tick
 // is non-overlapping (a `running` guard). It also starts the observe lane's fast drain, which has
 // no switch of its own: an install that runs the scheduler runs it. Returns the stop function.
+// The timers are created under `scheduler` (each pass's own label is entered again in its tick, which a
+// wake from another context also reaches; docs/logs.md, "Database").
 export function startScheduler(opts: StartOptions = {}): () => void {
-  const h = holder();
-  if (h.timer) return stopScheduler;
-  const base = opts.base ?? basePrisma;
-  const intervalMs = opts.intervalMs ?? config.schedulerWorker.intervalMs;
-  const observeIntervalMs =
-    opts.observeIntervalMs ?? config.observeWorker.intervalMs;
-  const staleMs = opts.staleMs ?? SCHEDULER_STALE_MS;
-  const batchSize = opts.batchSize ?? 20;
-  const providerConcurrency =
-    opts.providerConcurrency ??
-    sharedProviderConcurrency(config.agent.modelConcurrency);
-  // ONE bound for both drains: an observation takes a permit the shared tick's follow-ups would
-  // otherwise use, never one on top of them.
-  const gate = new Semaphore(providerConcurrency);
-  h.timer = setInterval(() => {
-    if (h.running) return;
-    h.running = true;
-    void runSchedulerTick(base, {
-      staleMs,
-      batchSize,
-      gate,
-      providerConcurrency,
-      claimObserve: false,
-      claimTraffic: false,
-      ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
-    })
-      .catch((err) => logger.error({ err }, "scheduler tick failed"))
-      .finally(() => {
-        h.running = false;
-      });
-  }, intervalMs);
-  const drainObserve = () => {
-    // A drain asked for after the worker stopped (a row finishing late) claims nothing.
-    if (!h.observeTimer) return;
-    if (h.observing) {
-      h.observeAgain = true;
-      return;
-    }
-    h.observing = true;
-    h.observeAgain = false;
-    void runObserveTick(base, {
-      slots: providerConcurrency,
-      gate,
-      staleMs,
-      onFreed: drainObserve,
-      ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
-    })
-      .catch((err) => logger.error({ err }, "observe tick failed"))
-      .finally(() => {
-        h.observing = false;
-        if (h.observeAgain) drainObserve();
-      });
-  };
-  h.observeTimer = setInterval(drainObserve, observeIntervalMs);
-  const trafficSlots =
-    opts.trafficConcurrency ?? config.schedulerWorker.trafficConcurrency;
-  const window = new StartWindow(
-    opts.trafficPerMinute ?? config.schedulerWorker.trafficPerMinute,
-  );
-  const drainTraffic = () => {
-    if (!h.trafficTimer) return;
-    if (h.draining) {
-      h.drainAgain = true;
-      return;
-    }
-    h.draining = true;
-    h.drainAgain = false;
-    void (opts.runTraffic ?? runTrafficTick)(base, {
-      slots: trafficSlots,
-      window,
-      gate,
-      staleMs,
-      onFreed: drainTraffic,
-      ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
-    })
-      .then(({ waitMs, wantsPermit }) => {
-        if (wantsPermit && !h.trafficPermitWake) {
-          h.trafficPermitWake = gate.onFree(() => {
-            if (trafficPermitsFree(gate) === 0) return;
-            h.trafficPermitWake?.();
-            h.trafficPermitWake = undefined;
-            drainTraffic();
-          });
-          // A permit freed while the claim was out notified nobody: look once more now.
-          if (trafficPermitsFree(gate) > 0) h.drainAgain = true;
-        }
-        // The window stopped the claim: wake when it admits again rather than at the next interval.
-        if (waitMs !== null && !h.trafficWake) {
-          h.trafficWake = setTimeout(() => {
-            h.trafficWake = undefined;
-            drainTraffic();
-          }, waitMs);
-        }
+  return runWithWorkLabel("scheduler", () => {
+    const h = holder();
+    if (h.timer) return stopScheduler;
+    const base = opts.base ?? basePrisma;
+    const intervalMs = opts.intervalMs ?? config.schedulerWorker.intervalMs;
+    const observeIntervalMs =
+      opts.observeIntervalMs ?? config.observeWorker.intervalMs;
+    const staleMs = opts.staleMs ?? SCHEDULER_STALE_MS;
+    const batchSize = opts.batchSize ?? 20;
+    const providerConcurrency =
+      opts.providerConcurrency ??
+      sharedProviderConcurrency(config.agent.modelConcurrency);
+    // ONE bound for both drains: an observation takes a permit the shared tick's follow-ups would
+    // otherwise use, never one on top of them.
+    const gate = new Semaphore(providerConcurrency);
+    h.timer = setInterval(() => {
+      if (h.running) return;
+      h.running = true;
+      void runSchedulerTick(base, {
+        staleMs,
+        batchSize,
+        gate,
+        providerConcurrency,
+        claimObserve: false,
+        claimTraffic: false,
+        ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
       })
-      .catch((err) => logger.error({ err }, "traffic tick failed"))
-      .finally(() => {
-        h.draining = false;
-        if (h.drainAgain) drainTraffic();
-      });
-  };
-  h.trafficTimer = setInterval(drainTraffic, intervalMs);
-  h.wakeTraffic = drainTraffic;
-  h.wakeObserve = (atMs) => {
-    const slot =
-      Math.ceil(atMs / OBSERVE_WAKE_GRAIN_MS) * OBSERVE_WAKE_GRAIN_MS;
-    const wait = slot - Date.now();
-    if (h.observeWakes.has(slot)) return;
-    h.observeWakes.set(
-      slot,
-      setTimeout(
-        () => {
-          h.observeWakes.delete(slot);
-          drainObserve();
-        },
-        Math.max(0, wait),
-      ),
+        .catch((err) => logger.error({ err }, "scheduler tick failed"))
+        .finally(() => {
+          h.running = false;
+        });
+    }, intervalMs);
+    const drainObserve = () => {
+      // A drain asked for after the worker stopped (a row finishing late) claims nothing.
+      if (!h.observeTimer) return;
+      if (h.observing) {
+        h.observeAgain = true;
+        return;
+      }
+      h.observing = true;
+      h.observeAgain = false;
+      void runObserveTick(base, {
+        slots: providerConcurrency,
+        gate,
+        staleMs,
+        onFreed: drainObserve,
+        ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
+      })
+        .catch((err) => logger.error({ err }, "observe tick failed"))
+        .finally(() => {
+          h.observing = false;
+          if (h.observeAgain) drainObserve();
+        });
+    };
+    h.observeTimer = setInterval(drainObserve, observeIntervalMs);
+    const trafficSlots =
+      opts.trafficConcurrency ?? config.schedulerWorker.trafficConcurrency;
+    const window = new StartWindow(
+      opts.trafficPerMinute ?? config.schedulerWorker.trafficPerMinute,
     );
-  };
-  logger.info(
-    "scheduler worker started (interval=%dms, observe=%dms)",
-    intervalMs,
-    observeIntervalMs,
-  );
-  return stopScheduler;
+    const drainTraffic = () => {
+      if (!h.trafficTimer) return;
+      if (h.draining) {
+        h.drainAgain = true;
+        return;
+      }
+      h.draining = true;
+      h.drainAgain = false;
+      void (opts.runTraffic ?? runTrafficTick)(base, {
+        slots: trafficSlots,
+        window,
+        gate,
+        staleMs,
+        onFreed: drainTraffic,
+        ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
+      })
+        .then(({ waitMs, wantsPermit }) => {
+          if (wantsPermit && !h.trafficPermitWake) {
+            h.trafficPermitWake = gate.onFree(() => {
+              if (trafficPermitsFree(gate) === 0) return;
+              h.trafficPermitWake?.();
+              h.trafficPermitWake = undefined;
+              drainTraffic();
+            });
+            // A permit freed while the claim was out notified nobody: look once more now.
+            if (trafficPermitsFree(gate) > 0) h.drainAgain = true;
+          }
+          // The window stopped the claim: wake when it admits again rather than at the next interval.
+          if (waitMs !== null && !h.trafficWake) {
+            h.trafficWake = setTimeout(() => {
+              h.trafficWake = undefined;
+              drainTraffic();
+            }, waitMs);
+          }
+        })
+        .catch((err) => logger.error({ err }, "traffic tick failed"))
+        .finally(() => {
+          h.draining = false;
+          if (h.drainAgain) drainTraffic();
+        });
+    };
+    h.trafficTimer = setInterval(drainTraffic, intervalMs);
+    h.wakeTraffic = drainTraffic;
+    h.wakeObserve = (atMs) => {
+      const slot =
+        Math.ceil(atMs / OBSERVE_WAKE_GRAIN_MS) * OBSERVE_WAKE_GRAIN_MS;
+      const wait = slot - Date.now();
+      if (h.observeWakes.has(slot)) return;
+      h.observeWakes.set(
+        slot,
+        setTimeout(
+          () => {
+            h.observeWakes.delete(slot);
+            drainObserve();
+          },
+          Math.max(0, wait),
+        ),
+      );
+    };
+    logger.info(
+      "scheduler worker started (interval=%dms, observe=%dms)",
+      intervalMs,
+      observeIntervalMs,
+    );
+    return stopScheduler;
+  });
 }
 
 export function stopScheduler(): void {

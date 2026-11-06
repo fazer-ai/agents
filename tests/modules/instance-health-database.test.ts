@@ -176,8 +176,9 @@ describe("the two signals and what their alert says", () => {
     expect(summary).toContain(
       "statement_timeouts_per_min is 3/min, above 0/min.",
     );
-    expect(summary).toContain("job:FOLLOWUP_SWEEP");
-    expect(summary).toContain("SELECT c.thread_id FROM conversations c");
+    expect(summary).toBe(
+      "statement_timeouts_per_min is 3/min, above 0/min. Last timeout: job FOLLOWUP_SWEEP, on conversations. Statement: SELECT c.thread_id FROM conversations c",
+    );
   });
 
   test("a database screen that fails to read records no point, so the drift signal ages instead of reading fresh", async () => {
@@ -452,9 +453,10 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       "SELECT pg_sleep($1)",
       appRole + 999_999n,
     );
-    const { pct, query } = await slowestMeanShare(appDb, now, 500);
+    const { pct, query, meanMs } = await slowestMeanShare(appDb, now, 500);
     // (1200 + 1800) / (4 + 6) = 300 ms, 60% of a 500 ms budget.
     expect(pct).toBeCloseTo(60, 5);
+    expect(meanMs).toBeCloseTo(300, 5);
     expect(query).toContain("SELECT c.thread_id FROM conversations");
   });
 
@@ -538,6 +540,11 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     );
     await suDb.$executeRawUnsafe(
       `CREATE INDEX ${probe}_note_idx ON langgraph.${probe} (note)`,
+    );
+    // The screen lists the 50 largest never-read indexes, and a shared test database holds more than
+    // 50 empty ones: a few MB of rows put the probe's index at the top of that list.
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO langgraph.${probe} SELECT g, md5(g::text) || md5((g * 7)::text) FROM generate_series(1, 30000) g`,
     );
     try {
       // Statistics views are fed asynchronously; reading them in this session sees the table.

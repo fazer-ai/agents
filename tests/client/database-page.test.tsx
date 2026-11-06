@@ -531,14 +531,17 @@ test("a table past autovacuum's trigger shows its dead-row share in the warning 
     tables: [
       {
         ...BASE.tables[0],
+        // A large table: a modest share is already past autovacuum's trigger
+        // (threshold + scale factor x live rows), so only the server can say so.
         table: "bloated",
-        deadRatio: 0.8,
+        deadRatio: 0.3,
         vacuumOverdue: true,
       },
       {
         ...BASE.tables[0],
+        // A tiny one: most rows dead, still under the trigger's fixed threshold.
         table: "fine",
-        deadRatio: 0.5,
+        deadRatio: 0.9,
         vacuumOverdue: false,
       },
     ],
@@ -554,7 +557,7 @@ test("a table past autovacuum's trigger shows its dead-row share in the warning 
       (r) =>
         `${r.querySelector("code")?.textContent}:${r.getAttribute("data-vacuum-overdue")}:${r.querySelector("[data-testid=dead-ratio]")?.textContent}`,
     );
-  expect(rows).toEqual(["bloated:true:80%", "fine:false:50%"]);
+  expect(rows).toEqual(["bloated:true:30%", "fine:false:90%"]);
   expect(
     screen.getByTestId("vacuum-overdue-count").textContent ?? "",
   ).toContain("1");

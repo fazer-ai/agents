@@ -103,7 +103,10 @@ function TimeoutCard({ x, fmt }: { x: TimeoutGroup; fmt: Formatters }) {
           </time>
         </Tooltip>
         <span className="flex flex-wrap gap-1.5">
-          <Badge variant="primary" className={cn({ "font-mono": x.label })}>
+          <Badge
+            variant="primary"
+            className={cn({ "font-mono": x.label !== null })}
+          >
             {x.label ?? t("database.unlabeled", "unlabeled work")}
           </Badge>
           <Badge variant={x.fleet ? "purple" : "info"}>{scope}</Badge>

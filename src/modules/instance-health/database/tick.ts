@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
-import { setSignalDetail, statementLine } from "../details";
+import { driftDetail, setSignalDetail } from "../details";
 import { budgetUntil } from "./budget";
 import { slowestMeanShare } from "./read";
 import { lastAvailability, snapshotIfDue } from "./snapshot";
@@ -45,15 +45,12 @@ export async function databaseScreenTick(
     setSignalDetail(DRIFT_SIGNAL, null);
     return 0;
   }
-  const { pct, query } = await slowestMeanShare(
+  const { pct, query, meanMs } = await slowestMeanShare(
     base,
     now,
     undefined,
     budgetUntil(deadline),
   );
-  setSignalDetail(
-    DRIFT_SIGNAL,
-    query ? `Slowest over the last hour: ${statementLine(query)}` : null,
-  );
+  setSignalDetail(DRIFT_SIGNAL, query ? driftDetail(query, meanMs) : null);
   return pct;
 }

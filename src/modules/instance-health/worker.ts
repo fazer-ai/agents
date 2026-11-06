@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import config from "@/config";
 import { isDraining } from "@/lib/shutdown";
+import { runWithWorkLabel } from "@/lib/work-label";
 import {
   type AlertSendDeps,
   alertErrMsg,
@@ -294,17 +295,21 @@ function loopState(): LoopState {
   return g[LOOP_KEY];
 }
 
+// The instance alert deliveries run as `instance-health:alerts`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
 export function startInstanceAlertWorker(): void {
-  const st = loopState();
-  if (st.timer) return;
-  st.timer = setInterval(() => {
-    if (st.running) return;
-    st.running = true;
-    void instanceAlertTick().finally(() => {
-      st.running = false;
-    });
-  }, config.alertWorker.intervalMs);
-  st.timer.unref?.();
+  runWithWorkLabel("instance-health:alerts", () => {
+    const st = loopState();
+    if (st.timer) return;
+    st.timer = setInterval(() => {
+      if (st.running) return;
+      st.running = true;
+      void instanceAlertTick().finally(() => {
+        st.running = false;
+      });
+    }, config.alertWorker.intervalMs);
+    st.timer.unref?.();
+  });
 }
 
 export function stopInstanceAlertWorker(): void {

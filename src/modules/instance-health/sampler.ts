@@ -9,6 +9,7 @@ import {
   poolStats,
   statementTimeoutsPerMinute,
 } from "@/lib/pool-stats";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { JOB_LANE, type SchedulerLane } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 import {
@@ -17,7 +18,7 @@ import {
   lastCompletedAt,
 } from "@/modules/scheduler/throughput";
 import { DRIFT_SIGNAL, databaseScreenTick } from "./database/tick";
-import { setSignalDetail, statementLine } from "./details";
+import { setSignalDetail, type TimeoutLine, timeoutDetail } from "./details";
 import { evaluateSample, judge } from "./evaluator";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { ingressLagP95 } from "./ingress";
@@ -85,9 +86,7 @@ export interface SamplerSources {
   // Statements cancelled by their budget in the last minute, and the last one (src/lib/pool-stats.ts).
   // Absent in a test that does not exercise them.
   statementTimeoutsPerMinute?: (now: number) => number;
-  lastStatementTimeout?: (
-    now: number,
-  ) => { sql: string; label: string | null } | null;
+  lastStatementTimeout?: (now: number) => TimeoutLine | null;
   // The database screen's share of the database half (./database/tick.ts): returns the drift
   // signal's value. Absent in a test that does not exercise it.
   databaseScreen?: (now: number) => Promise<number>;
@@ -219,9 +218,7 @@ function sampleProcess(
   const lastTimeout = sources.lastStatementTimeout?.(now) ?? null;
   setSignalDetail(
     "statement_timeouts_per_min",
-    lastTimeout
-      ? `Last: ${lastTimeout.label ?? "unlabeled work"}: ${statementLine(lastTimeout.sql)}`
-      : null,
+    lastTimeout ? timeoutDetail(lastTimeout) : null,
   );
   for (const kind of THROUGHPUT_KINDS) {
     values[schedulerDoneSignal(kind)] =
@@ -454,30 +451,34 @@ let modelSem: () => { waiting: number; oldestWaitMs(now: number): number } =
   () => ({ waiting: 0, oldestWaitMs: () => 0 });
 let debounceFull: (now: number) => number = () => 0;
 
-export async function startInstanceHealthSampler(): Promise<void> {
-  const s = state();
-  if (s.timer) return;
-  const { modelSemaphore } = await import("@/graph/model-limit");
-  const { debounceLaneFullMs } = await import("@/modules/debounce/worker");
-  modelSem = modelSemaphore;
-  debounceFull = debounceLaneFullMs;
-  const histogram = monitorEventLoopDelay({ resolution: 10 });
-  histogram.enable();
-  s.histogram = histogram;
-  const sources = defaultSources(histogram);
-  s.timer = setInterval(() => {
-    try {
-      void tick(sources);
-    } catch (err) {
-      logger.error({ err }, "instance health sample failed");
-    }
-  }, SAMPLE_INTERVAL_MS);
-  s.timer.unref?.();
-  startInstanceAlertWorker();
-  logger.info(
-    "Instance health sampler started (every %dms)",
-    SAMPLE_INTERVAL_MS,
-  );
+// The sampler's ticks run as `instance-health:sampler`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
+export function startInstanceHealthSampler(): Promise<void> {
+  return runWithWorkLabel("instance-health:sampler", async () => {
+    const s = state();
+    if (s.timer) return;
+    const { modelSemaphore } = await import("@/graph/model-limit");
+    const { debounceLaneFullMs } = await import("@/modules/debounce/worker");
+    modelSem = modelSemaphore;
+    debounceFull = debounceLaneFullMs;
+    const histogram = monitorEventLoopDelay({ resolution: 10 });
+    histogram.enable();
+    s.histogram = histogram;
+    const sources = defaultSources(histogram);
+    s.timer = setInterval(() => {
+      try {
+        void tick(sources);
+      } catch (err) {
+        logger.error({ err }, "instance health sample failed");
+      }
+    }, SAMPLE_INTERVAL_MS);
+    s.timer.unref?.();
+    startInstanceAlertWorker();
+    logger.info(
+      "Instance health sampler started (every %dms)",
+      SAMPLE_INTERVAL_MS,
+    );
+  });
 }
 
 export function stopInstanceHealthSampler(): void {

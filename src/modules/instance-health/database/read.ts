@@ -200,10 +200,7 @@ async function sparks(
            = ANY(${keys.map((k) => `${k.userid}:${k.dbid}:${k.queryid}`)}::text[])
      GROUP BY 1, 2, 3, 4`;
   for (const k of keys) {
-    out.set(
-      `${k.userid}:${k.dbid}:${k.queryid}`,
-      Array(buckets).fill(null),
-    );
+    out.set(`${k.userid}:${k.dbid}:${k.queryid}`, Array(buckets).fill(null));
   }
   for (const r of rows) {
     const series = out.get(`${r.userid}:${r.dbid}:${r.queryid}`);
@@ -222,14 +219,14 @@ export async function slowestMeanShare(
   now: number = Date.now(),
   budgetMs: number = config.dbTx.timeoutMs,
   txBudget: TxBudget = budgetUntil(Date.now() + DRIFT_BUDGET_MS),
-): Promise<{ pct: number; query: string | null }> {
+): Promise<{ pct: number; query: string | null; meanMs: number }> {
   return fleetWithin(base, txBudget, async (db) => {
     const totals = await statementTotals(
       db,
       new Date(now - WINDOWS["1h"]),
       new Date(now),
     );
-    if (totals.length === 0) return { pct: 0, query: null };
+    if (totals.length === 0) return { pct: 0, query: null, meanMs: 0 };
     // Only what this application runs is measured against its budget: the runtime role and the
     // roles it can act as (the fleet role). A statement an operator runs in psql as another user
     // never had DB_TX_TIMEOUT_MS as its limit. An install that connects as a superuser matches every
@@ -246,8 +243,12 @@ export async function slowestMeanShare(
       const mean = t.total_ms / t.calls;
       if (!best || mean > best.mean) best = { mean, query };
     }
-    if (!best || budgetMs <= 0) return { pct: 0, query: null };
-    return { pct: (best.mean / budgetMs) * 100, query: best.query };
+    if (!best || budgetMs <= 0) return { pct: 0, query: null, meanMs: 0 };
+    return {
+      pct: (best.mean / budgetMs) * 100,
+      query: best.query,
+      meanMs: best.mean,
+    };
   });
 }
 

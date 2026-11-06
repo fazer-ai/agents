@@ -93,6 +93,16 @@ const PROBES: Record<string, string> = {
   [P("zone-pinned.ts")]:
     'declare const Pool: new (o: object) => object;\ndeclare function withSessionOptions(u: string): object;\nexport const p = new Pool({ ...withSessionOptions("x"), connectionTimeoutMillis: 5_000 });\n',
 
+  // require-work-label-on-timer
+  [P("timer-bare.ts")]:
+    "export const t = setInterval(() => undefined, 1_000);\n",
+  [P("timer-in-start.ts")]:
+    "export function start(): void {\n  setInterval(() => undefined, 1_000);\n}\n",
+  [P("timer-labeled.ts")]:
+    'declare function runWithWorkLabel<T>(l: string, f: () => T): T;\nexport function start(): void {\n  runWithWorkLabel("worker", () => {\n    setInterval(() => undefined, 1_000);\n  });\n}\n',
+  [P("timer-labeled-inner.ts")]:
+    'declare function runWithWorkLabel<T>(l: string, f: () => T): T;\nexport const t = setInterval(() => runWithWorkLabel("worker", () => undefined), 1_000);\n',
+
   // no-raw-violation-code
   [P("violation-eq.ts")]:
     'declare const e: { code?: string };\nexport const a = e.code === "P2002";\n',
@@ -264,6 +274,7 @@ const RULES = {
   glob: "A test that globs src/ reads each file",
   violation: "A violation code read by hand misses the other shape",
   number: "A number field takes the range the server enforces",
+  timer: "A recurring timer runs under a work label",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -404,6 +415,26 @@ describe("require-pool-session-zone", () => {
       expect(of(P(name), "zone")).toBe(0);
     },
   );
+});
+
+describe("require-work-label-on-timer", () => {
+  test.each([["timer-bare.ts"], ["timer-in-start.ts"]])(
+    "a timer created under no work label is refused (%s)",
+    (name) => {
+      expect(of(P(name), "timer")).toBe(1);
+    },
+  );
+
+  test("a timer created inside runWithWorkLabel passes", () => {
+    expect(of(P("timer-labeled.ts"), "timer")).toBe(0);
+  });
+
+  // One shape for the whole tree: the label goes around where the timer is created, so the code that
+  // runs before the first pass (a start's first read) carries it too. A label entered only inside the
+  // callback is refused.
+  test("a label entered only inside the callback is refused", () => {
+    expect(of(P("timer-labeled-inner.ts"), "timer")).toBe(1);
+  });
 });
 
 describe("no-raw-violation-code", () => {

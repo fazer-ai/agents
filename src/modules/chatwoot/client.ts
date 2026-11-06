@@ -2616,3 +2616,33 @@ export async function fetchChatwootProfile(
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 }
+
+// One account as Chatwoot shows it to its members (`GET /api/v1/accounts/:id`), read for the
+// account's identity. Same guards and timeout as the profile; returns the raw JSON.
+export async function fetchChatwootAccount(
+  params: { baseUrl: string; token: string; accountId: number },
+  deps: ChatwootClientDeps = {},
+): Promise<unknown> {
+  const assertSafe = deps.assertSafe ?? assertSafeChatwootUrl;
+  await assertSafe(params.baseUrl);
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const root = params.baseUrl.replace(/\/+$/, "");
+  const res = await fetchImpl(`${root}/api/v1/accounts/${params.accountId}`, {
+    method: "GET",
+    headers: {
+      [CHATWOOT_AUTH_HEADER]: params.token,
+      accept: "application/json",
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(INTERACTIVE_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new ChatwootApiError(
+      res.status,
+      "GET /accounts/:id",
+      await authFailureDetail(res),
+    );
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}

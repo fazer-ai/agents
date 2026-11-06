@@ -9,7 +9,11 @@ import {
   setConnectedAccounts,
 } from "@/modules/chatwoot/management";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { seedChatwootInstance, withRunNamespace } from "../utils/chatwoot";
+import {
+  fakeInstallation,
+  seedChatwootInstance,
+  withRunNamespace,
+} from "../utils/chatwoot";
 
 // A Chatwoot ACCOUNT (server + accountId) is globally unique to one tenant, even though a server can
 // back many tenants. Needs a real Postgres for the unique index + the superuser cross-tenant guard.
@@ -44,6 +48,7 @@ const suDb = su as PrismaClient;
 const SHARED = "https://127.0.0.1:9";
 // Probe stub: the accounts the (shared) server's admin token can reach.
 const deps = {
+  fetchAccount: fakeInstallation("shared").fetchAccount,
   fetchProfile: async () => ({
     accounts: [
       { id: 5, name: "Acc 5" },
@@ -150,6 +155,7 @@ describe.skipIf(!dbUp)("Chatwoot account uniqueness (shared server)", () => {
       ctx(tenantC),
       [1, 5],
       {
+        fetchAccount: fakeInstallation("other").fetchAccount,
         fetchProfile: async () => ({
           accounts: [
             { id: 1, name: "C1" },

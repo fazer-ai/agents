@@ -103,6 +103,8 @@ export interface WriteDeps {
   // input against the accounts the deployment reports, and a preview that cannot reach that list
   // would approve ids the apply refuses.
   fetchProfile?: ListAccountsDeps["fetchProfile"];
+  // NOTE: injectable account read, for the identity `deployment_set_accounts` checks claims by.
+  fetchAccount?: ListAccountsDeps["fetchAccount"];
 }
 
 // The one id parser for every MCP surface, read and write alike. `BigInt("")` is 0n and

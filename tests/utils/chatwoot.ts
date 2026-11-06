@@ -57,3 +57,23 @@ export async function seedChatwootInstance(
     },
   });
 }
+
+// One fake Chatwoot installation's account reads: every address of it answers the same creation
+// instant per account, and another installation (another name) answers another. The pid and a
+// random per-process offset keep concurrent runs on the shared test database apart, since the
+// identity is unique across every tenant.
+const RUN_OFFSET_MS = Math.floor(Math.random() * 1e9);
+export function fakeInstallation(name: string) {
+  let h = 0;
+  for (const ch of `${name}:${process.pid}`)
+    h = (h * 31 + ch.charCodeAt(0)) | 0;
+  const origin = Date.UTC(2020, 0, 1) + RUN_OFFSET_MS + Math.abs(h) * 1000;
+  return {
+    createdAt: (accountId: number) => new Date(origin + accountId),
+    fetchAccount: async (p: { accountId: number }) => ({
+      id: p.accountId,
+      name: `Account ${p.accountId}`,
+      created_at: new Date(origin + p.accountId).toISOString(),
+    }),
+  };
+}

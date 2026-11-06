@@ -9,6 +9,7 @@ import {
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { fakeInstallation } from "@/tests/utils/chatwoot";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The channel family's trail, driven through the Channels page's own doors.
@@ -46,7 +47,7 @@ setupPrismaMock();
 const ADMIN_TOKEN = "cw-console-token-9394";
 // The two destructive routes ask for the acting user's password again (step-up), verified against
 // the stored hash, so the session alone does not open them.
-const PASSWORD = "senha-do-operador-9394";
+const PASSWORD = "operator-password";
 const PASSWORD_HASH = await Bun.password.hash(PASSWORD);
 // The pid in the PATH, the way `withRunNamespace` does it for the seeded fixtures: the server key is
 // derived from this URL and `chatwoot_instances (server_key, account_id)` is unique GLOBALLY, so two
@@ -59,6 +60,8 @@ const fetchProfile = async () => ({
     { id: 2, name: "Conta B" },
   ],
 });
+
+const installation = fakeInstallation("channels-audit-actor");
 
 // What Chatwoot answers `listInboxes` with, flipped by the journey below. It starts empty because
 // the two syncs `PUT /deployment/accounts` performs happen before any inbox exists upstream, and a
@@ -104,7 +107,12 @@ mock.module("@/modules/chatwoot/management", () => ({
     real.disconnectChatwootDeployment(ctx, app),
   ),
   setConnectedAccounts: mock((ctx: TenantContext, ids: number[]) =>
-    real.setConnectedAccounts(ctx, ids, { fetchProfile, makeClient }, app),
+    real.setConnectedAccounts(
+      ctx,
+      ids,
+      { fetchProfile, fetchAccount: installation.fetchAccount, makeClient },
+      app,
+    ),
   ),
   softDisconnectChatwootInstance: mock((ctx: TenantContext, id: bigint) =>
     real.softDisconnectChatwootInstance(ctx, id, app),

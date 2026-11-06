@@ -590,24 +590,83 @@ describe("the day a stacked chart's detail opens", () => {
     expect(head(await openDetail(container))).toBe("Jan 2");
   });
 
-  for (const key of ["Enter", " "])
-    test(`is the day focused on the keyboard, opened with ${key === " " ? "Space" : key}`, async () => {
+  async function dayKeys(container: HTMLElement) {
+    return waitFor(() => {
+      const b = [
+        ...container.querySelectorAll<HTMLButtonElement>("fieldset button"),
+      ];
+      if (b.length !== 2) throw new Error("no day keys yet");
+      return b;
+    });
+  }
+
+  test("is the day focused on the keyboard, activated as Enter, Space and a screen reader do it", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    await hover(container, 0, 2);
+    const days = await dayKeys(container);
+    // One tab stop; the arrow moves to the second day.
+    expect(days.map((b) => b.tabIndex)).toEqual([0, -1]);
+    days[0]?.focus();
+    fireEvent.keyDown(days[0] as HTMLElement, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(days[1] as HTMLElement);
+    // A native button turns Enter and Space into its own click, which is also what a screen
+    // reader's activation sends.
+    fireEvent.click(days[1] as HTMLElement);
+    expect(head(await openDetail(container))).toBe("Jan 2");
+  });
+
+  test("takes the focus once when it opens, not again on every redraw", async () => {
+    const tree = (rows: ChartRow[]) =>
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(
+            TooltipProvider,
+            null,
+            createElement(StackedBars, { ...stacked, data: rows }),
+          ),
+        ),
+      );
+    const { container, rerender } = render(tree(data));
+    await clickDay(container, "2026-01-02");
+    const detail = await openDetail(container);
+    expect(document.activeElement).toBe(detail);
+    const other = container.querySelector<HTMLElement>(
+      '[data-testid="chart-legend"] > li[data-series-key="__other"] button',
+    ) as HTMLElement;
+    other.focus();
+    // A streamed update redraws the chart and the detail under it.
+    rerender(tree(data.map((r) => ({ ...r }))));
+    await openDetail(container);
+    expect(document.activeElement).toBe(other);
+  });
+
+  for (const how of ["Escape", "the close button"])
+    test(`closing it with ${how} hands the focus back to its day`, async () => {
       const { container } = renderChart(StackedBars, stacked);
-      await hover(container, 0, 2);
-      const days = await waitFor(() => {
-        const b = [
-          ...container.querySelectorAll<HTMLButtonElement>("fieldset button"),
-        ];
-        if (b.length !== 2) throw new Error("no day keys yet");
-        return b;
+      const days = await dayKeys(container);
+      days[1]?.focus();
+      fireEvent.click(days[1] as HTMLElement);
+      const detail = await openDetail(container);
+      expect(document.activeElement).toBe(detail);
+      if (how === "Escape") fireEvent.keyDown(detail, { key: "Escape" });
+      else
+        fireEvent.click(
+          detail.querySelector(
+            'button[aria-label="Close the day\'s detail"]',
+          ) as Element,
+        );
+      await waitFor(() => {
+        if (container.querySelector('[data-testid="chart-day-detail"]'))
+          throw new Error("still open");
       });
-      // One tab stop; the arrow moves to the second day.
-      expect(days.map((b) => b.tabIndex)).toEqual([0, -1]);
-      days[0]?.focus();
-      fireEvent.keyDown(days[0] as HTMLElement, { key: "ArrowRight" });
       expect(document.activeElement).toBe(days[1] as HTMLElement);
-      fireEvent.keyDown(days[1] as HTMLElement, { key });
-      expect(head(await openDetail(container))).toBe("Jan 2");
+      // And the arrows go on from there.
+      fireEvent.keyDown(days[1] as HTMLElement, { key: "ArrowLeft" });
+      expect(document.activeElement).toBe(days[0] as HTMLElement);
     });
 
   test("is a day still loading or with no data, which has no segment to hit", async () => {
@@ -781,6 +840,65 @@ describe("a line at zero", () => {
     });
     const tip = await hover(container, 1, 2);
     expect(lines(tip)).toEqual(["Resolution0 (previous: 0.8)"]);
+  });
+});
+
+describe("a line with no value on a day but a previous-period one", () => {
+  test("keeps its row, with a dash for now and the previous value", async () => {
+    const rows: ChartRow[] = data.map((r) => ({
+      day: r.day,
+      state: "ready",
+      rate: null,
+      ratePrev: 0.8,
+    }));
+    const { container } = renderChart(LineTrend, {
+      data: rows,
+      series: [{ key: "rate", label: "Resolution" }],
+      lang: "en",
+      format: String,
+      compare: { rate: "ratePrev" },
+      compareLabel: "previous",
+    });
+    const wrapper = await waitFor(() => {
+      const w = container.querySelector(".recharts-wrapper");
+      if (!w || !container.querySelector(".recharts-surface"))
+        throw new Error("no chart yet");
+      return w;
+    });
+    fireEvent.mouseMove(wrapper, {
+      clientX: centerOf(1, 2),
+      clientY: HEIGHT / 2,
+    });
+    const tip = await waitFor(() => {
+      const shown = container.querySelector<HTMLElement>(
+        ".recharts-tooltip-wrapper",
+      );
+      if (!shown?.querySelector("li")) throw new Error("no row shown");
+      return shown;
+    });
+    expect(lines(tip)).toEqual(["Resolution\u2014 (previous: 0.8)"]);
+  });
+
+  test("with no previous value either, the line has no row", async () => {
+    const rows: ChartRow[] = data.map((r) => ({
+      day: r.day,
+      state: "ready",
+      rate: null,
+      ratePrev: null,
+      other: 0.5,
+    }));
+    const { container } = renderChart(LineTrend, {
+      data: rows,
+      series: [
+        { key: "rate", label: "Resolution" },
+        { key: "other", label: "Other rate" },
+      ],
+      lang: "en",
+      format: String,
+      compare: { rate: "ratePrev" },
+      compareLabel: "previous",
+    });
+    expect(lines(await hover(container, 1, 2))).toEqual(["Other rate0.5"]);
   });
 });
 

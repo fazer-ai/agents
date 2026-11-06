@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useId,
@@ -551,8 +552,11 @@ export function LineTrend({
   const groupName = chartText.others(arranged.folded.length);
   // The dot's own click runs before the chart's, which is the one that knows the day.
   const hitSeries = useRef<string | null>(null);
-  const describeRow = (r: { key: string; value: number }, row?: ChartRow) => {
-    const current = format(r.value);
+  const describeRow = (
+    r: { key: string; value: number | null },
+    row?: ChartRow,
+  ) => {
+    const current = r.value === null ? "\u2014" : format(r.value);
     const prevKey = compare?.[r.key];
     if (!prevKey || !compareLabel) return current;
     const prev = row?.[prevKey];
@@ -648,12 +652,19 @@ export function LineTrend({
                     summary={
                       ready
                         ? lineSummary(
-                            arranged.kept.map((s) => ({
-                              key: s.key,
-                              label: s.label,
-                              color: colorOf(s.key),
-                              value: values.get(s.key),
-                            })),
+                            arranged.kept.map((s) => {
+                              const prevKey = compare?.[s.key];
+                              return {
+                                key: s.key,
+                                label: s.label,
+                                color: colorOf(s.key),
+                                value: values.get(s.key),
+                                compared:
+                                  !!prevKey &&
+                                  !!compareLabel &&
+                                  typeof row?.[prevKey] === "number",
+                              };
+                            }),
                             context,
                             TOOLTIP_ROWS,
                           )
@@ -752,27 +763,30 @@ function DayHits({
   );
 }
 
-// The same days for a keyboard: one tab stop over the plot, the arrows move between days, Enter or
-// Space opens the focused one. Invisible to the pointer, which the columns above serve.
+// The same days for a keyboard and a screen reader: one tab stop over the plot, the arrows move
+// between days, Enter or Space opens the focused one. Invisible to the pointer, which the columns serve.
 function DayKeys({
   days,
   picked,
   label,
   onPick,
+  buttons,
 }: {
   days: string[];
   picked: string | null;
   label: (day: string) => string;
   onPick: (day: string) => void;
+  // Each day's button, by day, for the detail to hand the focus back to when it closes.
+  buttons: RefObject<Map<string, HTMLButtonElement>>;
 }) {
   const text = useChartText();
   const [cursor, setCursor] = useState(0);
-  const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const at = Math.min(cursor, Math.max(days.length - 1, 0));
   const move = (to: number) => {
     const i = Math.max(0, Math.min(days.length - 1, to));
     setCursor(i);
-    refs.current[i]?.focus();
+    const d = days[i];
+    if (d) buttons.current.get(d)?.focus();
   };
   if (days.length === 0) return null;
   return (
@@ -790,7 +804,8 @@ function DayKeys({
         <button
           key={d}
           ref={(el) => {
-            refs.current[i] = el;
+            if (el) buttons.current.set(d, el);
+            else buttons.current.delete(d);
           }}
           type="button"
           data-day={d}
@@ -799,12 +814,10 @@ function DayKeys({
           aria-pressed={picked === d}
           className="focus-visible:ring-accent h-full flex-1 rounded-sm opacity-0 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
           onFocus={() => setCursor(i)}
+          // Enter, Space and a screen reader's activation all arrive as the button's own click.
+          onClick={() => onPick(d)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              // NOTE: handled on keydown and defaulted, so the button's own click does not fire too.
-              e.preventDefault();
-              onPick(d);
-            } else if (e.key === "ArrowRight") {
+            if (e.key === "ArrowRight") {
               e.preventDefault();
               move(i + 1);
             } else if (e.key === "ArrowLeft") {
@@ -859,6 +872,8 @@ function DayDetail({
   // the focus moves in for a keyboard or a screen reader to land on the day.
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // A popup above it (the Others list) takes its own Escape first and marks it handled.
       if (e.key === "Escape" && !e.defaultPrevented) onClose();
@@ -993,7 +1008,15 @@ export function StackedBars({
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
   const [picked, setPicked] = useState<string | null>(null);
-  const closeDetail = useCallback(() => setPicked(null), []);
+  const dayButtons = useRef(new Map<string, HTMLButtonElement>());
+  // Closing the detail from inside it hands the focus back to its day, where the arrows go on.
+  const closeDetail = useCallback(() => {
+    const inside = document.activeElement?.closest(
+      '[data-testid="chart-day-detail"]',
+    );
+    if (inside && picked) dayButtons.current.get(picked)?.focus();
+    setPicked(null);
+  }, [picked]);
   const days = data.map((r) => r.day);
   // The day comes from what was clicked or pressed, never from the hover: a second click on the
   // open day closes it.
@@ -1083,7 +1106,7 @@ export function StackedBars({
                             )
                           : null
                       }
-                      describe={(r) => format(r.value)}
+                      describe={(r) => format(r.value ?? 0)}
                       hint={
                         ready && drawn.length > 0 ? chartText.clickForAll : null
                       }
@@ -1123,6 +1146,7 @@ export function StackedBars({
           picked={picked}
           label={(d) => day(d)}
           onPick={pick}
+          buttons={dayButtons}
         />
       </div>
       <SeriesLegend

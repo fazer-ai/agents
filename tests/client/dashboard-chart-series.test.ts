@@ -188,6 +188,18 @@ describe("lineSummary", () => {
     expect(out.other).toBeNull();
   });
 
+  test("a line with no value that day keeps its row only when it has a previous value to show, under the lines that have one", () => {
+    const out = lineSummary(
+      [{ ...item("a", null), compared: true }, item("b", 0.4), item("c", null)],
+      0,
+      6,
+    );
+    expect(out.rows.map((r) => [r.key, r.value])).toEqual([
+      ["b", 0.4],
+      ["a", null],
+    ]);
+  });
+
   test("a tie keeps the legend's order", () => {
     expect(
       lineSummary([item("a", 1), item("b", 1)], 0, 6).rows.map((r) => r.key),

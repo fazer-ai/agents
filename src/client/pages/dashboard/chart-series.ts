@@ -101,10 +101,14 @@ export interface TooltipItem {
   label: string;
   color: string;
   value: unknown;
+  // A line with a previous-period value to show beside it that day, which keeps its row when its
+  // own value is missing.
+  compared?: boolean;
 }
 
 export interface TooltipSummary {
-  rows: (TooltipItem & { value: number })[];
+  // A null value is a line with nothing that day and a previous-period value to show.
+  rows: (TooltipItem & { value: number | null })[];
   // The one "Other" line: how many series it holds, and their sum on a stack (null on a line chart,
   // whose values do not add up). Null when the group has nothing to show that day.
   other: { count: number; value: number | null } | null;
@@ -149,11 +153,13 @@ export function lineSummary(
 ): TooltipSummary {
   const present = kept
     .map((it, i) => ({ it: { ...it, value: numeric(it.value) }, i }))
-    .filter(
-      (x): x is { it: TooltipItem & { value: number }; i: number } =>
-        x.it.value !== null,
+    .filter((x) => x.it.value !== null || x.it.compared)
+    // A line with no point that day has no height to sit at, so it goes under the ones that do.
+    .sort(
+      (a, b) =>
+        (b.it.value ?? Number.NEGATIVE_INFINITY) -
+          (a.it.value ?? Number.NEGATIVE_INFINITY) || a.i - b.i,
     )
-    .sort((a, b) => b.it.value - a.it.value || a.i - b.i)
     .map((x) => x.it);
   const room =
     present.length + (context > 0 ? 1 : 0) > max ? max - 1 : present.length;

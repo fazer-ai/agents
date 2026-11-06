@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { ForbiddenError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
+import type { TenantContext, TxBudget } from "@/lib/tenancy";
 import { listInstanceThresholds } from "./channels";
 import { signalDetail } from "./details";
 import { firingSignals } from "./evaluator";
@@ -125,12 +125,15 @@ export function requireFleet(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
+// `budget`: a caller with a deadline of its own (the database view, under the request's metrics
+// budget) bounds the thresholds read by it.
 export async function readInstanceHealth(
   sampling: boolean,
   base: PrismaClient = basePrisma,
   now: number = Date.now(),
+  budget?: TxBudget,
 ): Promise<InstanceHealthDto> {
-  const thresholds = await listInstanceThresholds(base);
+  const thresholds = await listInstanceThresholds(base, budget);
   const snap = snapshot(now);
   const firing = new Set(firingSignals());
   const byKey = new Map(thresholds.map((t) => [t.signal, t]));

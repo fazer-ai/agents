@@ -1,6 +1,8 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
+import { DeadlinePassedError } from "@/lib/tenancy";
+import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
 import { type InstanceSignalDto, readInstanceHealth } from "../read";
 import {
   type DatabaseScreenDto,
@@ -57,7 +59,16 @@ export async function readDatabaseView(
 ): Promise<DatabaseViewDto> {
   // One after the other: on a metrics pool of one connection, a read started beside the screen's
   // long aggregate would time out waiting for it, well inside the screen's own budget.
-  const health = await readInstanceHealth(sampling, base);
+  // Both under the request's metrics deadline, the session lookup in front of the route included: a
+  // spent one opens nothing.
+  const deadline = metricsDeadline();
+  if (Date.now() >= deadline) throw new DeadlinePassedError();
+  const health = await readInstanceHealth(
+    sampling,
+    base,
+    Date.now(),
+    metricsBudget(deadline),
+  );
   const screen = await readDatabaseScreen(window, base);
   const signals = DATABASE_SIGNALS.flatMap((name) => {
     const s = health.signals.find((x) => x.signal === name);

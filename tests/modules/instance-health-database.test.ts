@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { requestContext } from "@/api/lib/i18n";
 import config from "@/config";
 import {
   drainStatementTimeouts,
@@ -1448,6 +1449,32 @@ describe.skipIf(!dbUp)("the screen's summary figures", () => {
     });
     await readDatabaseView("1h", base, false);
     expect(overlapped).toBe(false);
+  });
+
+  test("the view opens nothing once the request's metrics budget is spent", async () => {
+    // A request that arrived longer ago than METRICS_TIMEOUT_MS (a slow session lookup in front of
+    // the route): neither read may open a transaction, the thresholds read included.
+    let opened = 0;
+    const base = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop !== "$transaction") return Reflect.get(target, prop, receiver);
+        return (...args: unknown[]) => {
+          opened++;
+          return (
+            target.$transaction as unknown as (...a: unknown[]) => unknown
+          ).apply(target, args);
+        };
+      },
+    });
+    const late = requestContext.run(
+      {
+        locale: "en",
+        startedAt: Date.now() - config.metrics.timeoutMs - 1_000,
+      },
+      () => readDatabaseView("1h", base, false),
+    );
+    await expect(late).rejects.toBeInstanceOf(DeadlinePassedError);
+    expect(opened).toBe(0);
   });
 
   test("the view carries both statement signals, each with its threshold and state", async () => {

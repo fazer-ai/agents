@@ -108,6 +108,10 @@ export async function serverWalPacing(
 // The errors a smaller batch can get past: the batch's cut (statement timeout, or the deadline the
 // guard checks itself), a lock it waited on, and a deadlock it lost. Anything else (the connection,
 // a missing table) fails the pass as before.
+// What a batch that threw had already committed: one transaction per table, so the tables before the
+// failing one stay deleted, and the pass counts them although the batch never returned.
+const committedBefore = new WeakMap<object, RetentionBatch>();
+
 function retryable(err: unknown): boolean {
   if (err instanceof SweepDeadlineError) return true;
   const code = (err as { code?: unknown } | null)?.code;
@@ -334,9 +338,17 @@ export async function retainCheckpointBatch(
   // waiting on another's would deadlock with it. Each condition is read again when its statement runs,
   // so a batch stopped between tables leaves rows a later one takes, never a thread missing its state.
   for (const table of RETAIN_ORDER) {
-    const got = await indexed((query) =>
-      retainRows(query, table, due, rows, budget),
-    );
+    let got: Awaited<ReturnType<typeof retainRows>>;
+    try {
+      got = await indexed((query) =>
+        retainRows(query, table, due, rows, budget),
+      );
+    } catch (err) {
+      result.threads = [...touched];
+      if (typeof err === "object" && err !== null)
+        committedBefore.set(err, result);
+      throw err;
+    }
     result.deleted[table] = got.n;
     result.bytes += got.bytes;
     for (const id of got.threads) touched.add(id);
@@ -416,20 +428,34 @@ export function retainCheckpoints(
         checkpoint_blobs: 0,
         bytes: 0,
       };
+      const add = (res: RetentionBatch) => {
+        for (const table of RETAIN_ORDER) totals[table] += res.deleted[table];
+        totals.bytes += res.bytes;
+        for (const id of res.threads) threads.add(id);
+      };
       // The wait after an attempt that may have written: `pauseMs`, or as long as the WAL the instance
-      // wrote since `walBefore` takes at the budget's rate. A failed attempt counts too, since the
-      // tables a batch committed before its failing one stay deleted and a rolled-back delete writes
-      // WAL as well.
-      const pace = async (walBefore: number | null, startedAt: number) => {
+      // wrote since the mark takes at the budget's rate, less the time since the mark. The mark is the
+      // reading taken before the last wait, so the WAL the instance's own traffic writes while the
+      // pass sleeps counts against the next batch. A failed attempt waits too, since the tables a batch
+      // committed before its failing one stay deleted and a rolled-back delete writes WAL as well.
+      let mark: { wal: number; at: number } | null = null;
+      const markNow = async () => {
+        const wal = await readWal();
+        mark = wal === null ? null : { wal, at: Date.now() };
+      };
+      const pace = async () => {
         let wait = pauseMs;
+        const before = mark;
         const walAfter = await readWal();
-        if (pacing && walBefore !== null && walAfter !== null)
+        const at = Date.now();
+        if (pacing && before !== null && walAfter !== null)
           wait = Math.max(
             wait,
-            ((walAfter - walBefore) / pacing.budgetBytesPerSec) * 1000 -
-              (Date.now() - startedAt),
+            ((walAfter - before.wal) / pacing.budgetBytesPerSec) * 1000 -
+              (at - before.at),
           );
         wait = Math.min(wait, RETENTION_MAX_PAUSE_MS);
+        mark = walAfter === null ? null : { wal: walAfter, at };
         if (wait > 0) await sleep(wait);
       };
       let cursor: string | null = "";
@@ -437,14 +463,18 @@ export function retainCheckpoints(
       while (cursor !== null) {
         if (opts.shouldStop?.()) break;
         await beforeBatch();
-        const walBefore = await readWal();
-        const startedAt = Date.now();
+        if (mark === null) await markNow();
         let res: RetentionBatch;
         try {
           res = await retainCheckpointBatch(pool, cursor, { ...opts, probes });
         } catch (err) {
           if (!retryable(err)) throw err;
-          await pace(walBefore, startedAt);
+          const partial =
+            typeof err === "object" && err !== null
+              ? committedBefore.get(err)
+              : undefined;
+          if (partial) add(partial);
+          await pace();
           if (probes > 1) {
             probes = Math.ceil(probes / 2);
             continue;
@@ -457,12 +487,10 @@ export function retainCheckpoints(
           continue;
         }
         probes = Math.min(fullProbes, probes * 2);
-        for (const table of RETAIN_ORDER) totals[table] += res.deleted[table];
-        totals.bytes += res.bytes;
-        for (const id of res.threads) threads.add(id);
+        add(res);
         cursor = res.next;
         if (res.threads.length === 0) continue;
-        await pace(walBefore, startedAt);
+        await pace();
       }
       totals.threads = threads.size;
       return totals;

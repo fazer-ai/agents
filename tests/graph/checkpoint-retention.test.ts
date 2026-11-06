@@ -874,7 +874,7 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
       },
     } as unknown as Pool;
     let wal = 0;
-    await retainCheckpoints(failingOnce, {
+    const totals = await retainCheckpoints(failingOnce, {
       pauseMs: 0,
       graceMs: 0,
       scope: only(id),
@@ -892,6 +892,43 @@ describe.skipIf(!dbUp)("the checkpoint retention pass", () => {
     });
     expect(await rowsOf(id)).toEqual(prunedThreeOld);
     expect(events.slice(0, 3)).toEqual(["blobs", "sleep paced", "blobs"]);
+    // The checkpoints and writes the failed attempt committed are in the pass's totals, once.
+    expect(totals).toMatchObject({
+      threads: 1,
+      checkpoints: 2,
+      checkpoint_writes: 2,
+      checkpoint_blobs: 2,
+    });
+  });
+
+  // The budget is for the instance's WAL, not the pass's alone: what the instance's own traffic writes
+  // while the pass sleeps counts against the next batch, or a busy instance plus the pass runs past
+  // the rate that forces a checkpoint.
+  test("the WAL written while the pass sleeps counts against the next batch", async () => {
+    const id = thread();
+    await seedRows(id, threeOld);
+    let wal = 0;
+    const slept: number[] = [];
+    await pass([id], {
+      rows: 1,
+      pacing: {
+        budgetBytesPerSec: 1_000,
+        readWal: async () => {
+          wal += 1_000;
+          return wal;
+        },
+        sleep: async (ms: number) => {
+          slept.push(ms);
+          wal += 10_000;
+        },
+      },
+    } as Parameters<typeof retainCheckpoints>[1]);
+    expect(await rowsOf(id)).toEqual(prunedThreeOld);
+    expect(slept.length).toBeGreaterThan(1);
+    // The first wait pays for its batch alone; every later one also for the 10 kB written during the
+    // wait before it.
+    expect(slept[0]).toBeLessThanOrEqual(2_000);
+    for (const ms of slept.slice(1)) expect(ms).toBeGreaterThanOrEqual(10_000);
   });
 
   // An instance whose own traffic alone writes past the budget would otherwise hold the pass for as

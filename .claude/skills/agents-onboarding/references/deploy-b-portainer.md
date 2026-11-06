@@ -54,18 +54,16 @@ curl -sk -X POST https://localhost:9443/api/endpoints -H "X-API-Key: <api-key>" 
 ```
 ```
 
-## 2. Registrar os registries privados (uma vez)
+## 2. Registrar o Harbor (só Pro, uma vez)
+
+O Free e o OSS não registram nada: as imagens do ghcr são públicas e o pull é anônimo. No Pro, o único registry privado é o Harbor, e as imagens Pro saem só dele (`harbor.fazer.ai/agents/fazer-ai/agents-pro`, `harbor.fazer.ai/chatwoot/fazer-ai/chatwoot-pro`), nunca do ghcr:
 
 ```sh
-curl -sk -X POST https://localhost:9443/api/registries -H "X-API-Key: <api-key>" -H 'Content-Type: application/json' \
-  -d '{"Name":"ghcr","Type":3,"URL":"ghcr.io","Authentication":true,"Username":"<gh-user>","Password":"<gh-token>"}'
-# Só Pro:
 curl -sk -X POST https://localhost:9443/api/registries -H "X-API-Key: <api-key>" -H 'Content-Type: application/json' \
   -d '{"Name":"harbor","Type":3,"URL":"harbor.fazer.ai","Authentication":true,"Username":"robot$...","Password":"<secret>"}'
 ```
 
-`Type:3` é registry Custom (serve pra qualquer). Capture cada `Id` e passe no array `Registries` do stack
-pra o `pull_policy: always` autenticar.
+`Type:3` é registry Custom (serve pra qualquer). Capture o `Id` e passe no array `Registries` do stack pra o `pull_policy: always` autenticar; sem Pro, `Registries` fica vazio.
 
 ## 3. Deploy do stack agents
 
@@ -79,7 +77,7 @@ bun scripts/gen-onboarding-env.ts --public-url https://agents.<domínio> --acme-
 curl -sk -X POST "https://localhost:9443/api/stacks/create/standalone/string?endpointId=1" \
   -H "X-API-Key: <api-key>" -H 'Content-Type: application/json' \
   -d "$(jq -n --arg c "$(cat templates/docker-compose.portainer.yml)" --argjson env "$ENV_JSON" \
-        '{Name:"agents", StackFileContent:$c, Env:$env, Registries:[<ghcr-id>]}')"
+        '{Name:"agents", StackFileContent:$c, Env:$env, Registries:[<harbor-id>]}')"
 ```
 
 `Env` é um array de `{name,value}` do `.env` gerado. O entrypoint da imagem roda **db-bootstrap →

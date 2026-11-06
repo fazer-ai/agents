@@ -1165,8 +1165,16 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
           get(target, prop, receiver) {
             const v = Reflect.get(target, prop, receiver);
             if (prop !== "$queryRaw") return v;
-            return (strings: TemplateStringsArray, ...values: unknown[]) => {
-              seen.push(Prisma.sql(strings, ...values).text);
+            // A tagged template, or a Prisma.Sql built elsewhere and passed whole.
+            return (
+              strings: TemplateStringsArray | Prisma.Sql,
+              ...values: unknown[]
+            ) => {
+              seen.push(
+                strings instanceof Prisma.Sql
+                  ? strings.text
+                  : Prisma.sql(strings, ...values).text,
+              );
               return (v as (...a: unknown[]) => unknown).call(
                 target,
                 strings,

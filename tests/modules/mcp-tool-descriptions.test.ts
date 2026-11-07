@@ -240,8 +240,8 @@ describe("MCP tool descriptions", () => {
     // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools; 88_157
     // with the hold and how long a theme stays new on occurrences_set, two settings of the monitor;
     // 88_437 with occurrence_flag_episodes_list, the flag history, a read no other tool does;
-    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update, 89_131 alert urls.
-    expect(schema).toBeLessThanOrEqual(89_200);
+    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update, 89_958 alert urls, `customer_choice` and `choiceCheck`.
+    expect(schema).toBeLessThanOrEqual(90_000);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

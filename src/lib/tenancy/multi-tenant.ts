@@ -1,11 +1,17 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { runInDbScope } from "@/lib/db-scope";
+import {
+  closeScopeMark,
+  type DbScope,
+  openScopeMark,
+  runInDbScope,
+} from "@/lib/db-scope";
 import {
   ActiveTenantNotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { currentWorkLabel } from "@/lib/work-label";
 import type { ScopedDb, TenantContext } from "./context";
 import { untilDeadline } from "./deadline";
 import { FLEET_ROLE_FN } from "./fleet-role";
@@ -211,6 +217,22 @@ function scopeOf(budget: TxBudget, tenantId: string | null, fleet: boolean) {
   };
 }
 
+// The transaction runs under its declared scope, and its first statement carries a mark of it as a
+// bound value (`mark`), so the instrumented pool binds the connection to this scope and to the work
+// that opened it (src/lib/db-scope.ts, ScopeMark): read from the async context at the driver, a
+// statement Prisma sent together with another transaction's would carry that one's.
+async function underScope<T>(
+  scope: DbScope,
+  fn: (mark: Prisma.Sql) => Promise<T>,
+): Promise<T> {
+  const id = openScopeMark({ scope, label: currentWorkLabel() });
+  try {
+    return await runInDbScope(scope, () => fn(Prisma.sql`${id}::text`));
+  } finally {
+    closeScopeMark(id);
+  }
+}
+
 // Under a deadline, every statement gets only what is left of it, not the time left when the
 // transaction opened.
 function withinBudget<D extends object>(db: D, budget: TxBudget): D {
@@ -226,9 +248,9 @@ export async function runWithinBudgetOn<T>(
   budget: TxBudget,
   fn: (db: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
-  return runInDbScope(scopeOf(budget, null, false), () =>
+  return underScope(scopeOf(budget, null, false), (mark) =>
     base.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT ${budgetSql(budget)}`;
+      await tx.$executeRaw`SELECT ${budgetSql(budget)}, ${mark}`;
       return fn(withinBudget(tx, budget));
     }, scopedTxOptions(budget)),
   );
@@ -266,11 +288,11 @@ export async function runScopedOn<T>(
   }
   const tenantId = ctx.tenantId;
   const extended = base.$extends(makeScopedExtension(tenantId));
-  return runInDbScope(scopeOf(budget, String(tenantId), false), () =>
+  return underScope(scopeOf(budget, String(tenantId), false), (mark) =>
     extended.$transaction(async (tx) => {
       // transaction-local GUC: RLS policies scope every statement to this tenant; resets
       // on commit/rollback so it cannot leak to the next request on a pooled connection.
-      await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true), ${budgetSql(budget)}`;
+      await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true), ${budgetSql(budget)}, ${mark}`;
       const db = withinBudget(tx as unknown as ScopedDb, budget);
       if (ctx.role === "SUPER_ADMIN") await requireTenantExists(db, tenantId);
       return fn(db);
@@ -299,9 +321,9 @@ export async function asSuperAdminOn<T>(
   fn: (db: ScopedDb) => Promise<T>,
   budget: TxBudget = SCOPED_TX_OPTIONS,
 ): Promise<T> {
-  return runInDbScope(scopeOf(budget, null, true), () =>
+  return underScope(scopeOf(budget, null, true), (mark) =>
     base.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(budget)}`;
+      await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(budget)}, ${mark}`;
       return fn(withinBudget(tx as unknown as ScopedDb, budget));
     }, scopedTxOptions(budget)),
   );

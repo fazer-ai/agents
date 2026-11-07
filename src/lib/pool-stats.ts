@@ -1,6 +1,6 @@
 import { AsyncResource } from "node:async_hooks";
 import type { Pool, PoolClient } from "pg";
-import { currentDbScope } from "@/lib/db-scope";
+import { currentDbScope, markedScope, scopeMarkIn } from "@/lib/db-scope";
 import { currentWorkLabel } from "@/lib/work-label";
 
 // What each database pool is doing, for the instance health sampler (docs/logs.md, instance alerts):
@@ -54,6 +54,7 @@ interface Registry {
 
 const KEY = Symbol.for("fazerai.poolStats");
 const WATCHED = Symbol.for("fazerai.poolStats.watched");
+const MARKED = Symbol.for("fazerai.poolStats.marked");
 const MAX_PENDING_TIMEOUTS = 500;
 
 function registry(): Registry {
@@ -179,10 +180,17 @@ function noteError(
   }
 }
 
+// The bound values of a `client.query(...)` call, in either of pg's shapes.
+function valuesOf(args: unknown[]): unknown {
+  const first = args[0];
+  if (typeof first === "string") return args[1];
+  return (first as { values?: unknown } | null)?.values;
+}
+
 // Watches a client's statements for 55P03 and 57014, once per client, without changing what the
 // caller gets: the rejection still reaches it, and a callback still receives its error.
 function watchClient(client: PoolClient, pool: string): void {
-  const c = client as PoolClient & { [WATCHED]?: true };
+  const c = client as PoolClient & { [WATCHED]?: true; [MARKED]?: string };
   if (c[WATCHED]) return;
   c[WATCHED] = true;
   const query = c.query.bind(c) as (...args: unknown[]) => unknown;
@@ -190,11 +198,17 @@ function watchClient(client: PoolClient, pool: string): void {
     ...args: unknown[]
   ) => {
     const text = textOf(args);
-    // Read now, in the caller's context: the rejection settles on another continuation.
+    // A transaction's first statement carries the mark of the scope that opened it: from then on
+    // this connection's statements are that transaction's, whatever async context Prisma sent them
+    // from (src/lib/db-scope.ts, ScopeMark). Cleared when the connection goes back to the pool.
+    const mark = scopeMarkIn(valuesOf(args));
+    if (mark) c[MARKED] = mark;
+    const bound = c[MARKED] ? markedScope(c[MARKED]) : null;
+    // Otherwise read now, in the caller's context: the rejection settles on another continuation.
     const statement = {
       text,
-      label: currentWorkLabel(),
-      scope: currentDbScope(),
+      label: bound ? bound.label : currentWorkLabel(),
+      scope: bound ? bound.scope : currentDbScope(),
       pool,
     };
     const last = args[args.length - 1];
@@ -219,6 +233,10 @@ function watchClient(client: PoolClient, pool: string): void {
 // `instrumentPool("main", new Pool(...))`.
 export function instrumentPool<P extends Pool>(name: string, pool: P): P {
   const tracked: Tracked = { pool, waits: new Map(), next: 0 };
+  // A released connection belongs to no transaction any more: the next one marks it again.
+  pool.on("release", (_err: unknown, client: PoolClient) => {
+    delete (client as PoolClient & { [MARKED]?: string })[MARKED];
+  });
   registry().pools.set(name, tracked);
   const connect = pool.connect.bind(pool) as (...args: unknown[]) => unknown;
   (pool as unknown as { connect: (...args: unknown[]) => unknown }).connect = (

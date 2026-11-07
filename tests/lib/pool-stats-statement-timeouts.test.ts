@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import { checkpointTransaction } from "@/graph/checkpoint-sweep";
+import { openScopeMarkCount } from "@/lib/db-scope";
 import {
   drainStatementTimeouts,
   forgetPool,
@@ -85,6 +86,64 @@ describe.skipIf(!dbUp)("statement timeouts on an instrumented pool", () => {
     expect(lastStatementTimeout()?.label).toBe("job:FOLLOWUP_SWEEP");
     // Counted apart from the lock timeouts, which mean something else.
     expect(lockTimeoutsPerMinute()).toBe(0);
+  });
+
+  // Both callbacks wait on one gate, so their statements go out in the same tick: Prisma dispatches
+  // requests issued together from the first one's async context, and read at the driver both would
+  // carry the first caller's scope and label.
+  const together = () => {
+    let ready = 0;
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    return async (n: number) => {
+      if (++ready === n) open();
+      await gate;
+    };
+  };
+
+  test("two transactions whose statements go out in the same tick each keep their own work and tenant", async () => {
+    const wait = together();
+    const run = (label: string, tenantId: bigint) =>
+      runWithWorkLabel(label, () =>
+        runScopedOn(
+          db as PrismaClient,
+          { tenantId, userId: null, role: "TENANT_ADMIN" },
+          async (tx) => {
+            await wait(2);
+            return tx.$queryRaw`SELECT pg_sleep(1)`;
+          },
+          budget(50),
+        ),
+      ).catch(() => null);
+    await Promise.all([run("job:FIRST", 11n), run("job:SECOND", 22n)]);
+    const seen = drainStatementTimeouts()
+      .map((e) => `${e.label} ${e.tenantId}`)
+      .sort();
+    expect(seen).toEqual(["job:FIRST 11", "job:SECOND 22"]);
+    // Each transaction's mark is closed when it ends, failed or not.
+    expect(openScopeMarkCount()).toBe(0);
+  });
+
+  test("two fleet transactions whose statements go out together each keep their own work", async () => {
+    const wait = together();
+    const fleet = (label: string) =>
+      runWithWorkLabel(label, () =>
+        asSuperAdminOn(
+          db as PrismaClient,
+          async (tx) => {
+            await wait(2);
+            return tx.$queryRaw`SELECT pg_sleep(1)`;
+          },
+          budget(50),
+        ),
+      ).catch(() => null);
+    await Promise.all([fleet("job:FLEET_A"), fleet("job:FLEET_B")]);
+    const seen = drainStatementTimeouts()
+      .map((e) => `${e.label} ${e.fleet} ${e.tenantId}`)
+      .sort();
+    expect(seen).toEqual(["job:FLEET_A true null", "job:FLEET_B true null"]);
   });
 
   test("the fleet path is recorded as such", async () => {

@@ -453,6 +453,10 @@ model ChatwootInstance {
   // accountId) is globally unique to ONE tenant — a shared server can back many tenants, but the
   // same account can't. See normalizeChatwootBaseUrl + @@unique([serverKey, accountId]) below.
   serverKey       String    @map("server_key")
+  // When Chatwoot created the account (`GET /api/v1/accounts/:id`, milliseconds): with accountId, the
+  // account's identity across tenants whatever address reaches it. Null until the reconcile sweep
+  // reads it for a row connected before it existed.
+  accountCreatedAt DateTime? @map("account_created_at")
   accountName     String?   @map("account_name") // display name, refreshed on sync (Chatwoot can rename)
   // Soft-disconnect: "remove account" keeps the rows (conversations/inboxes/contacts) for history +
   // analytics but unbinds agents and makes the webhook/runtime ignore the account. Null = active.
@@ -478,6 +482,9 @@ model ChatwootInstance {
   @@unique([tenantId, accountId])
   // Global (no tenantId): one Chatwoot account belongs to a single tenant across the whole fleet.
   @@unique([serverKey, accountId])
+  // The same account reached through another address of its installation. Rows still without an
+  // identity are distinct under it (NULLs never collide) and keep the address index above.
+  @@unique([accountId, accountCreatedAt])
   @@index([deploymentId])
   @@map("chatwoot_instances")
 }

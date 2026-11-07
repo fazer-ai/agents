@@ -10,6 +10,7 @@ import {
   type JobResult,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
+import { markAccountIdentities } from "./account-identity";
 import type { ChatwootClient, ChatwootInboxConversation } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import {
@@ -773,6 +774,16 @@ export async function reconcileSweepHandler(
   // Committed from the start: every write a pass makes is idempotent, so a pass on a busy account
   // that outruns the run's deadline still has its reschedule written instead of spending retries.
   ctx?.commit();
+  // NOTE: best-effort and first: an account connected before its identity was recorded is held only
+  // by its address until this reads it, and a failure here must not cost the reconciliation.
+  try {
+    await markAccountIdentities(job.tenantId, {}, base);
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: String(job.tenantId) },
+      "chatwoot reconcile: account identities could not be recorded; tried again next pass",
+    );
+  }
   await reconcileFromChatwoot({ tenantId: job.tenantId, base });
   return {
     outcome: "reschedule",

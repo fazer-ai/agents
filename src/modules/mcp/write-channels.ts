@@ -2,8 +2,6 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import {
-  assertAccountsClaimable,
-  assertAccountsSelectable,
   assertBindTargetNotObserving,
   assertDeploymentConnectable,
   assertDeploymentNotSwitching,
@@ -19,6 +17,7 @@ import {
   listDeploymentAccounts,
   listInboxes,
   observeInbox,
+  planAccountClaims,
   previewChatwootDeploymentUpdate,
   previewInboxRemoval,
   readInboxBotForBind,
@@ -272,23 +271,13 @@ export async function deploymentSetAccounts(
     if (args.dry_run !== false) {
       // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
-      await assertAccountsClaimable(ctx, args.account_ids, base);
-      // ADVISORY, like the claim check above: the list lives on the operator's Chatwoot and
-      // can move before the apply, which asks again. It refuses here an id this deployment cannot
-      // operate.
-      let reported: number[] | null = null;
-      try {
-        reported = (
-          await listDeploymentAccounts(
-            ctx,
-            { fetchProfile: deps.fetchProfile },
-            base,
-          )
-        ).map((a) => a.id);
-      } catch {
-        // probe failed — the core applies the same fallback cap for itself
-      }
-      assertAccountsSelectable([...new Set(args.account_ids)], reported);
+      // ADVISORY: the account list and the claims can move before the apply, which asks again.
+      await planAccountClaims(
+        ctx,
+        args.account_ids,
+        { fetchProfile: deps.fetchProfile, fetchAccount: deps.fetchAccount },
+        base,
+      );
       return ok({
         dryRun: true,
         action: "set_accounts",
@@ -300,7 +289,11 @@ export async function deploymentSetAccounts(
     const accounts = await setConnectedAccounts(
       ctx,
       args.account_ids,
-      { fetchProfile: deps.fetchProfile, makeClient: deps.makeClient },
+      {
+        fetchProfile: deps.fetchProfile,
+        fetchAccount: deps.fetchAccount,
+        makeClient: deps.makeClient,
+      },
       base,
     );
     return ok({ dryRun: false, applied: true, accounts });

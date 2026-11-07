@@ -32,7 +32,7 @@ import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 import { POLL_DEADLINE_MS, until } from "@/tests/utils/poll";
 import { HandoffThenThrowModel } from "@/tests/utils/scripted-models";
-import { seedChatwootInstance } from "../utils/chatwoot";
+import { fakeInstallation, seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot delivery stranded by a process death, and the sweep that reports it.
 // `processChatwootDelivery` works between a CAS `PENDING -> PROCESSING` and a final `-> PROCESSED`,
@@ -1354,7 +1354,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await setConnectedAccounts(
       ctx,
       [61, 62],
-      { makeClient: async () => ({ listInboxes: async () => [] }) as never },
+      {
+        fetchAccount: fakeInstallation("delivery-sweep").fetchAccount,
+        makeClient: async () => ({ listInboxes: async () => [] }) as never,
+      },
       appDb,
     );
     const job = await suDb.schedulerJob.findFirst({

@@ -26,6 +26,7 @@ import {
 } from "@/modules/chatwoot/management";
 import { routeTokenCacheGeneration } from "@/modules/chatwoot/route-token-cache";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { fakeInstallation } from "@/tests/utils/chatwoot";
 
 // THE CHANNEL-MANAGEMENT FAMILY, recorded by the service (`src/modules/chatwoot/management.ts`), so
 // the Channels page's routes and MCP leave the same rows (docs/api-and-fleet.md, "A family moves
@@ -84,6 +85,7 @@ const ctx = (over: Partial<TenantContext> = {}): TenantContext => ({
 // It lists every id these tests connect, because `setConnectedAccounts` checks its input against the
 // accounts the deployment reports: Chatwoot answers 401 to a token on an account absent from its own
 // `GET /api/v1/profile`, so a stub that omits them describes a server that cannot exist.
+const fetchAccount = fakeInstallation("audit-channel-family").fetchAccount;
 const fetchProfile = async () => ({
   accounts: [
     { id: 1, name: "Conta A" },
@@ -369,7 +371,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     const result = await connectChatwootDeployment(
       ctx(),
       { baseUrl: `${BASE_URL}/p${process.pid}`, adminToken: ADMIN_TOKEN },
-      { fetchProfile },
+      { fetchProfile, fetchAccount },
       appDb,
     );
     const [row, ...rest] = await rows();
@@ -393,7 +395,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     const updated = await rotateChatwootDeploymentToken(
       ctx(),
       ROTATED_TOKEN,
-      { fetchProfile },
+      { fetchProfile, fetchAccount },
       appDb,
     );
     const [row] = await rows();
@@ -412,7 +414,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     const result = await connectChatwootDeployment(
       ctx(),
       { baseUrl: `${BASE_URL}/p${process.pid}`, adminToken: ADMIN_TOKEN },
-      { fetchProfile },
+      { fetchProfile, fetchAccount },
       appDb,
     );
     const [row, ...rest] = await rows();
@@ -427,7 +429,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await rotateChatwootDeploymentToken(
       ctx(),
       ROTATED_TOKEN,
-      { fetchProfile },
+      { fetchProfile, fetchAccount },
       appDb,
     );
     await clearAudit();
@@ -441,7 +443,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await rotateChatwootDeploymentToken(
       ctx(),
       ROTATED_TOKEN,
-      { fetchProfile },
+      { fetchProfile, fetchAccount },
       appDb,
     );
     expect(await rows()).toEqual([]);
@@ -465,7 +467,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       rotateChatwootDeploymentToken(
         ctx(),
         "cw-outro-token",
-        { fetchProfile },
+        { fetchProfile, fetchAccount },
         appDb,
       ),
     ).rejects.toThrow();
@@ -481,7 +483,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [1, 2],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       appDb,
     );
     // The choice AND what it did, which are not the same fact: a reader who saw only the choice
@@ -509,7 +511,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [1, 2],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       appDb,
     );
     expect(await rows()).toEqual([]);
@@ -523,7 +525,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [1, 2, 3],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       appDb,
     );
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
@@ -542,7 +544,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [1, 2, 3],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       afterSnapshot(appDb, () =>
         reconnectChatwootInstance(ctx(), inst.id, appDb),
       ),
@@ -579,7 +581,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [1, 2],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       afterSnapshot(appDb, () =>
         softDisconnectChatwootInstance(ctx(), inst.id, appDb),
       ),
@@ -605,7 +607,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [1, 2, 3],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       auditFailingOn(appDb, "deployment.set_accounts"),
     );
     // The effect landed, and so did the row for the account that moved. Only the choice is missing.
@@ -1548,7 +1550,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await setConnectedAccounts(
       ctx(),
       [7311],
-      { fetchProfile, makeClient: stubClient().makeClient },
+      { fetchProfile, fetchAccount, makeClient: stubClient().makeClient },
       staged,
     );
     const live = await suDb.chatwootInstance.findMany({

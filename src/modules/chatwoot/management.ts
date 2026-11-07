@@ -35,6 +35,10 @@ import {
   syncVoiceInboxes,
 } from "@/modules/voice-call/inboxes";
 import {
+  type AccountIdentityDeps,
+  readAccountIdentities,
+} from "./account-identity";
+import {
   assertSafeChatwootUrl,
   ChatwootApiError,
   type ChatwootClient,
@@ -1007,6 +1011,7 @@ async function connectAccount(
   deploymentId: bigint,
   accountId: number,
   accountName: string | null,
+  accountCreatedAt: Date,
   serverKey: string,
   addresses: string[],
   base: PrismaClient,
@@ -1015,10 +1020,14 @@ async function connectAccount(
   if (tenantId === null) throw new AppError("tenant required", 400);
   // A Chatwoot account belongs to ONE tenant fleet-wide. RLS hides another tenant's claim from the
   // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error; the unique
-  // index on (serverKey, accountId) is the hard race-safe backstop on create, for one address.
-  await assertAccountsNotTakenByAnotherTenant(base, tenantId, addresses, [
-    accountId,
-  ]);
+  // index on (accountId, accountCreatedAt) is the race-safe backstop, whatever address each side used.
+  await assertAccountsNotTakenByAnotherTenant(
+    base,
+    tenantId,
+    addresses,
+    [accountId],
+    new Map([[accountId, accountCreatedAt]]),
+  );
   const result = await runScopedOn(base, ctx, async (db) => {
     // NOTE: the deployment row first, outermost of the three (deployment, account, inboxes), so the
     // module locks in one order. It also keeps the disconnect's count honest: locking existing
@@ -1034,10 +1043,20 @@ async function connectAccount(
       // `instance.connect`. With the condition in the `where`, the loser re-evaluates after the first
       // commits and matches nothing. The metadata rides inside the condition, so the loser does not
       // move `accountName` unrecorded.
-      const { count } = await db.chatwootInstance.updateMany({
-        where: { id: existing.id, disconnectedAt: { not: null } },
-        data: { disconnectedAt: null, deploymentId, accountName, serverKey },
-      });
+      const { count } = await db.chatwootInstance
+        .updateMany({
+          where: { id: existing.id, disconnectedAt: { not: null } },
+          data: {
+            disconnectedAt: null,
+            deploymentId,
+            accountName,
+            accountCreatedAt,
+            serverKey,
+          },
+        })
+        .catch((err: unknown) => {
+          throw isUniqueViolation(err) ? accountTakenError() : err;
+        });
       if (count > 0) {
         // NOTE: in this transaction, not with the choice that asked for it: `setConnectedAccounts`
         // connects one account per iteration, and a crash between two must not leave one handled and
@@ -1064,7 +1083,14 @@ async function connectAccount(
     }
     try {
       const row = await db.chatwootInstance.create({
-        data: { tenantId, deploymentId, accountId, accountName, serverKey },
+        data: {
+          tenantId,
+          deploymentId,
+          accountId,
+          accountName,
+          accountCreatedAt,
+          serverKey,
+        },
         select: { id: true },
       });
       await auditMutation(db, ctx, {
@@ -1126,6 +1152,7 @@ async function assertAccountsNotTakenByAnotherTenant(
   tenantId: bigint,
   addresses: string[],
   accountIds: number[],
+  identities: Map<number, Date> = new Map(),
 ): Promise<void> {
   if (accountIds.length === 0) return;
   // The chunks share ONE transaction. Chunking to dodge the parameter ceiling would otherwise
@@ -1133,11 +1160,18 @@ async function assertAccountsNotTakenByAnotherTenant(
   // divided by a thousand.
   const taken = await asSuperAdminOn(base, async (db) => {
     for (let i = 0; i < accountIds.length; i += CLAIM_CHECK_CHUNK) {
+      const chunk = accountIds.slice(i, i + CLAIM_CHECK_CHUNK);
+      const sameAccount = chunk.flatMap((accountId) => {
+        const accountCreatedAt = identities.get(accountId);
+        return accountCreatedAt ? [{ accountId, accountCreatedAt }] : [];
+      });
       const hit = await db.chatwootInstance.findFirst({
         where: {
-          ...claimedOn(addresses),
-          accountId: { in: accountIds.slice(i, i + CLAIM_CHECK_CHUNK) },
           tenantId: { not: tenantId },
+          OR: [
+            { ...claimedOn(addresses), accountId: { in: chunk } },
+            ...sameAccount,
+          ],
         },
         select: { id: true },
       });
@@ -1172,6 +1206,64 @@ export async function assertAccountsClaimable(
     [...new Set(accountIds)],
   );
   return dep;
+}
+
+// Everything `setConnectedAccounts` asks before it writes, so the MCP preview asks the same: the
+// claim check by address, the bound by the deployment's own account list (one probe, also the source
+// of display names; a failed probe means null names and the fallback cap), then the identity of each
+// account not yet active for this tenant, read from Chatwoot, and the claim check by identity.
+export async function planAccountClaims(
+  ctx: TenantContext,
+  accountIds: number[],
+  deps: ListAccountsDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{
+  wanted: number[];
+  dep: Awaited<ReturnType<typeof assertDeploymentConnected>>;
+  nameById: Map<number, string>;
+  identities: Map<number, Date>;
+}> {
+  const tenantId = ctx.tenantId;
+  if (tenantId === null) throw new AppError("tenant required", 400);
+  const wanted = [...new Set(accountIds)];
+  const dep = await assertAccountsClaimable(ctx, wanted, base);
+  let nameById = new Map<number, string>();
+  let reported: number[] | null = null;
+  try {
+    const summaries = await listDeploymentAccounts(ctx, deps, base);
+    nameById = new Map(summaries.map((s) => [s.id, s.name]));
+    reported = summaries.map((s) => s.id);
+  } catch {
+    // probe failed — proceed with null names (the operator picked these ids deliberately)
+  }
+  assertAccountsSelectable(wanted, reported);
+  const { active, adminToken } = await runScopedOn(base, ctx, async (db) => ({
+    active: await db.chatwootInstance.findMany({
+      where: { disconnectedAt: null },
+      select: { accountId: true },
+    }),
+    adminToken: (
+      await db.chatwootDeployment.findUniqueOrThrow({
+        where: { id: dep.id },
+        select: { adminToken: true },
+      })
+    ).adminToken,
+  }));
+  const activeIds = new Set(active.map((a) => a.accountId));
+  const toClaim = wanted.filter((id) => !activeIds.has(id));
+  const identities = await readAccountIdentities(
+    { baseUrl: dep.baseUrl, token: readStoredToken(adminToken) },
+    toClaim,
+    deps,
+  );
+  await assertAccountsNotTakenByAnotherTenant(
+    base,
+    tenantId,
+    deploymentAddresses(dep),
+    toClaim,
+    identities,
+  );
+  return { wanted, dep, nameById, identities };
 }
 
 // The tenant's connected deployment, or the refusal every account operation owes its caller.
@@ -1256,22 +1348,13 @@ export async function setConnectedAccounts(
   base: PrismaClient = basePrisma,
 ): Promise<ChatwootInstanceDto[]> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const wanted = [...new Set(accountIds)];
-  const dep = await assertAccountsClaimable(ctx, wanted, base);
+  const { wanted, dep, nameById, identities } = await planAccountClaims(
+    ctx,
+    accountIds,
+    deps,
+    base,
+  );
   const serverKey = deploymentServerKey(dep);
-  // One probe, not one per account, and its answer is the bound as well as the source of
-  // display names. A failure still falls through to null names, and `assertAccountsSelectable` reads
-  // that same null as "no list available" and applies the fallback cap instead.
-  let nameById = new Map<number, string>();
-  let reported: number[] | null = null;
-  try {
-    const summaries = await listDeploymentAccounts(ctx, deps, base);
-    nameById = new Map(summaries.map((s) => [s.id, s.name]));
-    reported = summaries.map((s) => s.id);
-  } catch {
-    // probe failed — proceed with null names (the operator picked these ids deliberately)
-  }
-  assertAccountsSelectable(wanted, reported);
   const current = await runScopedOn(base, ctx, (db) =>
     db.chatwootInstance.findMany({
       select: { id: true, accountId: true, disconnectedAt: true },
@@ -1294,11 +1377,15 @@ export async function setConnectedAccounts(
   // Connect (create/reactivate) the newly-selected accounts + best-effort inbox sync.
   for (const accountId of wanted) {
     if (activeIds.has(accountId)) continue; // already active — nothing to do
+    const accountCreatedAt = identities.get(accountId);
+    // NOTE: only when it was already active as the plan read it, then disconnected in between.
+    if (!accountCreatedAt) continue;
     const { id, changed } = await connectAccount(
       ctx,
       dep.id,
       accountId,
       nameById.get(accountId) ?? null,
+      accountCreatedAt,
       serverKey,
       deploymentAddresses(dep),
       base,
@@ -4168,7 +4255,7 @@ export function parseChatwootAccounts(raw: unknown): ChatwootAccountSummary[] {
   return out;
 }
 
-export interface ListAccountsDeps {
+export interface ListAccountsDeps extends AccountIdentityDeps {
   fetchProfile?: (p: { baseUrl: string; token: string }) => Promise<unknown>;
   // How the bots are moved when the webhook base changes (tests inject the Chatwoot client).
   repoint?: RepointDeps;

@@ -7,7 +7,7 @@ import { setConnectedAccounts } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { deploymentSetAccounts } from "@/modules/mcp/write-channels";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { seedChatwootInstance } from "../utils/chatwoot";
+import { fakeInstallation, seedChatwootInstance } from "../utils/chatwoot";
 
 // `deployment_set_accounts` publishes `account_ids` with no maximum, and `setConnectedAccounts` gives
 // every new id a row plus a best-effort `syncInboxes` (two sequential HTTP calls), so an unbounded
@@ -49,8 +49,14 @@ const REPORTED = [
   { id: 8, name: "Acc 8" },
   { id: 9, name: "Acc 9" },
 ];
-const profileOk = { fetchProfile: async () => ({ accounts: REPORTED }) };
+// Every account still answers its own read, which is what a claim is checked by.
+const { fetchAccount } = fakeInstallation("bounded");
+const profileOk = {
+  fetchProfile: async () => ({ accounts: REPORTED }),
+  fetchAccount,
+};
 const profileDown = {
+  fetchAccount,
   fetchProfile: async () => {
     throw new Error("chatwoot unreachable");
   },
@@ -155,7 +161,7 @@ describe.skipIf(!dbUp)("the accounts a deployment can be asked for", () => {
     const previewed = await deploymentSetAccounts(
       p,
       { account_ids: [5, 4242], dry_run: true },
-      { base: appDb, fetchProfile: profileOk.fetchProfile },
+      { base: appDb, ...profileOk },
     );
     expect(previewed.ok).toBe(false);
     if (!previewed.ok) {

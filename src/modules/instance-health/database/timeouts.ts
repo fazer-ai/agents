@@ -139,12 +139,6 @@ export async function capturePlan(
   // "Planned as" is read back from the transaction that planned, not restated from the event: the
   // record says which role and tenant Postgres actually applied.
   const explain = async (db: ScopedDb) => {
-    // Inside the budgeted transaction, like everything else here: no statement escapes the deadline.
-    const [version] = await db.$queryRaw<{ v: number }[]>`
-      SELECT current_setting('server_version_num')::int AS v`;
-    if ((version?.v ?? 0) < 160000) {
-      throw new Error(PLAN_NEEDS_PG16);
-    }
     await db.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
     // Without values, so the parameters stay `$N` and the plan is the generic one; the text was
     // already read as one statement by the server in the check before.
@@ -171,6 +165,14 @@ export async function capturePlan(
           ? scopedWithin(base, tenantId, budget, fn)
           : plainWithin(base, budget, fn);
     await inScope(async (db) => {
+      // Before the text is sent at all: an older server refuses the GENERIC_PLAN option at parse
+      // time, which would read as any other refusal. Inside the budgeted transaction, like
+      // everything else here: no statement escapes the deadline.
+      const [version] = await db.$queryRaw<{ v: number }[]>`
+        SELECT current_setting('server_version_num')::int AS v`;
+      if ((version?.v ?? 0) < 160000) {
+        throw new Error(PLAN_NEEDS_PG16);
+      }
       await db.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
       await checkOneStatement(db, text);
     });

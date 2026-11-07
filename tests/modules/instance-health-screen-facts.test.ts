@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { PrismaClient } from "@/../generated/prisma/client";
 import {
+  capturePlan,
   PLAN_NEEDS_PG16,
   PLAN_ON_OTHER_DATABASE,
   planFailureOf,
@@ -144,5 +146,41 @@ describe("the scope a plan was taken under, as fields", () => {
       expect(plannedScopeOf(plannedAsOf(scope))).toEqual(scope);
     }
     expect(plannedScopeOf("something else")).toBeNull();
+  });
+});
+
+describe("a server too old for EXPLAIN (GENERIC_PLAN)", () => {
+  test("is named as such before the statement is sent to it", async () => {
+    // A server that answers version 15 and refuses the GENERIC_PLAN option, as Postgres 15 does at
+    // parse time whatever the statement's parameters.
+    const sent: string[] = [];
+    const tx = {
+      $executeRaw: async () => 0,
+      $executeRawUnsafe: async () => 0,
+      $queryRaw: async (strings: TemplateStringsArray) =>
+        strings.join("").includes("server_version_num") ? [{ v: 150_000 }] : [],
+      $queryRawUnsafe: async (text: string) => {
+        sent.push(text);
+        throw Object.assign(
+          new Error('unrecognized EXPLAIN option "generic_plan"'),
+          { code: "42601" },
+        );
+      },
+    };
+    const base = {
+      $transaction: async (fn: (t: typeof tx) => unknown) => fn(tx),
+    } as unknown as PrismaClient;
+    const out = await capturePlan(
+      {
+        sql: "SELECT * FROM agents WHERE id = $1",
+        tenantId: null,
+        fleet: false,
+        pool: "main",
+      },
+      base,
+    );
+    expect(out).toEqual({ error: PLAN_NEEDS_PG16 });
+    expect(planFailureOf(PLAN_NEEDS_PG16)).toEqual({ kind: "old_server" });
+    expect(sent).toEqual([]);
   });
 });

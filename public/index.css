@@ -61,6 +61,17 @@
   --color-info: #828fff;
   --color-info-soft: #5e6ad233;
 
+  /* Chart series, in this order: a categorical palette whose neighbours stay apart under
+     colour-vision deficiency, stepped per theme. Charts never cycle it. */
+  --color-chart-1: #3987e5;
+  --color-chart-2: #d95926;
+  --color-chart-3: #199e70;
+  --color-chart-4: #c98500;
+  --color-chart-5: #d55181;
+  --color-chart-6: #008300;
+  --color-chart-7: #9085e9;
+  --color-chart-8: #e66767;
+
   /* Backdrop behind modals and the mobile drawer */
   --color-overlay: #00000099;
 
@@ -166,6 +177,15 @@ html[data-theme="light"] {
   --color-warning-soft: #9a67001a;
   --color-info: #4b55c8;
   --color-info-soft: #5e6ad21f;
+
+  --color-chart-1: #2a78d6;
+  --color-chart-2: #eb6834;
+  --color-chart-3: #19a573;
+  --color-chart-4: #c28400;
+  --color-chart-5: #da749a;
+  --color-chart-6: #008300;
+  --color-chart-7: #6250d6;
+  --color-chart-8: #e34948;
 
   --color-overlay: #1c1c1a40;
 

@@ -28,6 +28,11 @@ const IDENTICAL_ON_PURPOSE: Record<string, string> = {
   "editor.tools.mcpSelected": "en: no noun agrees with the count",
   "editor.tools.nativeActiveCount": "en: no noun agrees with the count",
   "dashboard.cost.acrossResolved": "en: no noun agrees with the count",
+  // A chart's "Other" group: "Others (2)". pt-BR forms agree in number.
+  "dashboard.chart.moreMembers":
+    'a count after a list: "and 2 more" / "e mais 2"',
+  "dashboard.chart.otherLines":
+    "en: parenthetical count, no noun to agree with",
   // A round's parts, each a count and a verb or participle: "1 failed", "2 left for the next round".
   "occurrences.detail.copied": "en: no noun agrees with the count",
   "occurrences.detail.failed": "en: no noun agrees with the count",

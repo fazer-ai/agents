@@ -979,14 +979,23 @@
       "unread": "The ceiling could not be read."
     },
     "chart": {
+      "clickForAll": "Click to see every series",
+      "closeDetail": "Close the day's detail",
+      "days": "Days of the chart",
       "loading": "loading",
       "loadingDays_one": "loading · {{count}} day",
       "loadingDays_other": "loading · {{count}} days",
       "loadingTip": "computing…",
+      "moreMembers_one": "and {{count}} more",
+      "moreMembers_other": "and {{count}} more",
       "noData": "no data",
       "noDataDays_one": "no data · {{count}} day",
       "noDataDays_other": "no data · {{count}} days",
-      "noDataTip": "no data: retention cleared this day's Logs before it was kept"
+      "noDataTip": "no data: retention cleared this day's Logs before it was kept",
+      "openDay": "Open the detail of {{day}}",
+      "otherLines_one": "Others ({{count}})",
+      "otherLines_other": "Others ({{count}})",
+      "total": "Day total {{value}}"
     },
     "col": {
       "agent": "Agent",

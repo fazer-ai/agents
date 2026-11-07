@@ -1016,18 +1016,30 @@
       "unread": "Não foi possível ler o teto."
     },
     "chart": {
+      "clickForAll": "Clique para ver todas as séries",
+      "closeDetail": "Fechar o detalhe do dia",
+      "days": "Dias do gráfico",
       "loading": "carregando",
       "loadingDays_zero": "carregando · {{count}} dias",
       "loadingDays_one": "carregando · {{count}} dia",
       "loadingDays_many": "carregando · {{count}} dias",
       "loadingDays_other": "carregando · {{count}} dias",
       "loadingTip": "calculando…",
+      "moreMembers_zero": "e mais {{count}}",
+      "moreMembers_one": "e mais {{count}}",
+      "moreMembers_many": "e mais {{count}}",
+      "moreMembers_other": "e mais {{count}}",
       "noData": "sem dados",
       "noDataDays_zero": "sem dados · {{count}} dias",
       "noDataDays_one": "sem dados · {{count}} dia",
       "noDataDays_many": "sem dados · {{count}} dias",
       "noDataDays_other": "sem dados · {{count}} dias",
-      "noDataTip": "sem dados: os Logs deste dia foram apagados pela retenção antes de ele ser guardado"
+      "noDataTip": "sem dados: os Logs deste dia foram apagados pela retenção antes de ele ser guardado",
+      "openDay": "Abrir o detalhe de {{day}}",
+      "otherLines_one": "Outras ({{count}})",
+      "otherLines_many": "Outras ({{count}})",
+      "otherLines_other": "Outras ({{count}})",
+      "total": "Total do dia {{value}}"
     },
     "col": {
       "agent": "Agente",

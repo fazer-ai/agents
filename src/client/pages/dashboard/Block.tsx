@@ -75,8 +75,9 @@ export function CoverageChip({
 }
 
 // A dashboard block: a titled card with its controls, a CSV export of exactly what it shows, and,
-// when its content is a chart, a table a screen reader reads in the chart's place (the chart itself
-// is hidden from the accessibility tree, since an SVG of bars says nothing).
+// when its content is a chart, a table a screen reader reads in the chart's place (the chart hides
+// its drawing from the accessibility tree, since an SVG of bars says nothing, and keeps its legend
+// and its day detail reachable).
 export function Block({
   id,
   icon: Icon,
@@ -169,8 +170,9 @@ export function Block({
           )}
         </p>
       ) : chart ? (
-        // A chart says which days are still loading on its own axis: it does not pulse as a whole.
-        <div aria-hidden="true">{children}</div>
+        // A chart says which days are still loading on its own axis: it does not pulse as a whole. It
+        // hides its own drawing from a screen reader, which reads the table below in its place.
+        <div>{children}</div>
       ) : (
         <ProvisionalValue coverage={coverage}>{children}</ProvisionalValue>
       )}

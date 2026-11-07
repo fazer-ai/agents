@@ -553,6 +553,10 @@ const takeover = z.looseObject({
     ),
 });
 
+const conversationNotes = z.looseObject({
+  toolsUsed: z.boolean().optional(),
+});
+
 const limits = z.looseObject({
   maxToolCalls: ranged(LIMITS_RANGES.maxToolCalls)
     .optional()
@@ -1397,6 +1401,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   snoozedFollowUp: snoozedFollowUp.optional(),
   handoff: handoff.optional(),
   takeover: takeover.optional(),
+  conversationNotes: conversationNotes.optional(),
   limits: limits.optional(),
   availability: availability.optional(),
   contactAuth: contactAuth.optional(),

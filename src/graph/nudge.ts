@@ -35,6 +35,7 @@ import {
   contactAuthHasEndpointStage,
   contactAuthHasRuleStage,
 } from "@/modules/contact-auth/settings";
+import { postToolsUsedNote } from "@/modules/conversation-notes/tools-used";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
@@ -590,6 +591,9 @@ interface NudgeClosing {
   // Gives back the proactive limit's reservation when nothing reached the customer, after the tool
   // speech above has had its chance to claim it.
   releaseReservation: () => Promise<void>;
+  // The private note naming the tools the turn ran, when the agent asks for one. Posted last, so it
+  // reads below whatever the turn sent.
+  toolsUsedNote: () => Promise<void>;
 }
 
 // EVERY PROACTIVE TURN CLOSES ON ONE LINE. The outcome line carries the messages the turn created
@@ -608,12 +612,14 @@ export async function runAgentNudge(
     generating: false,
     recordToolSpeech: async () => {},
     releaseReservation: async () => {},
+    toolsUsedNote: async () => {},
   };
   try {
     return await runAgentNudgeBody(params, closing, turnStartedAt);
   } finally {
     await closing.recordToolSpeech();
     await closing.releaseReservation();
+    await closing.toolsUsedNote();
     const sentMessageIds = closing.sentIds();
     if (
       closing.flow &&
@@ -1969,6 +1975,16 @@ async function runAgentNudgeBody(
     tools,
     handedOff: () => handoffState.completed === true,
   });
+  if (cfg.toolsUsedNote) {
+    closing.toolsUsedNote = async () => {
+      await postToolsUsedNote({
+        client,
+        conversationId,
+        called: toolLogger.calledTools(),
+        flow,
+      });
+    };
+  }
   const callbacks = [
     ...buildCallbacks(cfg, {
       tenantId,

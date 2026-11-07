@@ -17,6 +17,7 @@ import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
 import { readContactFieldsConfig } from "@/modules/chatwoot/contact-fields";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
+import { readConversationNotesConfig } from "@/modules/conversation-notes/settings";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 import { readDebounceConfig } from "@/modules/debounce/settings";
 import {
@@ -84,6 +85,7 @@ export interface BehaviorSettings {
   // NOTE: The second block whose default is ON (see modules/handoff/settings for why), and it is kept
   // apart from `handoff` above because the Tools tab REPLACES that one wholesale.
   takeover: ReturnType<typeof readTakeoverConfig>;
+  conversationNotes: ReturnType<typeof readConversationNotesConfig>;
   sendImage: ReturnType<typeof readSendImageConfig>;
   // NOTE: The labels resolve_conversation writes itself, before the close.
   resolveConversation: ReturnType<typeof readResolveConversationConfig>;
@@ -141,6 +143,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "snoozedFollowUp",
   "handoff",
   "takeover",
+  "conversationNotes",
   "sendImage",
   "resolveConversation",
   "crossInboxCase",
@@ -187,6 +190,7 @@ export function readBehaviorSettings(
     snoozedFollowUp: readSnoozedFollowUpConfig(settings),
     handoff: readHandoffConfig(settings),
     takeover: readTakeoverConfig(settings),
+    conversationNotes: readConversationNotesConfig(settings),
     sendImage: readSendImageConfig(settings),
     resolveConversation: readResolveConversationConfig(settings),
     crossInboxCase: readCrossInboxCaseConfig(settings),
@@ -233,6 +237,7 @@ export interface BehaviorSettingsPatch {
   snoozedFollowUp?: Record<string, unknown>;
   handoff?: Record<string, unknown>;
   takeover?: Record<string, unknown>;
+  conversationNotes?: Record<string, unknown>;
   sendImage?: Record<string, unknown>;
   resolveConversation?: Record<string, unknown>;
   crossInboxCase?: Record<string, unknown>;

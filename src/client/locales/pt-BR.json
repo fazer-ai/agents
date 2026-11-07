@@ -2031,6 +2031,10 @@
     "contactFieldsHint": "Os campos próprios do contato no Chatwoot. O agente vê o valor atual de cada campo marcado e pode gravar o que o cliente informar nos campos marcados como editáveis.",
     "contactFieldVisible": "No contexto",
     "contactFieldWritable": "Agente pode alterar",
+    "conversationNotes": "Notas na conversa",
+    "conversationNotesHelp": "Notas privadas que o agente deixa na conversa do Chatwoot para a sua equipe. O cliente nunca as vê, e o agente não as lê de volta nos turnos seguintes.",
+    "conversationNotesToolsUsed": "Deixar uma nota com as ferramentas usadas em cada turno",
+    "conversationNotesToolsUsedHelp": "Uma nota por turno que usou alguma ferramenta, só com os nomes delas. O que cada ferramenta recebeu e devolveu fica de fora, porque pode trazer dados do cliente; a página de Logs mostra isso.",
     "credential": "Chave de API",
     "crossInboxCase": {
       "attributeKey": "Atributo do número do caso",

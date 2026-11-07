@@ -37,6 +37,7 @@ import {
   attachmentFetchTarget,
   ChatwootApiError,
   type ChatwootClient,
+  ChatwootStatusConflictError,
   chatwootLinkBase,
 } from "@/modules/chatwoot/client";
 import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
@@ -2336,6 +2337,11 @@ export async function returnConversationToAgent(
   // decides first, and somebody else can arrive in between). Reading the baseline here would adopt
   // the newcomer. The console and MCP omit it; omitting it can only ever refuse to unassign somebody.
   expectedHolder?: ReturnToAgentHolder,
+  // The status the conversation must still hold for an AUTOMATIC hand-back (the test-mode park
+  // returns only an `open` conversation): a resolve or snooze that landed before the last read refuses
+  // with ChatwootStatusConflictError, and the status call is conditional on it. A person's hand-back
+  // omits it, since returning a resolved conversation is what they asked for.
+  expectedStatus?: string,
 ): Promise<ReturnToAgentOutcome> {
   const tenantId = requireTenant(ctx);
   const conv = await loadConvRef(ctx, id, base);
@@ -2475,6 +2481,11 @@ export async function returnConversationToAgent(
   // "nobody took it": a degraded payload with the holder unchanged is the common case, and refusing
   // to hand back on it would leave the conversation with a human who has already walked away.
   const live = await readHolder();
+  if (
+    expectedStatus !== undefined &&
+    (live === null || live.status !== expectedStatus)
+  )
+    throw new ChatwootStatusConflictError(conv.chatwootConversationId);
   // A holder other than the baseline, by the whole identity ("User" and "AgentBot" are
   // separate id namespaces). An EMPTY assignee is not a competing holder; a typed holder with no id
   // is (unknown is not absent, so it fails closed). Written once because a live read after the
@@ -2584,6 +2595,7 @@ export async function returnConversationToAgent(
     if (!(attempted && handedToBot)) {
       await client.toggleStatus(conv.chatwootConversationId, "pending", {
         asAdmin: true,
+        ...(expectedStatus !== undefined ? { expectedStatus } : {}),
       });
       toggled = true;
       // NOTE: the unassign is decided on a read taken AFTER the status call, so a human who claimed

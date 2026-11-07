@@ -202,7 +202,7 @@ import {
   forgetMediaFallbacks,
   handleChannelFailure,
 } from "./channel-failure";
-import type { ChatwootClient } from "./client";
+import { type ChatwootClient, ChatwootStatusConflictError } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
 import { resetAckSendId } from "./constants";
 import {
@@ -3100,9 +3100,16 @@ async function maybeConsumeCommandOrGate(params: {
         );
         const sibPark = await readTestPark(sib.id);
         if (live && sibPark && testParkHolds(sibPark, live)) {
-          await returnConversationToAgent(sysCtx(tenantId), sib.id, {}, base, {
-            assigneeType: live.assigneeType,
-            assigneeId: live.assigneeId,
+          // NOTE: A status that moved since this read refuses the hand-back, and that is the decision too.
+          await returnConversationToAgent(
+            sysCtx(tenantId),
+            sib.id,
+            {},
+            base,
+            { assigneeType: live.assigneeType, assigneeId: live.assigneeId },
+            "open",
+          ).catch((err: unknown) => {
+            if (!(err instanceof ChatwootStatusConflictError)) throw err;
           });
         }
         await clearTestPark(sib.id);
@@ -3234,6 +3241,7 @@ async function maybeConsumeCommandOrGate(params: {
               assigneeType: ctx.conv.assigneeType,
               assigneeId: ctx.conv.assigneeId,
             },
+            "open",
           );
         } catch (err) {
           logger.warn(

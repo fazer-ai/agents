@@ -763,6 +763,41 @@ describe.skipIf(!dbUp)(
       expect(live.get(convId)?.status).toBe("open");
     });
 
+    test("a conversation resolved after /teste looked stays resolved", async () => {
+      const convId = await seedConversation();
+      const live = new Map<number, LiveConv>([
+        [convId, { status: "pending", assigneeType: null, assigneeId: null }],
+      ]);
+      let readsInTeste: number | null = null;
+      const cw = fakeChatwoot(live, {
+        autoAssign: true,
+        beforeRead: async (id) => {
+          if (readsInTeste === null || id !== convId) return;
+          readsInTeste += 1;
+          // The refresh saw it open and held by the park's assignee; somebody resolves it after.
+          if (readsInTeste === 2) {
+            const c = live.get(convId);
+            if (c) c.status = "resolved";
+          }
+        },
+      });
+      globalThis.fetch = cw.impl;
+      await deliver(convId, "oi", {
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+      });
+      readsInTeste = 0;
+      await deliver(convId, "/teste", {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: AUTO_AGENT,
+      });
+      expect(readsInTeste).toBeGreaterThanOrEqual(2);
+      expect(handBacks(cw.calls, convId)).toHaveLength(0);
+      expect(live.get(convId)?.status).toBe("resolved");
+    });
+
     test("/teste on an open conversation the agent never parked keeps today's answer", async () => {
       const convId = await seedConversation({ status: "open" });
       const live = new Map<number, LiveConv>([
@@ -835,76 +870,99 @@ describe.skipIf(!dbUp)(
       // Still no copy and no note: the refusal stays silent under test mode.
       expect(posts(cw.calls, convId)).toHaveLength(0);
     });
-    test("/teste on one half of a redirect episode gives the parked other half back too", async () => {
-      const widgetInbox = await suDb.inbox.create({
-        data: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          chatwootInboxId: WIDGET_INBOX_ID,
-          name: "Chat do site",
-          agentId,
-        },
-      });
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: {
-          settings: {
-            channelRedirect: {
-              enabled: true,
-              entryInboxId: INBOX_ID,
-              widgetInboxId: WIDGET_INBOX_ID,
+    for (const resolvedMidway of [false, true])
+      test(
+        resolvedMidway
+          ? "/teste leaves the parked other half of a redirect episode resolved when it was resolved meanwhile"
+          : "/teste on one half of a redirect episode gives the parked other half back too",
+        async () => {
+          const widgetInbox = await suDb.inbox.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootInboxId: WIDGET_INBOX_ID,
+              name: "Chat do site",
+              agentId,
             },
-          },
-        },
-      });
-      try {
-        const widgetConvId = await seedConversation({
-          inboxId: widgetInbox.id,
-          status: "open",
-          testParkedOpenAt: new Date(),
-        });
-        const entryConvId = await seedConversation();
-        const live = new Map<number, LiveConv>([
-          [
-            entryConvId,
-            { status: "pending", assigneeType: null, assigneeId: null },
-          ],
-          [
-            widgetConvId,
-            {
+          });
+          await suDb.agent.update({
+            where: { id: agentId },
+            data: {
+              settings: {
+                channelRedirect: {
+                  enabled: true,
+                  entryInboxId: INBOX_ID,
+                  widgetInboxId: WIDGET_INBOX_ID,
+                },
+              },
+            },
+          });
+          try {
+            const widgetConvId = await seedConversation({
+              inboxId: widgetInbox.id,
+              status: "open",
+              testParkedOpenAt: new Date(),
+            });
+            const entryConvId = await seedConversation();
+            const live = new Map<number, LiveConv>([
+              [
+                entryConvId,
+                { status: "pending", assigneeType: null, assigneeId: null },
+              ],
+              [
+                widgetConvId,
+                {
+                  status: "open",
+                  assigneeType: null,
+                  assigneeId: null,
+                  inboxId: WIDGET_INBOX_ID,
+                },
+              ],
+            ]);
+            let widgetReads = 0;
+            const cw = fakeChatwoot(live, {
+              beforeRead: async (id) => {
+                if (!resolvedMidway || id !== widgetConvId) return;
+                widgetReads += 1;
+                const c = live.get(widgetConvId);
+                if (widgetReads === 2 && c) c.status = "resolved";
+              },
+            });
+            globalThis.fetch = cw.impl;
+            await deliver(entryConvId, "oi", {
+              status: "pending",
+              assigneeType: null,
+              assigneeId: null,
+            });
+            await deliver(entryConvId, "/teste", {
               status: "open",
               assigneeType: null,
               assigneeId: null,
-              inboxId: WIDGET_INBOX_ID,
-            },
-          ],
-        ]);
-        const cw = fakeChatwoot(live);
-        globalThis.fetch = cw.impl;
-        await deliver(entryConvId, "oi", {
-          status: "pending",
-          assigneeType: null,
-          assigneeId: null,
-        });
-        await deliver(entryConvId, "/teste", {
-          status: "open",
-          assigneeType: null,
-          assigneeId: null,
-        });
-        expect(live.get(entryConvId)?.status).toBe("pending");
-        expect(live.get(widgetConvId)).toEqual({
-          status: "pending",
-          assigneeType: "AgentBot",
-          assigneeId: BOT_ID,
-          inboxId: WIDGET_INBOX_ID,
-        });
-        expect((await rowOf(widgetConvId)).testParkedOpenAt).toBeNull();
-      } finally {
-        await suDb.conversation.deleteMany({
-          where: { tenantId, inboxId: widgetInbox.id },
-        });
-        await suDb.inbox.delete({ where: { id: widgetInbox.id } });
-      }
-    });
+            });
+            expect(live.get(entryConvId)?.status).toBe("pending");
+            expect(live.get(widgetConvId)).toEqual(
+              resolvedMidway
+                ? {
+                    status: "resolved",
+                    assigneeType: null,
+                    assigneeId: null,
+                    inboxId: WIDGET_INBOX_ID,
+                  }
+                : {
+                    status: "pending",
+                    assigneeType: "AgentBot",
+                    assigneeId: BOT_ID,
+                    inboxId: WIDGET_INBOX_ID,
+                  },
+            );
+            expect((await rowOf(widgetConvId)).testParkedOpenAt).toBeNull();
+          } finally {
+            await suDb.conversation.deleteMany({
+              where: { tenantId, inboxId: widgetInbox.id },
+            });
+            await suDb.inbox.delete({ where: { id: widgetInbox.id } });
+          }
+        },
+      );
   },
 );

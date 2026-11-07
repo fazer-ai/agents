@@ -10,6 +10,7 @@ import {
   cloneVerdict,
   ensureWorkerClone,
   fastPath,
+  orphanClonesToDrop,
   ownerComment,
   processStart,
   reapClones,
@@ -185,6 +186,66 @@ describe("which leftover clones a run removes", () => {
   });
 });
 
+// A checkout removed before its next parallel run leaves its copies with nobody to reap them, so every
+// run also sweeps the copies of ANY checkout that no run can come back for: owner gone AND the template
+// it was copied from gone. Either one alone is not enough across checkouts.
+describe("which copies of a removed checkout any run removes", () => {
+  const gone = "/dev/agents/1719-removed";
+  const goneTemplate = testDbNameFor("secretaria_v4_test", gone);
+  const row = (comment: string | null, w = "1") => ({
+    name: cloneName(w, gone),
+    comment,
+  });
+  const databases = new Set([TEMPLATE]);
+
+  test.each([
+    [
+      "the owner and the template are gone",
+      owner({ template: goneTemplate }),
+      {},
+      true,
+    ],
+    [
+      "the owner is running",
+      owner({ template: goneTemplate }),
+      { 100: "Sat Oct 11 10:00:00 2026" },
+      false,
+    ],
+    [
+      "the pid was reused",
+      owner({ template: goneTemplate }),
+      { 100: "Sun Oct 12 09:00:00 2026" },
+      true,
+    ],
+    // Another checkout's next run may be about to rebuild it under that checkout's own lock.
+    ["the template is still there", owner({}), {}, false],
+  ] as const)("%s", (_why, o, running, dropped) => {
+    expect(
+      orphanClonesToDrop([row(ownerComment(o))], databases, alive(running)),
+    ).toEqual(dropped ? [cloneName("1", gone)] : []);
+  });
+
+  // Nothing says whose they are or where they came from, so nothing says no run will come back.
+  test("a copy with no record, an unreadable one or one without a template is left", () => {
+    const { template: _t, ...noTemplate } = owner({});
+    const rows = [
+      row(null, "1"),
+      row("not json", "2"),
+      row(JSON.stringify({ "fazerai-test-clone": 1, ...noTemplate }), "3"),
+    ];
+    expect(orphanClonesToDrop(rows, databases, alive({}))).toEqual([]);
+  });
+
+  test("a database that is no worker copy is never touched", () => {
+    const o = ownerComment(owner({ template: goneTemplate }));
+    const rows = [
+      { name: goneTemplate, comment: o },
+      { name: testDbNameFor("fzgate417_p1_test", gone), comment: o },
+    ];
+    expect(orphanClonesToDrop(rows, databases, alive({}))).toEqual([]);
+  });
+});
+
 describe("what a worker does with the clone it is about to use", () => {
   const me = { pid: 200, ancestors: [200, 100] };
   const running = alive({ 100: "Sat Oct 11 10:00:00 2026" });
@@ -238,9 +299,12 @@ describe("removing leftovers, on the database", () => {
     "a dead run's clone and its fleet role go, a live run's clone stays",
     async () => {
       const root = `/nonexistent/fzclone1384-p${process.pid}`;
-      const template = testDbNameFor(`fzclone1384_p${process.pid}_test`, root);
-      const dead = testDbNameFor(template, root, "1");
-      const kept = testDbNameFor(template, root, "2");
+      // A template that exists, or any run's sweep of removed checkouts takes the dead copy before the
+      // reap under test does.
+      const template = "postgres";
+      const stem = testDbNameFor(`fzclone1384_p${process.pid}_test`, root);
+      const dead = testDbNameFor(stem, root, "1");
+      const kept = testDbNameFor(stem, root, "2");
       const finished = Bun.spawn(["true"]);
       await finished.exited;
       const maintUrl = withDbName(suUrl as string, "postgres");
@@ -298,6 +362,89 @@ describe("removing leftovers, on the database", () => {
           await maint.query(`DROP DATABASE IF EXISTS "${db}"`).catch(() => {});
         }
         await maint.query(`DROP ROLE IF EXISTS "${deadRole}"`).catch(() => {});
+        await maint.end();
+      }
+    },
+    60_000,
+  );
+
+  // The checkout that made these is gone, and so is its database: a run of ANOTHER checkout takes the
+  // copy and its role. A copy whose owner runs, or whose template is still there, stays.
+  test.skipIf(!live)(
+    "a removed checkout's copy goes with its role from another checkout's reap",
+    async () => {
+      const gone = `/nonexistent/fzclone437-p${process.pid}`;
+      const goneTemplate = testDbNameFor(
+        `fzclone437_p${process.pid}_test`,
+        gone,
+      );
+      const orphan = testDbNameFor(goneTemplate, gone, "1");
+      const running = testDbNameFor(goneTemplate, gone, "2");
+      const rebuildable = testDbNameFor(goneTemplate, gone, "3");
+      const finished = Bun.spawn(["true"]);
+      await finished.exited;
+      const maintUrl = withDbName(suUrl as string, "postgres");
+      const maint = new Client({ connectionString: maintUrl });
+      await maint.connect();
+      const orphanRole = (
+        await maint.query<{ role: string }>(
+          `SELECT ${FLEET_ROLE_EXPR.replaceAll("current_database()::text", "$1::text")} AS role`,
+          [orphan],
+        )
+      ).rows[0]?.role as string;
+      const all = [orphan, running, rebuildable];
+      try {
+        const owners = [
+          [
+            orphan,
+            owner({ template: goneTemplate, pid: finished.pid, start: "gone" }),
+          ],
+          [
+            running,
+            owner({
+              template: goneTemplate,
+              pid: process.pid,
+              start: (await processStart(process.pid)) as string,
+            }),
+          ],
+          [
+            rebuildable,
+            owner({ template: "postgres", pid: finished.pid, start: "gone" }),
+          ],
+        ] as const;
+        for (const [db, o] of owners) {
+          await maint.query(`CREATE DATABASE "${db}"`);
+          await maint.query(
+            `COMMENT ON DATABASE "${db}" IS ${maint.escapeLiteral(ownerComment(o))}`,
+          );
+        }
+        await maint.query(`CREATE ROLE "${orphanRole}" NOLOGIN`);
+
+        await reapClones({
+          maintUrl,
+          root: ROOT,
+          template: testDbNameFor("fzclone437_none_test", ROOT),
+        });
+
+        const { rows } = await maint.query<{ datname: string }>(
+          "SELECT datname FROM pg_database WHERE datname = ANY($1) ORDER BY datname",
+          [all],
+        );
+        expect(rows.map((r) => r.datname)).toEqual(
+          [running, rebuildable].sort(),
+        );
+        const role = await maint.query(
+          "SELECT 1 FROM pg_roles WHERE rolname = $1",
+          [orphanRole],
+        );
+        expect(role.rowCount).toBe(0);
+      } finally {
+        for (const db of all) {
+          await maint.query(`DROP DATABASE IF EXISTS "${db}"`).catch(() => {});
+        }
+        await maint
+          .query(`DROP ROLE IF EXISTS "${orphanRole}"`)
+          .catch(() => {});
         await maint.end();
       }
     },

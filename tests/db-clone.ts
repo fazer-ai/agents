@@ -3,7 +3,12 @@ import { fileURLToPath } from "node:url";
 import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import { CONNECT_ATTEMPT_MS, DB_GATE_OPT_OUT, retryConnect } from "./db-gate";
-import { isWorkerCloneOf, testDbNameFor, withDbName } from "./db-name";
+import {
+  isWorkerClone,
+  isWorkerCloneOf,
+  testDbNameFor,
+  withDbName,
+} from "./db-name";
 import {
   acquireRoleCatalogLock,
   ROLE_CATALOG_LOCK,
@@ -105,6 +110,29 @@ export function clonesToDrop(
       if (o === null) return true;
       if (o.template !== scope.template) return false;
       return !ownerAlive(o, startOf);
+    })
+    .map((r) => r.name);
+}
+
+// Which copies of ANY checkout no run will come back for. The per-checkout reap above only ever sees
+// its own root, so a checkout removed before its next parallel run (a throwaway copy, a worktree
+// deleted after a killed run) leaves its copies and their roles forever. A copy goes here only when
+// its owner is gone AND the database it was copied from is gone: a dead owner alone is another
+// checkout's business, since that checkout's next run may be about to rebuild the copy under its own
+// lock, and no run builds a copy without its template. A copy with no readable record is never
+// taken, because nothing in it says where it came from.
+export function orphanClonesToDrop(
+  rows: { name: string; comment: string | null }[],
+  databases: Set<string>,
+  startOf: (pid: number) => string | null,
+): string[] {
+  return rows
+    .filter((r) => isWorkerClone(r.name))
+    .filter((r) => {
+      const o = parseOwner(r.comment);
+      return (
+        o !== null && !databases.has(o.template) && !ownerAlive(o, startOf)
+      );
     })
     .map((r) => r.name);
 }
@@ -315,11 +343,56 @@ async function dropClone(maint: Client, name: string): Promise<void> {
   );
 }
 
+// Runs under the lock of whichever checkout is reaping, not under the lock of the copy's checkout,
+// whose key is not recoverable from the copy's name. So the record is read again right before each
+// drop: if the checkout was recreated at the same path meanwhile and its run built a new copy under
+// the same name, the record changed and the copy stays. Prefiltered on the template so that `ps` only
+// runs for the few candidates.
+async function sweepOrphanClones(maint: Client): Promise<string[]> {
+  const { rows } = await maint.query<{
+    name: string;
+    comment: string | null;
+  }>(
+    `SELECT datname AS name, shobj_description(oid, 'pg_database') AS comment
+       FROM pg_database WHERE datname LIKE '%x%'`,
+  );
+  const databases = new Set(
+    (
+      await maint.query<{ name: string }>(
+        "SELECT datname AS name FROM pg_database",
+      )
+    ).rows.map((r) => r.name),
+  );
+  const candidates = rows.filter((r) => {
+    const o = isWorkerClone(r.name) ? parseOwner(r.comment) : null;
+    return o !== null && !databases.has(o.template);
+  });
+  const startOf = await startsOf(
+    candidates.map((r) => (parseOwner(r.comment) as CloneOwner).pid),
+  );
+  const doomed = orphanClonesToDrop(candidates, databases, startOf);
+  const dropped: string[] = [];
+  for (const name of doomed) {
+    const was = candidates.find((r) => r.name === name)?.comment ?? null;
+    const now = (
+      await maint.query<{ comment: string | null }>(
+        "SELECT shobj_description(oid, 'pg_database') AS comment FROM pg_database WHERE datname = $1",
+        [name],
+      )
+    ).rows[0];
+    if (!now || now.comment !== was) continue;
+    await dropClone(maint, name);
+    dropped.push(name);
+  }
+  return dropped;
+}
+
 async function reapUnderLock(
   maint: Client,
   root: string,
   template: string,
 ): Promise<string[]> {
+  await sweepOrphanClones(maint);
   const rows = await listClones(maint, root);
   const startOf = await startsOf(
     rows.flatMap((r) => {

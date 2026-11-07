@@ -42,9 +42,10 @@ export async function logFactsReady(db: ScopedDb): Promise<boolean> {
 }
 
 // Fills one slice of a tenant's earlier lines and moves the cursor past it, in one transaction.
-// Returns whether the tenant is done. The lines are read FOR KEY SHARE: a retention delete of one of
-// them waits for this commit, so its trigger sees the fact this slice wrote and removes it with the
-// line, instead of missing a row it could not yet see.
+// Returns whether the tenant is done. The lines are locked FOR KEY SHARE in a subquery, and only the
+// rows that lock returns are written: a delete still uncommitted when the slice reaches its line holds
+// the slice until it commits, and the line it took is skipped; a delete that comes after waits for
+// this commit, and its trigger then sees the fact and removes it with the line.
 export async function backfillLogFactsSlice(
   base: PrismaClient,
   tenantId: bigint,
@@ -62,9 +63,9 @@ export async function backfillLogFactsSlice(
       from = first?.at ?? new Date();
     }
     const to = new Date(from.getTime() + SLICE_MS);
-    await db.$queryRaw(Prisma.sql`
-      SELECT COUNT(*)::int AS n FROM (
-        SELECT dashboard_log_fact_put(l)
+    await db.$executeRaw(Prisma.sql`
+      SELECT dashboard_log_fact_put(s.l) FROM (
+        SELECT l
           FROM execution_logs l
          WHERE l.tenant_id = ${tenantId}
            AND l.created_at >= ${from} AND l.created_at < ${to}

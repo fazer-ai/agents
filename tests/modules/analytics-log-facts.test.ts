@@ -755,6 +755,46 @@ describe.skipIf(!dbUp)("the dashboard's log facts", () => {
     }
   }, 60_000);
 
+  test("a line deleted while the backfill reaches it leaves no fact behind", async () => {
+    const t = await seedTenant("facts-race");
+    const a = new Client({ connectionString: suUrl });
+    await a.connect();
+    try {
+      const conv = await seedConv(t, t.inboxes[0] as bigint, START);
+      const id = await writeLine(t, {
+        at: START,
+        conv,
+        stage: "handoff",
+        detail: { outcome: "guardrail_handoff" },
+      });
+      // As the migration finds it: the line, no fact, the tenant waiting.
+      await suDb.$executeRaw`DELETE FROM dashboard_log_facts WHERE tenant_id = ${t.tenantId}`;
+      await suDb.$executeRaw`INSERT INTO dashboard_log_facts_state (tenant_id, cursor_at) VALUES (${t.tenantId}, ${new Date(START.getTime() - 60_000)})`;
+      // A retention delete of the line, not yet committed when the slice reaches it.
+      await a.query("BEGIN");
+      await a.query("DELETE FROM execution_logs WHERE id = $1", [id]);
+      const slice = backfillLogFactsSlice(appDb, t.tenantId);
+      // The slice is waiting on the line's lock before the delete commits.
+      for (let i = 0; i < 100; i++) {
+        const [w] = await suDb.$queryRaw<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`;
+        if ((w?.n ?? 0) > 0) break;
+        await Bun.sleep(50);
+      }
+      await a.query("COMMIT");
+      await slice;
+      expect(await suDb.dashboardLogFact.count({ where: { lineId: id } })).toBe(
+        0,
+      );
+    } finally {
+      await a.end();
+      await clearFlowLog(suDb, { tenantId: t.tenantId });
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${t.tenantId}`,
+      );
+    }
+  }, 60_000);
+
   test("a tenant sees only its own facts", async () => {
     const mine = await appDb.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(other.tenantId)}, true)`;

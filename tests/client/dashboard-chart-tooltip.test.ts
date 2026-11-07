@@ -1044,6 +1044,26 @@ describe("the day and series a line chart's click names", () => {
   });
 });
 
+describe("a context line", () => {
+  test("is drawn opaque, so its neutral ink keeps its contrast on the card", async () => {
+    const { container } = renderChart(LineTrend, {
+      data,
+      series: series.slice(0, 10),
+      lang: "en",
+      format: String,
+    });
+    const curves = await waitFor(() => {
+      const c = [...container.querySelectorAll(".recharts-line-curve")];
+      if (c.length < 10) throw new Error("lines not drawn yet");
+      return c;
+    });
+    for (const c of curves.slice(0, 3)) {
+      expect(c.getAttribute("stroke")).toBe(token("--color-text-muted"));
+      expect(c.getAttribute("stroke-opacity") ?? "1").toBe("1");
+    }
+  });
+});
+
 describe("a context line with a single value", () => {
   test("still marks the value", async () => {
     // Node 9 is a context line with a small value on the first day only: no segment to draw.
@@ -1247,9 +1267,13 @@ describe("the chart colours", () => {
     test(`clear 3:1 against the card surface (${theme})`, () => {
       setTheme(theme);
       const card = luminance(token("--color-bg-secondary").trim());
-      const low = Array.from({ length: 8 }, (_, i) =>
-        token(`--color-chart-${i + 1}`).trim(),
-      ).filter((c) => {
+      // The eight series colours, and the neutral ink of the Others layer and context lines.
+      const low = [
+        ...Array.from({ length: 8 }, (_, i) =>
+          token(`--color-chart-${i + 1}`).trim(),
+        ),
+        token("--color-text-muted").trim(),
+      ].filter((c) => {
         const [hi, lo] = [luminance(c), card].sort((a, b) => b - a);
         return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05) < 3;
       });

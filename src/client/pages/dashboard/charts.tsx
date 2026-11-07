@@ -607,7 +607,6 @@ export function LineTrend({
       name={context ? groupName : s.label}
       stroke={context ? p.other : colorOf(s.key)}
       strokeWidth={context ? 1 : 2}
-      strokeOpacity={context ? 0.6 : 1}
       // A context line keeps a small dot, so a value with no neighbour still shows.
       dot={point(s, context ? 1.5 : 2)}
       activeDot={point(s, 5)}

@@ -234,11 +234,12 @@ describe("which copies of a removed checkout any run removes", () => {
       {},
       false,
     ],
+    // Every copy left before the field existed has none, and those are the leftovers to clear.
     [
       "the record predates the host field",
       owner({ template: goneTemplate, host: undefined }),
       {},
-      false,
+      true,
     ],
   ] as const)("%s", (_why, o, running, dropped) => {
     expect(

@@ -36,7 +36,7 @@ export type CloneOwner = {
   start: string;
   workerPid: number;
   ready: boolean;
-  // The machine whose `ps` the pid and start time are about. A record without it predates the field.
+  // The machine whose `ps` the pid and start time are about. Absent on records that predate it.
   host?: string;
 };
 
@@ -123,8 +123,8 @@ export function clonesToDrop(
 // root, so a checkout removed before its next parallel run leaves its copies and roles forever. A copy
 // goes only when its owner is gone AND its template is gone, since a dead owner alone may be about to
 // be rebuilt by that checkout's next run, and no run builds a copy without its template. Left alone:
-// a copy with no readable record, and one recorded on another host or with no host, whose pid this
-// machine's `ps` cannot judge (a cluster shared with a container or another machine).
+// a copy with no readable record, and one recorded on another host, whose pid this machine's `ps`
+// cannot judge. A record with no host predates the field and is judged here, like every leftover.
 export function orphanClonesToDrop(
   rows: { name: string; comment: string | null }[],
   databases: Set<string>,
@@ -137,7 +137,7 @@ export function orphanClonesToDrop(
       const o = parseOwner(r.comment);
       return (
         o !== null &&
-        o.host === host &&
+        (o.host ?? host) === host &&
         !databases.has(o.template) &&
         !ownerAlive(o, startOf)
       );

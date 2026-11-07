@@ -1303,6 +1303,12 @@ model Conversation {
   // to a silenced conversation. Anti-spam: posted at most once per conversation (NULL = not yet).
   // /reset clears it so a fresh note can be posted on the next silenced message.
   testNoticeSentAt                DateTime? @map("test_notice_sent_at")
+  // When the test-mode silence opened this conversation for the team (Chatwoot starts it `pending` on
+  // a bot inbox, a tab nobody watches), and who Chatwoot assigned it to in that same write (NULL =
+  // nobody). /teste returns it to the agent only while it is still in that state; any other holder
+  // took it. Cleared by /teste.
+  testParkedOpenAt                DateTime? @map("test_parked_open_at")
+  testParkedAssigneeId            Int?      @map("test_parked_assignee_id")
   // When the one-shot "message received outside business hours" private note was posted. Same anti-spam
   // one-shot as testNoticeSentAt: the agent stays silent outside its configured business hours and the
   // operator is notified once per conversation (NULL = not yet). /reset clears it.

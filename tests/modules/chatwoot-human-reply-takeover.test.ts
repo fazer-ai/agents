@@ -710,20 +710,29 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // A test-mode agent lives in a conversation an operator activated with /teste. Answering from the
   // composer mid-test is how an operator checks what the agent saw, and silencing the agent there
   // would end the test with the way back (/reset) a command they now have to know about.
+  // NOTE: An activated conversation: one the test-mode silence keeps quiet is opened for the team
+  // by the gate on the customer's first message, which is a different toggle from the takeover's.
   test("a test-mode agent does not take the conversation away from itself", async () => {
+    const conv = 8450;
+    await deliver(conv, { ...customerSays("oi") });
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { mode: "test" },
     });
-    const conv = 8450;
-    await deliver(conv, { ...customerSays("oi") });
-    await deliver(conv, { ...deviceReply("já te respondo") });
-    expect(toggles(conv).length).toBe(0);
-    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
-    await suDb.agent.update({
-      where: { id: agentDbId },
-      data: { mode: "production" },
-    });
+    try {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: conv },
+        data: { testActivatedAt: new Date() },
+      });
+      await deliver(conv, { ...deviceReply("já te respondo") });
+      expect(toggles(conv).length).toBe(0);
+      expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "production" },
+      });
+    }
   });
 
   // The mirror is what decides whether an ALREADY RUNNING turn may post (the runtime rechecks

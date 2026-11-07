@@ -184,7 +184,9 @@ a rule:
   refusal speaks (the deny copy) and opens conversations. So on a test-mode agent, in a conversation
   not activated with `/teste` (the same reading the test-mode gate uses to decide who is served), a
   refusal at the rule is silent: no copy, no handoff, no private note, and no test-mode notice either
-  (`testNoticeSentAt` stays unset). Only the flow line is written, with `silencedBy: "test_mode"`. In a
+  (`testNoticeSentAt` stays unset). The conversation is still opened for the team, by the test-mode
+  silence's own park rather than by the gate's handoff ([`chatwoot.md`](chatwoot.md), Pre-turn
+  gates). Only the flow line is written, with `silencedBy: "test_mode"`. In a
   conversation activated with `/teste` the refusal goes out as configured: that is the operator
   testing the gate.
 - **Endpoint stage**: where the gate always stood, last.

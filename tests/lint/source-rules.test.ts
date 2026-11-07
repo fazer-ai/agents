@@ -93,6 +93,16 @@ const PROBES: Record<string, string> = {
   [P("zone-pinned.ts")]:
     'declare const Pool: new (o: object) => object;\ndeclare function withSessionOptions(u: string): object;\nexport const p = new Pool({ ...withSessionOptions("x"), connectionTimeoutMillis: 5_000 });\n',
 
+  // require-work-label-on-timer
+  [P("timer-bare.ts")]:
+    "export const t = setInterval(() => undefined, 1_000);\n",
+  [P("timer-in-start.ts")]:
+    "export function start(): void {\n  setInterval(() => undefined, 1_000);\n}\n",
+  [P("timer-labeled.ts")]:
+    'declare function runWithWorkLabel<T>(l: string, f: () => T): T;\nexport function start(): void {\n  runWithWorkLabel("worker", () => {\n    setInterval(() => undefined, 1_000);\n  });\n}\n',
+  [P("timer-labeled-inner.ts")]:
+    'declare function runWithWorkLabel<T>(l: string, f: () => T): T;\nexport const t = setInterval(() => runWithWorkLabel("worker", () => undefined), 1_000);\n',
+
   // no-raw-violation-code
   [P("violation-eq.ts")]:
     'declare const e: { code?: string };\nexport const a = e.code === "P2002";\n',
@@ -152,6 +162,14 @@ const PROBES: Record<string, string> = {
     "declare function runModelCall<T>(f: () => T, o?: object): T;\nexport const a = runModelCall(() => 1, { /* deadlineMs */ x: 1 });\n",
   [P("model-call-named.ts")]:
     "declare function runModelCall<T>(f: () => T, o?: object): T;\ndeclare const deadlineMs: number;\nexport const a = runModelCall(() => 1, { deadlineMs: 15_000 });\nexport const b = runModelCall<string>(() => String(1), { deadlineMs: 5 });\nexport const c = runModelCall(() => 1, { deadlineMs });\n",
+
+  // require-database-screen-budget
+  [P("db-screen-budgetless.ts")]:
+    "declare function fleetWithin<T>(b: unknown, ...r: unknown[]): T;\ndeclare const base: { $queryRaw: (s: TemplateStringsArray) => unknown };\nexport const a = fleetWithin(base, (db: unknown) => db); // budget elsewhere\nexport const b = base.$queryRaw`SELECT 1`;\n",
+  [P("db-screen-fleet-helper.ts")]:
+    "declare function asFleetForInstanceHealth<T>(...r: unknown[]): T;\ndeclare function runScopedOn<T>(...r: unknown[]): T;\ndeclare const budget: unknown;\nexport const a = asFleetForInstanceHealth(budget, () => 1);\nexport const b = runScopedOn(budget, () => 1, budget);\n",
+  [P("db-screen-budgeted.ts")]:
+    "declare function fleetWithin<T>(...r: unknown[]): T;\ndeclare function plainWithin<T>(...r: unknown[]): T;\ndeclare function budgetUntil(d: number): unknown;\ndeclare function left(c: number): unknown;\ndeclare const base: unknown;\ndeclare const opts: { budget: unknown };\nexport const a = fleetWithin(base, budgetUntil(1), (db: unknown) => db);\nexport const b = plainWithin(base, left(2000), (db: unknown) => db);\nexport const c = fleetWithin(base, opts.budget, (db: unknown) => db);\n",
 
   // no-scrub-around-cut
   [P("scrub-around-cut.ts")]:
@@ -247,6 +265,7 @@ const RULES = {
   bigint: "A caller's id is parsed, never cast",
   env: "The environment is read in",
   deadline: "Every model call names its own `deadlineMs`",
+  dbBudget: "A database screen transaction runs under a budget",
   scrub: "A scrub wrapped around a cut",
   pkg: "This replaces a third-party package",
   undo: "rewrote this namespace in place",
@@ -255,6 +274,7 @@ const RULES = {
   glob: "A test that globs src/ reads each file",
   violation: "A violation code read by hand misses the other shape",
   number: "A number field takes the range the server enforces",
+  timer: "A recurring timer runs under a work label",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -397,6 +417,26 @@ describe("require-pool-session-zone", () => {
   );
 });
 
+describe("require-work-label-on-timer", () => {
+  test.each([["timer-bare.ts"], ["timer-in-start.ts"]])(
+    "a timer created under no work label is refused (%s)",
+    (name) => {
+      expect(of(P(name), "timer")).toBe(1);
+    },
+  );
+
+  test("a timer created inside runWithWorkLabel passes", () => {
+    expect(of(P("timer-labeled.ts"), "timer")).toBe(0);
+  });
+
+  // One shape for the whole tree: the label goes around where the timer is created, so the code that
+  // runs before the first pass (a start's first read) carries it too. A label entered only inside the
+  // callback is refused.
+  test("a label entered only inside the callback is refused", () => {
+    expect(of(P("timer-labeled-inner.ts"), "timer")).toBe(1);
+  });
+});
+
 describe("no-raw-violation-code", () => {
   test.each([
     ["violation-eq.ts"],
@@ -472,6 +512,17 @@ describe("require-model-call-deadline", () => {
 
   test("a call that names it passes, generic or shorthand", () => {
     expect(of(P("model-call-named.ts"), "deadline")).toBe(0);
+  });
+});
+
+describe("require-database-screen-budget", () => {
+  test("a transaction without a budget, a tenancy helper called directly and a statement on base are refused", () => {
+    expect(of(P("db-screen-budgetless.ts"), "dbBudget")).toBe(2);
+    expect(of(P("db-screen-fleet-helper.ts"), "dbBudget")).toBe(2);
+  });
+
+  test("a transaction handed a budget passes, built, carved or passed down", () => {
+    expect(of(P("db-screen-budgeted.ts"), "dbBudget")).toBe(0);
   });
 });
 

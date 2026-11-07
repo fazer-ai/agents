@@ -4,6 +4,7 @@ import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runWithWorkLabel } from "@/lib/work-label";
 import type { DashboardFilter } from "../filter";
 import { addDays, dayCount, localDay } from "./days";
 import { type DayWindow, filterKey, LIVE_DAYS, WindowLoad } from "./engine";
@@ -176,7 +177,13 @@ function holder(): Holder {
 
 const FIRST_DELAY_MS = 60_000;
 
+// Under its own work label: every pass is armed from this context, so a statement that times out in
+// one names the worker (src/lib/work-label.ts).
 export function startDashboardWarm(): void {
+  runWithWorkLabel("dashboard:warm", armDashboardWarm);
+}
+
+function armDashboardWarm(): void {
   const h = holder();
   if (h.timer !== null || config.dashboardWarm.intervalMs === 0) return;
   h.stopped = false;

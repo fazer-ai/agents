@@ -1,0 +1,23 @@
+// The closed rule of src/modules/instance-health/database/ (docs/logs.md, "Database"): every statement
+// runs inside a transaction whose budget is carved from one deadline, opened through ./budget.ts with
+// that budget. A direct `base.$queryRaw`, a tenancy helper called directly, or a transaction opened
+// without a budget is how a sampler tick came to wait past its time, one site at a time.
+// budget.ts, which defines the helpers, is out of scope in biome.jsonc.
+language js;
+
+or {
+    JsCallExpression(callee = $callee, arguments = $args) as $call where {
+        $callee <: r"(?:[\s\S]*\.)?(?:fleetWithin|scopedWithin|plainWithin)",
+        not $args <: contains r"\w*[bB]udget\w*|left",
+        register_diagnostic(span = $call, message = "A database screen transaction runs under a budget carved from the run's deadline: pass `budgetUntil(...)`, `left(...)` or the caller's budget (docs/logs.md, Database).")
+    },
+    JsCallExpression(callee = $callee) as $call where {
+        $callee <: r"(?:[\s\S]*\.)?(?:asFleetForInstanceHealth|asSuperAdminOn|runScopedOn|runWithinBudgetOn)",
+        register_diagnostic(span = $call, message = "A database screen transaction runs under a budget carved from the run's deadline: open it through `fleetWithin`, `scopedWithin` or `plainWithin` from ./budget, which recompute what is left when it opens (docs/logs.md, Database).")
+    },
+    JsStaticMemberExpression(object = $obj, member = $m) as $e where {
+        $obj <: r"base",
+        $m <: r"\$\w+",
+        register_diagnostic(span = $e, message = "A database screen transaction runs under a budget carved from the run's deadline: a statement on `base` directly has none (docs/logs.md, Database).")
+    }
+}

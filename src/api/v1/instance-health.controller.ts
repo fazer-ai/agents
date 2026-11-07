@@ -18,6 +18,8 @@ import {
   setInstanceThreshold,
   updateInstanceAlertChannel,
 } from "@/modules/instance-health/channels";
+import type { WindowKey } from "@/modules/instance-health/database/read";
+import { readDatabaseView } from "@/modules/instance-health/database/view";
 import {
   readInstanceHealth,
   requireFleet,
@@ -75,6 +77,35 @@ export const instanceHealthController = new Elysia({
         "Returns every instance signal (pools, queues, ingress lag, event loop) with its last value, the last hour sampled every 5 s, its threshold and whether it is firing. In memory: a restart starts the history empty.",
       ),
       response: errors(401, 403),
+    },
+  )
+  .get(
+    "/database",
+    async ({ tenantContext, query }) => {
+      requireFleet(tenantContext);
+      return {
+        instance: instanceIdentity,
+        database: await readDatabaseView(
+          (query.window ?? "1h") as WindowKey,
+          metricsPrisma,
+          config.alertWorker.enabled,
+        ),
+      };
+    },
+    {
+      requireRole: "SUPER_ADMIN",
+      query: t.Object({
+        window: t.Optional(
+          t.Union([t.Literal("1h"), t.Literal("24h"), t.Literal("7d")], {
+            description: "The window the statement figures cover. Default 1h.",
+          }),
+        ),
+      }),
+      detail: doc(
+        "Read the database screen",
+        "Returns the database's own figures: the two statement signals (timeouts per minute, slowest mean as a share of the budget) with their value, threshold and state against it; pg_stat_statements deltas over the window (top statements by total and by mean time, with calls, rows, the mean as a share of DB_TX_TIMEOUT_MS and a mean-time series; or, without the extension, how to enable it), the statements that hit their statement_timeout with the plan captured under the scope they ran in and the window's count of them, the size of the screen's tables and their growth, per table its size, growth, tuples, dead-row ratio, whether autovacuum is overdue and vacuum times, never-scanned indexes and the tables read most by sequential scan. Statement texts are normalized by Postgres ($N for every value).",
+      ),
+      response: errors(401, 403, 422, 503),
     },
   )
   .get(

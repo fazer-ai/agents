@@ -14,6 +14,7 @@ export const INSTANCE_HEALTH_TX_BUDGET: TxBudget = {
 export function asFleetForInstanceHealth<T>(
   base: PrismaClient,
   fn: (db: ScopedDb) => Promise<T>,
+  budget: TxBudget = INSTANCE_HEALTH_TX_BUDGET,
 ): Promise<T> {
-  return asSuperAdminOn(base, fn, INSTANCE_HEALTH_TX_BUDGET);
+  return asSuperAdminOn(base, fn, budget);
 }

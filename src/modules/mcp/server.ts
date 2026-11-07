@@ -169,6 +169,7 @@ import {
   instanceAlertChannelList,
   instanceAlertChannelTest,
   instanceAlertChannelUpdate,
+  instanceDatabaseGet,
   instanceHealthGet,
   instanceThresholdSet,
 } from "./write-instance-health";
@@ -3976,6 +3977,22 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {},
       },
       async () => writeContent(await instanceHealthGet(principal)),
+    );
+
+    server.registerTool(
+      "instance_database_get",
+      {
+        description:
+          "Read the instance's database figures, the same as the console's Admin → Database screen: the two statement signals (statement_timeouts_per_min, statement_mean_budget_pct) with value, threshold and state (ok, firing, stale, muted, no_data); pg_stat_statements deltas over a window (top statements by total and by mean time, with calls, rows, the mean as a share of DB_TX_TIMEOUT_MS and a mean-time series; or, when the extension is missing, how to enable it), the statements that hit their statement_timeout with the work that ran them, the tenant scope and budget, and the EXPLAIN plan captured under that scope, the size of the database's tables and their growth, per table size, growth, tuples, dead-row ratio, whether autovacuum is overdue and vacuum times, never-scanned indexes, and the tables read most by sequential scan. Statement texts come normalized ($N for values). Read-only: nothing here runs SQL you pass. SUPER_ADMIN only.",
+        inputSchema: {
+          window: z
+            .enum(["1h", "24h", "7d"])
+            .optional()
+            .describe("The window the statement figures cover. Default 1h."),
+        },
+      },
+      async (args: { window?: "1h" | "24h" | "7d" }) =>
+        writeContent(await instanceDatabaseGet(principal, args)),
     );
 
     server.registerTool(

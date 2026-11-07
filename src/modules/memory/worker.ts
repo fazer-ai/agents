@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { kindsInLane } from "@/modules/scheduler/lanes";
 import {
   claimDueCompactionJobs,
@@ -48,11 +49,23 @@ export interface CompactionTickDeps {
   reap?: typeof reapStaleJobs;
 }
 
-export async function runCompactionTick(
+// The reap and the claim run as `compaction` (each job as `job:<KIND>`; docs/logs.md, "Database").
+export function runCompactionTick(
   base: PrismaClient,
   batchSize: number,
   deps: CompactionTickDeps = {},
   staleMs: number = DEFAULT_STALE_MS,
+): Promise<{ claimed: number; reaped: number }> {
+  return runWithWorkLabel("compaction", () =>
+    runCompactionTickUnlabeled(base, batchSize, deps, staleMs),
+  );
+}
+
+async function runCompactionTickUnlabeled(
+  base: PrismaClient,
+  batchSize: number,
+  deps: CompactionTickDeps,
+  staleMs: number,
 ): Promise<{ claimed: number; reaped: number }> {
   const claim = deps.claim ?? claimDueCompactionJobs;
   const run = deps.run ?? runClaimed;
@@ -105,30 +118,34 @@ export interface StartOptions {
   staleMs?: number;
 }
 
+// The timers are created under `compaction` (each pass's own label is entered again in its tick, which a
+// wake from another context also reaches; docs/logs.md, "Database").
 export function startCompactionWorker(opts: StartOptions = {}): () => void {
-  const h = holder();
-  if (h.timer) return stopCompactionWorker;
-  const base = opts.base ?? basePrisma;
-  const intervalMs = opts.intervalMs ?? config.compactionWorker.intervalMs;
-  const batchSize = opts.batchSize ?? defaultBatchSize();
-  const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
-  if (batchSize <= 0) {
-    logger.warn(
-      "compaction lane idle: agent.modelConcurrency=%d leaves no model capacity a customer turn is not already waiting on. Closed attendances will not be compacted at this setting.",
-      config.agent.modelConcurrency,
-    );
-  }
-  h.timer = setInterval(() => {
-    if (h.running) return;
-    h.running = true;
-    void runCompactionTick(base, batchSize, {}, staleMs)
-      .catch((e) => logger.error({ err: e }, "compaction tick failed"))
-      .finally(() => {
-        h.running = false;
-      });
-  }, intervalMs);
-  logger.info("compaction worker started (interval=%dms)", intervalMs);
-  return stopCompactionWorker;
+  return runWithWorkLabel("compaction", () => {
+    const h = holder();
+    if (h.timer) return stopCompactionWorker;
+    const base = opts.base ?? basePrisma;
+    const intervalMs = opts.intervalMs ?? config.compactionWorker.intervalMs;
+    const batchSize = opts.batchSize ?? defaultBatchSize();
+    const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
+    if (batchSize <= 0) {
+      logger.warn(
+        "compaction lane idle: agent.modelConcurrency=%d leaves no model capacity a customer turn is not already waiting on. Closed attendances will not be compacted at this setting.",
+        config.agent.modelConcurrency,
+      );
+    }
+    h.timer = setInterval(() => {
+      if (h.running) return;
+      h.running = true;
+      void runCompactionTick(base, batchSize, {}, staleMs)
+        .catch((e) => logger.error({ err: e }, "compaction tick failed"))
+        .finally(() => {
+          h.running = false;
+        });
+    }, intervalMs);
+    logger.info("compaction worker started (interval=%dms)", intervalMs);
+    return stopCompactionWorker;
+  });
 }
 
 export function stopCompactionWorker(): void {

@@ -22,6 +22,7 @@ import {
 } from "@/graph/checkpoint-sweep";
 import { getCheckpointPool } from "@/graph/checkpointer";
 import { runInPoolClass } from "@/lib/pool-class";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 
 // The periodic pass that keeps, of every live thread, only what the saver resumes from. A thread keeps
@@ -630,19 +631,23 @@ async function runPass(): Promise<void> {
 }
 
 // Arms the pass: the first one `firstDelayMs` after the boot, then every `intervalMs`. Idempotent.
+// Every pass runs as `checkpoints:retention`: each timer is armed inside the label, so a statement
+// that times out in a pass names it (docs/logs.md, "Database").
 export function startCheckpointRetention(): void {
-  const h = holder();
-  if (h.timer !== null) return;
-  h.stopped = false;
-  const arm = (ms: number) => {
-    h.timer = setTimeout(() => {
-      void runPass().finally(() => {
-        if (!holder().stopped) arm(config.checkpointRetention.intervalMs);
-      });
-    }, ms);
-    h.timer.unref?.();
-  };
-  arm(config.checkpointRetention.firstDelayMs);
+  runWithWorkLabel("checkpoints:retention", () => {
+    const h = holder();
+    if (h.timer !== null) return;
+    h.stopped = false;
+    const arm = (ms: number) => {
+      h.timer = setTimeout(() => {
+        void runPass().finally(() => {
+          if (!holder().stopped) arm(config.checkpointRetention.intervalMs);
+        });
+      }, ms);
+      h.timer.unref?.();
+    };
+    arm(config.checkpointRetention.firstDelayMs);
+  });
 }
 
 // Stops arming passes, and makes the one in flight stop after its current batch.

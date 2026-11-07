@@ -17,6 +17,7 @@ import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
 import { checkSessionZoneAtBoot } from "@/lib/db-session-zone";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
+import { runWithWorkLabel } from "@/lib/work-label";
 import {
   startDashboardWarm,
   stopDashboardWarm,
@@ -220,36 +221,36 @@ if (config.schedulerWorker.enabled) {
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).
-  void ensureAllFlowlogSweeps().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllFlowlogSweeps).catch((error) =>
     logger.warn({ error }, "Failed to arm flowlog retention sweeps"),
   );
   // Arm the per-tenant follow-up sweep for every existing tenant so follow-ups self-heal after the
   // sweep's row is lost (DB reset, external truncate). Same best-effort discipline as above.
-  void ensureAllTenantSweeps().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllTenantSweeps).catch((error) =>
     logger.warn({ error }, "Failed to arm follow-up sweeps"),
   );
   // NOTE: Arm the per-tenant recovery sweep for Chatwoot deliveries stranded on PROCESSING. A deploy
   // both strands them and runs this, so the boot arm is what reaches the rows the restart created.
-  void ensureAllDeliverySweeps().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllDeliverySweeps).catch((error) =>
     logger.warn({ error }, "Failed to arm Chatwoot delivery sweeps"),
   );
   // NOTE: Arm the per-tenant reconciliation from Chatwoot: what an outage kept from reaching the ledger
   // is found by reading Chatwoot, and a boot is when an outage has just ended.
-  void ensureAllReconcileSweeps().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllReconcileSweeps).catch((error) =>
     logger.warn({ error }, "Failed to arm Chatwoot reconcile sweeps"),
   );
   // NOTE: Arm the per-tenant sweep for inbound deliveries stranded between the ack and the dispatch,
   // for every tenant with an inbound surface: a deploy strands them too.
-  void ensureAllInboundSweeps().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllInboundSweeps).catch((error) =>
     logger.warn({ error }, "Failed to arm inbound delivery sweeps"),
   );
   // NOTE: Each knowledge source gets its perpetual sync row back, due one interval out.
-  void ensureAllKnowledgeSourceSyncs().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllKnowledgeSourceSyncs).catch((error) =>
     logger.warn({ error }, "Failed to arm knowledge source syncs"),
   );
   // NOTE: Arm the spend ceiling poll for every tenant whose ceiling is on, so a row lost to a reset
   // is not a ceiling deciding on a figure frozen at its last poll.
-  void ensureAllSpendPolls().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllSpendPolls).catch((error) =>
     logger.warn({ error }, "Failed to arm spend ceiling polls"),
   );
   // NOTE: The pass that deletes the checkpoints of threads whose owner is gone: a
@@ -263,7 +264,7 @@ if (config.schedulerWorker.enabled) {
   // opening reads them instead of computing the month in front of the viewer.
   startDashboardWarm();
   // NOTE: Every account whose occurrence monitor is on gets its round back.
-  void ensureAllOccurrenceRounds().catch((error) =>
+  void runWithWorkLabel("boot", ensureAllOccurrenceRounds).catch((error) =>
     logger.warn({ error }, "Failed to arm occurrence rounds"),
   );
 }
@@ -303,7 +304,9 @@ if (config.compactionWorker.enabled) {
 // the delivery recovery now, any other event is processed from the body its row stored. Every replica
 // serves the webhook, so this runs whatever the worker flags; a row another live replica still holds
 // goes to whichever CAS lands first, and the loser skips.
-void drainStoredChatwootDeliveries({ minAgeMs: 0 }).catch((error) =>
+void runWithWorkLabel("boot", () =>
+  drainStoredChatwootDeliveries({ minAgeMs: 0 }),
+).catch((error) =>
   logger.warn({ error }, "Failed to drain stored Chatwoot deliveries"),
 );
 

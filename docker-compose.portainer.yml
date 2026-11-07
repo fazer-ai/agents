@@ -128,6 +128,7 @@ services:
       - DB_TX_MAX_WAIT_MS=${DB_TX_MAX_WAIT_MS:-}
       - DB_TX_TIMEOUT_MS=${DB_TX_TIMEOUT_MS:-}
       - DB_LOCK_TIMEOUT_MS=${DB_LOCK_TIMEOUT_MS:-}
+      - DB_STATS_RETENTION_DAYS=${DB_STATS_RETENTION_DAYS:-}
       # The turn capacities: model permits and debounce turn slots (docs/deploy.md). Empty takes the
       # app default.
       - AGENT_MODEL_CONCURRENCY=${AGENT_MODEL_CONCURRENCY:-}
@@ -214,6 +215,16 @@ services:
     # validated isolation spike. Not published to the host — only the app reaches it over the network.
     image: 'pgvector/pgvector:pg17'
     restart: always
+    # The Database screen's query statistics (docs/logs.md, "Database"): pg_stat_statements has to be
+    # preloaded, and changing these restarts Postgres. Without them the screen still works and says so.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=top
+      - -c
+      - pg_stat_statements.track_utility=off
     environment:
       - POSTGRES_DB=${DATABASE_NAME:-fazerai_agents_db}
       - POSTGRES_USER=${POSTGRES_USER}

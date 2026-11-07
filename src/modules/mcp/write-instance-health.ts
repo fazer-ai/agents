@@ -1,4 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -21,6 +22,8 @@ import {
   setInstanceThreshold,
   updateInstanceAlertChannel,
 } from "@/modules/instance-health/channels";
+import type { WindowKey } from "@/modules/instance-health/database/read";
+import { readDatabaseView } from "@/modules/instance-health/database/view";
 import { readInstanceHealth } from "@/modules/instance-health/read";
 import { isSignalKey } from "@/modules/instance-health/signals";
 import { instanceChannelFillUrl } from "@/modules/mcp/console-links";
@@ -47,6 +50,25 @@ function adminGate(principal: VerifiedToken): TenantContext | WriteResult {
     return err("forbidden: instance health requires a SUPER_ADMIN token");
   }
   return ctxOf(principal);
+}
+
+export async function instanceDatabaseGet(
+  principal: VerifiedToken,
+  args: { window?: WindowKey },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  // Off the main pool, like GET /v1/instance-health/database: a 7d aggregate must not hold a
+  // connection a live turn needs (docs/dashboard.md).
+  const base = deps.base ?? metricsPrisma;
+  const ctx = adminGate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    return ok({
+      database: await readDatabaseView(args.window ?? "1h", base),
+    });
+  } catch (e) {
+    return failOf(e);
+  }
 }
 
 export async function instanceHealthGet(

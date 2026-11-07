@@ -1,4 +1,4 @@
-import { Activity, Building2, Palette, Users } from "lucide-react";
+import { Activity, Building2, Database, Palette, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Outlet } from "react-router";
 import { SectionLayout } from "@/client/components";
@@ -11,6 +11,7 @@ import { useAuth } from "@/client/contexts/AuthContext";
 // t('admin.tabTenants', 'Tenants')
 // t('admin.tabBranding', 'Branding')
 // t('admin.tabInstanceHealth', 'Instance health')
+// t('admin.tabDatabase', 'Database')
 const TABS = [
   { to: "/admin/users", labelKey: "admin.tabUsers", icon: Users },
   { to: "/admin/tenants", labelKey: "admin.tabTenants", icon: Building2 },
@@ -20,6 +21,7 @@ const TABS = [
     labelKey: "admin.tabInstanceHealth",
     icon: Activity,
   },
+  { to: "/admin/database", labelKey: "admin.tabDatabase", icon: Database },
 ];
 
 export function AdminLayout() {

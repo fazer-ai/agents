@@ -390,6 +390,8 @@ const BARE_SLICES: Record<
   // `clipText` like every other cap.
   "src/client/pages/AuditPage.tsx": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
+  // The first 25 tables of the screen's list, before "show all".
+  "src/client/pages/admin/database/TablesPanel.tsx": [1, "array"],
   // The worst tenants listed on the follow-up sweep card: an array of rows, never a string.
   "src/client/pages/admin/instance-health/InstanceHealthPage.tsx": [1, "array"],
   // The signature's own token insert, which splices at a SELECTION. A caret is a position the browser
@@ -430,6 +432,8 @@ const BARE_SLICES: Record<
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [3, "array + index"],
+  // The queue of statement timeouts waiting to be stored, capped at a count of events.
+  "src/lib/pool-stats.ts": [1, "array"],
   "src/lib/redact.ts": [1, "array"],
   "src/lib/session-zone.ts": [2, "index"],
   "src/lib/ssrf.ts": [1, "index"],
@@ -513,6 +517,10 @@ const BARE_SLICES: Record<
   // LIST, and each entry is a slot object this code built, never received text.
   "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
   // The tabs whose header row is read in one batch: a list of tabs, never text.
+  // The database screen's top lists: arrays of statement and table rows, capped at a count.
+  "src/modules/instance-health/database/read.ts": [4, "array"],
+  // A statement's fingerprint: a sha256 hex digest, so the cut cannot land inside a surrogate pair.
+  "src/modules/instance-health/database/timeouts.ts": [1, "ascii"],
   "src/modules/integrations/google-sheets.service.ts": [1, "array"],
   // The rows a find scans: a list of rows. Cell text is cut through `clipText`.
   "src/modules/integrations/toolpacks/google-sheets.ts": [1, "array"],

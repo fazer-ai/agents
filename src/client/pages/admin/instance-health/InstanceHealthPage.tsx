@@ -4,11 +4,12 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Navigate } from "react-router";
+import { Link, Navigate } from "react-router";
 import {
   Badge,
   Button,
@@ -38,6 +39,8 @@ import {
 } from "@/modules/instance-health/signals";
 import { JOB_LANE } from "@/modules/scheduler/lanes";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
+import { factsLine } from "../database/facts";
+import { type Formatters, formatters } from "../database/format";
 import { InstanceAlertChannels } from "./InstanceAlertChannels";
 import {
   formatSignalValue,
@@ -156,7 +159,9 @@ function ThresholdModal({
       ? t("instanceHealth.unitCount", "count")
       : signal?.unit === "per_minute"
         ? t("instanceHealth.unitPerMinute", "per minute")
-        : t("instanceHealth.unitMs", "milliseconds");
+        : signal?.unit === "percent"
+          ? t("instanceHealth.unitPercent", "percent of the budget")
+          : t("instanceHealth.unitMs", "milliseconds");
 
   return (
     <Modal
@@ -481,6 +486,7 @@ function signalDetail(
   signal: string,
   health: Health,
   t: ReturnType<typeof useTranslation>["t"],
+  fmt: Formatters,
 ): string | null {
   const pool = /^pool_waiters:(.+)$/.exec(signal)?.[1];
   if (pool) {
@@ -508,7 +514,10 @@ function signalDetail(
       ? kinds.join(" · ")
       : t("instanceHealth.laneIdle", "No job overdue");
   }
-  return null;
+  // The work and table behind a timeout or drift signal, written from the server's fields in the
+  // console's language (the server's `detail` is the alert's English line).
+  const facts = health.signals.find((s) => s.signal === signal)?.facts;
+  return facts ? `${factsLine(facts, fmt, t)} · ${facts.statement}` : null;
 }
 
 // The follow-up sweep card's line: each tenant, furthest behind first, with how long since its last
@@ -536,7 +545,8 @@ function followUpSweepDetail(
 
 // `pollMs` is the sampler's cadence; a test passes a short one.
 export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const fmt = useMemo(() => formatters(i18n.language), [i18n.language]);
   const { user } = useAuth();
   const { showToast } = useToast();
   const [health, setHealth] = useState<Health | null>(null);
@@ -601,7 +611,17 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
             {t(
               "instanceHealth.subtitle",
               "This process's own load, sampled every 5 seconds. The last hour is kept in memory and starts empty after a restart.",
-            )}
+            )}{" "}
+            <Link
+              to="/admin/database"
+              className="text-accent hover:underline"
+              data-testid="database-link"
+            >
+              {t(
+                "instanceHealth.databaseLink",
+                "Database: slow queries, timeouts and tables",
+              )}
+            </Link>
           </p>
         </div>
         {staleSince && (
@@ -671,7 +691,7 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
                 <SignalCard
                   key={s.signal}
                   signal={s}
-                  detail={signalDetail(s.signal, health, t)}
+                  detail={signalDetail(s.signal, health, t, fmt)}
                   windowMs={health.historyMs}
                   onEdit={() => thresholdModal.open({ signal: s })}
                 />

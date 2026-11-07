@@ -334,6 +334,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/meta": { none: META },
   "GET /v1/instance-health/": { tool: "instance_health_get" },
   "GET /v1/instance-health/channels": { tool: "instance_alert_channel_list" },
+  "GET /v1/instance-health/database": { tool: "instance_database_get" },
   // Without the url and secret, filled in the console from the answer's fillAt link.
   "POST /v1/instance-health/channels": {
     tool: "instance_alert_channel_create",

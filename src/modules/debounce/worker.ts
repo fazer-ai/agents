@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import config, { debounceTurnSlots } from "@/config";
 import { modelPermitReading } from "@/graph/model-limit";
 import { asSuperAdminOn } from "@/lib/tenancy";
+import { runWithWorkLabel } from "@/lib/work-label";
 import {
   type CapacityOccupancy,
   emitCapacityWait,
@@ -219,10 +220,26 @@ async function announceWaiting(
 // Claims up to the free slots and starts the jobs, and returns as soon as they are STARTED.
 // `settled` resolves when every job this tick started has finished; the worker never waits on it,
 // tests do.
-export async function runDebounceTick(
+// The claim runs as `debounce` (each job it starts as `job:<KIND>`), so a statement that times out
+// here names the lane (docs/logs.md, "Database").
+export function runDebounceTick(
   base: PrismaClient,
   slots: number,
   deps: DebounceTickDeps = {},
+): Promise<{
+  claimed: number;
+  settled: Promise<void>;
+  reported: Promise<void>;
+}> {
+  return runWithWorkLabel("debounce", () =>
+    runDebounceTickUnlabeled(base, slots, deps),
+  );
+}
+
+async function runDebounceTickUnlabeled(
+  base: PrismaClient,
+  slots: number,
+  deps: DebounceTickDeps,
 ): Promise<{
   claimed: number;
   settled: Promise<void>;
@@ -321,30 +338,34 @@ export interface StartOptions {
   deps?: DebounceTickDeps;
 }
 
+// The timers are created under `debounce` (each pass's own label is entered again in its tick, which a
+// wake from another context also reaches; docs/logs.md, "Database").
 export function startDebounceWorker(opts: StartOptions = {}): () => void {
-  const h = holder();
-  if (h.timer) return stopDebounceWorker;
-  const base = opts.base ?? basePrisma;
-  const intervalMs = opts.intervalMs ?? config.debounceWorker.intervalMs;
-  const slots = opts.slots ?? debounceTurnSlots();
-  h.timer = setInterval(() => {
-    // NOTE: `running` covers the CLAIM only, so two claims never overlap. The tick resolves once its
-    // jobs have started, and the next tick fills whatever slots have freed by then.
-    if (h.running) return;
-    h.running = true;
-    void runDebounceTick(base, slots, opts.deps)
-      .catch((e) => logger.error({ err: e }, "debounce tick failed"))
-      .finally(() => {
-        h.running = false;
-      });
-  }, intervalMs);
-  logger.info(
-    "debounce worker started (interval=%dms, slots=%d, model permits=%d)",
-    intervalMs,
-    slots,
-    config.agent.modelConcurrency,
-  );
-  return stopDebounceWorker;
+  return runWithWorkLabel("debounce", () => {
+    const h = holder();
+    if (h.timer) return stopDebounceWorker;
+    const base = opts.base ?? basePrisma;
+    const intervalMs = opts.intervalMs ?? config.debounceWorker.intervalMs;
+    const slots = opts.slots ?? debounceTurnSlots();
+    h.timer = setInterval(() => {
+      // NOTE: `running` covers the CLAIM only, so two claims never overlap. The tick resolves once its
+      // jobs have started, and the next tick fills whatever slots have freed by then.
+      if (h.running) return;
+      h.running = true;
+      void runDebounceTick(base, slots, opts.deps)
+        .catch((e) => logger.error({ err: e }, "debounce tick failed"))
+        .finally(() => {
+          h.running = false;
+        });
+    }, intervalMs);
+    logger.info(
+      "debounce worker started (interval=%dms, slots=%d, model permits=%d)",
+      intervalMs,
+      slots,
+      config.agent.modelConcurrency,
+    );
+    return stopDebounceWorker;
+  });
 }
 
 export function stopDebounceWorker(): void {

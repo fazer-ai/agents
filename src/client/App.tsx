@@ -28,6 +28,7 @@ import { AdminBrandingPage } from "@/client/pages/admin/AdminBrandingPage";
 import { AdminLayout } from "@/client/pages/admin/AdminLayout";
 import { AdminTenantsPage } from "@/client/pages/admin/AdminTenantsPage";
 import { AdminUsersPage } from "@/client/pages/admin/AdminUsersPage";
+import { DatabasePage } from "@/client/pages/admin/database/DatabasePage";
 import { InstanceHealthPage } from "@/client/pages/admin/instance-health/InstanceHealthPage";
 import { AgentEditorPage } from "@/client/pages/agents/AgentEditorPage";
 import { ChannelsPage } from "@/client/pages/ChannelsPage";
@@ -308,6 +309,10 @@ export function App() {
                                   <Route
                                     path="instance-health"
                                     element={<InstanceHealthPage />}
+                                  />
+                                  <Route
+                                    path="database"
+                                    element={<DatabasePage />}
                                   />
                                 </Route>
                                 <Route

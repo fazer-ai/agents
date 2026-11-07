@@ -4,6 +4,16 @@ services:
     # the validated isolation spike.
     image: pgvector/pgvector:pg17
     container_name: agents-postgres
+    # The Database screen's query statistics (docs/logs.md, "Database"): pg_stat_statements has to be
+    # preloaded, and changing these restarts Postgres. Without them the screen still works and says so.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=top
+      - -c
+      - pg_stat_statements.track_utility=off
     restart: unless-stopped
     ports:
       - '${POSTGRES_PORT:-5432}:5432'

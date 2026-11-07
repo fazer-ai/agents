@@ -5,7 +5,11 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
-import { asSuperAdminOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  type TenantContext,
+  type TxBudget,
+} from "@/lib/tenancy";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutationOn, projectionMoved } from "@/modules/audit/service";
 import {
@@ -527,9 +531,12 @@ export interface InstanceThresholdDto {
 
 export async function listInstanceThresholds(
   base: PrismaClient = basePrisma,
+  budget?: TxBudget,
 ): Promise<InstanceThresholdDto[]> {
-  const rows = await asSuperAdminOn(base, (db) =>
-    db.instanceAlertThreshold.findMany(),
+  const rows = await asSuperAdminOn(
+    base,
+    (db) => db.instanceAlertThreshold.findMany(),
+    budget,
   );
   const byKey = new Map(rows.map((r) => [r.signal, r]));
   return SIGNALS.map((s) => {

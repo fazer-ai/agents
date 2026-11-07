@@ -9,6 +9,7 @@ import {
 } from "@/lib/process-lease";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -1311,12 +1312,19 @@ async function deadClaimPass(base: PrismaClient): Promise<void> {
 
 // Runs the dead-claim pass now and every `DEAD_CLAIM_PASS_MS`, in every process (a web replica's
 // death is found by the leader, and the leader's by whatever starts next). Idempotent.
+// The dead-claim pass run as `chatwoot:dead-claims`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
 export function startDeadClaimSweep(base: PrismaClient = basePrisma): void {
-  const h = deadClaimHolder();
-  if (h.timer !== null) return;
-  h.timer = setInterval(() => void runDeadClaimPass(base), DEAD_CLAIM_PASS_MS);
-  h.timer.unref?.();
-  void runDeadClaimPass(base);
+  runWithWorkLabel("chatwoot:dead-claims", () => {
+    const h = deadClaimHolder();
+    if (h.timer !== null) return;
+    h.timer = setInterval(
+      () => void runDeadClaimPass(base),
+      DEAD_CLAIM_PASS_MS,
+    );
+    h.timer.unref?.();
+    void runDeadClaimPass(base);
+  });
 }
 
 export function stopDeadClaimSweep(): void {

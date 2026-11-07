@@ -51,7 +51,6 @@ import {
   type McpLoadDeps,
   type McpServerMeta,
 } from "@/graph/tools/mcp";
-import { logSchemaRefusals } from "@/graph/tools/refusal-log";
 import type { ReplyChoice } from "@/graph/tools/reply-as-text";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import {
@@ -337,8 +336,9 @@ export function toPlaygroundInvokeError(e: unknown): AppError {
 }
 
 // Replaces a tool's execution with an operator-supplied canned result, keeping its model-facing
-// name/description/schema. Applied AFTER the toolset is built, over ANY tool (native/HTTP/MCP/KB), so
-// the agent's behavior can be tested deterministically without a real call. Exported for tests.
+// name/description/schema. Applied over the assembled toolset, ANY tool (native/HTTP/MCP/KB), and
+// before the precondition wrapper, so the agent's behavior can be tested deterministically without a
+// real call and the tool's rules still refuse the canned result. Exported for tests.
 export function applyToolMocks(
   tools: StructuredToolInterface[],
   mocks: Record<string, string> | undefined,
@@ -454,30 +454,27 @@ async function buildPlaygroundGraph(params: {
       base,
       overrides: params.overrides,
     }));
-  const rawTools = await buildDetachedToolset(loaded, {
+  const toolMocks = params.overrides?.toolMocks;
+  // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
+  // below asks, and the one a name alone cannot answer.
+  const protocol = inertToolsFor(loaded);
+  // The mocks go in INSIDE the toolset build, before the precondition wrapper: a canned result is
+  // still refused by the operator's rules on that tool, as the real call would be. The schema-refusal
+  // wrapper `buildToolset` puts on last therefore covers the mocked tools too.
+  const mocked = await buildDetachedToolset(loaded, {
     ctx,
     threadId,
     base,
     mcp: params.deps?.mcp,
     flow: params.flow,
+    makeModel: params.deps?.makeModel,
+    replaceTools: (assembled) => applyToolMocks(assembled, toolMocks, protocol),
     replyChoice: params.replyChoice,
     natives: PLAYGROUND_NATIVES,
     // NOTE: simulated, so the operator sees the agent choose a document, which is what they came to see.
     documents: "simulated",
     proactive: params.silenceProtocol,
   });
-  const toolMocks = params.overrides?.toolMocks;
-  // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
-  // below asks, and the one a name alone cannot answer.
-  const protocol = inertToolsFor(loaded);
-  // Wrapped again after the swap: `applyToolMocks` replaces a mocked tool with a fresh `tool()`,
-  // losing the wrapper that records schema refusals. Wrapping is idempotent, so unmocked tools keep
-  // the single wrapper `buildToolset` gave them.
-  const mocked = logSchemaRefusals(
-    applyToolMocks(rawTools, toolMocks, protocol),
-    params.flow,
-    loaded.logToolValues,
-  );
   const tools = params.silenceProtocol
     ? // Same rule production applies, on the same list: a toolset that is nothing but the protocol
       // tool belongs to an agent that is tool-less in practice, and binding it here would simulate a

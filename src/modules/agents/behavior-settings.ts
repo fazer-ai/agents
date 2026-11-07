@@ -1,4 +1,5 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
+import { readChoiceCheckConfig } from "@/graph/tools/choice-check-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { GROUNDING_RANGES } from "@/modules/agents/number-ranges";
 import { readResolveConversationConfig } from "@/modules/agents/resolve-labels";
@@ -119,6 +120,8 @@ export interface BehaviorSettings {
     allowed: ReturnType<typeof readWritableAttributes>;
   };
   toolPreconditions: ReturnType<typeof readToolPreconditionsForDisplay>;
+  // NOTE: All four fields null is the agent's own model, as for the reviewer.
+  choiceCheck: ReturnType<typeof readChoiceCheckConfig>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
 }
 
@@ -158,6 +161,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "setLabels",
   "setCustomAttribute",
   "toolPreconditions",
+  "choiceCheck",
   "monitoring",
 ] as const;
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
@@ -208,6 +212,7 @@ export function readBehaviorSettings(
     },
     setCustomAttribute: { allowed: readWritableAttributes(settings) },
     toolPreconditions: readToolPreconditionsForDisplay(settings),
+    choiceCheck: readChoiceCheckConfig(settings),
     monitoring: readMonitoringConfig(settings),
   };
 }
@@ -248,6 +253,7 @@ export interface BehaviorSettingsPatch {
   setLabels?: Record<string, unknown>;
   setCustomAttribute?: Record<string, unknown>;
   toolPreconditions?: Record<string, unknown>;
+  choiceCheck?: Record<string, unknown>;
   monitoring?: Record<string, unknown>;
 }
 

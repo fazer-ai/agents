@@ -28,6 +28,7 @@ const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   ttsFallback: "degraded",
   memoryModel: "degraded",
   suggestionReviewModel: "degraded",
+  choiceCheckModel: "degraded",
   modelFallback: "degraded",
   vision: "degraded",
   // A decisions observer without its classifier key decides nothing at all: the same as a language

@@ -2051,3 +2051,51 @@ describe("computeConfigIssues — fallback voice", () => {
     ).toEqual([]);
   });
 });
+
+describe("the choice judge's own model (settings.choiceCheck)", () => {
+  const ISSUE = {
+    key: "choiceCheckModel",
+    tab: "tools",
+    sectionId: "tools-preconditions",
+  } as const;
+  const judge = (
+    choiceCheck: Record<string, unknown>,
+    rules: Record<string, unknown> = {
+      send_orcamento: { kind: "customer_choice" },
+    },
+  ) => ({ ...base, settings: { choiceCheck, toolPreconditions: rules } });
+
+  test("another vendor with no key of its own is flagged, since every guarded call is refused", () => {
+    expect(
+      computeConfigIssues(judge({ provider: "anthropic", model: "x" })),
+    ).toEqual([ISSUE]);
+  });
+
+  test("a model with no provider is flagged", () => {
+    expect(computeConfigIssues(judge({ model: "gpt-5.4-mini" }))).toEqual([
+      ISSUE,
+    ]);
+  });
+
+  test("the agent's vendor on its key, or another with its own key, is fine", () => {
+    expect(
+      computeConfigIssues(judge({ provider: "openai", model: "gpt-5.4-mini" })),
+    ).toEqual([]);
+    expect(
+      computeConfigIssues(
+        judge({ provider: "anthropic", model: "x", credentialRef: "vault:3" }),
+      ),
+    ).toEqual([]);
+  });
+
+  test("with no customer_choice rule nothing calls the judge, so nothing is flagged", () => {
+    expect(
+      computeConfigIssues(
+        judge(
+          { provider: "anthropic", model: "x" },
+          { send_orcamento: { key: "cpf", scope: "contact" } },
+        ),
+      ),
+    ).toEqual([]);
+  });
+});

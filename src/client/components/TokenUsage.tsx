@@ -49,6 +49,8 @@ function nodeLabel(t: T, node: string): string {
       return t("tokenUsage.node.guardrail", "guardrail check");
     case "tts_normalize":
       return t("tokenUsage.node.ttsNormalize", "rewrite for speech");
+    case "choice_check":
+      return t("tokenUsage.node.choiceCheck", "customer choice check");
     case "vision":
       return t("tokenUsage.node.vision", "image or document read");
     case "memory_compact":

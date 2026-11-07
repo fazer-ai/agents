@@ -6,12 +6,20 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
-import type { ModelOverride } from "@/graph/model-override";
+import {
+  type ModelOverride,
+  resolveModelOverride,
+} from "@/graph/model-override";
 import {
   caseHoldOn,
   type ResolveCaseHold,
   resolveCaseHoldFor,
 } from "@/graph/resolve-labels";
+import {
+  choiceCheckOverridden,
+  readChoiceCheckConfig,
+} from "@/graph/tools/choice-check-settings";
+import { type ChoiceCheck, choiceCheck } from "@/graph/tools/customer-choice";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWriteReporter } from "@/graph/tools/label-writes";
 import {
@@ -98,6 +106,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
+import type { DatedContextMessage } from "@/modules/guardrails/context";
 import {
   type GuardrailsConfig,
   guardrailCredentialRef,
@@ -419,6 +428,12 @@ export interface AgentConfig {
   suggestionReviewOverride: ModelOverride;
   suggestionReviewApiKey: string;
   suggestionReviewCredentialBaseUrl: string | null;
+  // The customer_choice judge's own model (agent.settings.choiceCheck), with the credential it names.
+  // Same shape and resolver as the reviewer's above, but an override that cannot run REFUSES the
+  // guarded call instead of letting it through.
+  choiceCheckOverride: ModelOverride;
+  choiceCheckApiKey: string;
+  choiceCheckCredentialBaseUrl: string | null;
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
@@ -713,6 +728,27 @@ export async function loadAgentConfig(
         "agent %s: suggestion review credentialRef %s did not resolve to an API key, so suggestions reach the queue unreviewed",
         String(args.agentId),
         reviewCfg.credentialRef,
+      );
+    }
+  }
+  // The choice judge's own credential: an unresolvable ref leaves the key empty, and every guarded
+  // call is then refused rather than judged on the agent's key.
+  const choiceCheckCfg = readChoiceCheckConfig(effSettings);
+  let choiceCheckApiKey = "";
+  let choiceCheckCredentialBaseUrl: string | null = null;
+  if (choiceCheckCfg.credentialRef) {
+    const cEntry = await tryResolveApiKeyEntry(
+      db,
+      choiceCheckCfg.credentialRef,
+    );
+    if (cEntry.state === "ok") {
+      choiceCheckApiKey = cEntry.secret;
+      choiceCheckCredentialBaseUrl = cEntry.baseUrl;
+    } else {
+      logger.warn(
+        "agent %s: choice check credentialRef %s did not resolve to an API key, so every choice-guarded call is refused",
+        String(args.agentId),
+        choiceCheckCfg.credentialRef,
       );
     }
   }
@@ -1116,6 +1152,9 @@ export async function loadAgentConfig(
     suggestionReviewOverride: reviewCfg,
     suggestionReviewApiKey,
     suggestionReviewCredentialBaseUrl,
+    choiceCheckOverride: choiceCheckCfg,
+    choiceCheckApiKey,
+    choiceCheckCredentialBaseUrl,
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
   };
@@ -1175,6 +1214,9 @@ export interface ToolsetCtx {
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
   // screens it on this path. See ToolCtx.screenCustomerText.
   screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
+  // The conversation for the `customer_choice` judge, when the graph state is not it: the observer's
+  // graph reads one rendered prompt, which would read as a single customer message.
+  choiceTranscript?: () => DatedContextMessage[];
   // The caller's whole-turn deadline, when it has one (the observer's tick). Reaches the Chatwoot
   // client as `expiresOn` and the HTTP tools as the same signal, so a handler that outlives the
   // budget cannot still write. Absent on a reactive turn, which has no deadline.
@@ -1371,6 +1413,19 @@ export interface ToolBuildDeps {
   // Flow telemetry context for THIS turn. When present, an MCP discovery failure is surfaced as a
   // flowlog warn (visible in the Logs page; paged on inbox traffic) instead of only a stdout log.
   flow?: FlowContext;
+  // The `customer_choice` judge's model factory and ledger writer, injectable like the turn's own.
+  makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
+  persistUsage?: UsagePersist;
+  // The scheduler job's signal, for a tool that makes its own model call (the `customer_choice`
+  // judge): a job past its deadline starts no call, as the turn's own model does not.
+  signal?: AbortSignal;
+  // The permit class of that call, the turn's own (BuildAgentGraphParams.modelPriority).
+  modelPriority?: PermitClass;
+  // Swaps tools of the assembled list before the precondition wrapper goes on (the playground's
+  // canned results), so a stand-in is refused by the same rules as the tool it replaces.
+  replaceTools?: (
+    tools: StructuredToolInterface[],
+  ) => StructuredToolInterface[];
 }
 
 // Native Chatwoot tools + allowlisted custom HTTP tools + allowlisted MCP tools. buildNativeTools
@@ -1963,7 +2018,7 @@ export async function buildToolset(
   // document, HTTP, MCP, toolpack and RAG at once. An agent with no preconditions gets the same
   // array back, untouched.
   const guarded = applyToolPreconditions(
-    tools,
+    deps.replaceTools ? deps.replaceTools(tools) : tools,
     cfg.toolPreconditions,
     preconditionStateLoader({
       base: ctx.base,
@@ -1990,6 +2045,7 @@ export async function buildToolset(
     // otherwise lose the cover that ask gives it.
     ctx.stillWanted,
     ctx.onNoEffect,
+    customerChoiceCheck(cfg, ctx, deps),
   );
   if (dropped.length > 0) {
     // NOTE: The operator is the only one who can fix this, and the symptom they would otherwise see
@@ -2090,6 +2146,122 @@ export function buildCallbacks(
     updateRoot: args.updateRoot,
   });
   return langfuse ? [usage, langfuse] : [usage];
+}
+
+// The `customer_choice` judge runs on the agent's OWN model and key, so the condition needs no
+// configuration of its own, and is billed under its own ledger node inside the turn that called the
+// tool. Pinned like the speech rewrite: temperature 0 and no reasoning effort, since the answer is a
+// YES or a NO the customer is waiting on.
+export function customerChoiceCheck(
+  cfg: AgentConfig,
+  ctx: ToolsetCtx,
+  deps: ToolBuildDeps,
+): ChoiceCheck {
+  // The agent's model and key unless `settings.choiceCheck` names another, resolved like every
+  // secondary call's override. Unlike the suggestion reviewer, an override that cannot run refuses the
+  // call (null below): falling back to the agent's model would send its key where the operator moved
+  // the check away from, and letting the call through would drop the guard.
+  const mc = (): ResolvedModelConfig | null => {
+    const o = cfg.choiceCheckOverride ?? {};
+    if (!choiceCheckOverridden(o)) {
+      return {
+        provider: cfg.mc.provider,
+        model: cfg.mc.model,
+        apiKey: cfg.apiKey,
+        baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+        temperature: 0,
+      };
+    }
+    const r = resolveModelOverride(
+      o,
+      {
+        provider: cfg.mc.provider,
+        model: cfg.mc.model,
+        baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+      },
+      { ownCredentialBaseURL: cfg.choiceCheckCredentialBaseUrl },
+    );
+    if (!r.runnable) {
+      logger.warn(
+        { agentId: String(cfg.agentId), reason: r.reason },
+        "customer choice: the judge's own model cannot run, so a guarded call is refused",
+      );
+      return null;
+    }
+    if (r.credential === "own" && !cfg.choiceCheckApiKey) {
+      logger.warn(
+        { agentId: String(cfg.agentId) },
+        "customer choice: the judge's own credential did not resolve, so a guarded call is refused",
+      );
+      return null;
+    }
+    return {
+      provider: r.provider as ModelConfig["provider"],
+      model: r.model,
+      apiKey:
+        r.credential === "own"
+          ? cfg.choiceCheckApiKey
+          : r.credential === "agent"
+            ? cfg.apiKey
+            : "",
+      baseURL: r.baseURL ?? undefined,
+      temperature: 0,
+    };
+  };
+  let resolvedMc: ResolvedModelConfig | null | undefined;
+  const judgeMc = (): ResolvedModelConfig | null => {
+    if (resolvedMc === undefined) resolvedMc = mc();
+    return resolvedMc;
+  };
+  let built: BaseChatModel | null | undefined;
+  return choiceCheck({
+    // NOTE: the clock and zone the agent's own prompt rendered, so the playground's simulated hour
+    // reaches the judge too and "tomorrow" means the same day to both.
+    clock: () => ({
+      now: cfg.promptOpts.now,
+      timezone: cfg.promptOpts.timezone ?? cfg.timezone,
+    }),
+    transcript: ctx.choiceTranscript,
+    priority: deps.modelPriority,
+    reference: () => cfg.systemPrompt,
+    signal: () => {
+      const turn = [ctx.expiresOn, deps.signal].filter(
+        (s): s is AbortSignal => s !== undefined,
+      );
+      return turn.length > 1 ? AbortSignal.any(turn) : turn[0];
+    },
+    model: () => {
+      if (built !== undefined) return built;
+      try {
+        const resolved = judgeMc();
+        // NOTE: no key is not a reason to refuse here: an `openai-compatible` endpoint may run keyless,
+        // and the factory is what knows which configurations are runnable.
+        built = resolved ? (deps.makeModel ?? createChatModel)(resolved) : null;
+      } catch (err) {
+        logger.warn(
+          { err, agentId: String(cfg.agentId) },
+          "customer choice: the agent's model is not runnable, so a guarded call is refused",
+        );
+        built = null;
+      }
+      return built;
+    },
+    callbacks: () =>
+      deps.flow
+        ? buildCallbacks(cfg, {
+            tenantId: ctx.tenantId,
+            threadId: ctx.threadId,
+            base: ctx.base,
+            persistUsage: deps.persistUsage,
+            node: "choice_check",
+            billedModel: judgeMc() ?? undefined,
+            turnId: deps.flow.turnId,
+            source: deps.flow.source,
+            anonymous: deps.flow.anonymous,
+            updateRoot: false,
+          })
+        : [],
+  });
 }
 
 export interface SpeechNormalizerArgs {

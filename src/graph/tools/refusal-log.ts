@@ -157,11 +157,8 @@ function argsOf(input: unknown): Record<string, unknown> {
   return {};
 }
 
-// ALREADY WATCHED, so applying this twice is a no-op rather than two lines for one refused call.
-// It exists because one caller REPLACES tools after assembly: the playground swaps a mocked tool for
-// a fresh `tool()` carrying the original schema (`applyToolMocks`), which drops the wrapper and takes
-// the refusal line with it while the schema goes on refusing. That path has to wrap again, and the
-// tools it did NOT replace come through by identity, so the second pass must be able to tell them
+// ALREADY WATCHED, so applying this twice is a no-op rather than two lines for one refused call: a
+// caller that wraps a list some of whose tools came through by identity must be able to tell them
 // apart. An own property on the wrapper, which the prototype carries into any later `Object.create`.
 const WATCHED = Symbol.for("fazerai.schema-refusal-logged");
 

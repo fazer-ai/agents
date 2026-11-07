@@ -1156,7 +1156,14 @@ async function runTurnBody(
         return "handed";
       },
     },
-    { buildNativeTools, mcp: params.deps?.mcp, flow },
+    {
+      buildNativeTools,
+      mcp: params.deps?.mcp,
+      flow,
+      makeModel: params.deps?.makeModel,
+      persistUsage: params.deps?.persistUsage,
+      signal: params.signal,
+    },
   );
 
   // Whether an unexplained silence was asked once more, for the warn that still fires when

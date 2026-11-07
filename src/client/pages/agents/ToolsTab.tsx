@@ -9,8 +9,14 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
+import {
+  ChoiceCheckModelField,
+  choiceCheckBlocksSave,
+} from "./ChoiceCheckModelField";
 import type { CrossInboxCaseState } from "./CrossInboxCaseFields";
+import type { ChoiceCheckState } from "./choiceCheckFormState";
 import { assembledToolNames, guardableToolsOf } from "./guardableTools";
+import type { AgentModelSource } from "./modelOverrideForm";
 import type { ResolveConversationState } from "./ResolveConversationFields";
 import { SectionNav } from "./SectionNav";
 import type { SendImageState } from "./SendImageFields";
@@ -75,6 +81,13 @@ interface ToolsTabProps {
   // by this tab, because a precondition is config OF a tool.
   toolPreconditions: ToolPreconditionRow[];
   setToolPreconditions: (rows: ToolPreconditionRow[]) => void;
+  // The customer_choice judge's own model, drawn while some rule asks for the customer's choice.
+  choiceCheck: ChoiceCheckState;
+  setChoiceCheck: React.Dispatch<React.SetStateAction<ChoiceCheckState>>;
+  // The model this save writes and its effective endpoint, which the judge inherits.
+  agentModel: AgentModelSource;
+  choiceCheckCredBaseUrl: string | null;
+  choiceCheckCredentialError?: string;
   // Discovered MCP tools + per-connection collapse state, owned by AgentEditorPage so the discovery
   // survives tab switches (this tab unmounts when inactive).
   mcpTools: Record<string, DiscoveredMcpTool[]>;
@@ -143,6 +156,11 @@ export function ToolsTab({
   setUpdateKanbanTaskInstructions,
   toolPreconditions,
   setToolPreconditions,
+  choiceCheck,
+  setChoiceCheck,
+  agentModel,
+  choiceCheckCredBaseUrl,
+  choiceCheckCredentialError,
   mcpTools,
   setMcpTools,
   mcpInstructions,
@@ -158,6 +176,12 @@ export function ToolsTab({
   onOpenPlayground,
 }: ToolsTabProps) {
   const { t } = useTranslation();
+  const choiceShown =
+    !decides &&
+    !voice &&
+    toolPreconditions.some((r) =>
+      r.conditions.some((c) => c.kind === "customer_choice"),
+    );
   const shown = voice ? voiceToolCatalog(catalog) : catalog;
   // Every granted tool a precondition can be put on, by the name the model calls it.
   const guardableTools = guardableToolsOf(shown, grants, {
@@ -286,7 +310,18 @@ export function ToolsTab({
             guardableTools={guardableTools}
             assembledTools={assembledTools}
             decides={decides}
+            voice={voice}
           />
+          {choiceShown && (
+            <ChoiceCheckModelField
+              value={choiceCheck}
+              onChange={setChoiceCheck}
+              agentModel={agentModel}
+              credBaseUrl={choiceCheckCredBaseUrl}
+              credentialError={choiceCheckCredentialError}
+              saving={saving}
+            />
+          )}
         </div>
       </div>
       <TabActionBar
@@ -296,6 +331,12 @@ export function ToolsTab({
         onDiscard={onDiscard}
         saveLabel={t("editor.saveTools", "Save tools")}
         onOpenPlayground={onOpenPlayground}
+        saveDisabled={choiceCheckBlocksSave(
+          choiceCheck,
+          agentModel,
+          choiceCheckCredBaseUrl,
+          choiceShown,
+        )}
       />
     </div>
   );

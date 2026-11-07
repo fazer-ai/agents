@@ -1747,7 +1747,11 @@ function canonicalPrecondition(raw: unknown): string {
   const parsed = parseToolPreconditionList(raw);
   if (parsed) {
     return JSON.stringify(
-      parsed.map((c) => [c.kind, c.scope, c.key, c.equals ?? null]),
+      parsed.map((c) =>
+        c.kind === "attribute"
+          ? [c.kind, c.scope, c.key, c.equals ?? null]
+          : [c.kind],
+      ),
     );
   }
   return `raw:${JSON.stringify(raw) ?? "undefined"}`;

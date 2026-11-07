@@ -310,7 +310,11 @@ test("...and an agent that answers is offered all of them", async () => {
 
 // THE OTHER HALF OF THE SAME SCREEN. Besides the grant cards, the preconditions block beside them
 // and the section index on the left leave out what a muted turn strips.
-function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
+function renderToolsTab(
+  observing: boolean,
+  rows: ToolPreconditionRow[] = [],
+  voice = false,
+) {
   const noop = () => undefined;
   return render(
     <MemoryRouter>
@@ -320,6 +324,7 @@ function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
             <ToolsTab
               agentId="1"
               observing={observing}
+              voice={voice}
               catalog={CATALOG as never}
               grants={[] as never}
               onChange={noop}
@@ -380,6 +385,19 @@ function renderToolsTab(observing: boolean, rows: ToolPreconditionRow[] = []) {
               setUpdateKanbanTaskInstructions={noop}
               toolPreconditions={rows as never}
               setToolPreconditions={noop}
+              choiceCheck={{
+                provider: "",
+                model: "",
+                credentialRef: "",
+                baseURL: "",
+              }}
+              setChoiceCheck={noop}
+              agentModel={{
+                provider: "openai",
+                credentialRef: "",
+                baseURL: "",
+              }}
+              choiceCheckCredBaseUrl={null}
               mcpTools={{}}
               setMcpTools={noop}
               mcpInstructions={{}}
@@ -468,4 +486,24 @@ test("the section index carries no link to a block the watcher does not draw", a
     ),
   );
   expect(screen.queryAllByRole("link", { name: "Documents" })).toHaveLength(0);
+});
+
+// A call's tools run with no transcript, so a customer_choice rule would refuse every call: the tab
+// offers neither the kind nor the judge's model on a voice agent.
+test("a voice agent is offered neither the customer's choice nor the judge's model", async () => {
+  stubAuth();
+  const choiceOpt = () =>
+    screen.queryAllByRole("option", {
+      name: "the customer has chosen the values of the call",
+    });
+  const { unmount } = renderToolsTab(false, [EMPTY_ROW], true);
+  await waitFor(() =>
+    expect(screen.queryAllByText("Tool preconditions").length).toBeGreaterThan(
+      0,
+    ),
+  );
+  expect(choiceOpt()).toHaveLength(0);
+  unmount();
+  renderToolsTab(false, [EMPTY_ROW]);
+  await waitFor(() => expect(choiceOpt()).toHaveLength(1));
 });

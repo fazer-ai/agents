@@ -65,6 +65,7 @@ export function useNodeLabel() {
     decision: t("dashboard.node.decision", "Decision API"),
     tts_normalize: t("dashboard.node.ttsNormalize", "Voice text preparation"),
     guardrail: t("dashboard.node.guardrail", "Guardrail"),
+    choice_check: t("dashboard.node.choiceCheck", "Customer choice check"),
     memory_compact: t("dashboard.node.memoryCompact", "Memory compaction"),
     suggestion_review: t(
       "dashboard.node.suggestionReview",

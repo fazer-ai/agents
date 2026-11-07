@@ -29,6 +29,7 @@ const ALL_KEYS: Record<ConfigIssueKey, true> = {
   ttsFallback: true,
   memoryModel: true,
   suggestionReviewModel: true,
+  choiceCheckModel: true,
   modelFallback: true,
   vision: true,
   decisions: true,

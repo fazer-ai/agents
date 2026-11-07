@@ -292,6 +292,10 @@ const IS_AGENT_TURN = {
   nudge: true,
   guardrail: true,
   tts_normalize: true,
+  // The `customer_choice` precondition's judge, inside the turn whose tool call it decides. Not a turn
+  // of its own: the reactive turn and the nudge that call it bill their own `agent`/`nudge` row, and
+  // an observer's tick calls it too, on a conversation nobody of ours answers.
+  choice_check: false,
   memory_compact: true,
   vision: false,
   // The OBSERVE job classifying a conversation the agent watches: a model call on a

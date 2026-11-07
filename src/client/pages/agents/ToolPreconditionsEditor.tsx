@@ -7,6 +7,7 @@ import { Input } from "@/client/components/Input";
 import { Select } from "@/client/components/Select";
 import { api } from "@/client/lib/api";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { cn } from "@/client/lib/utils";
 import {
   isGuardableToolName,
   TOOL_PRECONDITION_CONDITIONS_MAX,
@@ -35,6 +36,9 @@ interface Props {
   assembledTools: { has(name: string): boolean };
   // Questions and rules: a refused tool is a rule's action that does not run, and no model is told.
   decides?: boolean;
+  // A voice agent: a call's tools run with no transcript, so a customer_choice rule would refuse
+  // every call. Not offered there; a saved one stays visible.
+  voice?: boolean;
 }
 
 const KIND_ORDER: GuardableTool["kind"][] = [
@@ -65,6 +69,7 @@ export function ToolPreconditionsEditor({
   guardableTools,
   assembledTools,
   decides = false,
+  voice = false,
 }: Props) {
   const { t } = useTranslation();
   const patch = (i: number, next: Partial<ToolPreconditionRow>) =>
@@ -142,12 +147,17 @@ export function ToolPreconditionsEditor({
           decides
             ? t(
                 "editor.toolPreconditions.descriptionDecisions",
-                "Block a tool until every conversation or contact attribute you list holds a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
+                "Block a tool until every condition you list holds: a conversation or contact attribute with a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
               )
-            : t(
-                "editor.toolPreconditions.description",
-                "Block a tool until every conversation or contact attribute you list holds a value. The agent is told why and continues the conversation; nothing is said to the customer.",
-              )
+            : voice
+              ? t(
+                  "editor.toolPreconditions.descriptionVoice",
+                  "Block a tool until every condition you list holds: a conversation or contact attribute with a value. The agent is told why and continues the call; nothing is said to the customer.",
+                )
+              : t(
+                  "editor.toolPreconditions.description",
+                  "Block a tool until every condition you list holds: a conversation or contact attribute with a value, or the customer having chosen the values the agent calls it with. The agent is told why and continues the conversation; nothing is said to the customer.",
+                )
         }
       >
         <div className="flex flex-col gap-2">
@@ -213,6 +223,7 @@ export function ToolPreconditionsEditor({
                 </div>
                 {row.conditions.map((cond, c) => {
                   const match = matchOf(cond);
+                  const choice = cond.kind === "customer_choice";
                   return (
                     <div
                       // biome-ignore lint/suspicious/noArrayIndexKey: conditions are positional, edited only by add/remove.
@@ -223,135 +234,186 @@ export function ToolPreconditionsEditor({
                       <div className="flex flex-wrap items-start gap-2">
                         <div className="flex min-w-0 flex-1 flex-col gap-2">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="sm:w-32 sm:shrink-0">
+                            <span className="sm:w-16 sm:shrink-0">
                               {c === 0
-                                ? t(
-                                    "editor.toolPreconditions.untilAttribute",
-                                    "until the attribute",
-                                  )
+                                ? t("editor.toolPreconditions.until", "until")
                                 : t(
-                                    "editor.toolPreconditions.andUntilAttribute",
-                                    "and until the attribute",
+                                    "editor.toolPreconditions.andUntil",
+                                    "and until",
                                   )}
                             </span>
-                            <div className="w-full sm:w-40">
-                              <Input
+                            <div
+                              className={cn("w-full", {
+                                "sm:w-28": !choice,
+                                "sm:w-96": choice,
+                              })}
+                            >
+                              <Select
                                 aria-label={t(
-                                  "editor.toolPreconditions.key",
-                                  "Attribute",
+                                  "editor.toolPreconditions.kind",
+                                  "Condition type",
                                 )}
-                                value={cond.key}
+                                value={choice ? "customer_choice" : "attribute"}
                                 onChange={(e) =>
-                                  patchCondition(i, c, { key: e.target.value })
+                                  patchCondition(i, c, {
+                                    kind:
+                                      e.target.value === "customer_choice"
+                                        ? "customer_choice"
+                                        : "attribute",
+                                  })
                                 }
-                                placeholder={t(
-                                  "editor.toolPreconditions.keyPlaceholder",
-                                  "attribute key",
+                              >
+                                <option value="attribute">
+                                  {t(
+                                    "editor.toolPreconditions.kindAttribute",
+                                    "the attribute",
+                                  )}
+                                </option>
+                                {((!decides && !voice) || choice) && (
+                                  <option value="customer_choice">
+                                    {t(
+                                      "editor.toolPreconditions.kindCustomerChoice",
+                                      "the customer has chosen the values of the call",
+                                    )}
+                                  </option>
                                 )}
-                                list={listIdOf(c)}
-                              />
-                              <datalist id={listIdOf(c)}>
-                                {defs
-                                  .filter(
-                                    (d) => d.model === SCOPE_MODEL[cond.scope],
-                                  )
-                                  .map((d) => (
-                                    <option key={d.key} value={d.key}>
-                                      {d.displayName || d.key}
+                              </Select>
+                            </div>
+                            {!choice && (
+                              <>
+                                <div className="w-full sm:w-40">
+                                  <Input
+                                    aria-label={t(
+                                      "editor.toolPreconditions.key",
+                                      "Attribute",
+                                    )}
+                                    value={cond.key}
+                                    onChange={(e) =>
+                                      patchCondition(i, c, {
+                                        key: e.target.value,
+                                      })
+                                    }
+                                    placeholder={t(
+                                      "editor.toolPreconditions.keyPlaceholder",
+                                      "attribute key",
+                                    )}
+                                    list={listIdOf(c)}
+                                  />
+                                  <datalist id={listIdOf(c)}>
+                                    {defs
+                                      .filter(
+                                        (d) =>
+                                          d.model === SCOPE_MODEL[cond.scope],
+                                      )
+                                      .map((d) => (
+                                        <option key={d.key} value={d.key}>
+                                          {d.displayName || d.key}
+                                        </option>
+                                      ))}
+                                  </datalist>
+                                </div>
+                                <div className="w-full sm:w-32">
+                                  <Select
+                                    aria-label={t(
+                                      "editor.toolPreconditions.scope",
+                                      "Scope",
+                                    )}
+                                    value={cond.scope}
+                                    onChange={(e) =>
+                                      patchCondition(i, c, {
+                                        scope:
+                                          e.target.value === "contact"
+                                            ? "contact"
+                                            : "conversation",
+                                      })
+                                    }
+                                  >
+                                    <option value="conversation">
+                                      {t(
+                                        "editor.toolPreconditions.ofConversation",
+                                        "on the conversation",
+                                      )}
                                     </option>
-                                  ))}
-                              </datalist>
-                            </div>
-                            <div className="w-full sm:w-32">
-                              <Select
-                                aria-label={t(
-                                  "editor.toolPreconditions.scope",
-                                  "Scope",
+                                    <option value="contact">
+                                      {t(
+                                        "editor.toolPreconditions.ofContact",
+                                        "on the contact",
+                                      )}
+                                    </option>
+                                  </Select>
+                                </div>
+                                <div className="w-full sm:w-44">
+                                  <Select
+                                    aria-label={t(
+                                      "editor.toolPreconditions.match",
+                                      "Condition",
+                                    )}
+                                    value={match}
+                                    onChange={(e) =>
+                                      patchCondition(i, c, {
+                                        match:
+                                          e.target.value === "equals"
+                                            ? "equals"
+                                            : "any",
+                                      })
+                                    }
+                                  >
+                                    <option value="any">
+                                      {t(
+                                        "editor.toolPreconditions.matchAny",
+                                        "has any value",
+                                      )}
+                                    </option>
+                                    <option value="equals">
+                                      {t(
+                                        "editor.toolPreconditions.matchEquals",
+                                        "equals",
+                                      )}
+                                    </option>
+                                  </Select>
+                                </div>
+                                {match === "equals" && (
+                                  <div className="w-full sm:w-44">
+                                    <Input
+                                      aria-label={t(
+                                        "editor.toolPreconditions.equals",
+                                        "Required value",
+                                      )}
+                                      value={cond.equals}
+                                      onChange={(e) =>
+                                        patchCondition(i, c, {
+                                          match: "equals",
+                                          equals: e.target.value,
+                                        })
+                                      }
+                                      placeholder={t(
+                                        "editor.toolPreconditions.equalsPlaceholder",
+                                        "required value",
+                                      )}
+                                    />
+                                  </div>
                                 )}
-                                value={cond.scope}
-                                onChange={(e) =>
-                                  patchCondition(i, c, {
-                                    scope:
-                                      e.target.value === "contact"
-                                        ? "contact"
-                                        : "conversation",
-                                  })
-                                }
-                              >
-                                <option value="conversation">
-                                  {t(
-                                    "editor.toolPreconditions.ofConversation",
-                                    "on the conversation",
-                                  )}
-                                </option>
-                                <option value="contact">
-                                  {t(
-                                    "editor.toolPreconditions.ofContact",
-                                    "on the contact",
-                                  )}
-                                </option>
-                              </Select>
-                            </div>
-                            <div className="w-full sm:w-44">
-                              <Select
-                                aria-label={t(
-                                  "editor.toolPreconditions.match",
-                                  "Condition",
-                                )}
-                                value={match}
-                                onChange={(e) =>
-                                  patchCondition(i, c, {
-                                    match:
-                                      e.target.value === "equals"
-                                        ? "equals"
-                                        : "any",
-                                  })
-                                }
-                              >
-                                <option value="any">
-                                  {t(
-                                    "editor.toolPreconditions.matchAny",
-                                    "has any value",
-                                  )}
-                                </option>
-                                <option value="equals">
-                                  {t(
-                                    "editor.toolPreconditions.matchEquals",
-                                    "equals",
-                                  )}
-                                </option>
-                              </Select>
-                            </div>
-                            {match === "equals" && (
-                              <div className="w-full sm:w-44">
-                                <Input
-                                  aria-label={t(
-                                    "editor.toolPreconditions.equals",
-                                    "Required value",
-                                  )}
-                                  value={cond.equals}
-                                  onChange={(e) =>
-                                    patchCondition(i, c, {
-                                      match: "equals",
-                                      equals: e.target.value,
-                                    })
-                                  }
-                                  placeholder={t(
-                                    "editor.toolPreconditions.equalsPlaceholder",
-                                    "required value",
-                                  )}
-                                />
-                              </div>
+                              </>
                             )}
                           </div>
-                          {match === "equals" && !cond.equals.trim() && (
+                          {choice && (
                             <p className="text-text-muted text-xs">
                               {t(
-                                "editor.toolPreconditions.equalsMissing",
-                                "While the value is blank, the rule asks only that the attribute has some value.",
+                                "editor.toolPreconditions.customerChoiceHelp",
+                                "Each call is checked against the customer's messages: when a value of the call (which option, how many, which day) was not said or confirmed by the customer, it does not run and the agent asks. By default the agent's own model makes the check (it can be changed below), billed on its own line.",
                               )}
                             </p>
                           )}
+                          {!choice &&
+                            match === "equals" &&
+                            !cond.equals.trim() && (
+                              <p className="text-text-muted text-xs">
+                                {t(
+                                  "editor.toolPreconditions.equalsMissing",
+                                  "While the value is blank, the rule asks only that the attribute has some value.",
+                                )}
+                              </p>
+                            )}
                         </div>
                         {row.conditions.length > 1 && (
                           <Button
@@ -462,6 +524,7 @@ export function serializeToolPreconditions(
     const tool = row.tool.trim();
     if (!tool) continue;
     const conditions = row.conditions.flatMap((cond) => {
+      if (cond.kind === "customer_choice") return [{ kind: "customer_choice" }];
       const key = cond.key.trim();
       if (!key) return [];
       const equals = matchOf(cond) === "equals" ? cond.equals.trim() : "";
@@ -491,6 +554,14 @@ export function serializeToolPreconditions(
 function conditionOf(raw: unknown): ToolPreconditionCondition | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const c = raw as Record<string, unknown>;
+  if (c.kind === "customer_choice") {
+    return {
+      kind: "customer_choice",
+      scope: "conversation",
+      key: "",
+      equals: "",
+    };
+  }
   if (c.kind !== "attribute") return null;
   if (c.scope !== "conversation" && c.scope !== "contact") return null;
   if (typeof c.key !== "string" || c.key.trim() === "") return null;

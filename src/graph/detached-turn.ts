@@ -8,6 +8,7 @@ import {
   type AgentConfigOverrides,
   buildToolset,
   loadAgentConfig,
+  type ToolBuildDeps,
 } from "@/graph/prepare";
 import type { NativeHandlers } from "@/graph/tools/channel-natives";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
@@ -84,6 +85,10 @@ export function buildDetachedToolset(
     // operator goes to find out what their agent does — a refused call never reaches the inner tool,
     // so ToolFlowLogger sees no run either and there is nothing else to read.
     flow: FlowContext | undefined;
+    // The `customer_choice` judge's model factory (ToolBuildDeps.makeModel).
+    makeModel?: ToolBuildDeps["makeModel"];
+    // The playground's mocks (ToolBuildDeps.replaceTools).
+    replaceTools?: ToolBuildDeps["replaceTools"];
     // Where `reply_as_text` records its choice. The turn passes the one its delivery
     // reads; the listing passes a throwaway, so the panel shows the tool the model is offered. Absent
     // on the simulated follow-up, which, like production's nudge, is never offered the tool.
@@ -147,6 +152,8 @@ export function buildDetachedToolset(
       documents: params.documents,
       mcp: params.mcp,
       flow: params.flow,
+      makeModel: params.makeModel,
+      replaceTools: params.replaceTools,
     },
   );
 }

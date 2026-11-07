@@ -10,10 +10,12 @@ import type {
   ToolPrecondition,
 } from "@/modules/agents/tool-preconditions";
 import {
+  unchosenValuesMessage,
   unmetPreconditionMessage,
   unmetPreconditions,
 } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
+import type { ChoiceCheck } from "./customer-choice";
 import type { NoEffectReporter } from "./effect-free";
 import { fenceReporterOf } from "./fence-report";
 
@@ -54,7 +56,11 @@ export function guardedTool(
   stillWanted?: () => Promise<boolean>,
   // Called when this wrapper refuses: the inner tool never ran, so nothing was committed.
   onNoEffect?: NoEffectReporter,
+  // Judges a `customer_choice` condition. Absent, that condition is unmet: fail closed.
+  checkChoice?: ChoiceCheck,
 ): StructuredToolInterface {
+  const attributeConds = conds.filter((c) => c.kind !== "customer_choice");
+  const choiceCond = conds.find((c) => c.kind === "customer_choice");
   // DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
   // `inner.invoke` from inside it starts a CHILD tool run under the outer one's callbacks:
   // ToolFlowLogger and Langfuse then record two runs for one model-issued call, and an integration
@@ -81,11 +87,12 @@ export function guardedTool(
         ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
         : text;
     };
-    let unmet: ToolPrecondition[];
+    let unmet: ToolPrecondition[] = [];
     let err: unknown;
     let reason: RefusalReason = "unmet";
     try {
-      unmet = unmetPreconditions(conds, await loadState());
+      if (attributeConds.length > 0)
+        unmet = unmetPreconditions(attributeConds, await loadState());
     } catch (e) {
       // NOTE: FAIL CLOSED, the same way the contact-authorization gate does. A precondition exists because
       // running the tool wrongly costs something the operator cannot undo (a conversation handed to
@@ -95,9 +102,35 @@ export function guardedTool(
       // NOTE: The exception is carried OUT, not swallowed. Failing closed is the right answer to the
       // model and the wrong answer to the operator: the two cases are indistinguishable downstream
       // unless the reason travels with the refusal.
-      unmet = conds;
+      unmet = attributeConds;
       err = e;
       reason = "unreadable";
+    }
+    let message: string | null = null;
+    // NOTE: the choice is judged only once every attribute holds: a call refused for a missing
+    // attribute spends no model call on the judge.
+    if (unmet.length === 0 && choiceCond) {
+      const args = argsOf(input);
+      const verdict = checkChoice
+        ? await checkChoice({
+            tool: inner.name,
+            description: inner.description,
+            args,
+            messages: (config as { state?: { messages?: unknown } } | undefined)
+              ?.state?.messages as never,
+            signal: (config as { signal?: AbortSignal } | undefined)?.signal,
+          })
+        : ({
+            chosen: false,
+            reason: "unreadable",
+            err: new Error("no choice check"),
+          } as const);
+      if (!verdict.chosen) {
+        unmet = [choiceCond];
+        reason = verdict.reason;
+        err = verdict.err;
+        message = unchosenValuesMessage(inner.name, args);
+      }
     }
     if (unmet.length === 0) {
       if (stillWanted && !(await stillWanted().catch(() => true))) {
@@ -114,9 +147,16 @@ export function guardedTool(
     // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
     // with plain args (a unit test) has none, and the plain string is the honest degradation there —
     // the same shape failableTool settled on.
-    return answer(unmetPreconditionMessage(inner.name, unmet));
+    return answer(message ?? unmetPreconditionMessage(inner.name, unmet));
   }) as StructuredToolInterface["invoke"];
   return guarded;
+}
+
+// The arguments of a call: ToolNode hands the whole tool call in, a direct invocation the args.
+function argsOf(input: unknown): unknown {
+  return (input as { type?: string } | null)?.type === "tool_call"
+    ? (input as { args?: unknown }).args
+    : input;
 }
 
 // Applies the whole map in one pass. Names with no condition come through untouched and identical,
@@ -139,6 +179,7 @@ export function applyToolPreconditions(
   stillWanted?: () => Promise<boolean>,
   // Passed straight through to each wrapper, for the counter the observer's tick keeps.
   onNoEffect?: NoEffectReporter,
+  checkChoice?: ChoiceCheck,
 ): StructuredToolInterface[] {
   const names = Object.keys(preconditions);
   if (names.length === 0) return tools;
@@ -155,7 +196,15 @@ export function applyToolPreconditions(
       ? preconditions[t.name]
       : undefined;
     return conds && conds.length > 0
-      ? guardedTool(t, conds, loadState, onRefused, stillWanted, onNoEffect)
+      ? guardedTool(
+          t,
+          conds,
+          loadState,
+          onRefused,
+          stillWanted,
+          onNoEffect,
+          checkChoice,
+        )
       : t;
   });
 }
@@ -180,9 +229,13 @@ export function preconditionFlowEvent(info: PreconditionRefusal): FlowEvent {
       // NOTE: KEYS, never values: an attribute bag holds whatever the operator put in it, and a
       // flow-log detail is PII-free by contract (modules/flowlog). The single fields name the first
       // unmet condition; `preconditions` names every one.
-      preconditionKey: first?.key,
-      preconditionScope: first?.scope,
-      preconditions: info.unmet.map((c) => ({ scope: c.scope, key: c.key })),
+      preconditionKey: first?.kind === "attribute" ? first.key : undefined,
+      preconditionScope: first?.kind === "attribute" ? first.scope : undefined,
+      preconditions: info.unmet.map((c) =>
+        c.kind === "attribute"
+          ? { scope: c.scope, key: c.key }
+          : { kind: c.kind },
+      ),
       // NOTE: The error's CLASS, never its message: a driver error can carry the failing query and
       // even the connection string, and this detail is rendered in the console.
       ...(unreadable

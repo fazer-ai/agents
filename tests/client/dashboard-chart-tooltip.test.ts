@@ -971,6 +971,73 @@ describe("a line chart with more series than colours", () => {
   });
 });
 
+describe("the day and series a line chart's click names", () => {
+  // A at 100% every day, on the plot's top edge; B lower.
+  const rows: ChartRow[] = data.map((r) => ({
+    day: r.day,
+    state: "ready",
+    a: 1,
+    b: 0.4,
+  }));
+  const two = [
+    { key: "a", label: "A" },
+    { key: "b", label: "B" },
+  ];
+  function setup() {
+    const picks: [string, string | undefined][] = [];
+    const out = renderChart(LineTrend, {
+      data: rows,
+      series: two,
+      lang: "en",
+      format: String,
+      onPick: (d, k) => picks.push([d, k]),
+    });
+    return { ...out, picks };
+  }
+  async function dotOf(container: HTMLElement, line: number, day: number) {
+    return waitFor(() => {
+      const groups = container.querySelectorAll(".recharts-line-dots");
+      const c = groups[line]?.querySelectorAll("circle")[day];
+      if (!c) throw new Error("dots not drawn yet");
+      return c;
+    });
+  }
+
+  test("a point clicked with no hover before it names its own day and line", async () => {
+    const { container, picks } = setup();
+    fireEvent.click(await dotOf(container, 1, 1));
+    expect(picks).toEqual([["2026-01-02", "b"]]);
+  });
+
+  test("a point clicked after hovering another day names its own day", async () => {
+    const { container, picks } = setup();
+    await hover(container, 0, 2);
+    fireEvent.click(await dotOf(container, 0, 1));
+    expect(picks).toEqual([["2026-01-02", "a"]]);
+  });
+
+  test("a point on the top edge is a day's column all over, its upper half included", async () => {
+    const { container, picks } = setup();
+    const dot = await dotOf(container, 0, 1);
+    const top = Number(dot.getAttribute("cy")) - Number(dot.getAttribute("r"));
+    const column = await dayColumn(container, "2026-01-02");
+    expect(Number(column.getAttribute("y"))).toBeLessThanOrEqual(top);
+    // A click on the column above the line names the day alone.
+    fireEvent.click(column);
+    expect(picks).toEqual([["2026-01-02", undefined]]);
+  });
+
+  test("the line between its points lets the click through", () => {
+    const { container } = setup();
+    const plot = container
+      .querySelector(".recharts-wrapper")
+      ?.closest("[aria-hidden='true']");
+    expect(plot?.className).toContain(
+      "[&_.recharts-line-curve]:pointer-events-none",
+    );
+  });
+});
+
 describe("a context line with a single value", () => {
   test("still marks the value", async () => {
     // Node 9 is a context line with a small value on the first day only: no segment to draw.
@@ -1011,10 +1078,17 @@ describe("a line at zero", () => {
       compareLabel: "previous",
     });
     const tip = await hover(container, 1, 2);
-    expect(lines(tip)).toEqual(["Resolution0 (previous: 0.8)"]);
-    // The name is whole, never an ellipsis, and a long value wraps under it instead.
+    expect(lines(tip)).toEqual(["Resolution0previous: 0.8"]);
+    // The name is whole, never an ellipsis; the value keeps its width beside it, and the previous
+    // period sits on a muted line of its own under them.
+    const row = tip.querySelector("li") as HTMLElement;
     expect(tip.querySelector(".truncate")).toBeNull();
-    expect(tip.querySelector("li")?.classList.contains("flex-wrap")).toBe(true);
+    const [main, note] = [...row.children] as HTMLElement[];
+    expect(main?.textContent).toBe("Resolution0");
+    expect(
+      main?.lastElementChild?.classList.contains("whitespace-nowrap"),
+    ).toBe(true);
+    expect(note?.textContent).toBe("previous: 0.8");
   });
 });
 
@@ -1051,7 +1125,7 @@ describe("a line with no value on a day but a previous-period one", () => {
       if (!shown?.querySelector("li")) throw new Error("no row shown");
       return shown;
     });
-    expect(lines(tip)).toEqual(["Resolution\u2014 (previous: 0.8)"]);
+    expect(lines(tip)).toEqual(["Resolution\u2014previous: 0.8"]);
   });
 
   test("with no previous value either, the line has no row", async () => {

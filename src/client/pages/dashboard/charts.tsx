@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import {
+  type ReactElement,
   type RefObject,
   useCallback,
   useEffect,
@@ -13,6 +14,8 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Dot,
+  type DotProps,
   Line,
   LineChart,
   ReferenceArea,
@@ -331,13 +334,14 @@ function valuesOf(entries: readonly TooltipEntry[]): Map<string, unknown> {
 
 // A summary of the day, in the order the chart draws it top to bottom: a short stroke of the series
 // colour, its name and its value; the "Other" group in one line; on a stack, the day's total in the
-// header and a hint that a click shows everything. A name is never cut short: a value too long to sit
-// beside it (a rate with its previous period) wraps to a line of its own.
+// header and a hint that a click shows everything. A name is never cut short, and a line chart's
+// previous-period value sits on a line of its own under its row.
 function TooltipCard({
   head,
   total,
   summary,
   describe,
+  note,
   hint,
   p,
 }: {
@@ -345,56 +349,60 @@ function TooltipCard({
   total: string | null;
   summary: TooltipSummary | null;
   describe: (row: TooltipSummary["rows"][number]) => string;
+  // A second, muted line under a row: a line chart's previous-period value.
+  note?: (row: TooltipSummary["rows"][number]) => string | null;
   hint: string | null;
   p: ReturnType<typeof useChartPalette>;
 }) {
   const text = useChartText();
   const other = summary?.other;
-  const otherLine = other ? (
-    <li
-      key={OTHER_KEY}
-      data-series-key={OTHER_KEY}
-      className="flex flex-wrap items-center justify-between gap-x-4"
-    >
-      <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="inline-block h-0.5 w-3 shrink-0 rounded-full"
-          style={{ background: p.other }}
-        />
-        <span className="break-words">{text.others(other.count)}</span>
-      </span>
-      {other.value !== null && (
-        <span className="ml-auto text-right font-medium tabular-nums">
-          {describe({
-            key: OTHER_KEY,
-            label: "",
-            color: p.other,
-            value: other.value,
-          })}
+  // The name takes the room and wraps, never cut short; the value keeps its own width beside it, and
+  // a comparison goes on a muted line of its own under them.
+  const line = (
+    key: string,
+    color: string,
+    name: string,
+    value: string | null,
+    extra: string | null,
+  ) => (
+    <li key={key} data-series-key={key} className="flex flex-col">
+      <span className="flex items-start justify-between gap-x-4">
+        <span className="text-text-secondary flex min-w-0 flex-1 items-start gap-1.5">
+          <span
+            aria-hidden="true"
+            className="mt-1.5 inline-block h-0.5 w-3 shrink-0 rounded-full"
+            style={{ background: color }}
+          />
+          <span className="min-w-0 break-words">{name}</span>
         </span>
-      )}
-    </li>
-  ) : null;
-  const rows = (summary?.rows ?? []).map((r) => (
-    <li
-      key={r.key}
-      data-series-key={r.key}
-      className="flex flex-wrap items-center justify-between gap-x-4"
-    >
-      <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="inline-block h-0.5 w-3 shrink-0 rounded-full"
-          style={{ background: r.color }}
-        />
-        <span className="break-words">{r.label}</span>
+        {value !== null && (
+          <span className="shrink-0 font-medium whitespace-nowrap tabular-nums">
+            {value}
+          </span>
+        )}
       </span>
-      <span className="ml-auto text-right font-medium tabular-nums">
-        {describe(r)}
-      </span>
+      {extra && <span className="text-text-muted text-right">{extra}</span>}
     </li>
-  ));
+  );
+  const otherLine = other
+    ? line(
+        OTHER_KEY,
+        p.other,
+        text.others(other.count),
+        other.value === null
+          ? null
+          : describe({
+              key: OTHER_KEY,
+              label: "",
+              color: p.other,
+              value: other.value,
+            }),
+        null,
+      )
+    : null;
+  const rows = (summary?.rows ?? []).map((r) =>
+    line(r.key, r.color, r.label, describe(r), note?.(r) ?? null),
+  );
   // A stack's group sits on top of it; a line chart's group has no place, so it closes the list.
   const ordered = total !== null ? [otherLine, ...rows] : [...rows, otherLine];
   return (
@@ -567,19 +575,33 @@ export function LineTrend({
   // Past the palette, a line keeps its place and its click but no identity: rates do not add up into
   // an "Other", so the group is drawn as neutral context lines under one name.
   const groupName = chartText.others(arranged.folded.length);
-  // The dot's own click runs before the chart's, which is the one that knows the day.
-  const hitSeries = useRef<string | null>(null);
-  const describeRow = (
-    r: { key: string; value: number | null },
-    row?: ChartRow,
-  ) => {
-    const current = r.value === null ? "\u2014" : format(r.value);
+  // A point names its own day and series from its row; the day's column names the day alone. Never
+  // recharts' hover state, which a click with no movement before it leaves on another day.
+  const point =
+    (s: SeriesDef, r: number) =>
+    (props: unknown): ReactElement => {
+      const dot = props as DotProps & { index?: number; payload?: ChartRow };
+      const at = dot.payload?.day;
+      return (
+        <Dot
+          {...dot}
+          key={`${s.key}-${dot.index}`}
+          r={r}
+          onClick={
+            onPick && typeof at === "string"
+              ? () => onPick(at, s.key)
+              : undefined
+          }
+        />
+      );
+    };
+  const describeRow = (r: { value: number | null }) =>
+    r.value === null ? "\u2014" : format(r.value);
+  const compareNote = (r: { key: string }, row?: ChartRow) => {
     const prevKey = compare?.[r.key];
-    if (!prevKey || !compareLabel) return current;
+    if (!prevKey || !compareLabel) return null;
     const prev = row?.[prevKey];
-    return `${current} (${compareLabel}: ${
-      typeof prev === "number" ? format(prev) : "—"
-    })`;
+    return `${compareLabel}: ${typeof prev === "number" ? format(prev) : "\u2014"}`;
   };
   const line = (s: SeriesDef, context: boolean) => (
     <Line
@@ -591,13 +613,8 @@ export function LineTrend({
       strokeWidth={context ? 1 : 2}
       strokeOpacity={context ? 0.6 : 1}
       // A context line keeps a small dot, so a value with no neighbour still shows.
-      dot={{ r: context ? 1.5 : 2 }}
-      activeDot={{
-        r: 5,
-        onClick: () => {
-          hitSeries.current = s.key;
-        },
-      }}
+      dot={point(s, context ? 1.5 : 2)}
+      activeDot={point(s, 5)}
       isAnimationActive={false}
     />
   );
@@ -605,7 +622,8 @@ export function LineTrend({
     <div className="flex w-full flex-col gap-2">
       <div
         style={{ height }}
-        className="relative w-full"
+        // A line between its points lets the click through to the day's column under it.
+        className="relative w-full [&_.recharts-line-curve]:pointer-events-none"
         // The drawing only: a screen reader reads the block's table instead, and still reaches the
         // legend and the day detail.
         aria-hidden="true"
@@ -615,12 +633,6 @@ export function LineTrend({
           <LineChart
             data={plotted(data, series)}
             margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
-            onClick={(e) => {
-              const label = (e as { activeLabel?: string } | null)?.activeLabel;
-              const hit = hitSeries.current ?? undefined;
-              hitSeries.current = null;
-              if (onPick && typeof label === "string") onPick(label, hit);
-            }}
             style={onPick ? { cursor: "pointer" } : undefined}
           >
             <CartesianGrid
@@ -687,7 +699,8 @@ export function LineTrend({
                           )
                         : null
                     }
-                    describe={(r) => describeRow(r, row)}
+                    describe={describeRow}
+                    note={(r) => compareNote(r, row)}
                     hint={null}
                     p={p}
                   />
@@ -706,6 +719,13 @@ export function LineTrend({
             )}
             {arranged.folded.map((s) => line(s, true))}
             {arranged.kept.map((s) => line(s, false))}
+            {onPick && (
+              <DayHits
+                days={data.map((r) => r.day)}
+                onPick={(d) => onPick(d)}
+                pad={POINT_PAD}
+              />
+            )}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -745,6 +765,10 @@ function withState(
   return label;
 }
 
+// How far a line chart's day columns reach past the plot, so a point drawn on its top or bottom edge
+// (a rate at 100% or at 0%) is a day's column all over, not only on its inner half.
+const POINT_PAD = 8;
+
 // The height recharts gives the category axis under the plot.
 const X_AXIS_HEIGHT = 30;
 
@@ -754,9 +778,12 @@ const X_AXIS_HEIGHT = 30;
 function DayHits({
   days,
   onPick,
+  pad = 0,
 }: {
   days: string[];
   onPick: (day: string) => void;
+  // How far the columns reach past the plot's top and bottom, for a point drawn on its edge.
+  pad?: number;
 }) {
   const area = usePlotArea();
   if (!area || days.length === 0) return null;
@@ -769,9 +796,9 @@ function DayHits({
           key={d}
           data-day={d}
           x={area.x + band * i}
-          y={area.y}
+          y={area.y - pad}
           width={band}
-          height={area.height}
+          height={area.height + 2 * pad}
           fill="transparent"
           onClick={() => onPick(d)}
         />

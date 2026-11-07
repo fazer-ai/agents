@@ -257,9 +257,9 @@ hand-back `/reset` uses, while it is still `open` and held by nobody or by that 
 ends the park when it writes any other person as the assignee (`endsTestPark`), so somebody who took
 the conversation keeps it, and `/teste` answers with the ownership message that names `/reset`, even
 after they let it go. On a redirect episode the parked sibling on the other inbox goes back under
-the same rule. The hand-back is asked with `expectedStatus: "open"`: a conversation resolved or
-snoozed after `/teste` looked is refused on the hand-back's last live read, and its status call
-carries `expected_status`; the fork's bot assignment has no conditional form, so a resolve landing
+the same rule. The hand-back is asked with `expectedStatus: "open"`: a conversation resolved, snoozed
+or claimed by another person after `/teste` looked is refused on the hand-back's last live read,
+before any write, and its status call carries `expected_status`; the fork's bot assignment has no conditional form, so a resolve landing
 between that read and the assignment is still undone. Switching the agent to production, or unbinding it, touches no parked conversation:
 by then it belongs to whoever is answering it. An inbox on Chatwoot's assignment V2 assigns in a job
 after the save, so the person it picks is recorded as somebody who took the conversation.

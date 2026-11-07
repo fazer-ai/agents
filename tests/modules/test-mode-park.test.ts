@@ -763,40 +763,61 @@ describe.skipIf(!dbUp)(
       expect(live.get(convId)?.status).toBe("open");
     });
 
-    test("a conversation resolved after /teste looked stays resolved", async () => {
-      const convId = await seedConversation();
-      const live = new Map<number, LiveConv>([
-        [convId, { status: "pending", assigneeType: null, assigneeId: null }],
-      ]);
-      let readsInTeste: number | null = null;
-      const cw = fakeChatwoot(live, {
-        autoAssign: true,
-        beforeRead: async (id) => {
-          if (readsInTeste === null || id !== convId) return;
-          readsInTeste += 1;
-          // The refresh saw it open and held by the park's assignee; somebody resolves it after.
-          if (readsInTeste === 2) {
-            const c = live.get(convId);
-            if (c) c.status = "resolved";
-          }
+    for (const midway of ["resolved", "claimed"] as const)
+      test(
+        midway === "resolved"
+          ? "a conversation resolved after /teste looked stays resolved"
+          : "a conversation another person claims after /teste looked stays open with them",
+        async () => {
+          const convId = await seedConversation();
+          const live = new Map<number, LiveConv>([
+            [
+              convId,
+              { status: "pending", assigneeType: null, assigneeId: null },
+            ],
+          ]);
+          let readsInTeste: number | null = null;
+          const cw = fakeChatwoot(live, {
+            autoAssign: true,
+            beforeRead: async (id) => {
+              if (readsInTeste === null || id !== convId) return;
+              readsInTeste += 1;
+              // The refresh saw it open and held by the park's assignee; it changes after.
+              const c = live.get(convId);
+              if (readsInTeste === 2 && c) {
+                if (midway === "resolved") c.status = "resolved";
+                else {
+                  c.assigneeType = "User";
+                  c.assigneeId = 61;
+                }
+              }
+            },
+          });
+          globalThis.fetch = cw.impl;
+          await deliver(convId, "oi", {
+            status: "pending",
+            assigneeType: null,
+            assigneeId: null,
+          });
+          readsInTeste = 0;
+          await deliver(convId, "/teste", {
+            status: "open",
+            assigneeType: "User",
+            assigneeId: AUTO_AGENT,
+          });
+          expect(readsInTeste).toBeGreaterThanOrEqual(2);
+          expect(handBacks(cw.calls, convId)).toHaveLength(0);
+          expect(live.get(convId)).toEqual(
+            midway === "resolved"
+              ? {
+                  status: "resolved",
+                  assigneeType: "User",
+                  assigneeId: AUTO_AGENT,
+                }
+              : { status: "open", assigneeType: "User", assigneeId: 61 },
+          );
         },
-      });
-      globalThis.fetch = cw.impl;
-      await deliver(convId, "oi", {
-        status: "pending",
-        assigneeType: null,
-        assigneeId: null,
-      });
-      readsInTeste = 0;
-      await deliver(convId, "/teste", {
-        status: "open",
-        assigneeType: "User",
-        assigneeId: AUTO_AGENT,
-      });
-      expect(readsInTeste).toBeGreaterThanOrEqual(2);
-      expect(handBacks(cw.calls, convId)).toHaveLength(0);
-      expect(live.get(convId)?.status).toBe("resolved");
-    });
+      );
 
     test("/teste on an open conversation the agent never parked keeps today's answer", async () => {
       const convId = await seedConversation({ status: "open" });

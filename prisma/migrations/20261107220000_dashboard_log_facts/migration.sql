@@ -174,12 +174,17 @@ CREATE TRIGGER dashboard_log_fact_delete AFTER DELETE ON "execution_logs"
   REFERENCING OLD TABLE AS gone
   FOR EACH STATEMENT EXECUTE FUNCTION dashboard_log_fact_delete();
 
--- A TRUNCATE takes every line, so every fact goes with it. A DELETE, not a TRUNCATE: a
--- `TRUNCATE tenants CASCADE` truncates both tables in one statement, and a second TRUNCATE of the facts
--- from inside it is refused as a table in use.
+-- A TRUNCATE takes every line of every tenant, so every fact goes with it, by a TRUNCATE too: it is not
+-- bound by row security, where a DELETE run without a tenant would remove nothing. A
+-- `TRUNCATE tenants CASCADE` truncates both tables in one statement, and the second TRUNCATE is then
+-- refused as a table in use: the facts are already being emptied by that statement.
 CREATE FUNCTION dashboard_log_fact_truncate() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  DELETE FROM dashboard_log_facts;
+  BEGIN
+    TRUNCATE dashboard_log_facts;
+  EXCEPTION WHEN object_in_use THEN
+    NULL;
+  END;
   RETURN NULL;
 END $$;
 

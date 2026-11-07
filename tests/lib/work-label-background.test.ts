@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
 import { currentWorkLabel } from "@/lib/work-label";
+import {
+  startDashboardWarm,
+  stopDashboardWarm,
+} from "@/modules/analytics/rollup/warm";
 import { runDebounceTick } from "@/modules/debounce/worker";
 import { runCompactionTick } from "@/modules/memory/worker";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -80,5 +85,27 @@ describe("background work runs under a work label", () => {
     expect(seen[0]).toBe("debounce");
     expect(seen.length).toBeGreaterThan(2);
     expect(seen.slice(1).every((l) => l === "compaction")).toBe(true);
+  });
+
+  test("the dashboard warm pass arms its timer under its own label", () => {
+    // A timer's callback runs in the async context it was created in, so the label at creation is
+    // the one every pass of the loop runs under; the timer itself is never let run here.
+    const seen: (string | null)[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const realInterval = config.dashboardWarm.intervalMs;
+    (config.dashboardWarm as { intervalMs: number }).intervalMs = 600_000;
+    globalThis.setTimeout = ((..._args: unknown[]) => {
+      seen.push(currentWorkLabel());
+      return { unref: () => {} } as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout;
+    try {
+      startDashboardWarm();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      stopDashboardWarm();
+      (config.dashboardWarm as { intervalMs: number }).intervalMs =
+        realInterval;
+    }
+    expect(seen).toEqual(["dashboard:warm"]);
   });
 });

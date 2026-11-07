@@ -125,7 +125,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function fakeChatwoot(
   conversations: Map<number, LiveConv>,
-  opts: { autoAssign?: boolean } = {},
+  opts: {
+    autoAssign?: boolean;
+    // Runs before a live read answers, for whatever happened in Chatwoot (and reached the mirror)
+    // while the caller was on its way to that read.
+    beforeRead?: (convId: number) => Promise<void>;
+  } = {},
 ) {
   const calls: CwCall[] = [];
   const impl = (async (input, init) => {
@@ -143,6 +148,7 @@ function fakeChatwoot(
     if (m && conv) {
       const action = m[2] ?? "";
       if (method === "GET" && action === "") {
+        await opts.beforeRead?.(Number(m[1]));
         return jsonResponse({
           id: Number(m[1]),
           inbox_id: conv.inboxId ?? INBOX_ID,
@@ -722,6 +728,39 @@ describe.skipIf(!dbUp)(
       const row = await rowOf(convId);
       expect(row.assigneeId).toBe(61);
       expect(row.testParkedOpenAt).toBeNull();
+    });
+
+    test("a person who takes and lets go while /teste runs still keeps the conversation from it", async () => {
+      const convId = await seedConversation();
+      const live = new Map<number, LiveConv>([
+        [convId, { status: "pending", assigneeType: null, assigneeId: null }],
+      ]);
+      let duringTeste = false;
+      const cw = fakeChatwoot(live, {
+        beforeRead: async (id) => {
+          if (!duringTeste || id !== convId) return;
+          duringTeste = false;
+          // The person's assignment reached the mirror (which ends the park), and they let go.
+          await suDb.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: convId },
+            data: { testParkedOpenAt: null, testParkedAssigneeId: null },
+          });
+        },
+      });
+      globalThis.fetch = cw.impl;
+      await deliver(convId, "oi", {
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+      });
+      duringTeste = true;
+      await deliver(convId, "/teste", {
+        status: "open",
+        assigneeType: null,
+        assigneeId: null,
+      });
+      expect(handBacks(cw.calls, convId)).toHaveLength(0);
+      expect(live.get(convId)?.status).toBe("open");
     });
 
     test("/teste on an open conversation the agent never parked keeps today's answer", async () => {

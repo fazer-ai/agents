@@ -3018,6 +3018,47 @@ async function maybeConsumeCommandOrGate(params: {
     return true;
   };
 
+  // The park as the row holds it. Read again at each decision rather than carried from the delivery's
+  // start, since the mirror ends it the moment it writes another person as the assignee.
+  const readTestPark = async (rowId: bigint): Promise<TestPark | null> => {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: { id: rowId },
+        select: { testParkedOpenAt: true, testParkedAssigneeId: true },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not read the test-mode park (row=%s): %s",
+        String(rowId),
+        errMsg(err),
+      );
+      return null;
+    });
+    return row
+      ? {
+          parkedAt: row.testParkedOpenAt,
+          parkedAssigneeId: row.testParkedAssigneeId,
+        }
+      : null;
+  };
+
+  // Cleared by /teste once it decided: the park only means something while the conversation is
+  // silenced, and after the decision nothing reads it.
+  const clearTestPark = async (rowId: bigint): Promise<void> => {
+    await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.update({
+        where: { id: rowId },
+        data: { testParkedOpenAt: null, testParkedAssigneeId: null },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not clear the test-mode park (row=%s): %s",
+        String(rowId),
+        errMsg(err),
+      );
+    });
+  };
+
   // The other half of a redirect episode, when the silence parked it: /teste activates the episode
   // (every gate reads its activation), so a parked sibling goes back to the agent under the same rule
   // as this conversation. Best-effort, logged; it never changes this command's acknowledgement.
@@ -3040,12 +3081,7 @@ async function maybeConsumeCommandOrGate(params: {
           inbox: { chatwootInboxId: siblingInboxId },
           testParkedOpenAt: { not: null },
         },
-        select: {
-          id: true,
-          chatwootConversationId: true,
-          testParkedOpenAt: true,
-          testParkedAssigneeId: true,
-        },
+        select: { id: true, chatwootConversationId: true },
       }),
     ).catch((err: unknown) => {
       logger.warn(
@@ -3062,27 +3098,14 @@ async function maybeConsumeCommandOrGate(params: {
             sib.chatwootConversationId,
           ),
         );
-        if (
-          live &&
-          testParkHolds(
-            {
-              parkedAt: sib.testParkedOpenAt,
-              parkedAssigneeId: sib.testParkedAssigneeId,
-            },
-            live,
-          )
-        ) {
+        const sibPark = await readTestPark(sib.id);
+        if (live && sibPark && testParkHolds(sibPark, live)) {
           await returnConversationToAgent(sysCtx(tenantId), sib.id, {}, base, {
             assigneeType: live.assigneeType,
             assigneeId: live.assigneeId,
           });
         }
-        await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.conversation.update({
-            where: { id: sib.id },
-            data: { testParkedOpenAt: null, testParkedAssigneeId: null },
-          }),
-        );
+        await clearTestPark(sib.id);
       } catch (err) {
         logger.warn(
           "chatwoot: /teste could not return the episode's parked sibling (conv=%s): %s",
@@ -3159,9 +3182,6 @@ async function maybeConsumeCommandOrGate(params: {
         where: { id: ctx.conv.id },
         data: {
           testActivatedAt: activatedAt,
-          // NOTE: The park only means something while the conversation is silenced.
-          testParkedOpenAt: null,
-          testParkedAssigneeId: null,
           // NOTE: Clean engagement slate at activation: a message from while the agent was silenced must not
           // leave a follow-up pending nor look complete, so both anchors clear to the "none" state, as /reset
           // does. lastInboundAt also anchors the 24h window; the next customer message re-anchors it.
@@ -3200,7 +3220,10 @@ async function maybeConsumeCommandOrGate(params: {
     // keeps it, and the ack names /reset as before.
     if (testeBlocker === "ownership" && park.parkedAt !== null) {
       await refreshFromLive("the test-mode hand-back", null);
-      if (testParkHolds(park, ctx.conv)) {
+      // The park as the mirror holds it now, after the refresh: a person who took the conversation
+      // and let it go while this command ran has ended it there.
+      const parkNow = await readTestPark(ctx.conv.id);
+      if (parkNow && testParkHolds(parkNow, ctx.conv)) {
         try {
           await returnConversationToAgent(
             sysCtx(tenantId),
@@ -3223,6 +3246,7 @@ async function maybeConsumeCommandOrGate(params: {
       }
     }
     await returnParkedEpisodeSiblings();
+    await clearTestPark(ctx.conv.id);
     await postAcknowledgement(
       testeBlocker === "none"
         ? "🧪 Modo teste ativado para esta conversa."

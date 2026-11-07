@@ -680,6 +680,20 @@ describe.skipIf(!dbUp)("the dashboard's log facts", () => {
         attempts: 0,
         claimSeq: 0,
       };
+      // Halfway: some hours filled, the rest not. A figure read now is the log's whole figure, never
+      // the part the facts hold so far.
+      for (let i = 0; i < 48; i++) await backfillLogFactsSlice(appDb, t.tenantId);
+      const partial = await suDb.dashboardLogFact.count({
+        where: { tenantId: t.tenantId },
+      });
+      expect(partial).toBeGreaterThan(0);
+      expect(partial).toBeLessThan(expected.length);
+      expect(await getHandoffReasons(ctx(t.tenantId), ALL, appDb)).toEqual(
+        live.handoffs,
+      );
+      expect(await getFollowUpActivity(ctx(t.tenantId), ALL, appDb)).toEqual(
+        live.followUps,
+      );
       let result = await handler(job, appDb);
       for (let i = 0; i < 20 && result?.outcome === "reschedule"; i++) {
         result = await handler(job, appDb);

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Input } from "@/client/components";
 import { cn } from "@/client/lib/utils";
 import type { Formatters } from "./format";
-import { Meter, SectionIntro } from "./parts";
+import { Ident, Meter, SectionIntro } from "./parts";
 import type { Screen, TableRow } from "./types";
 
 // "Why?" on the storage side: which tables are big, growing or carrying dead rows autovacuum has not
@@ -14,8 +14,11 @@ import type { Screen, TableRow } from "./types";
 const FIRST_TABLES = 25;
 
 const th =
-  "text-text-muted px-3 py-2 text-left text-xs font-medium whitespace-nowrap";
+  "text-text-muted px-3 py-2 text-left align-bottom text-xs font-medium";
 const td = "px-3 py-2 align-middle tabular-nums whitespace-nowrap text-sm";
+// The columns that give way when the table's own box is narrow (a laptop with both sidebars open):
+// name, size, dead rows and the last vacuum stay, which is what decides whether a table needs care.
+const NARROW_HIDDEN = "hidden @3xl:table-cell";
 
 export function TablesPanel({
   screen,
@@ -94,19 +97,16 @@ export function TablesPanel({
             }
           />
         ) : (
-          <div className="border-border overflow-x-auto rounded-lg border">
-            <table
-              className="w-full min-w-[48rem] text-sm"
-              data-testid="tables-table"
-            >
+          <div className="border-border @container overflow-x-auto rounded-lg border">
+            <table className="w-full text-sm" data-testid="tables-table">
               <thead className="border-border border-b">
                 <tr>
                   <th className={th}>{t("database.table", "Table")}</th>
                   <th className={th}>{t("database.size", "Size")}</th>
-                  <th className={cn(th, "text-right")}>
+                  <th className={cn(th, NARROW_HIDDEN, "text-right")}>
                     {t("database.growth", "Growth in the window")}
                   </th>
-                  <th className={cn(th, "text-right")}>
+                  <th className={cn(th, NARROW_HIDDEN, "text-right")}>
                     {t("database.liveTuples", "Live rows")}
                   </th>
                   <th className={cn(th, "text-right")}>
@@ -118,7 +118,7 @@ export function TablesPanel({
                       "Autovacuum / autoanalyze",
                     )}
                   </th>
-                  <th className={cn(th, "text-right")}>
+                  <th className={cn(th, NARROW_HIDDEN, "text-right")}>
                     {t("database.scans", "Seq / index scans")}
                   </th>
                 </tr>
@@ -172,29 +172,29 @@ function TableLine({
       data-testid="table-row"
       data-vacuum-overdue={r.vacuumOverdue}
     >
-      <td className={td}>
-        <code className="text-text-primary font-mono text-xs">{r.table}</code>
+      <td className={cn(td, "@4xl:min-w-48")}>
+        <Ident name={r.table} />
       </td>
-      <td className={cn(td, "w-48")}>
+      <td className={cn(td, "pr-6")}>
         <div className="flex items-center gap-2">
-          <Meter
-            className="w-16 shrink-0"
-            pct={(r.totalBytes / largest) * 100}
-            tone="neutral"
-          />
+          <div className="hidden w-16 shrink-0 @xl:block">
+            <Meter pct={(r.totalBytes / largest) * 100} tone="neutral" />
+          </div>
           <span>{fmt.bytes(r.totalBytes)}</span>
         </div>
       </td>
       <td
-        className={cn(td, "text-right", {
+        className={cn(td, NARROW_HIDDEN, "text-right", {
           "text-text-muted": !r.growthBytes,
         })}
       >
         {r.growthBytes === null ? "—" : fmt.signedBytes(r.growthBytes)}
       </td>
-      <td className={cn(td, "text-right")}>{fmt.number(r.liveTuples)}</td>
+      <td className={cn(td, NARROW_HIDDEN, "text-right")}>
+        {fmt.number(r.liveTuples)}
+      </td>
       <td className={cn(td, "text-right")}>
-        <span className="inline-flex items-center justify-end gap-2">
+        <span className="inline-flex flex-col items-end gap-0.5">
           {fmt.number(r.deadTuples)}
           {r.deadRatio !== null && r.deadTuples > 0 && (
             <span data-testid="dead-ratio">
@@ -213,8 +213,15 @@ function TableLine({
           <When iso={r.lastAutoanalyze} fmt={fmt} />
         </div>
       </td>
-      <td className={cn(td, "text-text-secondary text-right")}>
-        {`${fmt.number(r.seqScans)} / ${fmt.number(r.indexScans)}`}
+      <td
+        className={cn(
+          td,
+          NARROW_HIDDEN,
+          "text-text-secondary text-right text-xs leading-snug",
+        )}
+      >
+        <div>{fmt.number(r.seqScans)}</div>
+        <div className="text-text-muted">{fmt.number(r.indexScans)}</div>
       </td>
     </tr>
   );
@@ -248,10 +255,8 @@ function UnusedIndexes({ screen, fmt }: { screen: Screen; fmt: Formatters }) {
           {screen.unusedIndexes.map((i) => (
             <li key={i.index} className="space-y-1">
               <div className="flex items-baseline justify-between gap-3">
-                <span className="min-w-0">
-                  <code className="text-text-primary font-mono text-xs break-all">
-                    {i.index}
-                  </code>{" "}
+                <span className="min-w-0 [overflow-wrap:anywhere]">
+                  <Ident name={i.index} />{" "}
                   <span className="text-text-muted text-xs">
                     {t("database.onTable", "on {{table}}", { table: i.table })}
                   </span>
@@ -301,10 +306,8 @@ function SeqScanHeavy({ screen, fmt }: { screen: Screen; fmt: Formatters }) {
               key={r.table}
               className="flex items-baseline justify-between gap-3 py-2 first:pt-0 last:pb-0"
             >
-              <code className="text-text-primary min-w-0 font-mono text-xs break-all">
-                {r.table}
-              </code>
-              <span className="text-text-secondary shrink-0 text-xs tabular-nums">
+              <Ident name={r.table} className="min-w-0" />
+              <span className="text-text-secondary text-right text-xs tabular-nums">
                 {t("database.seqScanLine", "{{scans}} scans · {{size}}", {
                   scans: fmt.number(r.seqScans),
                   size: fmt.bytes(r.totalBytes),

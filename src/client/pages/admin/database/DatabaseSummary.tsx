@@ -64,7 +64,7 @@ function Tile({
         "border-l-border": tone === "secondary",
       })}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1">
           <span className="text-text-secondary text-xs font-medium">
             {label}

@@ -674,3 +674,54 @@ test("in Portuguese, the signal lines, the budget and a failed plan are written 
     await i18n.changeLanguage(startingLanguage);
   }
 });
+
+test("on a narrow table box the secondary columns give way, and a table's name breaks only after its separators", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    tables: [{ ...BASE.tables[0], table: "langgraph.checkpoint_blobs" }],
+    statements: available(),
+  }));
+  renderPage(undefined, "/admin/database?section=statements");
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("statement-row").length).toBe(2),
+  );
+  // Each table sizes against its own box, not a fixed minimum width, and the columns that are not
+  // needed to answer "what is slow" hide on a narrow box (Tailwind container queries).
+  const hiddenOn = (testId: string) => {
+    const table = screen.getByTestId(testId);
+    const box = table.parentElement;
+    const heads = [...table.querySelectorAll("thead th")].map(
+      (th) => th.className,
+    );
+    return {
+      container: box?.className.includes("@container") ?? false,
+      minWidth: /min-w-\[/.test(table.className),
+      hidden: heads.filter((c) => /(^| )hidden( |$)/.test(c)).length,
+      bounded: heads
+        .filter((c) => /(^| )hidden( |$)/.test(c))
+        .every((c) => /@(lg|xl|3xl):table-cell/.test(c)),
+    };
+  };
+  expect(hiddenOn("statements-table")).toEqual({
+    container: true,
+    minWidth: false,
+    hidden: 3,
+    bounded: true,
+  });
+  fireEvent.click(screen.getByRole("tab", { name: "Tables and indexes" }));
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("table-row").length).toBe(1),
+  );
+  const tables = hiddenOn("tables-table");
+  expect(tables.container).toBe(true);
+  expect(tables.minWidth).toBe(false);
+  expect(tables.hidden).toBeGreaterThanOrEqual(3);
+  expect(tables.bounded).toBe(true);
+  // The name offers a break after each `_` and `.` and nowhere else.
+  const name = screen.getByTestId("table-row").querySelector("code");
+  const pieces = [...(name?.childNodes ?? [])].map((n) => n.textContent);
+  expect(pieces).toEqual(["langgraph.", "checkpoint_", "blobs"]);
+  expect(name?.querySelectorAll("wbr").length).toBe(2);
+  expect(name?.textContent).toBe("langgraph.checkpoint_blobs");
+});

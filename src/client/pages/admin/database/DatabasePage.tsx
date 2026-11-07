@@ -118,7 +118,7 @@ export function DatabasePage({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0 space-y-1">
           <h2 className="text-text-primary text-base font-semibold">
             {t("database.title", "Database")}
@@ -135,17 +135,8 @@ export function DatabasePage({
               {t("database.backToHealth", "Instance health")}
             </Link>
           </p>
-        </div>
-        <div className="flex flex-col items-start gap-1 sm:items-end">
-          <SegmentedControl<WindowKey>
-            aria-label={t("database.window", "Window")}
-            value={win}
-            onChange={(w) => setParam("window", w)}
-            // A unit, the same in every language: the value is its own label.
-            options={WINDOW_KEYS.map((w) => ({ value: w, label: w }))}
-          />
           {readAt && !stale && (
-            <span className="text-text-muted text-xs" data-testid="read-at">
+            <p className="text-text-muted text-xs" data-testid="read-at">
               {t(
                 "database.readAt",
                 "Read at {{time}}, refreshed every minute",
@@ -153,8 +144,17 @@ export function DatabasePage({
                   time: new Date(readAt).toLocaleTimeString(i18n.language),
                 },
               )}
-            </span>
+            </p>
           )}
+        </div>
+        <div className="shrink-0">
+          <SegmentedControl<WindowKey>
+            aria-label={t("database.window", "Window")}
+            value={win}
+            onChange={(w) => setParam("window", w)}
+            // A unit, the same in every language: the value is its own label.
+            options={WINDOW_KEYS.map((w) => ({ value: w, label: w }))}
+          />
         </div>
       </div>
       <DataBoundary

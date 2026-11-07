@@ -19,6 +19,39 @@ const FILL: Record<Tone, string> = {
   error: "bg-error",
 };
 
+// A table or index name that wraps only where it reads as a word break: after each `_` and `.`, never
+// in the middle of a word (`db_table_snapshot` + `s`). The text copied is the name as is.
+export function Ident({
+  name,
+  className,
+}: {
+  name: string;
+  className?: string;
+}) {
+  // Each piece keyed by where it starts in the name, which is unique and stable.
+  let at = 0;
+  const parts = name.split(/(?<=[_.])/).map((text) => {
+    const piece = { text, at };
+    at += text.length;
+    return piece;
+  });
+  return (
+    <code
+      className={cn(
+        "text-text-primary font-mono text-xs break-words whitespace-normal",
+        className,
+      )}
+    >
+      {parts.map((p) => (
+        <span key={p.at}>
+          {p.text}
+          {p.at + p.text.length < name.length && <wbr />}
+        </span>
+      ))}
+    </code>
+  );
+}
+
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);

@@ -18,8 +18,13 @@ import type { Screen, StatementRow } from "./types";
 export type Sort = "total" | "mean";
 
 const th =
-  "text-text-muted px-3 py-2 text-left text-xs font-medium whitespace-nowrap";
+  "text-text-muted px-3 py-2 text-left align-bottom text-xs font-medium";
 const td = "px-3 py-2.5 align-top tabular-nums whitespace-nowrap text-sm";
+// The columns that give way when the table's own box is narrow (a laptop with both sidebars open),
+// so the ones that answer "what is slow" fit without a horizontal scroll.
+const NARROW_HIDDEN = "hidden @3xl:table-cell";
+// Calls give way last, on a box narrower still (the console beside an open admin menu).
+const NARROWER_HIDDEN = "hidden @lg:table-cell";
 
 function budgetTone(pct: number | null, warnAt: number | null): Tone {
   if (pct === null) return "neutral";
@@ -170,7 +175,7 @@ export function StatementsPanel({
       className={cn(th, { "text-text-primary": sort === key })}
       aria-sort={sort === key ? "descending" : undefined}
     >
-      <span className="inline-flex items-center gap-1">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap">
         {label}
         {sort === key && <ArrowDown className="h-3 w-3" aria-hidden="true" />}
       </span>
@@ -235,23 +240,20 @@ export function StatementsPanel({
           }
         />
       ) : (
-        <div className="border-border overflow-x-auto rounded-lg border">
-          <table
-            className="w-full min-w-[56rem] text-sm"
-            data-testid="statements-table"
-          >
+        <div className="border-border @container overflow-x-auto rounded-lg border">
+          <table className="w-full text-sm" data-testid="statements-table">
             <thead className="border-border border-b">
               <tr>
                 <th className={th}>{t("database.query", "Query")}</th>
-                <th className={cn(th, "text-right")}>
+                <th className={cn(th, NARROWER_HIDDEN, "text-right")}>
                   {t("database.calls", "Calls")}
                 </th>
-                <th className={cn(th, "text-right")}>
+                <th className={cn(th, NARROW_HIDDEN, "text-right")}>
                   {t("database.rows", "Rows")}
                 </th>
                 {sortHeader("total", t("database.totalTime", "Total time"))}
                 {sortHeader("mean", t("database.meanTime", "Mean time"))}
-                <th className={th}>
+                <th className={cn(th, NARROW_HIDDEN)}>
                   {t("database.meanTrend", "Mean over time")}
                 </th>
               </tr>
@@ -296,11 +298,15 @@ function StatementLine({
       className="border-border border-b last:border-0"
       data-testid="statement-row"
     >
-      <td className="w-full max-w-0 min-w-80 px-3 py-2.5 align-top">
+      <td className="w-full max-w-0 min-w-48 px-3 py-2.5 align-top">
         <SqlText sql={r.query} />
       </td>
-      <td className={cn(td, "text-right")}>{fmt.number(r.calls)}</td>
-      <td className={cn(td, "text-right")}>{fmt.number(r.rows)}</td>
+      <td className={cn(td, NARROWER_HIDDEN, "text-right")}>
+        {fmt.number(r.calls)}
+      </td>
+      <td className={cn(td, NARROW_HIDDEN, "text-right")}>
+        {fmt.number(r.rows)}
+      </td>
       <td className={td}>{fmt.ms(r.totalMs)}</td>
       <td className={cn(td, "w-40")}>
         <div className="flex items-baseline justify-between gap-2">
@@ -320,7 +326,7 @@ function StatementLine({
         </div>
         <Meter className="mt-1.5" pct={r.meanBudgetPct ?? 0} tone={tone} />
       </td>
-      <td className={td}>
+      <td className={cn(td, NARROW_HIDDEN)}>
         <MeanSpark
           points={r.spark}
           label={t("database.meanOverWindow", "Mean over the window")}

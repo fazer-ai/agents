@@ -22,7 +22,7 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-async function flowlogSweepHandler(
+export async function flowlogSweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {

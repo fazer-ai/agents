@@ -317,6 +317,8 @@ function useChartText() {
     clickForAll: t("dashboard.chart.clickForAll", "Click to see every series"),
     close: t("dashboard.chart.closeDetail", "Close the day's detail"),
     days: t("dashboard.chart.days", "Days of the chart"),
+    moreMembers: (count: number) =>
+      t("dashboard.chart.moreMembers", "and {{count}} more", { count }),
     openDay: (day: string) =>
       t("dashboard.chart.openDay", "Open the detail of {{day}}", { day }),
   };
@@ -439,11 +441,17 @@ function useArrangedSeries(
 // Above the chart's own layers, which recharts draws later in the same box.
 const TOOLTIP_WRAPPER = { zIndex: 10, outline: "none" } as const;
 
+// The most names the "Other" entry lists, the largest first, before it counts the rest: the list never
+// outgrows its box, so it never needs scrolling, which the shared popover does not reach from the
+// keyboard. Every series stays in the block's table and its CSV, and a stack's day detail.
+const LEGEND_MEMBERS = 8;
+
 interface LegendItem {
   key: string;
   label: string;
   color: string;
-  // The names inside the "Other" group, shown when the entry is hovered or opened.
+  // The names inside the "Other" group, largest window total first, shown when the entry is hovered
+  // or opened.
   members?: SeriesDef[];
 }
 
@@ -458,6 +466,7 @@ function SeriesLegend({
   mark: "bar" | "line";
   p: ReturnType<typeof useChartPalette>;
 }) {
+  const text = useChartText();
   if (items.length === 0) return null;
   return (
     <ul
@@ -487,14 +496,16 @@ function SeriesLegend({
                 label={it.label}
                 side="top"
                 align="center"
-                // A long group still fits the screen: the list scrolls inside the room Radix measures.
-                // The day detail lists the same members, every one reachable from the keyboard.
-                contentClassName="max-h-[min(20rem,var(--radix-popover-content-available-height))] overflow-y-auto"
                 content={
                   <ul data-testid="chart-legend-members">
-                    {it.members.map((m) => (
+                    {it.members.slice(0, LEGEND_MEMBERS).map((m) => (
                       <li key={m.key}>{m.label}</li>
                     ))}
+                    {it.members.length > LEGEND_MEMBERS && (
+                      <li className="text-text-muted">
+                        {text.moreMembers(it.members.length - LEGEND_MEMBERS)}
+                      </li>
+                    )}
                   </ul>
                 }
               >
@@ -1170,9 +1181,7 @@ export function StackedBars({
           key: s.key,
           label: s.label,
           color: colorOf(s.key),
-          ...(s.key === OTHER_KEY
-            ? { members: [...arranged.folded].reverse() }
-            : {}),
+          ...(s.key === OTHER_KEY ? { members: arranged.folded } : {}),
         }))}
       />
       <StateLegend data={data} p={p} ids={ids} />

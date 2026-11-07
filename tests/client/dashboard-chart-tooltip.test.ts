@@ -449,10 +449,41 @@ describe("a stacked chart with more series than colours", () => {
       if (!m) throw new Error("no members yet");
       return m;
     });
-    // Top to bottom, as the group's members would stack: the smallest first, like the day detail.
-    expect(lines(members)).toEqual(["Node 0", "Node 3", "Node 1", "Node 2"]);
-    // A long group scrolls inside the room the screen has.
-    expect(members.closest(".overflow-y-auto")).not.toBeNull();
+    // The largest over the window first.
+    expect(lines(members)).toEqual(["Node 2", "Node 1", "Node 3", "Node 0"]);
+  });
+
+  test("a long Others group lists its eight largest and counts the rest, so the list never needs scrolling", async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      key: `m${i}`,
+      label: `Member ${i}`,
+    }));
+    const rows: ChartRow[] = data.map((r) => ({
+      day: r.day,
+      state: "ready",
+      ...Object.fromEntries(many.map((m, i) => [m.key, 100 - i])),
+    }));
+    const { container } = renderChart(StackedBars, {
+      ...stacked,
+      data: rows,
+      series: many,
+    });
+    await legendOf(container);
+    fireEvent.click(
+      container.querySelector(
+        '[data-testid="chart-legend"] > li[data-series-key="__other"] button',
+      ) as HTMLElement,
+    );
+    const list = await waitFor(() => {
+      const m = document.querySelector('[data-testid="chart-legend-members"]');
+      if (!m) throw new Error("no members yet");
+      return m;
+    });
+    // Seven kept, thirteen in the group: Member 7 to Member 14 named, five counted.
+    expect(lines(list)).toEqual([
+      ...Array.from({ length: 8 }, (_, i) => `Member ${i + 7}`),
+      "and 5 more",
+    ]);
   });
 
   test("the Others members follow a new ranking, two series with one name included", async () => {
@@ -510,12 +541,12 @@ describe("a stacked chart with more series than colours", () => {
     await waitFor(() => {
       if (members().length !== 6) throw new Error("no members yet");
     });
-    expect(members()).toEqual(["E", "D", "C", "B", "B", "A"]);
+    expect(members()).toEqual(["A", "B", "B", "C", "D", "E"]);
     rerender(tree(rows({ c: 6, a: 5, b1: 4, d: 3, e: 2, b2: 1 })));
     await waitFor(() => {
-      if (members()[0] !== "B") throw new Error("not re-ranked yet");
+      if (members()[0] !== "C") throw new Error("not re-ranked yet");
     });
-    expect(members()).toEqual(["B", "E", "D", "B", "A", "C"]);
+    expect(members()).toEqual(["C", "A", "B", "D", "E", "B"]);
   });
 
   test("hides only the drawing from a screen reader: the legend and the day detail stay reachable", async () => {

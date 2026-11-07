@@ -581,8 +581,9 @@ export function renderNudge(
 interface NudgeClosing {
   flow: FlowContext | null;
   sentIds: () => number[];
-  // The outcome line (`markFollowUp`) was written, and it carries the same two fields.
-  written: boolean;
+  // The outcome line (`markFollowUp`), once the turn chose its outcome. Written at the very end,
+  // after the tools-used note, so the messages it names and its time include that note.
+  outcomeLine: (() => void) | null;
   // The turn reached the model. Before that, a gate that stops the turn (stale, not owned, a refused
   // contact) ran nothing and owes no line, unless it left a message.
   generating: boolean;
@@ -608,7 +609,7 @@ export async function runAgentNudge(
   const closing: NudgeClosing = {
     flow: null,
     sentIds: () => [],
-    written: false,
+    outcomeLine: null,
     generating: false,
     recordToolSpeech: async () => {},
     releaseReservation: async () => {},
@@ -621,9 +622,10 @@ export async function runAgentNudge(
     await closing.releaseReservation();
     await closing.toolsUsedNote();
     const sentMessageIds = closing.sentIds();
-    if (
+    if (closing.outcomeLine) {
+      closing.outcomeLine();
+    } else if (
       closing.flow &&
-      !closing.written &&
       (closing.generating || sentMessageIds.length > 0)
     ) {
       emitFlowEvent(closing.flow, {
@@ -890,27 +892,28 @@ async function runAgentNudgeBody(
   // What the client below noted, once it exists. Before it does, the turn has created nothing.
   let sentIds: () => number[] = () => [];
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
-    closing.written = true;
-    const origin = nudgeOrigin(params.nudge);
-    emitFlowEvent(flow, {
-      stage: "generate",
-      status: "ok",
-      detail: {
-        trigger: params.nudge.source,
-        outcome,
-        ...(params.nudge.step != null ? { step: params.nudge.step } : {}),
-        origin,
-        // Set only by a send that reached the customer, so a note or a silence carries none.
-        ...(sentMessageId !== null ? { messageId: sentMessageId } : {}),
-        // NOTE: every message the turn created, the note included, and how long it took: what the
-        // conversation screen hangs the turn's usage on.
-        ...(sentIds().length > 0 ? { sentMessageIds: sentIds() } : {}),
-        turnMs: Math.round(performance.now() - turnStartedAt),
-        ...(origin === "event" && params.nudge.integrationInstanceId
-          ? { integrationInstanceId: params.nudge.integrationInstanceId }
-          : {}),
-      },
-    });
+    closing.outcomeLine = () => {
+      const origin = nudgeOrigin(params.nudge);
+      emitFlowEvent(flow, {
+        stage: "generate",
+        status: "ok",
+        detail: {
+          trigger: params.nudge.source,
+          outcome,
+          ...(params.nudge.step != null ? { step: params.nudge.step } : {}),
+          origin,
+          // Set only by a send that reached the customer, so a note or a silence carries none.
+          ...(sentMessageId !== null ? { messageId: sentMessageId } : {}),
+          // NOTE: every message the turn created, the note included, and how long it took: what the
+          // conversation screen hangs the turn's usage on.
+          ...(sentIds().length > 0 ? { sentMessageIds: sentIds() } : {}),
+          turnMs: Math.round(performance.now() - turnStartedAt),
+          ...(origin === "event" && params.nudge.integrationInstanceId
+            ? { integrationInstanceId: params.nudge.integrationInstanceId }
+            : {}),
+        },
+      });
+    };
   };
 
   // 2. Client + tools (network, outside the tx). The bot token is the persona's, so the

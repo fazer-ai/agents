@@ -10,6 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // A turn that called tools leaves ONE private note naming them, through the real turn path
 // (runAgentTurn and runAgentNudge → prepare → the tools → the note), and only for an agent that asked.
@@ -75,7 +76,13 @@ class ScriptedModel {
   }
 }
 
-type Sent = { conv: number; text: string; opts: unknown; private: boolean };
+type Sent = {
+  conv: number;
+  text: string;
+  opts: unknown;
+  private: boolean;
+  id: number;
+};
 
 function chatwoot() {
   const sent: Sent[] = [];
@@ -86,12 +93,14 @@ function chatwoot() {
       text: string,
       opts: { private?: boolean } = {},
     ) => {
-      sent.push({ conv, text, opts, private: opts.private === true });
-      return { id: id++ };
+      const mid = id++;
+      sent.push({ conv, text, opts, private: opts.private === true, id: mid });
+      return { id: mid };
     },
     sendPrivateNote: async (conv: number, text: string, opts: unknown) => {
-      sent.push({ conv, text, opts, private: true });
-      return { id: id++ };
+      const mid = id++;
+      sent.push({ conv, text, opts, private: true, id: mid });
+      return { id: mid };
     },
     toggleStatus: async () => ({}),
     toggleTyping: async () => ({}),
@@ -308,5 +317,23 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
     expect((notes[0] as Sent).text).toContain("get_current_time (2x)");
     expect((notes[0] as Sent).opts).toEqual({ activity: "tools" });
     expect(cw.sent.at(-1)?.private).toBe(true);
+    // The outcome line closes the turn AFTER the note, so the note is one of the messages it
+    // names (what the conversation screen hangs the turn's usage on).
+    const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${CONV_NUDGE}`,
+      },
+      select: { detail: true },
+    });
+    const outcomeLines = rows
+      .map((r) => r.detail as Record<string, unknown> | null)
+      .filter((d) => typeof d?.outcome === "string");
+    expect(outcomeLines).toHaveLength(1);
+    const noteId = (notes[0] as Sent).id;
+    expect(cw.sent.at(-1)?.id).toBe(noteId);
+    expect(outcomeLines[0]?.sentMessageIds).toEqual(cw.sent.map((s) => s.id));
   });
 });

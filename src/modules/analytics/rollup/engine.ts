@@ -61,7 +61,46 @@ export const PART_DAYS: Record<Family, number> = {
   know: 30,
 };
 // Days whose figures still move: never kept, always computed.
-const LIVE_DAYS = 2;
+export const LIVE_DAYS = 2;
+
+// The part size each tenant's family last fit in, so a cold window does not open on a size that is
+// known to run past METRICS_TIMEOUT_MS and be thrown away before its halves run. A part refused as too
+// slow lowers it to its halves and holds it there for `partSizeHold.ms`: growing back at once would
+// try the refused size again and throw away a budget per probe. Past the hold, a part that fits in
+// under half the budget doubles it, up to PART_DAYS. Per process: a restart starts from PART_DAYS.
+export const partSizeHold = { ms: 60 * 60 * 1000 };
+const partCaps = new Map<string, { size: number; refusedAt: number }>();
+
+export function partSize(tenantId: bigint | null, fam: Family): number {
+  return partCaps.get(`${tenantId}|${fam}`)?.size ?? PART_DAYS[fam];
+}
+
+function refusedPart(tenantId: bigint | null, fam: Family, days: number) {
+  partCaps.set(`${tenantId}|${fam}`, {
+    size: Math.max(1, Math.min(partSize(tenantId, fam), Math.ceil(days / 2))),
+    refusedAt: Date.now(),
+  });
+}
+
+function fitPart(
+  tenantId: bigint | null,
+  fam: Family,
+  days: number,
+  ms: number,
+) {
+  const key = `${tenantId}|${fam}`;
+  const cap = partCaps.get(key);
+  if (!cap || days < cap.size || Date.now() < cap.refusedAt + partSizeHold.ms)
+    return;
+  if (ms >= config.metrics.timeoutMs / 2) return;
+  const size = Math.min(PART_DAYS[fam], cap.size * 2);
+  if (size === PART_DAYS[fam]) partCaps.delete(key);
+  else partCaps.set(key, { size, refusedAt: 0 });
+}
+
+export function resetPartSizes() {
+  partCaps.clear();
+}
 const DAY_MS = 86_400_000;
 
 export type Block =
@@ -513,7 +552,7 @@ export class WindowLoad implements DayStore {
         (d) => !this.has(fam, d) && (fam !== "log" || d >= this.logFrom),
       );
       for (const [a, b] of runsOf(missing)) {
-        const size = PART_DAYS[fam];
+        const size = partSize(this.ctx.tenantId, fam);
         for (let end = b; end >= a; end = addDays(end, -size)) {
           const first = addDays(end, -(size - 1));
           // biome-ignore lint/complexity/useMathMinMax: days are ISO strings, which Math.max turns into NaN
@@ -675,10 +714,14 @@ export class WindowLoad implements DayStore {
   }
 
   private async runPart(part: Part, signal?: AbortSignal): Promise<void> {
+    const n = dayCount(part.first, part.last);
     try {
       if (part.live)
         (await this.scoped((db) => this.compute(db, part, false)))();
-      else await this.computeKept(part, signal);
+      else {
+        const ran = await this.computeKept(part, signal);
+        if (ran) fitPart(this.ctx.tenantId, part.family, ran.days, ran.ms);
+      }
     } catch (error) {
       // A viewer who left gets no half started in its place.
       if (error instanceof MetricsTooSlowError && signal?.aborted) return;
@@ -690,6 +733,7 @@ export class WindowLoad implements DayStore {
         throw error;
       const days = daysBetween(part.first, part.last);
       const mid = days[Math.floor(days.length / 2)] ?? part.last;
+      if (!part.live) refusedPart(this.ctx.tenantId, part.family, n);
       // The later half first, as every part goes.
       await this.runPart({ ...part, first: mid, last: part.last }, signal);
       await this.runPart(
@@ -699,10 +743,15 @@ export class WindowLoad implements DayStore {
     }
   }
 
-  private async computeKept(part: Part, signal?: AbortSignal) {
+  // Returns the days it computed and how long that took, or null when it computed none (another
+  // request had kept them): only a computation measures what a part size costs.
+  private async computeKept(
+    part: Part,
+    signal?: AbortSignal,
+  ): Promise<{ days: number; ms: number } | null> {
     const lockKey = `dashboard|${this.ctx.tenantId}|${this.version}|${this.key}|${this.tz}|${part.family}`;
     for (;;) {
-      if (signal?.aborted) return;
+      if (signal?.aborted) return null;
       const state = await this.scoped(async (db) => {
         if (!(await tryLock(db, lockKey))) return "busy" as const;
         const days = daysBetween(part.first, part.last);
@@ -715,11 +764,19 @@ export class WindowLoad implements DayStore {
         for (const r of kept) this.keepRead(r);
         const missing = days.filter((d) => !this.has(part.family, d));
         const [first, last] = [missing[0], missing[missing.length - 1]];
-        if (!first || !last) return () => {};
-        return this.compute(db, { ...part, first, last }, true);
+        if (!first || !last) return { apply: () => {}, ran: null };
+        const startedAt = Date.now();
+        const apply = await this.compute(db, { ...part, first, last }, true);
+        return {
+          apply,
+          ran: { days: dayCount(first, last), ms: Date.now() - startedAt },
+        };
       });
       // In memory once kept: a part whose transaction fails is computed again, and kept, on the retry.
-      if (state !== "busy") return state();
+      if (state !== "busy") {
+        state.apply();
+        return state.ran;
+      }
       if (this.overdue()) throw metricsTooSlow(this.deadline);
       await new Promise((r) => setTimeout(r, 250));
     }

@@ -17,6 +17,10 @@ import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
 import { checkSessionZoneAtBoot } from "@/lib/db-session-zone";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
+import {
+  startDashboardWarm,
+  stopDashboardWarm,
+} from "@/modules/analytics/rollup/warm";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
 import { drainStoredChatwootDeliveries } from "@/modules/chatwoot/delivery-queue";
@@ -255,6 +259,9 @@ if (config.schedulerWorker.enabled) {
   // NOTE: The pass that keeps, of every live thread, only the checkpoint the saver resumes from: a
   // thread keeps every checkpoint it wrote, each with a copy of the whole conversation.
   startCheckpointRetention();
+  // NOTE: The pass that computes again, between visits, the dashboard days a change dropped, so an
+  // opening reads them instead of computing the month in front of the viewer.
+  startDashboardWarm();
   // NOTE: Every account whose occurrence monitor is on gets its round back.
   void ensureAllOccurrenceRounds().catch((error) =>
     logger.warn({ error }, "Failed to arm occurrence rounds"),
@@ -322,6 +329,7 @@ installShutdownHandlers({
     stopDeadClaimSweep();
     stopCheckpointReconciler();
     stopCheckpointRetention();
+    stopDashboardWarm();
     stopInstanceHealthSampler();
   },
   boundMs: config.shutdown.drainMs,

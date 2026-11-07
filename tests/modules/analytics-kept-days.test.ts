@@ -39,6 +39,7 @@ import {
   BLOCK_SECTIONS,
   type Block,
   filterKey,
+  resetPartSizes,
   rollupVersion,
   WindowLoad,
 } from "@/modules/analytics/rollup/engine";
@@ -588,6 +589,7 @@ async function clearKept() {
 // old, and no day kept. A test that leaves a change unsettled, a change from the last minutes or a
 // kept day then cannot make the next one skip a day, count a batch short or find its window in.
 async function fromHistory() {
+  resetPartSizes();
   const settle = (db: tenancy.ScopedDb) =>
     settleDirty(db, `dashboard-settle|${tenantId}`);
   while ((await runScopedOn(appDb, ctx(), settle)) > 0);

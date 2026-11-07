@@ -150,8 +150,10 @@ describe("numeric environment parsing", () => {
       }
     }
     // DB_LOCK_TIMEOUT_MS: Postgres reads lock_timeout 0 as no limit, which is the documented "off".
+    // DASHBOARD_WARM_INTERVAL_MS: 0 is read before any timer is armed, as "never arm one".
     expect(admitZero.sort()).toEqual([
       "ALERT_COALESCE_WINDOW_MS",
+      "DASHBOARD_WARM_INTERVAL_MS",
       "DB_LOCK_TIMEOUT_MS",
     ]);
   });

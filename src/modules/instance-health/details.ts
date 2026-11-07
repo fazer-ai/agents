@@ -3,23 +3,56 @@ import { clipText } from "@/lib/text";
 // A line that names WHAT is behind a signal's value, appended to its firing alert: the statement
 // and the work that timed out, the statement that drifted. The number alone says that something is
 // slow; this says which, so the operator does not have to open the screen to know what broke
-// (docs/logs.md, "Database"). Set by whoever samples the signal, cleared with null.
+// (docs/logs.md, "Database"). Set by whoever samples the signal, as fields, cleared with null.
 
 const KEY = Symbol.for("fazerai.instanceHealth.details");
 
-function details(): Map<string, string> {
-  const g = globalThis as unknown as Record<symbol, Map<string, string>>;
+// The work behind a timeout, as the database screen names it in the console's language.
+export type WorkFacts =
+  | { kind: "job" | "request" | "worker"; name: string }
+  | { kind: "none"; pool: string | null };
+
+// What is behind a signal's value, as fields: the screen writes its own line from them, translated
+// and formatted by the locale, and the alert, REST and MCP carry the English line built from the same
+// fields (detailText).
+export interface TimeoutFacts {
+  kind: "timeout";
+  work: WorkFacts;
+  tenantId: string | null;
+  fleet: boolean;
+  budgetMs: number | null;
+  table: string | null;
+  statement: string;
+}
+export interface DriftFacts {
+  kind: "drift";
+  meanMs: number;
+  table: string | null;
+  statement: string;
+}
+export type SignalFacts = TimeoutFacts | DriftFacts;
+
+function details(): Map<string, SignalFacts> {
+  const g = globalThis as unknown as Record<symbol, Map<string, SignalFacts>>;
   g[KEY] ??= new Map();
   return g[KEY];
 }
 
-export function setSignalDetail(signal: string, detail: string | null): void {
-  if (detail) details().set(signal, detail);
+export function setSignalDetail(
+  signal: string,
+  facts: SignalFacts | null,
+): void {
+  if (facts) details().set(signal, facts);
   else details().delete(signal);
 }
 
-export function signalDetail(signal: string): string | null {
+export function signalFacts(signal: string): SignalFacts | null {
   return details().get(signal) ?? null;
+}
+
+export function signalDetail(signal: string): string | null {
+  const facts = signalFacts(signal);
+  return facts ? detailText(facts) : null;
 }
 
 // A statement in one line an alert can carry: comments dropped, whitespace collapsed, cut at a length
@@ -61,14 +94,22 @@ function durationText(ms: number): string {
 
 const HTTP_METHOD = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) /;
 
-// The work in the words of the alert: a job by its kind, a request by its route, any other label as
-// the worker it names (src/lib/work-label.ts), and no label by the pool that ran the statement.
-function workText(label: string | null, pool: string | undefined): string {
-  if (label === null)
-    return `work with no label${pool ? ` (pool ${pool})` : ""}`;
-  if (label.startsWith("job:")) return `job ${label.slice(4)}`;
-  if (HTTP_METHOD.test(label)) return `request ${label}`;
-  return `worker ${label}`;
+// The work by its label: a job by its kind, a request by its route, any other label as the worker it
+// names (src/lib/work-label.ts), and no label by the pool that ran the statement.
+export function workFacts(
+  label: string | null,
+  pool: string | undefined,
+): WorkFacts {
+  if (label === null) return { kind: "none", pool: pool ?? null };
+  if (label.startsWith("job:")) return { kind: "job", name: label.slice(4) };
+  if (HTTP_METHOD.test(label)) return { kind: "request", name: label };
+  return { kind: "worker", name: label };
+}
+
+function workText(w: WorkFacts): string {
+  if (w.kind === "none")
+    return `work with no label${w.pool ? ` (pool ${w.pool})` : ""}`;
+  return `${w.kind} ${w.name}`;
 }
 
 // The line under the statement-timeout count: the work that ran the statement, its scope, its
@@ -83,19 +124,46 @@ export interface TimeoutLine {
   pool?: string;
 }
 
-export function timeoutDetail(ev: TimeoutLine): string {
-  const parts = [workText(ev.label, ev.pool)];
-  if (ev.fleet) parts.push("all tenants");
-  else if (ev.tenantId != null) parts.push(`tenant ${ev.tenantId}`);
-  if (ev.budgetMs != null) parts.push(`${durationText(ev.budgetMs)} budget`);
-  const table = statementTable(ev.sql);
-  if (table) parts.push(`on ${table}`);
-  return `Last timeout: ${parts.join(", ")}. Statement: ${statementLine(ev.sql)}`;
+export function timeoutFacts(ev: TimeoutLine): TimeoutFacts {
+  return {
+    kind: "timeout",
+    work: workFacts(ev.label, ev.pool),
+    tenantId: ev.tenantId ?? null,
+    fleet: ev.fleet ?? false,
+    budgetMs: ev.budgetMs ?? null,
+    table: statementTable(ev.sql),
+    statement: statementLine(ev.sql),
+  };
 }
 
 // The line under the drift share: how slow the slowest statement runs on average, and on which
 // table, then the statement.
+export function driftFacts(sql: string, meanMs: number): DriftFacts {
+  return {
+    kind: "drift",
+    meanMs,
+    table: statementTable(sql),
+    statement: statementLine(sql),
+  };
+}
+
+// The English line the alert channel (which has no locale), REST and MCP carry.
+export function detailText(f: SignalFacts): string {
+  if (f.kind === "drift") {
+    return `Slowest over the last hour: ${durationText(f.meanMs)} mean${f.table ? `, on ${f.table}` : ""}. Statement: ${f.statement}`;
+  }
+  const parts = [workText(f.work)];
+  if (f.fleet) parts.push("all tenants");
+  else if (f.tenantId != null) parts.push(`tenant ${f.tenantId}`);
+  if (f.budgetMs != null) parts.push(`${durationText(f.budgetMs)} budget`);
+  if (f.table) parts.push(`on ${f.table}`);
+  return `Last timeout: ${parts.join(", ")}. Statement: ${f.statement}`;
+}
+
+export function timeoutDetail(ev: TimeoutLine): string {
+  return detailText(timeoutFacts(ev));
+}
+
 export function driftDetail(sql: string, meanMs: number): string {
-  const table = statementTable(sql);
-  return `Slowest over the last hour: ${durationText(meanMs)} mean${table ? `, on ${table}` : ""}. Statement: ${statementLine(sql)}`;
+  return detailText(driftFacts(sql, meanMs));
 }

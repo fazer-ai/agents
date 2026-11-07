@@ -17,6 +17,7 @@ const { DatabasePage } = await import(
 const { AuthProvider } = await import("@/client/contexts/AuthContext");
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
 const { ToastProvider } = await import("@/client/components/Toast");
+const { default: i18n } = await import("@/client/lib/i18n");
 
 // The Database screen as a super admin uses it: the window and the sort change what is listed, a
 // database without pg_stat_statements says how to enable it, and a tenant admin never sees it.
@@ -561,4 +562,115 @@ test("a table past autovacuum's trigger shows its dead-row share in the warning 
   expect(
     screen.getByTestId("vacuum-overdue-count").textContent ?? "",
   ).toContain("1");
+});
+
+test("in Portuguese, the signal lines, the budget and a failed plan are written by the screen, not sent ready in English", async () => {
+  const startingLanguage = i18n.language;
+  await i18n.changeLanguage("pt-BR");
+  try {
+    const raw =
+      "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `42501`. Message: `permission denied for table business_hours`";
+    const timeout = (fingerprint: string, extra: Record<string, unknown>) => ({
+      fingerprint,
+      statement: "SELECT * FROM business_hours WHERE tenant_id = $1",
+      occurrences: 2,
+      lastAt: new Date().toISOString(),
+      label: "job:FOLLOWUP_SWEEP",
+      tenantId: "1",
+      fleet: false,
+      budgetMs: 1500,
+      plan: null,
+      planError: null,
+      planFailure: null,
+      plannedAs: null,
+      plannedScope: null,
+      plannedAt: null,
+      ...extra,
+    });
+    stubApi("SUPER_ADMIN", (w) => ({
+      ...BASE,
+      window: w,
+      signals: [
+        {
+          ...signal("statement_timeouts_per_min", "per_minute", 3, "firing"),
+          detail:
+            "Last timeout: job FOLLOWUP_SWEEP, tenant 1, 1.5 s budget, on business_hours. Statement: SELECT * FROM business_hours WHERE tenant_id = $1",
+          facts: {
+            kind: "timeout",
+            work: { kind: "job", name: "FOLLOWUP_SWEEP" },
+            tenantId: "1",
+            fleet: false,
+            budgetMs: 1500,
+            table: "business_hours",
+            statement: "SELECT * FROM business_hours WHERE tenant_id = $1",
+          },
+        },
+        {
+          ...signal("statement_mean_budget_pct", "percent", 61.4, "firing"),
+          detail:
+            "Slowest over the last hour: 1.3 s mean, on business_hours. Statement: SELECT * FROM business_hours WHERE tenant_id = $1",
+          facts: {
+            kind: "drift",
+            meanMs: 1300,
+            table: "business_hours",
+            statement: "SELECT * FROM business_hours WHERE tenant_id = $1",
+          },
+        },
+      ],
+      timeoutOccurrences: 4,
+      timeouts: [
+        timeout("denied", {
+          planError: raw,
+          planFailure: {
+            kind: "permission",
+            code: "42501",
+            objectType: "table",
+            object: "business_hours",
+          },
+        }),
+        timeout("planned", {
+          plan: "Seq Scan on business_hours  (cost=0.00..1.00 rows=1 width=8)",
+          plannedAs: "application role, tenant 1",
+          plannedScope: { fleet: false, tenantId: "1" },
+          plannedAt: new Date().toISOString(),
+        }),
+      ],
+      statements: available(),
+    }));
+    renderPage(undefined, "/admin/database?section=timeouts");
+    await waitFor(() =>
+      expect(screen.queryAllByTestId("timeout-item").length).toBe(2),
+    );
+    const text = (id: string) => screen.getByTestId(id).textContent ?? "";
+    const drift = text("summary-signal-statement_mean_budget_pct");
+    expect(drift).toContain(
+      "Mais lenta na última hora: média de 1,3 s, em business_hours",
+    );
+    expect(drift).not.toContain("Slowest");
+    const last = text("summary-signal-statement_timeouts_per_min");
+    expect(last).toContain(
+      "Último timeout: tarefa FOLLOWUP_SWEEP, no tenant 1, orçamento 1,5 s, em business_hours",
+    );
+    expect(last).not.toContain("Last timeout");
+    // The budget badge goes through the locale's formatter, like every figure on the page.
+    const items = screen
+      .queryAllByTestId("timeout-item")
+      .map((i) => i.textContent ?? "");
+    expect(items.every((i) => i.includes("orçamento 1,5 s"))).toBe(true);
+    // A refused plan says which grant is missing; the raw error is only behind an expander.
+    const failure = text("timeout-plan-error");
+    expect(failure).toContain("SELECT");
+    expect(failure).toContain("business_hours");
+    expect(failure).not.toContain("prisma");
+    const rawBox = screen.getByTestId("timeout-plan-error-raw");
+    expect(rawBox.tagName).toBe("DETAILS");
+    expect(rawBox.hasAttribute("open")).toBe(false);
+    expect((rawBox.textContent ?? "").includes("permission denied")).toBe(true);
+    // The scope a plan was taken under is written in Portuguese too.
+    const toggle = text("timeout-plan-toggle");
+    expect(toggle).not.toContain("application role");
+    expect(toggle).toContain("tenant 1");
+  } finally {
+    await i18n.changeLanguage(startingLanguage);
+  }
 });

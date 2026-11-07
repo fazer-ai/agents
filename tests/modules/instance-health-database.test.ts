@@ -48,6 +48,7 @@ import {
   signalState,
 } from "@/modules/instance-health/database/view";
 import {
+  driftFacts,
   setSignalDetail,
   signalDetail,
   statementLine,
@@ -216,7 +217,7 @@ describe("the two signals and what their alert says", () => {
   test("the drift share reads as a percent", () => {
     setSignalDetail(
       "statement_mean_budget_pct",
-      "Slowest over the last hour: SELECT 1",
+      driftFacts("SELECT 1 FROM agents", 1_300),
     );
     expect(
       firingSummary("statement_mean_budget_pct", 61.4, {
@@ -225,7 +226,7 @@ describe("the two signals and what their alert says", () => {
         enabled: true,
       }),
     ).toBe(
-      "statement_mean_budget_pct is 61%, above 50%. Slowest over the last hour: SELECT 1",
+      "statement_mean_budget_pct is 61%, above 50%. Slowest over the last hour: 1.3 s mean, on agents. Statement: SELECT 1 FROM agents",
     );
     setSignalDetail("statement_mean_budget_pct", null);
   });

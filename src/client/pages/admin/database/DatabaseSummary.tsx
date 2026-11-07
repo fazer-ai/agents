@@ -2,11 +2,8 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Badge, Card, HelpPopover, Skeleton } from "@/client/components";
 import { cn } from "@/client/lib/utils";
-import {
-  formatSignalValue,
-  signalHelp,
-  signalLabel,
-} from "../instance-health/signals";
+import { signalHelp, signalLabel } from "../instance-health/signals";
+import { factsLine } from "./facts";
 import type { Formatters } from "./format";
 import type { DatabaseSignal, Screen } from "./types";
 
@@ -111,17 +108,22 @@ export function DatabaseSummary({
           help={signalHelp(s.signal, t)}
           badge={stateLabel(s.state, t)}
           tone={SIGNAL_TONE[s.state]}
-          value={s.value === null ? "—" : formatSignalValue(s.value, s.unit)}
+          value={s.value === null ? "—" : fmt.signal(s.value, s.unit)}
         >
           <p>
             {t("database.threshold", "Alerts above {{value}}", {
-              value: formatSignalValue(s.threshold, s.unit),
+              value: fmt.signal(s.threshold, s.unit),
             })}
           </p>
-          {s.detail && (
-            <p className="text-text-secondary line-clamp-2 font-mono break-all">
-              {s.detail}
-            </p>
+          {s.facts && (
+            <>
+              <p className="text-text-secondary">
+                {factsLine(s.facts, fmt, t)}
+              </p>
+              <p className="text-text-secondary line-clamp-2 font-mono break-all">
+                {s.facts.statement}
+              </p>
+            </>
           )}
         </Tile>
       ))}

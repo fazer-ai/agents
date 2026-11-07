@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import {
   AlertTriangle,
   ChevronDown,
@@ -8,7 +9,6 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, EmptyState, Tooltip } from "@/client/components";
 import { cn } from "@/client/lib/utils";
-import { formatSignalValue } from "../instance-health/signals";
 import type { Formatters } from "./format";
 import { CopyButton, PlanBlock, SectionIntro, SqlText } from "./parts";
 import type { Screen, TimeoutGroup } from "./types";
@@ -76,6 +76,81 @@ export function TimeoutsPanel({
   );
 }
 
+// Who a plan was taken as, in the console's language; the stored English wording when it names no
+// scope the screen knows.
+function plannedWho(x: TimeoutGroup, t: TFunction): string {
+  const scope = x.plannedScope;
+  if (!scope) return x.plannedAs ?? "";
+  if (scope.fleet) return t("database.scopeFleet", "fleet role");
+  return scope.tenantId
+    ? t("database.plannedTenant", "application role, tenant {{id}}", {
+        id: scope.tenantId,
+      })
+    : t("database.plannedNoTenant", "application role, no tenant");
+}
+
+// The privilege a refused plan lacks on each kind of object, and how GRANT names that object.
+const GRANT_FOR: Record<string, { privilege: string; target: string }> = {
+  table: { privilege: "SELECT", target: "" },
+  view: { privilege: "SELECT", target: "" },
+  "materialized view": { privilege: "SELECT", target: "" },
+  sequence: { privilege: "USAGE", target: "SEQUENCE " },
+  schema: { privilege: "USAGE", target: "SCHEMA " },
+  function: { privilege: "EXECUTE", target: "FUNCTION " },
+};
+
+// Why there is no plan, by the server's category: a missing grant names it, the rest say what
+// happened with the SQLSTATE; the raw error stays behind the expander.
+function planFailureText(x: TimeoutGroup, t: TFunction): string {
+  const f = x.planFailure;
+  const role = x.fleet
+    ? t("database.planRole.fleet", "the fleet role")
+    : t("database.planRole.app", "the application role");
+  switch (f?.kind) {
+    case "permission": {
+      const grant = f.objectType ? GRANT_FOR[f.objectType] : undefined;
+      if (!grant || !f.object) {
+        return t(
+          "database.planFailure.permissionUnnamed",
+          "No plan: {{role}} lacks a permission the plan needs (code 42501).",
+          { role },
+        );
+      }
+      return t(
+        "database.planFailure.permission",
+        "No plan: {{role}} has no {{privilege}} on {{object}}. Grant it with GRANT {{privilege}} ON {{target}} TO <role>, and the next timeout of this statement gets its plan.",
+        {
+          role,
+          privilege: grant.privilege,
+          object: f.object,
+          target: `${grant.target}${f.object}`,
+        },
+      );
+    }
+    case "old_server":
+      return t(
+        "database.planFailure.oldServer",
+        "No plan: plans are taken with EXPLAIN (GENERIC_PLAN), which needs PostgreSQL 16 or later.",
+      );
+    case "other_database":
+      return t(
+        "database.planFailure.otherDatabase",
+        "No plan: this statement ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken.",
+      );
+    default:
+      return f?.code
+        ? t(
+            "database.planFailure.otherCode",
+            "No plan: Postgres refused to plan this statement (code {{code}}).",
+            { code: f.code },
+          )
+        : t(
+            "database.planFailure.other",
+            "No plan: the plan could not be taken.",
+          );
+  }
+}
+
 function TimeoutCard({ x, fmt }: { x: TimeoutGroup; fmt: Formatters }) {
   const { t } = useTranslation();
   const [planOpen, setPlanOpen] = useState(false);
@@ -113,7 +188,7 @@ function TimeoutCard({ x, fmt }: { x: TimeoutGroup; fmt: Formatters }) {
           {x.budgetMs !== null && (
             <Badge variant="secondary">
               {t("database.budget", "budget {{budget}}", {
-                budget: formatSignalValue(x.budgetMs, "ms"),
+                budget: fmt.ms(x.budgetMs),
               })}
             </Badge>
           )}
@@ -140,7 +215,9 @@ function TimeoutCard({ x, fmt }: { x: TimeoutGroup; fmt: Formatters }) {
                 : t("database.showPlan", "Show the plan")}
               <span className="text-text-muted font-normal">
                 {x.plannedAs
-                  ? t("database.plannedAs", "as {{who}}", { who: x.plannedAs })
+                  ? t("database.plannedAs", "as {{who}}", {
+                      who: plannedWho(x, t),
+                    })
                   : null}
                 {x.plannedAt ? ` · ${fmt.relative(x.plannedAt)}` : null}
               </span>
@@ -155,20 +232,31 @@ function TimeoutCard({ x, fmt }: { x: TimeoutGroup; fmt: Formatters }) {
           {planOpen && <PlanBlock plan={x.plan} />}
         </div>
       ) : x.planError ? (
-        <p
+        <div
           className="text-text-secondary flex items-start gap-1.5 text-xs"
-          data-testid="timeout-plan-error"
+          data-testid="timeout-plan-failure"
         >
           <AlertTriangle
             className="text-warning mt-0.5 h-3.5 w-3.5 shrink-0"
             aria-hidden="true"
           />
-          <span>
-            {t("database.planError", "No plan: {{error}}", {
-              error: x.planError,
-            })}
+          <span className="space-y-1">
+            <span className="block" data-testid="timeout-plan-error">
+              {planFailureText(x, t)}
+            </span>
+            <details data-testid="timeout-plan-error-raw">
+              <summary className="cursor-pointer">
+                {t(
+                  "database.planErrorRaw",
+                  "The error as Postgres returned it",
+                )}
+              </summary>
+              <pre className="text-text-muted mt-1 font-mono text-xs break-all whitespace-pre-wrap">
+                {x.planError}
+              </pre>
+            </details>
           </span>
-        </p>
+        </div>
       ) : (
         <p className="text-text-muted text-xs">
           {t(

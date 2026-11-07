@@ -12,6 +12,7 @@ import {
   type StatementsAvailability,
   TABLE_NAME,
 } from "./snapshot";
+import { type PlanFailure, planFailureOf, plannedScopeOf } from "./timeouts";
 
 // What the "Database" screen, its REST route and its MCP tool read (docs/logs.md, "Database"). Every
 // figure about statements is the sum of the deltas stored inside the window (./snapshot.ts).
@@ -79,7 +80,11 @@ export interface TimeoutDto {
   budgetMs: number | null;
   plan: string | null;
   planError: string | null;
+  // The category of planError, for the screen; null when a plan was taken or none was tried.
+  planFailure: PlanFailure | null;
   plannedAs: string | null;
+  // plannedAs as fields, for the screen.
+  plannedScope: { fleet: boolean; tenantId: string | null } | null;
   plannedAt: string | null;
 }
 
@@ -465,7 +470,9 @@ export async function readDatabaseScreen(
       budgetMs: r.budget_ms,
       plan: r.plan,
       planError: r.plan_error,
+      planFailure: r.plan_error === null ? null : planFailureOf(r.plan_error),
       plannedAs: r.planned_as,
+      plannedScope: r.planned_as === null ? null : plannedScopeOf(r.planned_as),
       plannedAt: r.planned_at?.toISOString() ?? null,
     }));
     const [occurrences] = await db.$queryRaw<{ n: number }[]>`

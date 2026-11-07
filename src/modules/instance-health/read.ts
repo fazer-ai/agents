@@ -3,7 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { ForbiddenError } from "@/lib/errors";
 import type { TenantContext, TxBudget } from "@/lib/tenancy";
 import { listInstanceThresholds } from "./channels";
-import { signalDetail } from "./details";
+import { type SignalFacts, signalDetail, signalFacts } from "./details";
 import { firingSignals } from "./evaluator";
 import {
   DATABASE_EVERY_TICKS,
@@ -36,8 +36,10 @@ export interface InstanceSignalDto {
   // The last value is older than its cadence allows: the read behind it is failing, so it is not current.
   stale: boolean;
   // What is behind the value, when the signal names it: the statement and work of the last timeout,
-  // the statement that drifted. Also the tail of the signal's firing alert.
+  // the statement that drifted. Also the tail of the signal's firing alert. English: the screens
+  // write their own line from `facts`.
   detail: string | null;
+  facts: SignalFacts | null;
   history: SamplePoint[];
 }
 
@@ -155,6 +157,7 @@ export async function readInstanceHealth(
         firing: firing.has(s.signal),
         stale: isStale(sampling, s.at ?? snap.firstTickAt, now, s.signal),
         detail: signalDetail(s.signal),
+        facts: signalFacts(s.signal),
         history: s.history,
       };
     }),

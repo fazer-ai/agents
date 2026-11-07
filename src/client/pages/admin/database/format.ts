@@ -7,6 +7,8 @@ export interface Formatters {
   bytes: (n: number) => string;
   signedBytes: (n: number) => string;
   percent: (pct: number) => string;
+  // A signal's value or threshold in its unit (src/modules/instance-health/signals.ts).
+  signal: (value: number, unit: string) => string;
   ratio: (r: number) => string;
   relative: (iso: string, now?: number) => string;
   dateTime: (iso: string) => string;
@@ -37,18 +39,26 @@ export function formatters(locale: string): Formatters {
     return `${u === 0 ? int.format(v) : one.format(v)} ${BYTE_UNITS[u]}`;
   };
 
+  const ms = (ms: number) => {
+    if (ms >= 60_000) return `${one.format(ms / 60_000)} min`;
+    if (ms >= 1_000) return `${one.format(ms / 1_000)} s`;
+    if (ms >= 10) return `${int.format(ms)} ms`;
+    return `${two.format(ms)} ms`;
+  };
+
   return {
     number: (n) => int.format(n),
-    ms: (ms) => {
-      if (ms >= 60_000) return `${one.format(ms / 60_000)} min`;
-      if (ms >= 1_000) return `${one.format(ms / 1_000)} s`;
-      if (ms >= 10) return `${int.format(ms)} ms`;
-      return `${two.format(ms)} ms`;
-    },
+    ms,
     bytes,
     signedBytes: (n) =>
       n > 0 ? `+${bytes(n)}` : n < 0 ? `−${bytes(n)}` : bytes(0),
     percent: (pct) => `${pct >= 10 ? int.format(pct) : one.format(pct)}%`,
+    signal: (value, unit) => {
+      if (unit === "percent") return `${int.format(value)}%`;
+      if (unit === "per_minute") return `${int.format(value)}/min`;
+      if (unit === "ms") return ms(value);
+      return int.format(value);
+    },
     ratio: (r) => (r > 0 && r < 0.01 ? "<1%" : `${int.format(r * 100)}%`),
     relative: (iso, now = Date.now()) => {
       const s = (new Date(iso).getTime() - now) / 1000;

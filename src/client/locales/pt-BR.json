@@ -1288,6 +1288,13 @@
     "copySql": "Copiar o comando",
     "createStep": "Crie a extensão neste banco, como superusuário (ou como dono do banco num servidor gerenciado), ou rode o bootstrap de novo:",
     "deadTuples": "Linhas mortas",
+    "detail": {
+      "allTenants": "todos os tenants",
+      "lastTimeout": "Último timeout: {{parts}}",
+      "onTable": "em {{table}}",
+      "slowest": "Mais lenta na última hora: média de {{mean}}",
+      "tenant": "no tenant {{id}}"
+    },
     "emptyDescription": "O primeiro snapshot sai em até 5 minutos depois de o processo subir.",
     "emptyTitle": "Ainda sem números",
     "enableAfter": "O próximo snapshot começa o histórico. Timeouts e tabelas funcionam sem ela.",
@@ -1337,11 +1344,25 @@
     "occurrences_many": "{{count}} vezes",
     "occurrences_other": "{{count}} vezes",
     "onTable": "em {{table}}",
-    "planError": "Sem plano: {{error}}",
+    "planErrorRaw": "O erro como o Postgres devolveu",
+    "planFailure": {
+      "oldServer": "Sem plano: os planos usam EXPLAIN (GENERIC_PLAN), que exige PostgreSQL 16 ou mais novo.",
+      "other": "Sem plano: não foi possível obter o plano.",
+      "otherCode": "Sem plano: o Postgres recusou planejar esta consulta (código {{code}}).",
+      "otherDatabase": "Sem plano: esta consulta rodou no banco do checkpointer (LANGGRAPH_DATABASE_URL), onde não se tiram planos.",
+      "permission": "Sem plano: {{role}} não tem {{privilege}} em {{object}}. Conceda com GRANT {{privilege}} ON {{target}} TO <papel>, e o próximo timeout desta consulta já traz o plano.",
+      "permissionUnnamed": "Sem plano: {{role}} não tem uma permissão de que o plano precisa (código 42501)."
+    },
     "planLegendRls": "Predicado de tenant adicionado pela segurança por linha (RLS)",
     "planLegendSeq": "Seq Scan: lê a tabela inteira, linha a linha",
     "plannedAs": "como {{who}}",
+    "plannedNoTenant": "papel da aplicação, sem tenant",
+    "plannedTenant": "papel da aplicação, tenant {{id}}",
     "planPending": "Ainda não há plano neste escopo: um é capturado por comando a cada hora, no próximo timeout.",
+    "planRole": {
+      "app": "o papel da aplicação",
+      "fleet": "o papel da frota"
+    },
     "query": "Consulta",
     "readAt": "Lido às {{time}}, atualiza a cada minuto",
     "refreshFailedAt": "A última atualização falhou: estes números são de {{time}} e podem estar desatualizados. Uma nova tentativa sai a cada minuto.",
@@ -1405,7 +1426,13 @@
     "vacuumOverdueCount_one": "{{count}} tabela com vacuum atrasado",
     "vacuumOverdueCount_many": "{{count}} tabelas com vacuum atrasado",
     "vacuumOverdueCount_other": "{{count}} tabelas com vacuum atrasado",
-    "window": "Janela"
+    "window": "Janela",
+    "work": {
+      "job": "tarefa {{name}}",
+      "nonePool": "trabalho sem rótulo (pool {{pool}})",
+      "request": "requisição {{name}}",
+      "worker": "processo {{name}}"
+    }
   },
   "documentApproval": {
     "again": "Pedido de novo, com a data de hoje. Este é o pedido novo.",

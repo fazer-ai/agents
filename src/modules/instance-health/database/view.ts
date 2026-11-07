@@ -33,11 +33,8 @@ export type DatabaseSignalState =
   | "muted"
   | "no_data";
 
-export interface DatabaseSignalDto
-  extends Omit<InstanceSignalDto, "history" | "detail"> {
+export interface DatabaseSignalDto extends Omit<InstanceSignalDto, "history"> {
   state: DatabaseSignalState;
-  // What is behind the value: the statement and work of the last timeout, the statement that drifted.
-  detail: string | null;
 }
 
 export interface DatabaseViewDto extends DatabaseScreenDto {

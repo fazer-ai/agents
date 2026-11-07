@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
-import { driftDetail, setSignalDetail } from "../details";
+import { driftFacts, setSignalDetail } from "../details";
 import { budgetUntil } from "./budget";
 import { slowestMeanShare } from "./read";
 import { lastAvailability, snapshotIfDue } from "./snapshot";
@@ -51,6 +51,6 @@ export async function databaseScreenTick(
     undefined,
     budgetUntil(deadline),
   );
-  setSignalDetail(DRIFT_SIGNAL, query ? driftDetail(query, meanMs) : null);
+  setSignalDetail(DRIFT_SIGNAL, query ? driftFacts(query, meanMs) : null);
   return pct;
 }

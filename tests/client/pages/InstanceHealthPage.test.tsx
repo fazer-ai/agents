@@ -40,6 +40,7 @@ const { InstanceHealthPage } = await import(
   "@/client/pages/admin/instance-health/InstanceHealthPage"
 );
 
+const { default: i18n } = await import("@/client/lib/i18n");
 const realFetch = globalThis.fetch;
 
 // The pool and lane cards, only for the test that reads their detail line.
@@ -70,6 +71,27 @@ const EXTRA = {
       firing: true,
       stale: false,
       history: [{ at: Date.now(), value: 2 }],
+    },
+    {
+      signal: "statement_mean_budget_pct",
+      unit: "percent",
+      value: 61,
+      at: new Date().toISOString(),
+      threshold: 50,
+      durationSeconds: 0,
+      enabled: true,
+      firing: true,
+      stale: false,
+      history: [{ at: Date.now(), value: 61 }],
+      // The English line the alert carries, and the fields the screen writes its own line from.
+      detail:
+        "Slowest over the last hour: 1.3 s mean, on business_hours. Statement: SELECT * FROM business_hours",
+      facts: {
+        kind: "drift",
+        meanMs: 1_300,
+        table: "business_hours",
+        statement: "SELECT * FROM business_hours",
+      },
     },
     {
       signal: "scheduler_queue_age_ms:shared",
@@ -815,6 +837,35 @@ describe("instance health screen", () => {
       Boolean(screen.queryByText(/^HEARTBEAT 7\.1 min · FOLLOWUP \S+ min$/)),
     ).toBe(true);
     expect(Boolean(screen.queryByText(/DEBOUNCE/))).toBe(false);
+  });
+
+  test("in Portuguese, a statement signal's line is written by the screen with the locale's decimals (catches the alert's English line shown as is)", async () => {
+    withExtra = true;
+    const startingLanguage = i18n.language;
+    await i18n.changeLanguage("pt-BR");
+    try {
+      render(
+        <MemoryRouter initialEntries={["/admin/instance-health"]}>
+          <ThemeProvider>
+            <TooltipProvider>
+              <ToastProvider>
+                <NavGuardProvider>
+                  <InstanceHealthPage pollMs={20} />
+                </NavGuardProvider>
+              </ToastProvider>
+            </TooltipProvider>
+          </ThemeProvider>
+        </MemoryRouter>,
+      );
+      await screen.findByText(
+        "Mais lenta na última hora: média de 1,3 s, em business_hours · SELECT * FROM business_hours",
+      );
+      expect(Boolean(screen.queryByText(/Slowest over the last hour/))).toBe(
+        false,
+      );
+    } finally {
+      await i18n.changeLanguage(startingLanguage);
+    }
   });
 
   test("the follow-up sweep card names each tenant and marks the one above the threshold (catches a dead sweep shown without its tenant)", async () => {

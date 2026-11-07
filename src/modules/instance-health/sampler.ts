@@ -18,7 +18,7 @@ import {
   lastCompletedAt,
 } from "@/modules/scheduler/throughput";
 import { DRIFT_SIGNAL, databaseScreenTick } from "./database/tick";
-import { setSignalDetail, type TimeoutLine, timeoutDetail } from "./details";
+import { setSignalDetail, type TimeoutLine, timeoutFacts } from "./details";
 import { evaluateSample, judge } from "./evaluator";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { ingressLagP95 } from "./ingress";
@@ -218,7 +218,7 @@ function sampleProcess(
   const lastTimeout = sources.lastStatementTimeout?.(now) ?? null;
   setSignalDetail(
     "statement_timeouts_per_min",
-    lastTimeout ? timeoutDetail(lastTimeout) : null,
+    lastTimeout ? timeoutFacts(lastTimeout) : null,
   );
   for (const kind of THROUGHPUT_KINDS) {
     values[schedulerDoneSignal(kind)] =

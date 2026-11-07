@@ -69,6 +69,54 @@ export function plannedAsOf(ev: {
   return "application role, no tenant";
 }
 
+// The scope a stored "planned as" names, as fields, so the screen words it in the console's language.
+export function plannedScopeOf(
+  plannedAs: string,
+): { fleet: boolean; tenantId: string | null } | null {
+  if (plannedAs === "fleet role") return { fleet: true, tenantId: null };
+  if (plannedAs === "application role, no tenant")
+    return { fleet: false, tenantId: null };
+  const m = plannedAs.match(/^application role, tenant (\d+)$/);
+  return m?.[1] ? { fleet: false, tenantId: m[1] } : null;
+}
+
+export const PLAN_ON_OTHER_DATABASE =
+  "ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken";
+export const PLAN_NEEDS_PG16 =
+  "EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16 or later";
+
+// Why a plan could not be taken, by category, read from the stored error: the screen says what to do
+// about it in the console's language and keeps the raw error behind an expander.
+export type PlanFailure =
+  | {
+      kind: "permission";
+      code: "42501";
+      objectType: string | null;
+      object: string | null;
+    }
+  | { kind: "old_server" }
+  | { kind: "other_database" }
+  | { kind: "other"; code: string | null };
+
+export function planFailureOf(error: string): PlanFailure {
+  if (error.startsWith(PLAN_NEEDS_PG16)) return { kind: "old_server" };
+  if (error.startsWith(PLAN_ON_OTHER_DATABASE))
+    return { kind: "other_database" };
+  const code = error.match(/Code: `([0-9A-Z]{5})`/)?.[1] ?? null;
+  if (code === "42501") {
+    const m = error.match(
+      /permission denied for (table|view|materialized view|sequence|schema|function) ("[^"]+"|[^\s`]+)/,
+    );
+    return {
+      kind: "permission",
+      code,
+      objectType: m?.[1] ?? null,
+      object: m?.[2] ?? null,
+    };
+  }
+  return { kind: "other", code };
+}
+
 // EXPLAIN without ANALYZE (nothing runs), in GENERIC_PLAN form: the parameters stay `$N`, so no value
 // the statement carried is needed or stored, and the plan is the one Postgres builds for the
 // statement's shape. Read-only, under the captured scope.
@@ -84,8 +132,7 @@ export async function capturePlan(
     config.langgraphDatabaseUrl !== config.databaseUrl
   ) {
     return {
-      error:
-        "ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken",
+      error: PLAN_ON_OTHER_DATABASE,
     };
   }
   const text = `EXPLAIN (GENERIC_PLAN) ${ev.sql}`;
@@ -96,7 +143,7 @@ export async function capturePlan(
     const [version] = await db.$queryRaw<{ v: number }[]>`
       SELECT current_setting('server_version_num')::int AS v`;
     if ((version?.v ?? 0) < 160000) {
-      throw new Error("EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16 or later");
+      throw new Error(PLAN_NEEDS_PG16);
     }
     await db.$executeRawUnsafe("SET LOCAL transaction_read_only = on");
     // Without values, so the parameters stay `$N` and the plan is the generic one; the text was

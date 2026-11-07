@@ -1232,6 +1232,13 @@
     "copySql": "Copy the statement",
     "createStep": "Create the extension in this database, as a superuser (or the database owner on a managed server), or run the bootstrap again:",
     "deadTuples": "Dead rows",
+    "detail": {
+      "allTenants": "all tenants",
+      "lastTimeout": "Last timeout: {{parts}}",
+      "onTable": "on {{table}}",
+      "slowest": "Slowest over the last hour: {{mean}} mean",
+      "tenant": "tenant {{id}}"
+    },
     "emptyDescription": "The first snapshot is taken within 5 minutes of the process starting.",
     "emptyTitle": "No figures yet",
     "enableAfter": "The next snapshot starts the history. Timeouts and tables work without it.",
@@ -1275,11 +1282,25 @@
     "occurrences_one": "{{count}} time",
     "occurrences_other": "{{count}} times",
     "onTable": "on {{table}}",
-    "planError": "No plan: {{error}}",
+    "planErrorRaw": "The error as Postgres returned it",
+    "planFailure": {
+      "oldServer": "No plan: plans are taken with EXPLAIN (GENERIC_PLAN), which needs PostgreSQL 16 or later.",
+      "other": "No plan: the plan could not be taken.",
+      "otherCode": "No plan: Postgres refused to plan this statement (code {{code}}).",
+      "otherDatabase": "No plan: this statement ran on the checkpointer's database (LANGGRAPH_DATABASE_URL), where plans are not taken.",
+      "permission": "No plan: {{role}} has no {{privilege}} on {{object}}. Grant it with GRANT {{privilege}} ON {{target}} TO <role>, and the next timeout of this statement gets its plan.",
+      "permissionUnnamed": "No plan: {{role}} lacks a permission the plan needs (code 42501)."
+    },
     "planLegendRls": "Tenant predicate added by row-level security",
     "planLegendSeq": "Seq Scan: reads the whole table, row by row",
     "plannedAs": "as {{who}}",
+    "plannedNoTenant": "application role, no tenant",
+    "plannedTenant": "application role, tenant {{id}}",
     "planPending": "No plan under this scope yet: one is taken per statement each hour, on its next timeout.",
+    "planRole": {
+      "app": "the application role",
+      "fleet": "the fleet role"
+    },
     "query": "Query",
     "readAt": "Read at {{time}}, refreshed every minute",
     "refreshFailedAt": "The last refresh failed: these figures are from {{time}} and may be out of date. It tries again every minute.",
@@ -1335,7 +1356,13 @@
     "unusedIndexesHelp": "Not unique, not primary keys, and not read once since the statistics were last reset: candidates to drop, largest first.",
     "vacuumOverdueCount_one": "{{count}} table overdue for vacuum",
     "vacuumOverdueCount_other": "{{count}} tables overdue for vacuum",
-    "window": "Window"
+    "window": "Window",
+    "work": {
+      "job": "job {{name}}",
+      "nonePool": "work with no label (pool {{pool}})",
+      "request": "request {{name}}",
+      "worker": "worker {{name}}"
+    }
   },
   "documentApproval": {
     "again": "Requested again, dated today. This is the new request.",

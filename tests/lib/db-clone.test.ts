@@ -434,6 +434,19 @@ describe("removing leftovers, on the database", () => {
           template: testDbNameFor("fzclone437_none_test", ROOT),
         });
 
+        // Another run's sweep may hold the orphan's lock at that moment, so this reap skips it and the
+        // other one drops it: the effect is waited for, not read once.
+        await until("the orphan copy and its role to go", async () => {
+          const db = await maint.query(
+            "SELECT 1 FROM pg_database WHERE datname = $1",
+            [orphan],
+          );
+          const role = await maint.query(
+            "SELECT 1 FROM pg_roles WHERE rolname = $1",
+            [orphanRole],
+          );
+          return db.rowCount === 0 && role.rowCount === 0 ? true : null;
+        });
         const { rows } = await maint.query<{ datname: string }>(
           "SELECT datname FROM pg_database WHERE datname = ANY($1) ORDER BY datname",
           [all],
@@ -441,11 +454,6 @@ describe("removing leftovers, on the database", () => {
         expect(rows.map((r) => r.datname)).toEqual(
           [running, rebuildable].sort(),
         );
-        const role = await maint.query(
-          "SELECT 1 FROM pg_roles WHERE rolname = $1",
-          [orphanRole],
-        );
-        expect(role.rowCount).toBe(0);
       } finally {
         for (const db of all) {
           await maint.query(`DROP DATABASE IF EXISTS "${db}"`).catch(() => {});
@@ -506,7 +514,9 @@ describe("removing leftovers, on the database", () => {
           [key],
         );
         await reap();
-        expect(await exists()).toBe(false);
+        await until("the orphan copy to go once its lock is free", async () =>
+          (await exists()) ? null : true,
+        );
       } finally {
         await maint
           .query(`DROP DATABASE IF EXISTS "${orphan}"`)

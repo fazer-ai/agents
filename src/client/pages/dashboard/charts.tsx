@@ -331,7 +331,8 @@ function valuesOf(entries: readonly TooltipEntry[]): Map<string, unknown> {
 
 // A summary of the day, in the order the chart draws it top to bottom: a short stroke of the series
 // colour, its name and its value; the "Other" group in one line; on a stack, the day's total in the
-// header and a hint that a click shows everything.
+// header and a hint that a click shows everything. A name is never cut short: a value too long to sit
+// beside it (a rate with its previous period) wraps to a line of its own.
 function TooltipCard({
   head,
   total,
@@ -353,7 +354,7 @@ function TooltipCard({
     <li
       key={OTHER_KEY}
       data-series-key={OTHER_KEY}
-      className="flex items-center justify-between gap-4"
+      className="flex flex-wrap items-center justify-between gap-x-4"
     >
       <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
         <span
@@ -361,10 +362,10 @@ function TooltipCard({
           className="inline-block h-0.5 w-3 shrink-0 rounded-full"
           style={{ background: p.other }}
         />
-        <span className="truncate">{text.others(other.count)}</span>
+        <span className="break-words">{text.others(other.count)}</span>
       </span>
       {other.value !== null && (
-        <span className="font-medium tabular-nums">
+        <span className="ml-auto text-right font-medium tabular-nums">
           {describe({
             key: OTHER_KEY,
             label: "",
@@ -379,7 +380,7 @@ function TooltipCard({
     <li
       key={r.key}
       data-series-key={r.key}
-      className="flex items-center justify-between gap-4"
+      className="flex flex-wrap items-center justify-between gap-x-4"
     >
       <span className="text-text-secondary inline-flex min-w-0 items-center gap-1.5">
         <span
@@ -387,9 +388,11 @@ function TooltipCard({
           className="inline-block h-0.5 w-3 shrink-0 rounded-full"
           style={{ background: r.color }}
         />
-        <span className="truncate">{r.label}</span>
+        <span className="break-words">{r.label}</span>
       </span>
-      <span className="font-medium tabular-nums">{describe(r)}</span>
+      <span className="ml-auto text-right font-medium tabular-nums">
+        {describe(r)}
+      </span>
     </li>
   ));
   // A stack's group sits on top of it; a line chart's group has no place, so it closes the list.

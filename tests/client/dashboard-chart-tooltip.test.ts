@@ -993,6 +993,9 @@ describe("a line at zero", () => {
     });
     const tip = await hover(container, 1, 2);
     expect(lines(tip)).toEqual(["Resolution0 (previous: 0.8)"]);
+    // The name is whole, never an ellipsis, and a long value wraps under it instead.
+    expect(tip.querySelector(".truncate")).toBeNull();
+    expect(tip.querySelector("li")?.classList.contains("flex-wrap")).toBe(true);
   });
 });
 

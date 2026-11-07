@@ -224,9 +224,12 @@ describe("a stacked chart with more series than colours", () => {
   test("summarises the day top to bottom as drawn, with one Others line on top and the total in the header", async () => {
     const { container } = renderChart(StackedBars, stacked);
     const tip = await hover(container, 1, 2);
-    // Node 4 and Node 5 (5 and 6) join the group (1+2+3+4 = 10), which sits right above them.
+    // Exactly the legend: the seven kept series on lines of their own, and the legend's group
+    // (Node 0 to Node 3, 1+2+3+4 = 10) as one line with the legend's count.
     expect(lines(tip)).toEqual([
-      "Others (6)21",
+      "Others (4)10",
+      "Node 45",
+      "Node 56",
       "Node 67",
       "Node 78",
       "Node 89",
@@ -918,14 +921,17 @@ describe("a line chart with more series than colours", () => {
     expect(new Set(items.map((i) => i.color)).size).toBe(items.length);
     expectTextInkNames(items);
     const tip = await hover(container, 1, 2);
-    // The day's highest first, as the lines sit; what does not fit joins the group, last.
+    // The day's highest first, as the lines sit; every kept line has its row, and the legend's group
+    // closes the list with the legend's count.
     expect(lines(tip)).toEqual([
       "Node 910",
       "Node 89",
       "Node 78",
       "Node 67",
       "Node 56",
-      "Others (5)",
+      "Node 45",
+      "Node 23",
+      "Others (3)",
     ]);
     expect(tip.textContent).not.toContain("·");
     expect(tip.textContent).not.toContain("Total");
@@ -1214,7 +1220,7 @@ describe("the context lines of a line chart", () => {
 });
 
 describe("a line chart within the palette", () => {
-  test("names how many rows it leaves out, without adding rates", async () => {
+  test("lists every line and invents no group", async () => {
     const { container } = renderChart(LineTrend, {
       data,
       series: series.slice(0, 8),
@@ -1222,9 +1228,8 @@ describe("a line chart within the palette", () => {
       format: String,
     });
     const tip = await hover(container, 1, 2);
-    expect(lines(tip)).toHaveLength(6);
-    expect(lines(tip).at(-1)).toBe("Others (3)");
-    expect(tip.textContent).not.toContain("·");
+    expect(lines(tip)).toHaveLength(8);
+    expect(tip.textContent).not.toContain("Others");
   });
 });
 

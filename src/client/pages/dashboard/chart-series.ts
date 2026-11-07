@@ -115,12 +115,12 @@ export interface TooltipSummary {
 }
 
 // A stack's tooltip, top to bottom as the stack is drawn: "Other" first, then the kept series from
-// the top layer down to the base. `kept` comes base first. A zero segment is not drawn and not
-// listed. Past `max` lines, the layers nearest the group (the smallest kept) join it.
+// the top layer down to the base. `kept` comes base first. It lists exactly the legend's series, each
+// on its own line, and the legend's "Other" group as one line with the legend's count: nothing joins
+// the group on a busy day. A zero segment is not drawn and not listed.
 export function stackSummary(
   kept: TooltipItem[],
   group: { count: number; value: unknown } | null,
-  max: number,
 ): TooltipSummary {
   const present = kept
     .map((it) => ({ ...it, value: numeric(it.value) }))
@@ -129,29 +129,23 @@ export function stackSummary(
         it.value !== null && it.value !== 0,
     );
   const groupValue = group ? numeric(group.value) : null;
-  const groupShown = !!group && groupValue !== null && groupValue !== 0;
-  const room =
-    present.length + (groupShown ? 1 : 0) > max ? max - 1 : present.length;
-  const shown = present.slice(0, room);
-  const cut = present.slice(room);
-  const count = (group?.count ?? 0) + cut.length;
-  const value =
-    (groupShown ? (groupValue ?? 0) : 0) + cut.reduce((a, r) => a + r.value, 0);
   return {
-    rows: shown.reverse(),
-    other: groupShown || cut.length > 0 ? { count, value } : null,
+    rows: present.reverse(),
+    other:
+      group && groupValue !== null && groupValue !== 0
+        ? { count: group.count, value: groupValue }
+        : null,
   };
 }
 
 // A line chart's tooltip, top to bottom as the lines sit on that day: the highest value first. A
-// zero is a value there (a rate that fell to 0%). The context lines and whatever does not fit `max`
-// form the one "Other" line, last, with no value.
+// zero is a value there (a rate that fell to 0%). Every kept line has its row; the legend's "Other"
+// group closes the list as one line with the legend's count and no value, since rates do not add up.
 export function lineSummary(
   kept: TooltipItem[],
-  context: number,
-  max: number,
+  group: number,
 ): TooltipSummary {
-  const present = kept
+  const rows = kept
     .map((it, i) => ({ it: { ...it, value: numeric(it.value) }, i }))
     .filter((x) => x.it.value !== null || x.it.compared)
     // A line with no point that day has no height to sit at, so it goes under the ones that do.
@@ -161,13 +155,7 @@ export function lineSummary(
           (a.it.value ?? Number.NEGATIVE_INFINITY) || a.i - b.i,
     )
     .map((x) => x.it);
-  const room =
-    present.length + (context > 0 ? 1 : 0) > max ? max - 1 : present.length;
-  const count = context + present.length - room;
-  return {
-    rows: present.slice(0, room),
-    other: count > 0 ? { count, value: null } : null,
-  };
+  return { rows, other: group > 0 ? { count: group, value: null } : null };
 }
 
 export interface DetailRow {

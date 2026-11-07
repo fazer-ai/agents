@@ -129,11 +129,10 @@ describe("arrangeSeries across renders", () => {
 
 describe("stackSummary", () => {
   test("reads the stack top to bottom: the group first, then the kept from the top layer to the base", () => {
-    const out = stackSummary(
-      [item("a", 9), item("b", 5), item("c", 2)],
-      { count: 3, value: 1.5 },
-      6,
-    );
+    const out = stackSummary([item("a", 9), item("b", 5), item("c", 2)], {
+      count: 3,
+      value: 1.5,
+    });
     expect(out.rows.map((r) => r.key)).toEqual(["c", "b", "a"]);
     expect(out.other).toEqual({ count: 3, value: 1.5 });
   });
@@ -142,38 +141,35 @@ describe("stackSummary", () => {
     const out = stackSummary(
       [item("a", 9), item("b", 0), item("c", null)],
       null,
-      6,
     );
     expect(out.rows.map((r) => r.key)).toEqual(["a"]);
     expect(out.other).toBeNull();
   });
 
   test("a group at zero that day is not shown", () => {
-    expect(stackSummary([item("a", 1)], { count: 2, value: 0 }, 6).other).toBe(
+    expect(stackSummary([item("a", 1)], { count: 2, value: 0 }).other).toBe(
       null,
     );
   });
 
-  test("past the limit, the layers nearest the group join it, and the lines never exceed it", () => {
+  test("lists every legend series on a line of its own and the group with the legend's count, however many there are", () => {
     const kept = [6, 5, 4, 3, 2, 1, 0.5].map((v, i) => item(`k${i}`, v));
-    const out = stackSummary(kept, { count: 4, value: 0.25 }, 6);
-    expect(out.rows.map((r) => r.key)).toEqual(["k4", "k3", "k2", "k1", "k0"]);
-    expect(out.other).toEqual({ count: 6, value: 1.75 });
-    expect(out.rows.length + 1).toBe(6);
+    const out = stackSummary(kept, { count: 4, value: 0.25 });
+    expect(out.rows.map((r) => r.key)).toEqual([
+      "k6",
+      "k5",
+      "k4",
+      "k3",
+      "k2",
+      "k1",
+      "k0",
+    ]);
+    expect(out.other).toEqual({ count: 4, value: 0.25 });
   });
 
-  test("past the limit with no group, the cut still forms one", () => {
+  test("with no group, nothing forms one", () => {
     const kept = [6, 5, 4, 3, 2, 1, 0.5].map((v, i) => item(`k${i}`, v));
-    const out = stackSummary(kept, null, 6);
-    expect(out.rows).toHaveLength(5);
-    expect(out.other).toEqual({ count: 2, value: 1.5 });
-  });
-
-  test("exactly at the limit, nothing is cut", () => {
-    const kept = [6, 5, 4, 3, 2].map((v, i) => item(`k${i}`, v));
-    const out = stackSummary(kept, { count: 2, value: 1 }, 6);
-    expect(out.rows).toHaveLength(5);
-    expect(out.other).toEqual({ count: 2, value: 1 });
+    expect(stackSummary(kept, null).other).toBeNull();
   });
 });
 
@@ -182,7 +178,6 @@ describe("lineSummary", () => {
     const out = lineSummary(
       [item("a", 0.2), item("b", 0.9), item("c", 0), item("d", null)],
       0,
-      6,
     );
     expect(out.rows.map((r) => r.key)).toEqual(["b", "a", "c"]);
     expect(out.other).toBeNull();
@@ -192,7 +187,6 @@ describe("lineSummary", () => {
     const out = lineSummary(
       [{ ...item("a", null), compared: true }, item("b", 0.4), item("c", null)],
       0,
-      6,
     );
     expect(out.rows.map((r) => [r.key, r.value])).toEqual([
       ["b", 0.4],
@@ -202,15 +196,15 @@ describe("lineSummary", () => {
 
   test("a tie keeps the legend's order", () => {
     expect(
-      lineSummary([item("a", 1), item("b", 1)], 0, 6).rows.map((r) => r.key),
+      lineSummary([item("a", 1), item("b", 1)], 0).rows.map((r) => r.key),
     ).toEqual(["a", "b"]);
   });
 
-  test("the context lines and what does not fit form one group, last, with no value", () => {
+  test("every kept line has its row, and the group closes the list with the legend's count and no value", () => {
     const kept = [1, 2, 3, 4, 5, 6, 7].map((v, i) => item(`k${i}`, v));
-    const out = lineSummary(kept, 3, 6);
-    expect(out.rows.map((r) => r.key)).toEqual(["k6", "k5", "k4", "k3", "k2"]);
-    expect(out.other).toEqual({ count: 5, value: null });
+    const out = lineSummary(kept, 3);
+    expect(out.rows).toHaveLength(7);
+    expect(out.other).toEqual({ count: 3, value: null });
   });
 });
 

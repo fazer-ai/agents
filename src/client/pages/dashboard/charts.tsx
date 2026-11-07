@@ -300,10 +300,6 @@ function dayLabel(lang: string) {
   return (key: string) => f.format(new Date(`${key}T00:00:00`));
 }
 
-// The most lines a tooltip lists, the "Other" line included, so it stays shorter than the chart
-// whatever the series count.
-const TOOLTIP_ROWS = 6;
-
 type TooltipEntry = {
   dataKey?: unknown;
   value?: unknown;
@@ -667,9 +663,6 @@ export function LineTrend({
                 const values = valuesOf(entries);
                 const row = entries[0]?.payload;
                 const ready = !row?.state || row.state === "ready";
-                const context = arranged.folded.filter(
-                  (s) => typeof values.get(s.key) === "number",
-                ).length;
                 return (
                   <TooltipCard
                     head={withState(
@@ -694,8 +687,7 @@ export function LineTrend({
                                   typeof row?.[prevKey] === "number",
                               };
                             }),
-                            context,
-                            TOOLTIP_ROWS,
+                            arranged.folded.length,
                           )
                         : null
                     }
@@ -1157,7 +1149,6 @@ export function StackedBars({
                                     value: values.get(OTHER_KEY),
                                   }
                                 : null,
-                              TOOLTIP_ROWS,
                             )
                           : null
                       }

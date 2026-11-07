@@ -42,10 +42,10 @@ export async function logFactsReady(db: ScopedDb): Promise<boolean> {
 }
 
 // Fills one slice of a tenant's earlier lines and moves the cursor past it, in one transaction.
-// Returns whether the tenant is done. The lines are locked FOR KEY SHARE in a subquery, and only the
-// rows that lock returns are written: a delete still uncommitted when the slice reaches its line holds
-// the slice until it commits, and the line it took is skipped; a delete that comes after waits for
-// this commit, and its trigger then sees the fact and removes it with the line.
+// Returns whether the tenant is done. The lines are locked FOR SHARE in a subquery, and only the rows
+// that lock returns are written: a delete or rewrite still uncommitted when the slice reaches its line
+// holds the slice until it commits, and the slice then writes what the line has become (nothing, for a
+// deleted one); one that comes after waits for this commit, and its trigger then sees the fact.
 export async function backfillLogFactsSlice(
   base: PrismaClient,
   tenantId: bigint,
@@ -72,7 +72,7 @@ export async function backfillLogFactsSlice(
            AND (l.stage = 'handoff'
                 OR (l.stage = 'tool' AND (l.detail->>'tool') IN ('handoff_to_human', 'skip_reply'))
                 OR (l.stage = 'generate' AND (l.detail->>'trigger') = 'followup'))
-           FOR KEY SHARE OF l) s`);
+           FOR SHARE OF l) s`);
     // Every line from the migration on has its fact from the trigger, so the slices end at now.
     const done = to.getTime() > Date.now();
     await db.dashboardLogFactsState.update({

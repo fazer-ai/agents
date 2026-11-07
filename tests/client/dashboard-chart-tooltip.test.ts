@@ -779,6 +779,25 @@ describe("the day a stacked chart's detail opens", () => {
     expect(document.activeElement).toBe(other);
   });
 
+  test("opening another day from the keyboard while one is open takes the focus to the new day", async () => {
+    const { container } = renderChart(StackedBars, stacked);
+    const days = await dayKeys(container);
+    days[1]?.focus();
+    fireEvent.click(days[1] as HTMLElement);
+    expect(head(await openDetail(container))).toBe("Jan 2");
+    days[0]?.focus();
+    fireEvent.click(days[0] as HTMLElement);
+    const detail = await waitFor(() => {
+      const d = container.querySelector<HTMLElement>(
+        '[data-testid="chart-day-detail"]',
+      );
+      if (head(d as HTMLElement) !== "Jan 1")
+        throw new Error("not switched yet");
+      return d as HTMLElement;
+    });
+    expect(document.activeElement).toBe(detail);
+  });
+
   for (const how of ["Escape", "the close button"])
     test(`closing it with ${how} hands the focus back to its day`, async () => {
       const { container } = renderChart(StackedBars, stacked);

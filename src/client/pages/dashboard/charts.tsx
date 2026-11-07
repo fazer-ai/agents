@@ -1190,6 +1190,9 @@ export function StackedBars({
       <StateLegend data={data} p={p} ids={ids} />
       {pickedRow && (
         <DayDetail
+          // A new day is a new detail: it takes the focus again, while a streamed update of the same
+          // day leaves the focus where it is.
+          key={pickedRow.day}
           row={pickedRow}
           head={withState(day(pickedRow.day), pickedRow.state, text)}
           kept={arranged.kept}

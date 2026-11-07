@@ -36,6 +36,9 @@ interface Props {
   assembledTools: { has(name: string): boolean };
   // Questions and rules: a refused tool is a rule's action that does not run, and no model is told.
   decides?: boolean;
+  // A voice agent: a call's tools run with no transcript, so a customer_choice rule would refuse
+  // every call. Not offered there; a saved one stays visible.
+  voice?: boolean;
 }
 
 const KIND_ORDER: GuardableTool["kind"][] = [
@@ -66,6 +69,7 @@ export function ToolPreconditionsEditor({
   guardableTools,
   assembledTools,
   decides = false,
+  voice = false,
 }: Props) {
   const { t } = useTranslation();
   const patch = (i: number, next: Partial<ToolPreconditionRow>) =>
@@ -145,10 +149,15 @@ export function ToolPreconditionsEditor({
                 "editor.toolPreconditions.descriptionDecisions",
                 "Block a tool until every condition you list holds: a conversation or contact attribute with a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
               )
-            : t(
-                "editor.toolPreconditions.description",
-                "Block a tool until every condition you list holds: a conversation or contact attribute with a value, or the customer having chosen the values the agent calls it with. The agent is told why and continues the conversation; nothing is said to the customer.",
-              )
+            : voice
+              ? t(
+                  "editor.toolPreconditions.descriptionVoice",
+                  "Block a tool until every condition you list holds: a conversation or contact attribute with a value. The agent is told why and continues the call; nothing is said to the customer.",
+                )
+              : t(
+                  "editor.toolPreconditions.description",
+                  "Block a tool until every condition you list holds: a conversation or contact attribute with a value, or the customer having chosen the values the agent calls it with. The agent is told why and continues the conversation; nothing is said to the customer.",
+                )
         }
       >
         <div className="flex flex-col gap-2">
@@ -260,7 +269,7 @@ export function ToolPreconditionsEditor({
                                     "the attribute",
                                   )}
                                 </option>
-                                {(!decides || choice) && (
+                                {((!decides && !voice) || choice) && (
                                   <option value="customer_choice">
                                     {t(
                                       "editor.toolPreconditions.kindCustomerChoice",

@@ -79,5 +79,43 @@ describe("the Tools tab's wording", () => {
       />,
     );
     expect(choiceOption()).toHaveLength(1);
+    cleanup();
+    // A call's tools run with no transcript, so the rule would refuse every call.
+    render(
+      <ToolPreconditionsEditor
+        agentId="1"
+        rows={rows}
+        onChange={() => {}}
+        guardableTools={[]}
+        assembledTools={new Set(["t"])}
+        voice
+      />,
+    );
+    expect(choiceOption()).toHaveLength(0);
+    cleanup();
+    // A rule already saved on a voice agent stays visible as what it is.
+    render(
+      <ToolPreconditionsEditor
+        agentId="1"
+        rows={[
+          {
+            tool: "t",
+            conditions: [
+              {
+                kind: "customer_choice" as const,
+                scope: "conversation" as const,
+                key: "",
+                equals: "",
+              },
+            ],
+          },
+        ]}
+        onChange={() => {}}
+        guardableTools={[]}
+        assembledTools={new Set(["t"])}
+        voice
+      />,
+    );
+    expect(choiceOption()).toHaveLength(1);
   });
 });

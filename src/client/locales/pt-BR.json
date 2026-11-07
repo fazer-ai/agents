@@ -2778,6 +2778,7 @@
       "customerChoiceHelp": "Cada chamada é conferida com as mensagens do cliente: se um valor dela (qual opção, quantas unidades, qual dia) não foi dito nem confirmado pelo cliente, ela não roda e o agente pergunta. Por padrão quem confere é o próprio modelo do agente (dá para trocar logo abaixo), cobrado numa linha própria.",
       "description": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor, ou o cliente ter escolhido os valores com que o agente a chama. O agente é informado do motivo e segue a conversa; nada é dito ao cliente.",
       "descriptionDecisions": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor. A ação da regra não roda e a recusa fica registrada nos logs; nada é dito ao cliente.",
+      "descriptionVoice": "Bloqueia uma ferramenta até que todas as condições que você listar valham: um atributo da conversa ou do contato com valor. O agente é informado do motivo e segue a ligação; nada é dito ao cliente.",
       "empty": "Nenhuma precondição. Sem ela, o agente usa qualquer uma das suas ferramentas quando achar adequado.",
       "equals": "Valor exigido",
       "equalsMissing": "Enquanto o valor estiver em branco, a regra só exige que o atributo tenha algum valor.",

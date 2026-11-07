@@ -178,6 +178,7 @@ export function ToolsTab({
   const { t } = useTranslation();
   const choiceShown =
     !decides &&
+    !voice &&
     toolPreconditions.some((r) =>
       r.conditions.some((c) => c.kind === "customer_choice"),
     );
@@ -309,6 +310,7 @@ export function ToolsTab({
             guardableTools={guardableTools}
             assembledTools={assembledTools}
             decides={decides}
+            voice={voice}
           />
           {choiceShown && (
             <ChoiceCheckModelField

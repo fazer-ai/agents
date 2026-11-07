@@ -196,7 +196,6 @@ model Tenant {
   clientAllowanceUsage          ClientAllowanceUsage[]
   clientAppSecrets              ClientAppSecret[]
   dashboardDays                 DashboardDay[]
-  dashboardViews                DashboardView[]
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
   dashboardDataSources          DashboardDataSource[]
@@ -3498,23 +3497,6 @@ model DashboardDay {
   @@unique([tenantId, version, filterKey, tz, section, day])
   @@index([tenantId, tz, day])
   @@map("dashboard_days")
-}
-
-// A dashboard view the console opened (tenant, filter, zone): when last, and the farthest it reached
-// back from today while it kept being opened. The warm-up pass keeps the days of the views opened lately.
-model DashboardView {
-  id        BigInt   @id @default(autoincrement())
-  tenantId  BigInt   @map("tenant_id")
-  filterKey String   @map("filter_key")
-  tz        String
-  spanDays  Int?     @map("span_days")
-  openedAt  DateTime @default(now()) @map("opened_at")
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@unique([tenantId, filterKey, tz])
-  @@index([openedAt])
-  @@map("dashboard_views")
 }
 
 // What changed under a kept day, written by triggers on the tables the figures read

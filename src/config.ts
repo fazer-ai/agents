@@ -88,8 +88,6 @@ const {
   METRICS_POOL_MAX,
   BACKGROUND_POOL_MAX,
   METRICS_TIMEOUT_MS,
-  DASHBOARD_WARM_INTERVAL_MS,
-  DASHBOARD_WARM_IDLE_DAYS,
   DB_TX_MAX_WAIT_MS,
   DB_TX_TIMEOUT_MS,
   DB_LOCK_TIMEOUT_MS,
@@ -512,25 +510,6 @@ const config = {
       15_000,
       "It is how long a metrics request may take, waiting for a connection and running, before it is refused.",
       MAX_DURATION_MS,
-    ),
-  },
-  // NOTE: The pass that recomputes, between visits, the kept days a change dropped, for the dashboard
-  // views opened in the last `idleDays` (docs/dashboard.md, "Keeping the days warm"). 0 turns it off.
-  dashboardWarm: {
-    intervalMs: parseIntSetting(
-      DASHBOARD_WARM_INTERVAL_MS,
-      "DASHBOARD_WARM_INTERVAL_MS",
-      10 * 60 * 1000,
-      "It is how often the dashboard's dropped days are computed again in the background; 0 turns it off.",
-      MAX_DURATION_MS,
-      0,
-    ),
-    idleDays: parseIntSetting(
-      DASHBOARD_WARM_IDLE_DAYS,
-      "DASHBOARD_WARM_IDLE_DAYS",
-      14,
-      "It is how many days after its last opening a dashboard view keeps being kept warm.",
-      MAX_RETENTION_DAYS,
     ),
   },
   // NOTE: The Chatwoot receiver's two budgets (docs/chatwoot.md "Webhook receiver").

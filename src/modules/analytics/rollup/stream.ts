@@ -1,5 +1,4 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import logger from "@/api/lib/logger";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -23,7 +22,6 @@ import {
 } from "./engine";
 import { costsLink, type DashboardFigures, figuresOf } from "./figures";
 import type { Section } from "./sections";
-import { recordView } from "./warm";
 
 const HEARTBEAT_MS = 4_000;
 
@@ -77,11 +75,6 @@ export async function* streamFigures(
     );
     return;
   }
-  // NOTE: The opening is what keeps this view warm between visits (warm.ts); a failure to record it
-  // costs only the next opening's warmth.
-  void recordView(ctx, filter, w, base).catch((error) =>
-    logger.warn({ error }, "dashboard warm: opening not recorded"),
-  );
   const sections = [
     ...new Set(blocks.flatMap((b) => BLOCK_SECTIONS[b])),
   ] as Section[];

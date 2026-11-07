@@ -150,12 +150,24 @@ describe("numeric environment parsing", () => {
       }
     }
     // DB_LOCK_TIMEOUT_MS: Postgres reads lock_timeout 0 as no limit, which is the documented "off".
-    // DASHBOARD_WARM_INTERVAL_MS: 0 is read before any timer is armed, as "never arm one".
     expect(admitZero.sort()).toEqual([
       "ALERT_COALESCE_WINDOW_MS",
-      "DASHBOARD_WARM_INTERVAL_MS",
       "DB_LOCK_TIMEOUT_MS",
     ]);
+  });
+
+  // The dashboard's warm-up pass is gone: its two variables are read by nothing, so an instance that
+  // still sets them, whatever to, boots as one that does not.
+  test("the retired warm-up variables are not read", async () => {
+    const env = {
+      ...UNSET,
+      DASHBOARD_WARM_INTERVAL_MS: "not a number",
+      DASHBOARD_WARM_IDLE_DAYS: "-3",
+    };
+    expect(await refusalOf(env)).toBeNull();
+    expect(leaves(await loadConfig(env))).toEqual(
+      leaves(await loadConfig(UNSET)),
+    );
   });
 });
 

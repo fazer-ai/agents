@@ -5,6 +5,7 @@ import config from "@/config";
 import { runInPoolClass } from "@/lib/pool-class";
 import { isDraining } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { alertErrMsg, loadAlertContext, sendAlert } from "./alert-send";
 import { emitDeadLetter } from "./dead-letter";
@@ -371,18 +372,22 @@ async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
   }
 }
 
+// The execution alert deliveries run as `alerts:delivery`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
 export function startAlertWorker(opts: AlertWorkerOptions = {}): void {
-  const state = workerState();
-  if (state.timer) return; // singleton (survives bun --hot via globalThis)
-  const base = opts.base ?? basePrisma;
-  const intervalMs = config.alertWorker.intervalMs;
-  // NOTE: background pool: nobody is waiting on a delivery to a third party this second.
-  state.timer = setInterval(
-    () => void runInPoolClass("background", () => tick(base, state)),
-    intervalMs,
-  );
-  state.timer.unref?.();
-  logger.info("Alert worker started (interval %dms)", intervalMs);
+  runWithWorkLabel("alerts:delivery", () => {
+    const state = workerState();
+    if (state.timer) return; // singleton (survives bun --hot via globalThis)
+    const base = opts.base ?? basePrisma;
+    const intervalMs = config.alertWorker.intervalMs;
+    // NOTE: background pool: nobody is waiting on a delivery to a third party this second.
+    state.timer = setInterval(
+      () => void runInPoolClass("background", () => tick(base, state)),
+      intervalMs,
+    );
+    state.timer.unref?.();
+    logger.info("Alert worker started (interval %dms)", intervalMs);
+  });
 }
 
 export function stopAlertWorker(): void {

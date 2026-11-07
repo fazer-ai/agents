@@ -7,6 +7,7 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { isDraining } from "@/lib/shutdown";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runWithWorkLabel } from "@/lib/work-label";
 import { emitDeliveryDead } from "@/modules/flowlog/webhook";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "./service";
@@ -402,19 +403,23 @@ async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
   }
 }
 
+// The outbound webhook deliveries run as `webhooks:delivery`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
 export function startOutboundWorker(opts: OutboundWorkerOptions = {}): void {
-  const state = workerState();
-  if (state.timer) return; // singleton (survives bun --hot via globalThis)
-  const base = opts.base ?? basePrisma;
-  const intervalMs = config.webhookWorker.intervalMs;
-  // NOTE: background pool: nobody is waiting on a delivery to a third party this second.
-  state.timer = setInterval(
-    () => void runInPoolClass("background", () => tick(base, state)),
-    intervalMs,
-  );
-  // NOTE: unref so the tick timer never keeps the process alive at shutdown.
-  state.timer.unref?.();
-  logger.info("Outbound webhook worker started (interval %dms)", intervalMs);
+  runWithWorkLabel("webhooks:delivery", () => {
+    const state = workerState();
+    if (state.timer) return; // singleton (survives bun --hot via globalThis)
+    const base = opts.base ?? basePrisma;
+    const intervalMs = config.webhookWorker.intervalMs;
+    // NOTE: background pool: nobody is waiting on a delivery to a third party this second.
+    state.timer = setInterval(
+      () => void runInPoolClass("background", () => tick(base, state)),
+      intervalMs,
+    );
+    // NOTE: unref so the tick timer never keeps the process alive at shutdown.
+    state.timer.unref?.();
+    logger.info("Outbound webhook worker started (interval %dms)", intervalMs);
+  });
 }
 
 export function stopOutboundWorker(): void {

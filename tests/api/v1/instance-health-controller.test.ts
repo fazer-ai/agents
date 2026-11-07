@@ -58,6 +58,14 @@ mock.module("@/modules/instance-health/channels", () => ({
   listInstanceThresholds: () => realChannels.listInstanceThresholds(app),
 }));
 
+const dbScreen = await import("@/modules/instance-health/database/read");
+const realDbScreen = { ...dbScreen };
+mock.module("@/modules/instance-health/database/read", () => ({
+  ...realDbScreen,
+  readDatabaseScreen: (window: "1h" | "24h" | "7d") =>
+    realDbScreen.readDatabaseScreen(window, app),
+}));
+
 const keys = await import("@/modules/api-keys/service");
 const server = (await import("@/app")).default;
 
@@ -65,6 +73,7 @@ afterAll(() => {
   mock.module("@/modules/api-keys/verify", () => realVerify);
   mock.module("@/modules/instance-health/read", () => realRead);
   mock.module("@/modules/instance-health/channels", () => realChannels);
+  mock.module("@/modules/instance-health/database/read", () => realDbScreen);
 });
 
 const send = (
@@ -124,6 +133,8 @@ describe.skipIf(!dbUp)("instance health routes", () => {
   test("a tenant's key is refused on every route (catches a tenant admin reading or wiring the fleet's alerts)", async () => {
     const calls: [string, string, unknown?][] = [
       ["GET", "/api/v1/instance-health"],
+      ["GET", "/api/v1/instance-health/database"],
+      ["GET", "/api/v1/instance-health/database?window=7d"],
       ["GET", "/api/v1/instance-health/channels"],
       [
         "POST",
@@ -160,6 +171,33 @@ describe.skipIf(!dbUp)("instance health routes", () => {
       body.health.signals.find((s) => s.signal === "event_loop_p99_ms")
         ?.threshold,
     ).toBeGreaterThan(0);
+  });
+
+  test("a fleet key reads the database screen, and a request without credentials is refused (catches the statistics published to anyone)", async () => {
+    const res = await send(
+      "GET",
+      "/api/v1/instance-health/database?window=24h",
+      fleetToken,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      database: { window: string; tables: { table: string }[] };
+    };
+    expect(body.database.window).toBe("24h");
+    expect(body.database.tables.some((t) => t.table === "tenants")).toBe(true);
+    const anonymous = await server.handle(
+      new BunRequest("http://localhost/api/v1/instance-health/database", {
+        method: "GET",
+      }),
+    );
+    expect(anonymous.status).toBe(401);
+    // A window the route does not offer is refused by its schema, not read as some default.
+    const bad = await send(
+      "GET",
+      "/api/v1/instance-health/database?window=30d",
+      fleetToken,
+    );
+    expect(bad.status).toBe(422);
   });
 
   test("the public /health keeps its shape and carries no signal (catches load numbers published unauthenticated)", async () => {

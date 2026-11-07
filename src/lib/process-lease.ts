@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { runWithWorkLabel } from "@/lib/work-label";
 
 // Whether a server process is alive, said so another process can read it: one `process_leases` row
 // per process, renewed on a short cadence, named by the claims it makes (`claimed_by`). A lapsed or
@@ -111,16 +112,20 @@ async function renewOnce(h: Holder): Promise<void> {
 
 // Writes this process's lease and keeps renewing it. Resolves after the first attempt, committed or
 // not; until one commits, claims are not stamped. Idempotent.
-export async function startProcessLease(
+// A process's lease, written and renewed run as `process-lease`: the label is entered where the timer is created, so every pass
+// inherits it, and a statement that times out in one names this work (docs/logs.md, "Database").
+export function startProcessLease(
   base: PrismaClient,
   renewMs: number = LEASE_RENEW_MS,
 ): Promise<void> {
-  const h = holder();
-  if (h.timer !== null) return;
-  h.base = base;
-  h.timer = setInterval(() => void renewAndRecord(h), renewMs);
-  h.timer.unref?.();
-  await renewAndRecord(h);
+  return runWithWorkLabel("process-lease", async () => {
+    const h = holder();
+    if (h.timer !== null) return;
+    h.base = base;
+    h.timer = setInterval(() => void renewAndRecord(h), renewMs);
+    h.timer.unref?.();
+    await renewAndRecord(h);
+  });
 }
 
 // Stops renewing and deletes the lease, so the claims this process leaves behind are settled by the

@@ -41,6 +41,7 @@ import {
   instanceAlertChannelCreate,
   instanceAlertChannelTest,
   instanceAlertChannelUpdate,
+  instanceDatabaseGet,
   instanceHealthGet,
   instanceThresholdSet,
 } from "@/modules/mcp/write-instance-health";
@@ -1796,6 +1797,26 @@ describe.skipIf(!dbUp)("the MCP tools", () => {
     expect(JSON.stringify(res)).toContain("insufficient_scope");
     const forged = await instanceHealthGet(
       { ...tenantToken, scopes: ["mcp:admin"] },
+      { base: appDb },
+    );
+    expect(JSON.stringify(forged)).toContain("forbidden");
+  });
+
+  test("the database screen tool answers a fleet token for the window asked and refuses a tenant (catches the database's statements answered to a tenant)", async () => {
+    const res = await instanceDatabaseGet(
+      fleetToken,
+      { window: "24h" },
+      {
+        base: appDb,
+      },
+    );
+    expect(res.ok).toBe(true);
+    expect(JSON.stringify(res)).toContain('"window":"24h"');
+    const tenant = await instanceDatabaseGet(tenantToken, {}, { base: appDb });
+    expect(JSON.stringify(tenant)).toContain("insufficient_scope");
+    const forged = await instanceDatabaseGet(
+      { ...tenantToken, scopes: ["mcp:admin"] },
+      {},
       { base: appDb },
     );
     expect(JSON.stringify(forged)).toContain("forbidden");

@@ -1,8 +1,9 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { ForbiddenError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
+import type { TenantContext, TxBudget } from "@/lib/tenancy";
 import { listInstanceThresholds } from "./channels";
+import { type SignalFacts, signalDetail, signalFacts } from "./details";
 import { firingSignals } from "./evaluator";
 import {
   DATABASE_EVERY_TICKS,
@@ -34,6 +35,11 @@ export interface InstanceSignalDto {
   firing: boolean;
   // The last value is older than its cadence allows: the read behind it is failing, so it is not current.
   stale: boolean;
+  // What is behind the value, when the signal names it: the statement and work of the last timeout,
+  // the statement that drifted. Also the tail of the signal's firing alert. English: the screens
+  // write their own line from `facts`.
+  detail: string | null;
+  facts: SignalFacts | null;
   history: SamplePoint[];
 }
 
@@ -121,12 +127,15 @@ export function requireFleet(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
+// `budget`: a caller with a deadline of its own (the database view, under the request's metrics
+// budget) bounds the thresholds read by it.
 export async function readInstanceHealth(
   sampling: boolean,
   base: PrismaClient = basePrisma,
   now: number = Date.now(),
+  budget?: TxBudget,
 ): Promise<InstanceHealthDto> {
-  const thresholds = await listInstanceThresholds(base);
+  const thresholds = await listInstanceThresholds(base, budget);
   const snap = snapshot(now);
   const firing = new Set(firingSignals());
   const byKey = new Map(thresholds.map((t) => [t.signal, t]));
@@ -147,6 +156,8 @@ export async function readInstanceHealth(
         enabled: t?.enabled ?? true,
         firing: firing.has(s.signal),
         stale: isStale(sampling, s.at ?? snap.firstTickAt, now, s.signal),
+        detail: signalDetail(s.signal),
+        facts: signalFacts(s.signal),
         history: s.history,
       };
     }),

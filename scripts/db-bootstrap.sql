@@ -22,6 +22,15 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- The database screen's query statistics (docs/logs.md, "Database"). Creating it works whether or
+-- not the server preloads the library; reading it does not, and the screen says so. Never fatal.
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'pg_stat_statements not installed: %', SQLERRM;
+END $$;
+
 -- psql variable substitution does not reach inside dollar-quoted DO blocks, so the
 -- role name and password are handed to the block via session GUCs set out here.
 SELECT set_config('fazerai.app_role', :'app_role', false);
@@ -70,6 +79,11 @@ BEGIN
   -- already effectively can within the app's own tables.
   EXECUTE format('GRANT CONNECT, CREATE ON DATABASE %I TO %I', current_database(), v_role);
 END $$;
+
+-- pg_stat_statements shows a statement's text only to the role that ran it, and the cross-tenant
+-- path runs as the fleet role: without this the database screen lists those statements as
+-- "<insufficient privilege>". Reads statistics views only; no write, no RLS reach.
+GRANT pg_read_all_stats TO :"app_role";
 
 GRANT USAGE ON SCHEMA public TO :"app_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_role";

@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
+import { signalDetail } from "./details";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { SIGNALS, type SignalUnit, signalDef } from "./signals";
 
@@ -127,6 +128,7 @@ async function thresholds(now: number): Promise<Map<string, Threshold>> {
 
 export function formatValue(value: number, unit: SignalUnit): string {
   if (unit === "count") return String(Math.round(value));
+  if (unit === "percent") return `${Math.round(value)}%`;
   if (unit === "per_minute") return `${Math.round(value)}/min`;
   if (value >= 60_000) return `${(value / 60_000).toFixed(1)} min`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)} s`;
@@ -140,7 +142,8 @@ export function firingSummary(
 ): string {
   const unit = signalDef(signal)?.unit ?? "count";
   const held = t.durationSeconds > 0 ? ` for ${t.durationSeconds} s` : "";
-  return `${signal} is ${formatValue(value, unit)}, above ${formatValue(t.threshold, unit)}${held}.`;
+  const detail = signalDetail(signal);
+  return `${signal} is ${formatValue(value, unit)}, above ${formatValue(t.threshold, unit)}${held}.${detail ? ` ${detail}` : ""}`;
 }
 
 export function recoverySummary(

@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { runInDbScope } from "@/lib/db-scope";
 
 // Deleting the checkpoints of what a teardown removes, by thread id prefix (`tenant:instance:` for an
 // account, `tenant:` for a tenant): the `langgraph` tables carry no tenant and no foreign key, so no
@@ -86,6 +87,24 @@ async function withinDeadline(
 export type Bounded = (sql: string, params: unknown[]) => Promise<unknown>;
 
 export async function checkpointTransaction<T>(
+  pool: Pick<Pool, "connect">,
+  guard: BatchGuard | undefined,
+  fn: (query: Bounded) => Promise<T>,
+): Promise<T> {
+  // The scope a statement of it that times out is recorded under (src/lib/db-scope.ts): no tenant,
+  // the application role, and what is left of the sweep's deadline.
+  return runInDbScope(
+    {
+      tenantId: null,
+      fleet: false,
+      timeoutMs: null,
+      deadline: guard?.deadline ?? null,
+    },
+    () => inTransaction(pool, guard, fn),
+  );
+}
+
+async function inTransaction<T>(
   pool: Pick<Pool, "connect">,
   guard: BatchGuard | undefined,
   fn: (query: Bounded) => Promise<T>,

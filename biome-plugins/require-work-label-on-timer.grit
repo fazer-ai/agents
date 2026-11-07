@@ -1,0 +1,13 @@
+// Refuses, under the server's src/, a `setInterval(…)` that is not written inside a
+// `runWithWorkLabel(…)`. A timer's passes inherit the async context of where the timer was created,
+// so a worker's timer created under no label runs every statement of every pass unlabeled, and a
+// statement that times out there reaches the alert and the database screen as "unlabeled work"
+// instead of naming the worker (docs/logs.md, "Database"). Enter the worker's label around the code
+// that creates the timer (src/lib/work-label.ts). A timer created inside a request or a job inherits
+// that work's label; its file is exempted in biome.jsonc with the reason.
+language js;
+
+`setInterval($...)` as $call where {
+    not $call <: within `runWithWorkLabel($...)`,
+    register_diagnostic(span = $call, message = "A recurring timer runs under a work label: create it inside `runWithWorkLabel(\"<worker>\", …)` (src/lib/work-label.ts), so a statement that times out in one of its passes names the worker.")
+}

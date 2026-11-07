@@ -181,6 +181,31 @@
       ],
       "plugins": ["./biome-plugins/no-env-read-outside-config.grit"]
     },
+    // A worker's timer is created under its work label. Exempt: src/client and src/sdk run in the
+    // browser or the caller's process, with no statement to name; the thread-claim and client-channel
+    // renewals are created inside a turn or a request and inherit its label; the realtime presence
+    // tick reads memory only.
+    {
+      "includes": [
+        "src/**/*.ts",
+        "!src/client/**",
+        "!src/sdk/**",
+        "!src/graph/thread-claim.ts",
+        "!src/modules/client-channel/service.ts",
+        "!src/api/features/realtime/realtime.service.ts",
+        "tests/lint/.probe-src-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/require-work-label-on-timer.grit"]
+    },
+    // budget.ts defines the budgeted helpers every other file of the database screen goes through.
+    {
+      "includes": [
+        "src/modules/instance-health/database/**/*.ts",
+        "!src/modules/instance-health/database/budget.ts",
+        "tests/lint/.probe-src-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/require-database-screen-budget.grit"]
+    },
     // src/graph/model-limit.ts defines runModelCall and holds the default the rule keeps callers off.
     {
       "includes": [

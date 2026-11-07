@@ -55,11 +55,21 @@ export function isWorkerCloneOf(name: string, checkoutRoot: string): boolean {
   return new RegExp(`_[0-9a-f]{${HASH_CHARS}}x${hash}${SUFFIX}$`).test(name);
 }
 
-// Any checkout's worker copy, for the sweep of copies whose checkout is gone (./db-clone.ts).
-export function isWorkerClone(name: string): boolean {
-  return new RegExp(
-    `_[0-9a-f]{${HASH_CHARS}}x[0-9a-f]{${HASH_CHARS}}${SUFFIX}$`,
-  ).test(name);
+// The hash of the checkout root a worker copy belongs to, or null for a name that is no worker copy
+// of any checkout. The sweep of copies whose checkout is gone (./db-clone.ts) reads the root from the
+// name alone, since the checkout itself may no longer exist.
+export function workerCloneRootHash(name: string): string | null {
+  return (
+    name.match(
+      new RegExp(
+        `_[0-9a-f]{${HASH_CHARS}}x([0-9a-f]{${HASH_CHARS}})${SUFFIX}$`,
+      ),
+    )?.[1] ?? null
+  );
+}
+
+export function checkoutRootHash(checkoutRoot: string): string {
+  return shortHash(checkoutRoot.replace(/\/+$/, ""));
 }
 
 function cloneNameFor(checkout: string, hash: string, worker: string): string {

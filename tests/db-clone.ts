@@ -4,10 +4,11 @@ import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import { CONNECT_ATTEMPT_MS, DB_GATE_OPT_OUT, retryConnect } from "./db-gate";
 import {
-  isWorkerClone,
+  checkoutRootHash,
   isWorkerCloneOf,
   testDbNameFor,
   withDbName,
+  workerCloneRootHash,
 } from "./db-name";
 import {
   acquireRoleCatalogLock,
@@ -127,7 +128,7 @@ export function orphanClonesToDrop(
   startOf: (pid: number) => string | null,
 ): string[] {
   return rows
-    .filter((r) => isWorkerClone(r.name))
+    .filter((r) => workerCloneRootHash(r.name) !== null)
     .filter((r) => {
       const o = parseOwner(r.comment);
       return (
@@ -274,23 +275,25 @@ async function newClient(
   });
 }
 
-// The lock is per checkout (the root's hash is in every name it guards), held for the session, and
-// released with the connection if the holder dies.
+// The lock is per checkout, held for the session and released with the connection if the holder dies.
+// Its key is the root's hash, the one part of a worker copy's name that says whose it is, so the sweep
+// of copies whose checkout is gone can take the same lock from the name alone.
+export function cloneLockKey(rootHash: string): string {
+  return `fazerai-test-clone:${rootHash}`;
+}
+
 async function withCloneLock<T>(
   maint: Client,
   root: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  await maint.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
-    `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
-  ]);
+  const key = cloneLockKey(checkoutRootHash(root));
+  await maint.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [key]);
   try {
     return await fn();
   } finally {
     await maint
-      .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
-        `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
-      ])
+      .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key])
       .catch(() => {});
   }
 }
@@ -343,46 +346,62 @@ async function dropClone(maint: Client, name: string): Promise<void> {
   );
 }
 
-// Runs under the lock of whichever checkout is reaping, not under the lock of the copy's checkout,
-// whose key is not recoverable from the copy's name. So the record is read again right before each
-// drop: if the checkout was recreated at the same path meanwhile and its run built a new copy under
-// the same name, the record changed and the copy stays. Prefiltered on the template so that `ps` only
-// runs for the few candidates.
+// Each candidate is dropped under its own checkout's clone lock, the one every copy of that checkout
+// is created under, and only after its record and the template's absence are read again under it: a
+// copy rebuilt meanwhile carries a new record, and a template provisioned meanwhile means a run may
+// come back. The lock is only tried, never waited on: the caller already holds its own checkout's,
+// and a held lock means that checkout is running, which is no orphan's state. Candidates are
+// prefiltered on the template so that `ps` only runs for the few left.
 async function sweepOrphanClones(maint: Client): Promise<string[]> {
-  const { rows } = await maint.query<{
-    name: string;
-    comment: string | null;
-  }>(
-    `SELECT datname AS name, shobj_description(oid, 'pg_database') AS comment
-       FROM pg_database WHERE datname LIKE '%x%'`,
-  );
-  const databases = new Set(
-    (
-      await maint.query<{ name: string }>(
-        "SELECT datname AS name FROM pg_database",
-      )
-    ).rows.map((r) => r.name),
-  );
-  const candidates = rows.filter((r) => {
-    const o = isWorkerClone(r.name) ? parseOwner(r.comment) : null;
-    return o !== null && !databases.has(o.template);
-  });
+  const listed = async () => {
+    const { rows } = await maint.query<{
+      name: string;
+      comment: string | null;
+    }>(
+      `SELECT datname AS name, shobj_description(oid, 'pg_database') AS comment
+         FROM pg_database WHERE datname LIKE '%x%'`,
+    );
+    const databases = new Set(
+      (
+        await maint.query<{ name: string }>(
+          "SELECT datname AS name FROM pg_database",
+        )
+      ).rows.map((r) => r.name),
+    );
+    return {
+      databases,
+      candidates: rows.filter((r) => {
+        const o =
+          workerCloneRootHash(r.name) === null ? null : parseOwner(r.comment);
+        return o !== null && !databases.has(o.template);
+      }),
+    };
+  };
+  const first = await listed();
   const startOf = await startsOf(
-    candidates.map((r) => (parseOwner(r.comment) as CloneOwner).pid),
+    first.candidates.map((r) => (parseOwner(r.comment) as CloneOwner).pid),
   );
-  const doomed = orphanClonesToDrop(candidates, databases, startOf);
+  const doomed = orphanClonesToDrop(first.candidates, first.databases, startOf);
   const dropped: string[] = [];
   for (const name of doomed) {
-    const was = candidates.find((r) => r.name === name)?.comment ?? null;
-    const now = (
-      await maint.query<{ comment: string | null }>(
-        "SELECT shobj_description(oid, 'pg_database') AS comment FROM pg_database WHERE datname = $1",
-        [name],
-      )
-    ).rows[0];
-    if (!now || now.comment !== was) continue;
-    await dropClone(maint, name);
-    dropped.push(name);
+    const key = cloneLockKey(workerCloneRootHash(name) as string);
+    const { rows } = await maint.query<{ got: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS got",
+      [key],
+    );
+    if (!rows[0]?.got) continue;
+    try {
+      const again = await listed();
+      const was = first.candidates.find((r) => r.name === name)?.comment;
+      const now = again.candidates.find((r) => r.name === name)?.comment;
+      if (now === undefined || now !== was) continue;
+      await dropClone(maint, name);
+      dropped.push(name);
+    } finally {
+      await maint
+        .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key])
+        .catch(() => {});
+    }
   }
   return dropped;
 }

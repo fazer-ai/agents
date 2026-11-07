@@ -6,6 +6,7 @@ import {
   CLONE_APP,
   CLONE_MARKER_ENV,
   type CloneOwner,
+  cloneLockKey,
   clonesToDrop,
   cloneVerdict,
   ensureWorkerClone,
@@ -17,7 +18,12 @@ import {
   workerCloneTarget,
 } from "../db-clone";
 import { DB_GATE_OPT_OUT, withDeadline } from "../db-gate";
-import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
+import {
+  checkoutRootFrom,
+  checkoutRootHash,
+  testDbNameFor,
+  withDbName,
+} from "../db-name";
 import { until } from "../utils/poll";
 import { ROLE_CATALOG_LOCK } from "../utils/role-catalog-lock";
 
@@ -412,13 +418,15 @@ describe("removing leftovers, on the database", () => {
             owner({ template: "postgres", pid: finished.pid, start: "gone" }),
           ],
         ] as const;
+        // The role comes first: once the dead owner's record is on the copy, any run's sweep may
+        // take the copy, and a role created after that would have nothing left to find it by.
+        await maint.query(`CREATE ROLE "${orphanRole}" NOLOGIN`);
         for (const [db, o] of owners) {
           await maint.query(`CREATE DATABASE "${db}"`);
           await maint.query(
             `COMMENT ON DATABASE "${db}" IS ${maint.escapeLiteral(ownerComment(o))}`,
           );
         }
-        await maint.query(`CREATE ROLE "${orphanRole}" NOLOGIN`);
 
         await reapClones({
           maintUrl,
@@ -445,6 +453,65 @@ describe("removing leftovers, on the database", () => {
         await maint
           .query(`DROP ROLE IF EXISTS "${orphanRole}"`)
           .catch(() => {});
+        await maint.end();
+      }
+    },
+    60_000,
+  );
+  // A run of the copy's checkout holds that checkout's lock while it creates a copy, so a sweep that
+  // got there first and read a stale record cannot drop the copy being rebuilt under it.
+  test.skipIf(!live)(
+    "a copy whose checkout's lock is held is left until the lock is free",
+    async () => {
+      const gone = `/nonexistent/fzclone437lock-p${process.pid}`;
+      const goneTemplate = testDbNameFor(
+        `fzclone437lock_p${process.pid}_test`,
+        gone,
+      );
+      const orphan = testDbNameFor(goneTemplate, gone, "1");
+      const finished = Bun.spawn(["true"]);
+      await finished.exited;
+      const maintUrl = withDbName(suUrl as string, "postgres");
+      const maint = new Client({ connectionString: maintUrl });
+      const holder = new Client({ connectionString: maintUrl });
+      await maint.connect();
+      await holder.connect();
+      const key = cloneLockKey(checkoutRootHash(gone));
+      const exists = async () =>
+        (
+          await maint.query("SELECT 1 FROM pg_database WHERE datname = $1", [
+            orphan,
+          ])
+        ).rowCount === 1;
+      try {
+        await holder.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
+          key,
+        ]);
+        await maint.query(`CREATE DATABASE "${orphan}"`);
+        await maint.query(
+          `COMMENT ON DATABASE "${orphan}" IS ${maint.escapeLiteral(ownerComment(owner({ template: goneTemplate, pid: finished.pid, start: "gone" })))}`,
+        );
+        const reap = () =>
+          reapClones({
+            maintUrl,
+            root: ROOT,
+            template: testDbNameFor("fzclone437_none_test", ROOT),
+          });
+
+        await reap();
+        expect(await exists()).toBe(true);
+
+        await holder.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [key],
+        );
+        await reap();
+        expect(await exists()).toBe(false);
+      } finally {
+        await maint
+          .query(`DROP DATABASE IF EXISTS "${orphan}"`)
+          .catch(() => {});
+        await holder.end().catch(() => {});
         await maint.end();
       }
     },
@@ -615,7 +682,7 @@ describe("a worker whose checkout has no test database", () => {
         // NOTE: this checkout's clone lock, held elsewhere: a worker that went on to the slow path
         // would wait on it and lapse on its statement deadline, never reaching the message below.
         await maint.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
-          `fazerai-test-clone:${testDbNameFor("x_test", root)}`,
+          cloneLockKey(checkoutRootHash(root)),
         ]);
         const err = await ensureWorkerClone({
           suUrl: withDbName(suUrl as string, template),

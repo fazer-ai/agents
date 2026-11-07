@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
@@ -125,6 +126,7 @@ const owner = (o: Partial<CloneOwner>): CloneOwner => ({
   start: "Sat Oct 11 10:00:00 2026",
   workerPid: 200,
   ready: true,
+  host: hostname(),
   ...o,
 });
 const cloneName = (w: string, root = "/dev/agents/main") =>
@@ -225,9 +227,27 @@ describe("which copies of a removed checkout any run removes", () => {
     ],
     // Another checkout's next run may be about to rebuild it under that checkout's own lock.
     ["the template is still there", owner({}), {}, false],
+    // Its pid is another machine's (or container's): this `ps` cannot say whether it runs.
+    [
+      "the owner was recorded on another host",
+      owner({ template: goneTemplate, host: "elsewhere" }),
+      {},
+      false,
+    ],
+    [
+      "the record predates the host field",
+      owner({ template: goneTemplate, host: undefined }),
+      {},
+      false,
+    ],
   ] as const)("%s", (_why, o, running, dropped) => {
     expect(
-      orphanClonesToDrop([row(ownerComment(o))], databases, alive(running)),
+      orphanClonesToDrop(
+        [row(ownerComment(o))],
+        databases,
+        alive(running),
+        hostname(),
+      ),
     ).toEqual(dropped ? [cloneName("1", gone)] : []);
   });
 
@@ -239,7 +259,9 @@ describe("which copies of a removed checkout any run removes", () => {
       row("not json", "2"),
       row(JSON.stringify({ "fazerai-test-clone": 1, ...noTemplate }), "3"),
     ];
-    expect(orphanClonesToDrop(rows, databases, alive({}))).toEqual([]);
+    expect(orphanClonesToDrop(rows, databases, alive({}), hostname())).toEqual(
+      [],
+    );
   });
 
   test("a database that is no worker copy is never touched", () => {
@@ -248,7 +270,9 @@ describe("which copies of a removed checkout any run removes", () => {
       { name: goneTemplate, comment: o },
       { name: testDbNameFor("fzgate417_p1_test", gone), comment: o },
     ];
-    expect(orphanClonesToDrop(rows, databases, alive({}))).toEqual([]);
+    expect(orphanClonesToDrop(rows, databases, alive({}), hostname())).toEqual(
+      [],
+    );
   });
 });
 

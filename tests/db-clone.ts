@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
@@ -35,6 +36,8 @@ export type CloneOwner = {
   start: string;
   workerPid: number;
   ready: boolean;
+  // The machine whose `ps` the pid and start time are about. A record without it predates the field.
+  host?: string;
 };
 
 export function ownerComment(o: CloneOwner): string {
@@ -63,6 +66,7 @@ export function parseOwner(comment: string | null): CloneOwner | null {
       start: o.start,
       workerPid: o.workerPid,
       ready: o.ready,
+      ...(typeof o.host === "string" ? { host: o.host } : {}),
     };
   } catch {
     return null;
@@ -115,24 +119,27 @@ export function clonesToDrop(
     .map((r) => r.name);
 }
 
-// Which copies of ANY checkout no run will come back for. The per-checkout reap above only ever sees
-// its own root, so a checkout removed before its next parallel run (a throwaway copy, a worktree
-// deleted after a killed run) leaves its copies and their roles forever. A copy goes here only when
-// its owner is gone AND the database it was copied from is gone: a dead owner alone is another
-// checkout's business, since that checkout's next run may be about to rebuild the copy under its own
-// lock, and no run builds a copy without its template. A copy with no readable record is never
-// taken, because nothing in it says where it came from.
+// Which copies of ANY checkout no run will come back for: the per-checkout reap only sees its own
+// root, so a checkout removed before its next parallel run leaves its copies and roles forever. A copy
+// goes only when its owner is gone AND its template is gone, since a dead owner alone may be about to
+// be rebuilt by that checkout's next run, and no run builds a copy without its template. Left alone:
+// a copy with no readable record, and one recorded on another host or with no host, whose pid this
+// machine's `ps` cannot judge (a cluster shared with a container or another machine).
 export function orphanClonesToDrop(
   rows: { name: string; comment: string | null }[],
   databases: Set<string>,
   startOf: (pid: number) => string | null,
+  host: string,
 ): string[] {
   return rows
     .filter((r) => workerCloneRootHash(r.name) !== null)
     .filter((r) => {
       const o = parseOwner(r.comment);
       return (
-        o !== null && !databases.has(o.template) && !ownerAlive(o, startOf)
+        o !== null &&
+        o.host === host &&
+        !databases.has(o.template) &&
+        !ownerAlive(o, startOf)
       );
     })
     .map((r) => r.name);
@@ -381,7 +388,12 @@ async function sweepOrphanClones(maint: Client): Promise<string[]> {
   const startOf = await startsOf(
     first.candidates.map((r) => (parseOwner(r.comment) as CloneOwner).pid),
   );
-  const doomed = orphanClonesToDrop(first.candidates, first.databases, startOf);
+  const doomed = orphanClonesToDrop(
+    first.candidates,
+    first.databases,
+    startOf,
+    hostname(),
+  );
   const dropped: string[] = [];
   for (const name of doomed) {
     const key = cloneLockKey(workerCloneRootHash(name) as string);
@@ -686,6 +698,7 @@ export async function ensureWorkerClone(opts: {
         start,
         workerPid: process.pid,
         ready: false,
+        host: hostname(),
       };
       await createClone(maint, template, clone, owner);
       await withRoleCatalogLockOn(maint, () =>

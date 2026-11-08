@@ -240,6 +240,12 @@ describe("withConnectTimeout", () => {
         3,
       ),
     ).toBe("postgres://u:p@h:5432/db?connect_timeout=3&sslmode=require");
+    expect(withConnectTimeout("postgres://u:p@h/db?sslmode=require#x", 2)).toBe(
+      "postgres://u:p@h/db?sslmode=require&connect_timeout=2#x",
+    );
+    expect(withConnectTimeout("postgres://u:p@h/db#connect_timeout=0", 2)).toBe(
+      "postgres://u:p@h/db?connect_timeout=2#connect_timeout=0",
+    );
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the literal ${POSTGRES_PORT} placeholder from .env.
     const placeholder = "postgres://u:p@localhost:${POSTGRES_PORT}/db";
     expect(withConnectTimeout(placeholder, 0.2)).toBe(

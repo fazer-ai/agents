@@ -129,10 +129,13 @@ interface MigrateRun {
 // A string edit and not `URL`: the `${POSTGRES_PORT}` placeholder is not a port `URL` accepts.
 export function withConnectTimeout(url: string, seconds: number): string {
   const value = `connect_timeout=${Math.max(1, Math.ceil(seconds))}`;
-  if (/[?&]connect_timeout=[^&]*/.test(url)) {
-    return url.replace(/([?&])connect_timeout=[^&]*/, `$1${value}`);
+  const hash = url.indexOf("#");
+  const head = hash === -1 ? url : url.slice(0, hash);
+  const fragment = hash === -1 ? "" : url.slice(hash);
+  if (/[?&]connect_timeout=[^&]*/.test(head)) {
+    return `${head.replace(/([?&])connect_timeout=[^&]*/, `$1${value}`)}${fragment}`;
   }
-  return `${url}${url.includes("?") ? "&" : "?"}${value}`;
+  return `${head}${head.includes("?") ? "&" : "?"}${value}${fragment}`;
 }
 
 // `prisma migrate deploy`, its output passed through to the boot log and kept for the verdict. Its

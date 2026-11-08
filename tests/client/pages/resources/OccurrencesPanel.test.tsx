@@ -59,6 +59,7 @@ const DEFAULTS = {
   newWithinMinutes: 360,
   model: null as null | Record<string, unknown>,
   businessContext: "",
+  criticalSubjects: [] as string[],
   recoverMedia: false,
 };
 
@@ -640,6 +641,71 @@ describe("OccurrencesPanel", () => {
     expect(body.businessContext).toBe("  Atendemos clientes de uma loja.  ");
     // The model did not change, so it is not sent.
     expect("model" in body).toBe(false);
+  });
+
+  // docs/occurrences.md, "Critical themes": the list is a box, one subject per line, saved trimmed and
+  // without the blank lines; empty by default, the placeholder not being a value, and a save that does
+  // not touch it sends what was loaded.
+  test("the critical subjects are one per line, saved as a list, and empty by default", async () => {
+    installFetchStub({ ...DEFAULTS, model: READING });
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    const box = screen.getByLabelText("Critical list") as HTMLTextAreaElement;
+    expect(box.value).toBe("");
+    expect(box.placeholder).not.toBe("");
+    expect(screen.getByText("0 items of 20.")).toBeDefined();
+    fireEvent.change(box, {
+      target: {
+        value:
+          "falha no checkout\n\n  falha no pagamento \nitem indisponível ainda oferecido",
+      },
+    });
+    expect(screen.getByText("3 items of 20.")).toBeDefined();
+    const save = screen.getByRole("button", { name: "Save" });
+    await waitFor(() =>
+      expect((save as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(requests.some((r) => r.method === "PUT")).toBe(true),
+    );
+    const body = requests.find((r) => r.method === "PUT")?.body as {
+      criticalSubjects: string[];
+    };
+    expect(body.criticalSubjects).toEqual([
+      "falha no checkout",
+      "falha no pagamento",
+      "item indisponível ainda oferecido",
+    ]);
+  });
+
+  test("saved critical subjects load one per line, and too many or too long hold the save", async () => {
+    installFetchStub({
+      ...DEFAULTS,
+      model: READING,
+      criticalSubjects: ["falha no pagamento", "sistema fora do ar"],
+    });
+    renderPanel();
+    await screen.findByText("Occurrence monitor");
+    const box = screen.getByLabelText("Critical list") as HTMLTextAreaElement;
+    await waitFor(() =>
+      expect(box.value).toBe("falha no pagamento\nsistema fora do ar"),
+    );
+    const save = screen.getByRole("button", {
+      name: "Save",
+    }) as HTMLButtonElement;
+    fireEvent.change(box, {
+      target: {
+        value: Array.from({ length: 21 }, (_, i) => `assunto ${i}`).join("\n"),
+      },
+    });
+    expect(await screen.findByText("At most 20 items.")).toBeDefined();
+    expect(save.disabled).toBe(true);
+    fireEvent.change(box, { target: { value: "x".repeat(201) } });
+    expect(
+      await screen.findByText("Each item has at most 200 characters."),
+    ).toBeDefined();
+    expect(save.disabled).toBe(true);
   });
 
   test("recovering old voice notes and images is a switch, off until turned on, and saved as set", async () => {

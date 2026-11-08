@@ -4,6 +4,11 @@ import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { sysCtx } from "./config";
+import {
+  criticalBasis,
+  criticalSchema,
+  withCriticalSubjects,
+} from "./critical";
 import { lockFlagEpisodes } from "./flags";
 import type { RoundModels } from "./model";
 import type { MonitorKey } from "./monitors";
@@ -33,7 +38,11 @@ const ASSIGN_ANSWER = z.object({
   assignments: z.array(
     z.union([
       z.object({ i: z.number().int(), theme: z.string() }),
-      z.object({ i: z.number().int(), new: z.string() }),
+      z.object({
+        i: z.number().int(),
+        new: z.string(),
+        critical: criticalSchema,
+      }),
     ]),
   ),
 });
@@ -62,7 +71,12 @@ const CONSOLIDATE_ANSWER = z.object({
     .default([]),
   renames: z
     .array(
-      z.object({ theme: z.string(), title: z.string(), reason: reasonSchema }),
+      z.object({
+        theme: z.string(),
+        title: z.string(),
+        reason: reasonSchema,
+        critical: criticalSchema,
+      }),
     )
     .default([]),
 });
@@ -79,15 +93,17 @@ export const THEME_IS =
 const ASSIGN_SYSTEM = `You group the reasons customers contact customer service into themes.
 You get the open themes (id, title and a few of their sentences) and a numbered list of new reason sentences, each from a different conversation.
 For each sentence, decide whether it is the same reason as an open theme, or a reason no open theme covers.
-Answer only JSON: {"assignments":[{"i":0,"theme":"<an open theme id, exactly as listed>"},{"i":1,"new":"<a short title for a new theme>"}]}.
-${THEME_IS} Sentences that are the same new reason get the same new title. Write titles in the language of the sentences.`;
+Answer only JSON: {"assignments":[{"i":0,"theme":"<an open theme id, exactly as listed>"},{"i":1,"new":"<a short title for a new theme>","critical":<true or false>}]}.
+${THEME_IS} Sentences that are the same new reason get the same new title. Write titles in the language of the sentences.
+Every new theme says whether it is critical, as defined below.`;
 
 const CONSOLIDATE_SYSTEM = `You review the open themes of the reasons customers contact customer service: id, title, how many conversations, and some of their sentences.
 Merge themes that are the same reason (into the one that should remain), split a theme that mixes different reasons, and settle a title that does not say what the reason is.
 ${THEME_IS} A split gives one part per concrete reason the theme mixes, as many as there are, each titled by that reason; it never cuts one reason across two parts. A theme whose sentences are all one reason is not split, even when its title is broad: rename it instead.
 Give each decision a reason: one sentence saying what makes the themes the same reason (merge), what separates the parts (split), or what the old title failed to say (rename).
-Answer only JSON: {"merges":[{"absorbed":"<id>","into":"<id>","reason":"<sentence>"}],"splits":[{"theme":"<id>","into":["<title>","<title>"],"reason":"<sentence>"}],"renames":[{"theme":"<id>","title":"<title>","reason":"<sentence>"}]}.
-Empty lists are valid. Use only listed ids. Write titles and reasons in the language of the sentences.`;
+Answer only JSON: {"merges":[{"absorbed":"<id>","into":"<id>","reason":"<sentence>"}],"splits":[{"theme":"<id>","into":["<title>","<title>"],"reason":"<sentence>"}],"renames":[{"theme":"<id>","title":"<title>","reason":"<sentence>","critical":<true or false>}]}.
+Empty lists are valid. Use only listed ids. Write titles and reasons in the language of the sentences.
+Every rename says whether the theme, as its new title says it, is critical, as defined below.`;
 
 const PARTITION_SYSTEM = `A theme of customer contact reasons is being split into parts. You get the parts (numbered titles) and the theme's numbered sentences.
 ${THEME_IS} Put each sentence in the part whose reason it states; sentences that state the same reason go to the same part.
@@ -314,7 +330,10 @@ export async function runAssignmentStep(
     ].join("\n");
     const asked = await models.tryAsk(
       "assignment",
-      ASSIGN_SYSTEM,
+      withCriticalSubjects(
+        ASSIGN_SYSTEM,
+        models.critical?.criticalSubjects ?? [],
+      ),
       user,
       ASSIGN_ANSWER,
     );
@@ -344,6 +363,9 @@ export async function runAssignmentStep(
         number,
         { p: PendingSentence; theme: bigint | string }
       >();
+      // A new title is critical when any sentence that proposed it says so, not critical when one says
+      // it is not and none says it is, and not judged yet otherwise (the round's own call judges it).
+      const criticalOf = new Map<string, boolean>();
       for (const a of answer.assignments) {
         const p = pending[a.i];
         if (!p || placed.has(a.i)) continue;
@@ -353,7 +375,14 @@ export async function runAssignmentStep(
           if (id !== null && open.has(id)) placed.set(a.i, { p, theme: id });
         } else {
           const title = titleOf(a.new);
-          if (title) placed.set(a.i, { p, theme: title });
+          if (title) {
+            placed.set(a.i, { p, theme: title });
+            if (typeof a.critical === "boolean")
+              criticalOf.set(
+                title,
+                (criticalOf.get(title) ?? false) || a.critical,
+              );
+          }
         }
       }
       const titles = [
@@ -363,11 +392,19 @@ export async function runAssignmentStep(
             .filter((t): t is string => typeof t === "string"),
         ),
       ];
+      // Each mark with the basis it was judged by: a save of the list while the model ran leaves it to
+      // be judged again.
+      const basis = criticalBasis(models.critical);
       const created = new Map(
         titles.length
           ? (
               await db.occurrenceTheme.createManyAndReturn({
-                data: titles.map((title) => ({ tenantId, monitorId, title })),
+                data: titles.map((title) => ({
+                  tenantId,
+                  monitorId,
+                  title,
+                  ...markOf(criticalOf.get(title), basis),
+                })),
                 select: { id: true, title: true },
               })
             ).map((t) => [t.title, t.id])
@@ -526,7 +563,10 @@ export async function runConsolidationStep(
     .join("\n");
   const answer = await models.ask(
     "consolidation",
-    CONSOLIDATE_SYSTEM,
+    withCriticalSubjects(
+      CONSOLIDATE_SYSTEM,
+      models.critical?.criticalSubjects ?? [],
+    ),
     user,
     CONSOLIDATE_ANSWER,
   );
@@ -666,7 +706,15 @@ export async function runConsolidationStep(
     if (id === null || !open.has(id) || gone.has(id) || !title) continue;
     if (titles.get(id) === title) continue;
     await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      await db.occurrenceTheme.update({ where: { id }, data: { title } });
+      // The new title is judged again: the model's word on it, or none (judged by the round's own
+      // call) when it gave none.
+      await db.occurrenceTheme.update({
+        where: { id },
+        data: {
+          title,
+          ...markOf(r.critical ?? undefined, criticalBasis(models.critical)),
+        },
+      });
       await db.occurrenceThemeEvent.create({
         data: {
           tenantId,
@@ -685,4 +733,107 @@ export async function runConsolidationStep(
     summary.renames += 1;
   }
   return summary;
+}
+
+// Themes judged per round, newest first: a backlog (every open theme after the list changed) drains
+// over a few rounds instead of one call carrying them all.
+const JUDGED_PER_ROUND = 60;
+const JUDGE_SAMPLES = 3;
+
+// The list is required: an answer without it is unreadable, and the themes wait for the next round
+// instead of being set not critical by an empty default.
+const JUDGE_ANSWER = z.object({ critical: z.array(z.string()) });
+
+const JUDGE_SYSTEM = `You judge which themes of the reasons customers contact customer service are critical.
+You get open themes: id, title and a few of their sentences.
+Answer only JSON: {"critical":["<id of a critical theme, exactly as listed>"]}. A theme left out is not critical. An empty list is valid.`;
+
+// A theme's mark as written: the model's word with the basis it was judged by, or no word at all.
+const markOf = (critical: boolean | undefined, basis: string) =>
+  typeof critical === "boolean"
+    ? { critical, criticalBasis: basis }
+    : { critical: null, criticalBasis: null };
+
+// The themes whose mark is not by this basis: never judged, or judged by another list or context.
+const notJudgedBy = (basis: string) => ({
+  OR: [
+    { critical: null },
+    { criticalBasis: null },
+    { criticalBasis: { not: basis } },
+  ],
+});
+
+export interface CriticalitySummary {
+  judged: number;
+  critical: number;
+}
+
+// Judges the open themes no call has judged by the monitor's list and context now. Each theme listed is
+// set critical and the rest of those shown are set not critical, only where the mark is still not by
+// this basis.
+export async function runCriticalityStep(
+  base: PrismaClient,
+  { tenantId, monitorId }: MonitorKey,
+  models: RoundModels,
+): Promise<CriticalitySummary> {
+  const summary: CriticalitySummary = { judged: 0, critical: 0 };
+  const basis = criticalBasis(models.critical);
+  const { themes, samples } = await runScopedOn(
+    base,
+    sysCtx(tenantId),
+    async (db) => {
+      const themes = await db.occurrenceTheme.findMany({
+        where: { monitorId, status: "open", ...notJudgedBy(basis) },
+        select: { id: true, title: true },
+        orderBy: [
+          { lastSeenAt: { sort: "desc", nulls: "last" } },
+          { id: "desc" },
+        ],
+        take: JUDGED_PER_ROUND,
+      });
+      const samples = await samplesOf(
+        db,
+        monitorId,
+        themes.map((t) => t.id),
+        JUDGE_SAMPLES,
+      );
+      return { themes, samples };
+    },
+  );
+  if (themes.length === 0) return summary;
+  const user = themes
+    .flatMap((t) => [
+      `${themeRef(t.id)}: ${t.title}`,
+      ...(samples.get(t.id) ?? []).map((s) => `  - ${s}`),
+    ])
+    .join("\n");
+  const answer = await models.ask(
+    "assignment",
+    withCriticalSubjects(JUDGE_SYSTEM, models.critical?.criticalSubjects ?? []),
+    user,
+    JUDGE_ANSWER,
+  );
+  if (!answer) return summary;
+  const shown = new Set(themes.map((t) => t.id));
+  const critical = new Set(
+    answer.critical
+      .map(parseThemeRef)
+      .filter((id): id is bigint => id !== null && shown.has(id)),
+  );
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const yes = [...critical];
+    const no = [...shown].filter((id) => !critical.has(id));
+    const set = async (ids: bigint[], value: boolean) =>
+      ids.length
+        ? (
+            await db.occurrenceTheme.updateMany({
+              where: { id: { in: ids }, status: "open", ...notJudgedBy(basis) },
+              data: { critical: value, criticalBasis: basis },
+            })
+          ).count
+        : 0;
+    const marked = await set(yes, true);
+    const unmarked = await set(no, false);
+    return { judged: marked + unmarked, critical: marked };
+  });
 }

@@ -3775,6 +3775,11 @@ model OccurrenceRun {
 // the canonical reference most of its window conversations share (the column keeps its first name).
 // `flagUnmetSince`: the first round a flagged theme met no rule; it keeps its flags until the monitor's
 // hold has passed since (a held theme), and is null while a rule is met.
+// `critical`: the model's judgment that the theme is a serious subject for the business (one of the
+// monitor's critical subjects, or clearly urgent), decided when the theme is created or renamed, with
+// `criticalBasis`, the digest of the list and business context it was judged by. A mark with no basis,
+// or one that is not the monitor's now (the list or the context changed since), reads as not judged:
+// not critical, and judged again by the next round.
 model OccurrenceTheme {
   id              BigInt    @id @default(autoincrement())
   tenantId        BigInt    @map("tenant_id")
@@ -3788,6 +3793,8 @@ model OccurrenceTheme {
   flagReferenceId BigInt?   @map("flag_subject_id")
   flaggedAt       DateTime? @map("flagged_at")
   flagUnmetSince  DateTime? @map("flag_unmet_since")
+  critical        Boolean?
+  criticalBasis   String?   @map("critical_basis")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
 

@@ -100,7 +100,16 @@ export interface RoundModels {
   resolved?: boolean;
   // The least time a call is started with: work before a call leaves it this much.
   minCallMs?: number;
+  // What the round judges a theme critical by, as the round read the monitor: the steps that make or
+  // rename a theme send the subjects, and keep a judgment only while the monitor still has these.
+  // Absent reads as no subjects and no business context.
+  critical?: CriticalInputs;
 }
+
+export type CriticalInputs = Pick<
+  OccurrencesConfig,
+  "criticalSubjects" | "businessContext"
+>;
 
 export interface RoundModelDeps {
   base: PrismaClient;
@@ -388,6 +397,10 @@ export async function roundModels(
     deadline: deps.deadline,
     resolved: resolution.ok,
     minCallMs: deps.minCallMs ?? MIN_CALL_MS,
+    critical: {
+      criticalSubjects: occ.criticalSubjects,
+      businessContext: occ.businessContext,
+    },
     tryAsk,
     async ask(step, system, user, schema, scope) {
       const r = await tryAsk(step, system, user, schema, scope);

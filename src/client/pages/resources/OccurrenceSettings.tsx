@@ -32,6 +32,8 @@ import {
   CADENCE_MINUTES_RANGE,
   CONCENTRATION_SHARE_RANGE,
   CONSOLIDATION_MINUTES_RANGE,
+  CRITICAL_SUBJECT_MAX,
+  CRITICAL_SUBJECTS_MAX,
   FIELD_DESCRIPTION_MAX,
   FIELD_KEY_PATTERN,
   FIELD_NAME_MAX,
@@ -228,6 +230,8 @@ export function OccurrenceSettings({
   );
   const [model, setModel] = useState<ModelDraft | null>(null);
   const [businessContext, setBusinessContext] = useState("");
+  // The critical list, one item per line as typed; the blank lines are not subjects.
+  const [criticalText, setCriticalText] = useState("");
   const [recoverMedia, setRecoverMedia] = useState(false);
 
   // The defaults are read through a ref: a language change must not recreate `adopt`, which would
@@ -269,6 +273,7 @@ export function OccurrenceSettings({
     setNums(numTexts(c));
     setModel(toDraft(c.model));
     setBusinessContext(c.businessContext);
+    setCriticalText(c.criticalSubjects.join("\n"));
     setRecoverMedia(c.recoverMedia);
     setPristine(null);
     setAdoptSeq((n) => n + 1);
@@ -372,10 +377,31 @@ export function OccurrenceSettings({
     modelChanged &&
     modelProblem(model, t, baseUrlOf(model.credentialRef)) !== null;
   const contextTooLong = businessContext.length > BUSINESS_CONTEXT_MAX;
+  const criticalSubjects = useMemo(
+    () =>
+      criticalText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l !== ""),
+    [criticalText],
+  );
+  const criticalProblem =
+    criticalSubjects.length > CRITICAL_SUBJECTS_MAX
+      ? t("occurrences.critical.tooMany", "At most {{max}} items.", {
+          max: CRITICAL_SUBJECTS_MAX,
+        })
+      : criticalSubjects.some((l) => l.length > CRITICAL_SUBJECT_MAX)
+        ? t(
+            "occurrences.critical.tooLong",
+            "Each item has at most {{max}} characters.",
+            { max: CRITICAL_SUBJECT_MAX },
+          )
+        : null;
   const invalid =
     rowsInvalid ||
     modelInvalid ||
     contextTooLong ||
+    criticalProblem !== null ||
     numsInvalid ||
     cadence === null ||
     missingToEnable.length > 0;
@@ -398,6 +424,7 @@ export function OccurrenceSettings({
       ) as Record<NumKey, number>),
       model: fromDraft(model),
       businessContext,
+      criticalSubjects,
       recoverMedia,
     }),
     [
@@ -411,6 +438,7 @@ export function OccurrenceSettings({
       sentNums,
       model,
       businessContext,
+      criticalSubjects,
       recoverMedia,
     ],
   );
@@ -972,6 +1000,38 @@ export function OccurrenceSettings({
                 value={businessContext}
                 rows={4}
                 onChange={(e) => setBusinessContext(e.target.value)}
+              />
+            </FormField>
+          </Section>
+
+          <Section
+            title={t("occurrences.critical.title", "Critical list")}
+            intro={t(
+              "occurrences.critical.intro",
+              "Optional. What is serious for your business, one item per line. A theme that matches one of them, or that the business context makes clearly urgent, is marked critical and, once flagged, comes first in its own color. The list guides the model and does not limit it. Changing it judges the open themes again at the next round.",
+            )}
+          >
+            <FormField
+              label={t("occurrences.critical.label", "Critical list")}
+              description={t(
+                "occurrences.critical.count",
+                "{{count}} items of {{max}}.",
+                {
+                  count: criticalSubjects.length,
+                  max: CRITICAL_SUBJECTS_MAX,
+                },
+              )}
+              error={criticalProblem ?? undefined}
+            >
+              <Textarea
+                data-critical-subjects
+                value={criticalText}
+                rows={4}
+                placeholder={t(
+                  "occurrences.critical.placeholder",
+                  "Checkout failing\nPayment failing\nItem listed as available but out of stock",
+                )}
+                onChange={(e) => setCriticalText(e.target.value)}
               />
             </FormField>
           </Section>

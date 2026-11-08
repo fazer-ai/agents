@@ -220,8 +220,9 @@ describe("MCP tool descriptions", () => {
 
   // The Free tree lists 30 fewer tools than Full and Pro, so a total measured on Full would leave the
   // Free fence thousands of characters loose: each total has its own figure there, measured on that
-  // tree with the same principal (34_042 and 72_115).
-  const totals = { desc: 34_050, schema: 72_120 };
+  // tree with the same principal (34_042 and 72_115; 72_207 with the critical list, `criticalSubjects`,
+  // on occurrences_set).
+  const totals = { desc: 34_050, schema: 72_220 };
 
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema

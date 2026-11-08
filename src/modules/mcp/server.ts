@@ -208,6 +208,8 @@ import {
   CADENCE_MINUTES_RANGE,
   CONCENTRATION_SHARE_RANGE,
   CONSOLIDATION_MINUTES_RANGE,
+  CRITICAL_SUBJECT_MAX,
+  CRITICAL_SUBJECTS_MAX,
   FIELDS_MAX,
   FLAG_HOLD_MINUTES_RANGE,
   INBOXES_MAX,
@@ -3538,6 +3540,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           newWithinMinutes: ranged(NEW_WITHIN_MINUTES_RANGE).optional(),
           model: occurrenceModelSchema.nullable().optional(),
           businessContext: z.string().max(BUSINESS_CONTEXT_MAX).optional(),
+          criticalSubjects: z
+            .array(z.string().max(CRITICAL_SUBJECT_MAX))
+            .max(CRITICAL_SUBJECTS_MAX)
+            .optional(),
           recoverMedia: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
@@ -3561,6 +3567,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           newWithinMinutes?: number;
           model?: OccurrenceModel | null;
           businessContext?: string;
+          criticalSubjects?: string[];
           recoverMedia?: boolean;
           dry_run?: boolean;
         },

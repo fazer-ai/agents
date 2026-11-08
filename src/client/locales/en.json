@@ -1208,6 +1208,9 @@
     "accountNumber": "Account {{id}}",
     "proTitle": "Dashboards are a Pro feature",
     "subtitle": "Panels you arrange yourself over your conversations and AI usage, each at its own address.",
+    "themes": {
+      "critical": "Critical"
+    },
     "title": "Dashboards"
   },
   "database": {
@@ -4054,6 +4057,16 @@
     "costNoPrice": "No price",
     "costUnpriced_one": "{{count}} call with no price left out",
     "costUnpriced_other": "{{count}} calls with no price left out",
+    "critical": {
+      "count_one": "{{count}} item of {{max}}.",
+      "count_other": "{{count}} items of {{max}}.",
+      "intro": "Optional. What is serious for your business, one item per line. A theme that matches one of them, or that the business context makes clearly urgent, is marked critical and, once flagged, comes first in its own color. The list guides the model and does not limit it. Changing it judges the open themes again at the next round.",
+      "label": "Critical list",
+      "placeholder": "Checkout failing\nPayment failing\nItem listed as available but out of stock",
+      "title": "Critical list",
+      "tooLong": "Each item has at most {{max}} characters.",
+      "tooMany": "At most {{max}} items."
+    },
     "default": "Default: {{value}}",
     "detail": {
       "consolidationIncomplete": "Theme consolidation did not finish; the next round tries again.",

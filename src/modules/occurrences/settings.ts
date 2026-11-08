@@ -58,6 +58,11 @@ export const INBOXES_MAX = 50;
 // What the account tells every step about its business. Long enough for a paragraph on what it deals
 // with and what is routine, short enough to ride on every call without crowding out the conversation.
 export const BUSINESS_CONTEXT_MAX = 2_000;
+// The subjects the account calls critical (one failure or problem each, in its own words): a theme
+// that is one of them, or that is clearly urgent for the business, is marked critical. Few and short,
+// since they ride on every call that makes or renames a theme.
+export const CRITICAL_SUBJECTS_MAX = 20;
+export const CRITICAL_SUBJECT_MAX = 200;
 
 // The model calls of a round, each its own call type in the usage ledger. `reading` is the
 // conversation read; the other three run over what the readings say. All four run on the monitor's one
@@ -113,6 +118,9 @@ export interface OccurrencesConfig {
   model: OccurrenceModel | null;
   // Appended to every step's fixed prompt as context about the business; empty sends nothing.
   businessContext: string;
+  // The account's critical subjects, in its words. They guide the model's judgment of which themes are
+  // critical and do not limit it: with none, a clearly urgent theme is still critical.
+  criticalSubjects: string[];
   // On upstream Chatwoot a voice note's words and an image's description live only in this process's
   // memory for 15 minutes; on, the reading transcribes or describes again what a conversation's new
   // messages are missing, with the inbox agent's speech-to-text and vision, on its own cost lines.
@@ -136,6 +144,7 @@ export const OCCURRENCES_DEFAULTS: OccurrencesConfig = {
   newWithinMinutes: 360,
   model: null,
   businessContext: "",
+  criticalSubjects: [],
   recoverMedia: false,
 };
 
@@ -279,6 +288,28 @@ export const occurrencesSettingsSchema = z
           `the business context is at most ${BUSINESS_CONTEXT_MAX} characters`,
         )
         .refine((v) => unstorableCodePoints(v) === null, storableMessage),
+      // Each subject trimmed, none empty and on one line, so the list read back is the one the model is
+      // sent (one per line) and the one the console's box shows (one per line).
+      criticalSubjects: z
+        .array(
+          z
+            .string()
+            .trim()
+            .min(1, "a critical subject is not empty")
+            .refine(
+              (v) => !/[\r\n\u2028\u2029]/.test(v),
+              "a critical subject is one line",
+            )
+            .max(
+              CRITICAL_SUBJECT_MAX,
+              `a critical subject is at most ${CRITICAL_SUBJECT_MAX} characters`,
+            )
+            .refine((v) => unstorableCodePoints(v) === null, storableMessage),
+        )
+        .max(
+          CRITICAL_SUBJECTS_MAX,
+          `at most ${CRITICAL_SUBJECTS_MAX} critical subjects`,
+        ),
       recoverMedia: z.boolean(),
     },
     unknownKey,

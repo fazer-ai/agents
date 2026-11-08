@@ -1262,6 +1262,9 @@
     "accountNumber": "Conta {{id}}",
     "proTitle": "Dashboards são um recurso do Pro",
     "subtitle": "Painéis que você mesmo monta sobre as suas conversas e o uso de IA, cada um no seu próprio endereço.",
+    "themes": {
+      "critical": "Crítico"
+    },
     "title": "Dashboards"
   },
   "database": {
@@ -4177,6 +4180,18 @@
     "costUnpriced_one": "{{count}} chamada sem preço ficou de fora",
     "costUnpriced_many": "{{count}} chamadas sem preço ficaram de fora",
     "costUnpriced_other": "{{count}} chamadas sem preço ficaram de fora",
+    "critical": {
+      "count_zero": "{{count}} itens de {{max}}.",
+      "count_one": "{{count}} item de {{max}}.",
+      "count_many": "{{count}} itens de {{max}}.",
+      "count_other": "{{count}} itens de {{max}}.",
+      "intro": "Opcional. O que é grave para o seu negócio, um item por linha. Um tema que corresponda a um deles, ou que o contexto do negócio mostre que é claramente urgente, é marcado como crítico e, quando sinalizado, aparece primeiro e com cor própria. A lista orienta o modelo e não o limita. Mudar a lista faz a próxima rodada julgar de novo os temas abertos.",
+      "label": "Lista do que é crítico",
+      "placeholder": "Falha ao finalizar a compra\nFalha no pagamento\nProduto aparece disponível, mas está esgotado",
+      "title": "Lista do que é crítico",
+      "tooLong": "Cada item tem no máximo {{max}} caracteres.",
+      "tooMany": "No máximo {{max}} itens."
+    },
     "default": "Padrão: {{value}}",
     "detail": {
       "consolidationIncomplete": "A consolidação dos temas não terminou; a próxima rodada tenta de novo.",

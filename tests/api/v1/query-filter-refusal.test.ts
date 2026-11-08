@@ -155,6 +155,12 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/logs/export?source=all&maxRows=abc", "maxRows"],
   ["/v1/metrics/timeseries?tz=Not/AZone", "tz"],
   ["/v1/metrics/timeseries?tz=", "tz"],
+  // Routes whose read buckets no days still refuse a zone they cannot read.
+  ["/v1/metrics/kpis?tz=Not/AZone", "tz"],
+  ["/v1/metrics/kpis?tz=", "tz"],
+  ["/v1/metrics/breakdown?dimension=agent&tz=Not/AZone", "tz"],
+  ["/v1/metrics/labels?tz=Not/AZone", "tz"],
+  ["/v1/metrics/knowledge?tz=Not/AZone", "tz"],
   // `Number` reads spellings a count does not have, two of them as a DIFFERENT number, and all pass
   // `Number.isInteger`: only the decimal regex refuses them.
   ["/v1/logs?source=all&limit=1e3", "limit"],

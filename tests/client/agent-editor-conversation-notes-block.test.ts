@@ -30,11 +30,35 @@ describe("the agent editor carries the conversationNotes block through a Behavio
     await waitFor(() =>
       expect(lastSavedSettings(stub)?.conversationNotes).toEqual({
         toolsUsed: true,
+        errors: "off",
       }),
     );
     cleanup();
     await renderEditor(stub, "behavior");
     expect(notesSwitch().getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("the errors format is saved as picked and read back, beside the tools-used switch", async () => {
+    const stub = stubEditorApi({
+      settings: { conversationNotes: { toolsUsed: true, errors: "note" } },
+    });
+    await renderEditor(stub, "behavior");
+    const select = () =>
+      screen.getByLabelText(
+        /^Errors in the middle of a turn$/,
+      ) as HTMLSelectElement;
+    expect(select().value).toBe("note");
+    fireEvent.change(select(), { target: { value: "activity" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(lastSavedSettings(stub)?.conversationNotes).toEqual({
+        toolsUsed: true,
+        errors: "activity",
+      }),
+    );
+    cleanup();
+    await renderEditor(stub, "behavior");
+    expect(select().value).toBe("activity");
   });
 
   test("a stored ON loads as ON", async () => {

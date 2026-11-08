@@ -45,6 +45,7 @@ import {
 } from "@/modules/agents/tool-preconditions";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
+import { TURN_ERRORS_FORMATS } from "@/modules/conversation-notes/settings";
 import {
   CARRY_ATTACHMENTS_DEFAULTS,
   CARRY_FILE_TYPES,
@@ -555,6 +556,7 @@ const takeover = z.looseObject({
 
 const conversationNotes = z.looseObject({
   toolsUsed: z.boolean().optional(),
+  errors: z.enum(TURN_ERRORS_FORMATS).optional(),
 });
 
 const limits = z.looseObject({

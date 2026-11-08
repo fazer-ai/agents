@@ -45,7 +45,7 @@ describe("the Behavior tab's conversation notes", () => {
       <BehaviorTab
         {...behaviorTabProps({})}
         mode="production"
-        conversationNotes={{ toolsUsed: false }}
+        conversationNotes={{ toolsUsed: false, errors: "off" }}
         setConversationNotes={(v) => calls.push(v)}
       />,
     );
@@ -54,7 +54,7 @@ describe("the Behavior tab's conversation notes", () => {
     const sw = switchOf();
     expect(sw.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(sw);
-    expect(calls).toEqual([{ toolsUsed: true }]);
+    expect(calls).toEqual([{ toolsUsed: true, errors: "off" }]);
   });
 
   test("reads on when the agent has it on", () => {
@@ -62,10 +62,34 @@ describe("the Behavior tab's conversation notes", () => {
       <BehaviorTab
         {...behaviorTabProps({})}
         mode="production"
-        conversationNotes={{ toolsUsed: true }}
+        conversationNotes={{ toolsUsed: true, errors: "off" }}
       />,
     );
     expect(switchOf().getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("the errors format: three choices, the stored one shown, the pick handed to the form", () => {
+    const calls: unknown[] = [];
+    render(
+      <BehaviorTab
+        {...behaviorTabProps({})}
+        mode="production"
+        conversationNotes={{ toolsUsed: true, errors: "off" }}
+        setConversationNotes={(v) => calls.push(v)}
+      />,
+    );
+    const select = screen.getByLabelText(
+      /^(Errors in the middle of a turn|Erros no meio do turno)$/,
+    ) as HTMLSelectElement;
+    expect(select.value).toBe("off");
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "off",
+      "activity",
+      "note",
+    ]);
+    fireEvent.change(select, { target: { value: "note" } });
+    // NOTE: The tools-used switch is left as it was.
+    expect(calls).toEqual([{ toolsUsed: true, errors: "note" }]);
   });
 
   test("is not offered to a monitoring agent", () => {

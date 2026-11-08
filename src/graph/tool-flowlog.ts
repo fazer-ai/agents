@@ -240,6 +240,28 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     return [...this.called].map(([name, calls]) => ({ name, calls }));
   }
 
+  // The tools that failed at least once this turn, first call first: how many calls failed, whether
+  // a later call of the same tool succeeded, and the last cause (sanitized, as its flow line says).
+  failedTools(): {
+    name: string;
+    failed: number;
+    recovered: boolean;
+    cause: string;
+  }[] {
+    const out = [];
+    for (const name of this.called.keys()) {
+      const o = this.outcomes.get(name);
+      if (o && o.failed > 0)
+        out.push({
+          name,
+          failed: o.failed,
+          recovered: o.succeeded > 0,
+          cause: o.cause,
+        });
+    }
+    return out;
+  }
+
   private tally(tool: string, failure: string | null): void {
     const o = this.outcomes.get(tool) ?? {
       failed: 0,

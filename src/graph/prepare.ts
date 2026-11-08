@@ -87,7 +87,10 @@ import {
   type ContactAuthConfig,
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
-import { readConversationNotesConfig } from "@/modules/conversation-notes/settings";
+import {
+  readConversationNotesConfig,
+  type TurnErrorsFormat,
+} from "@/modules/conversation-notes/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
 import type {
   CaseInbox,
@@ -447,6 +450,9 @@ export interface AgentConfig {
   // Whether a turn that called a tool leaves a private note naming them in the Chatwoot conversation
   // (agent.settings.conversationNotes.toolsUsed; off by default — src/modules/conversation-notes).
   toolsUsedNote: boolean;
+  // Where a turn that hit an error and still ended says so in the conversation
+  // (agent.settings.conversationNotes.errors; "off" by default).
+  turnErrors: TurnErrorsFormat;
 }
 
 export interface LoadAgentArgs {
@@ -1162,6 +1168,7 @@ export async function loadAgentConfig(
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
     toolsUsedNote: readConversationNotesConfig(effSettings).toolsUsed,
+    turnErrors: readConversationNotesConfig(effSettings).errors,
   };
 }
 

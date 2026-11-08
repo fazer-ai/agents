@@ -379,7 +379,9 @@ export interface AttachmentDownloadOptions {
   signal?: AbortSignal;
 }
 
-export type ChatwootMessageType = "outgoing" | "incoming";
+// `activity` is a gray row of the timeline's own, never delivered to the channel nor shown to the
+// contact; the engine writes one only to tell the team about a turn.
+export type ChatwootMessageType = "outgoing" | "incoming" | "activity";
 
 // A Chatwoot custom-attribute definition (account-level). `model` is one of conversation_attribute |
 // contact_attribute | task_attribute | company_attribute; `values` is populated only for list types.
@@ -717,8 +719,11 @@ export class ChatwootClient {
       // A name for this send, echoed back by Chatwoot so a delivery can be proved without comparing
       // text. Passed by callers with a resend to decide; every other create gets `engineSendId()`.
       sendId?: string;
-      // The engine's own note about a turn (`CHATWOOT_ACTIVITY_NOTE_KEY`). Private notes only.
+      // The engine's own note about a turn (`CHATWOOT_ACTIVITY_NOTE_KEY`). Private notes and
+      // activity rows only.
       activity?: ActivityNoteKind;
+      // Extra keys of ours for the same rows, e.g. a turn-errors message's key. Same rule.
+      activityAttributes?: Record<string, string>;
     } = {},
   ): Promise<unknown> {
     return this.request(
@@ -732,11 +737,16 @@ export class ChatwootClient {
         // NOTE: Only an opaque send name goes here: this bag reaches the CONTACT on a website inbox
         // (the widget's messages jbuilder renders it, and `Message#push_event_data` ships it), so
         // nothing about the account's own state belongs in it. The activity kind rides on private
-        // notes only, which the widget never lists.
+        // notes and activity rows only, which the widget never lists and Chatwoot never pushes to the
+        // contact (`MessageFinder` filters both, `ActionCableListener#contact_tokens` skips both).
         content_attributes: {
           [CHATWOOT_SEND_ID_KEY]: opts.sendId ?? engineSendId(),
-          ...(opts.activity && opts.private === true
-            ? { [CHATWOOT_ACTIVITY_NOTE_KEY]: opts.activity }
+          ...(opts.activity &&
+          (opts.private === true || opts.messageType === "activity")
+            ? {
+                ...opts.activityAttributes,
+                [CHATWOOT_ACTIVITY_NOTE_KEY]: opts.activity,
+              }
             : {}),
         },
       },
@@ -747,12 +757,17 @@ export class ChatwootClient {
   sendPrivateNote(
     conversationId: number,
     content: string,
-    opts: { sendId?: string; activity?: ActivityNoteKind } = {},
+    opts: {
+      sendId?: string;
+      activity?: ActivityNoteKind;
+      activityAttributes?: Record<string, string>;
+    } = {},
   ): Promise<unknown> {
     return this.sendMessage(conversationId, content, {
       private: true,
       sendId: opts.sendId,
       activity: opts.activity,
+      activityAttributes: opts.activityAttributes,
     });
   }
 

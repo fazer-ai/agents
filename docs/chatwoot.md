@@ -407,9 +407,22 @@ Both the reactive turn (`runTurnBody`) and the proactive one (`runAgentNudge`) p
 
 What keeps it from costing anything else:
 
-- **It is marked.** `content_attributes.fazer_ai_activity` carries the kind (`"tools"`; `ACTIVITY_NOTE_KINDS` in `constants.ts`). `sendMessage` writes the mark on private notes only, and `parseChatwootMessages` reads it only off a private row with a known kind, so an automation's key of the same name on a public message is not ours.
+- **It is marked.** `content_attributes.fazer_ai_activity` carries the kind (`"tools"`, `"errors"`; `ACTIVITY_NOTE_KINDS` in `constants.ts`). `sendMessage` writes the mark on private notes and activity rows only, and `parseChatwootMessages` reads it only off such a row with a known kind, so an automation's key of the same name on a public message is not ours.
 - **No model reads it.** The responder's memory is the checkpoint, never the Chatwoot thread, and the only reader that hands private notes to a model is the monitoring agent's notes block (`notesFromRows`), which skips a marked row.
 - **It is not a turn.** Chatwoot sends the note back to the bot as `message_created`, outgoing and private: not an incoming message, not a person's reply (`isHumanAgentMessage` excludes private notes), not a foreign bot message (private is exempt), so nothing arms. Chatwoot does not reopen a conversation on an outgoing message, and every boundary reader in this repo (debounce, follow-ups, nothing-to-answer, re-engage) already skips private rows. It does move the conversation's `last_activity_at`, as any message does, seconds after the reply that moved it already.
+
+### Errors in the middle of a turn (`conversationNotes.errors`, `turn-errors.ts`)
+
+A turn that is lost writes the failure note and hands the conversation over (`src/modules/conversations/failure-note.ts`). Anything the turn survived shows up only in the Logs and Langfuse unless this is on. With `conversationNotes.errors` set (per agent, `"off"` by default, a select in the same editor section), a turn that RETURNED with something survived posts ONE message listing it:
+
+- a tool that failed at least once (`ToolFlowLogger.failedTools()`: a `status: "error"` result or a throw), with the number of failed calls and whether a later call of the same tool worked ("Se recuperou") or the model carried on without it ("Não se recuperou");
+- a reply that only the fallback model wrote (`onModelFallback`);
+- an empty model response answered on the second attempt (`onModelRetry`), unless the fallback already took the turn;
+- a guardrail screening that HELD the reply (`replaced`, `suppressed`, `handed-off`; `observe` holds nothing). The guardrail still writes its own note with the verdict; this line only says the turn was one where it happened.
+
+Each line carries a reason from a closed list (`errorReason`: `HTTP <status>`, `tempo esgotado`, `sem conexão`, `credencial recusada`, `limite de uso`, `erro`), never the error's text, which can quote the customer's data or an internal address. The message ends with the turn's Logs link (`<PUBLIC_URL>/logs?turnId=<turnId>`), where the detail is.
+
+The format is a Chatwoot activity row (`"activity"`: discreet, in the timeline's gray, never delivered to the channel nor shown to the contact, since `MessageFinder` and `ActionCableListener#contact_tokens` both filter activity rows, and not webhook-sendable, so it never comes back to the bot) or a private note (`"note"`: stands out to whoever handles the conversation). Both carry `fazer_ai_activity: "errors"`, which `sendMessage` writes on private notes and activity rows only and `parseChatwootMessages` reads off those two kinds of row only, and `fazer_ai_errors_key`, what failed without the counts. Before posting, the turn reads the conversation's latest page: when the newest errors message there has the same key, nothing is posted, so a tool that fails the same way on every turn is one message, and a different failure in between makes the old one news again. A turn that throws posts nothing: it is retried, and a lost one has its failure note. Both the reactive turn and the proactive one post it, after the tools-used note, and the proactive outcome line names it among the turn's messages. `toolsUsed` and `errors` are independent.
 
 ## Opening the case in another inbox (`open_case_in_inbox`, issue #700)
 

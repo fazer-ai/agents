@@ -113,8 +113,8 @@ const SETTINGS_DESC_CEILING = 2_000;
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
 // tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 38_550
-// with `calls`, `setLabels.removal`, the writable list, per-kind templates, `customer_choice`, `choiceCheck`; 38_660 with `conversationNotes`.
-const SETTINGS_SCHEMA_CEILING = 38_700;
+// with `calls`, `setLabels.removal`, the writable list, per-kind templates, `customer_choice`, `choiceCheck`; 38_660 with `conversationNotes`; 38_720 with `conversationNotes.errors`.
+const SETTINGS_SCHEMA_CEILING = 38_750;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -240,8 +240,8 @@ describe("MCP tool descriptions", () => {
     // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools; 88_157
     // with the hold and how long a theme stays new on occurrences_set, two settings of the monitor;
     // 88_437 with occurrence_flag_episodes_list, the flag history, a read no other tool does;
-    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update, 89_958 alert urls, `customer_choice` and `choiceCheck`; 90_099 with `conversationNotes`.
-    expect(schema).toBeLessThanOrEqual(90_100);
+    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update, 89_958 alert urls, `customer_choice` and `choiceCheck`; 90_099 with `conversationNotes`; 90_159 with `conversationNotes.errors`.
+    expect(schema).toBeLessThanOrEqual(90_160);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

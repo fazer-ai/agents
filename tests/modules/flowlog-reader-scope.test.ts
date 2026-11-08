@@ -183,6 +183,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // NOTE: The clip lines two code tools wrote in one turn, one silenced and one not, read by that turn.
   "tests/graph/tool-silence-truncation-alert.test.ts": 1,
   "tests/graph/tools-used-note.test.ts": 1,
+  "tests/graph/turn-errors-message.test.ts": 1,
   "tests/graph/turn-limit-turn.test.ts": 1,
   "tests/graph/tool-schema-refusal.test.ts": 2,
   // NOTE: Two readers in one test, and the second is the first one's control. The alert-channel test send

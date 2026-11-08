@@ -62,10 +62,13 @@ export function resetAckSendId(commandMessageId: number): string {
   return `reset-ack:${commandMessageId}`;
 }
 
-// Set on the private notes the engine writes to tell the team what a turn did, with the kind of note
-// as its value (`ACTIVITY_NOTE_KINDS`). A note is read back into a model's context by the monitoring
-// agent (`notesFromRows`), and these must not be: they describe the agent to the team, not the
-// conversation to the agent. A string and nothing else, for the reason `CHATWOOT_SEND_ID_KEY` is.
+// Set on the private notes and activity rows the engine writes to tell the team what a turn did, with
+// the kind as its value (`ACTIVITY_NOTE_KINDS`). A note is read back into a model's context by the
+// monitoring agent (`notesFromRows`), and these must not be: they describe the agent to the team, not
+// the conversation to the agent. A string and nothing else, for the reason `CHATWOOT_SEND_ID_KEY` is.
 export const CHATWOOT_ACTIVITY_NOTE_KEY = "fazer_ai_activity";
-export const ACTIVITY_NOTE_KINDS = ["tools"] as const;
+export const ACTIVITY_NOTE_KINDS = ["tools", "errors"] as const;
+// On a turn-errors message, what failed, so the next turn that fails the same way can tell it already
+// said so (`src/modules/conversation-notes/turn-errors.ts`). Tool names and our own reason words only.
+export const CHATWOOT_ERRORS_KEY_KEY = "fazer_ai_errors_key";
 export type ActivityNoteKind = (typeof ACTIVITY_NOTE_KINDS)[number];

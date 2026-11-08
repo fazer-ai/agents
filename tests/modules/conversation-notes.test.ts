@@ -63,7 +63,10 @@ describe("the conversationNotes block on the write path", () => {
     const next = mergeBehaviorSettings(stored, {
       conversationNotes: { toolsUsed: true },
     });
-    expect(next.conversationNotes).toEqual({ toolsUsed: true });
+    expect(next.conversationNotes).toEqual({
+      toolsUsed: true,
+      errors: "off",
+    });
     expect(next.takeover).toEqual({ onHumanReply: false });
     const off = mergeBehaviorSettings(next, {
       conversationNotes: { toolsUsed: false },

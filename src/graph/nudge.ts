@@ -36,6 +36,10 @@ import {
   contactAuthHasRuleStage,
 } from "@/modules/contact-auth/settings";
 import { postToolsUsedNote } from "@/modules/conversation-notes/tools-used";
+import {
+  postTurnErrors,
+  TurnErrors,
+} from "@/modules/conversation-notes/turn-errors";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
@@ -595,6 +599,9 @@ interface NudgeClosing {
   // The private note naming the tools the turn ran, when the agent asks for one. Posted last, so it
   // reads below whatever the turn sent.
   toolsUsedNote: () => Promise<void>;
+  // The message naming what the turn survived, when the agent asks for one. Only on a turn that
+  // returned: one that throws is retried or lost, and a lost one writes the failure note.
+  turnErrors: () => Promise<void>;
 }
 
 // EVERY PROACTIVE TURN CLOSES ON ONE LINE. The outcome line carries the messages the turn created
@@ -614,13 +621,19 @@ export async function runAgentNudge(
     recordToolSpeech: async () => {},
     releaseReservation: async () => {},
     toolsUsedNote: async () => {},
+    turnErrors: async () => {},
   };
+  let threw = false;
   try {
     return await runAgentNudgeBody(params, closing, turnStartedAt);
+  } catch (err) {
+    threw = true;
+    throw err;
   } finally {
     await closing.recordToolSpeech();
     await closing.releaseReservation();
     await closing.toolsUsedNote();
+    if (!threw) await closing.turnErrors();
     const sentMessageIds = closing.sentIds();
     if (closing.outcomeLine) {
       closing.outcomeLine();
@@ -1870,6 +1883,8 @@ async function runAgentNudgeBody(
     { conversationId: cfg.conversationDbId, threadId: params.threadId },
     base,
   );
+  // What this turn survives, for the turn-errors message the closing block posts.
+  const turnErrors = new TurnErrors();
   const graph = await buildModelAndGraph(cfg, tools, {
     standingNotices,
     makeModel: params.deps?.makeModel,
@@ -1890,7 +1905,8 @@ async function runAgentNudgeBody(
     signal: params.signal,
     // NOTE: the same line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one in the Logs.
-    onModelRetry: ({ attempt, provider, model }) =>
+    onModelRetry: ({ attempt, provider, model }) => {
+      turnErrors.modelRetried();
       emitFlowEvent(flow, {
         stage: "generate",
         level: "info",
@@ -1903,13 +1919,16 @@ async function runAgentNudgeBody(
         // NOTE: written before the retry runs; a retry that also comes back empty fails the send,
         // and that is the line that alerts.
         detail: { retriedEmptyResponse: attempt, willRetry: true },
-      }),
+      });
+    },
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the
     // primary was down: the reply went out, the customer was served, and the only trace would be a
     // usage row under another model's name. Warn rather than info — this is the operator's one
     // signal that a provider they are paying for is not taking their traffic.
-    onModelFallback: (info) =>
-      emitFallbackAnswered(flow, "generate", cfg.mc.provider, info),
+    onModelFallback: (info) => {
+      turnErrors.fallbackAnswered(info);
+      emitFallbackAnswered(flow, "generate", cfg.mc.provider, info);
+    },
     // NOTE: the turn's real ending when there was a second provider and it failed too. ATTRIBUTION,
     // not a second alarm, so `info` while `status` stays "error": the `generate` stage around this
     // call emits its OWN error when the turn throws, and alert coalescing keys on (channel, stage,
@@ -1978,6 +1997,18 @@ async function runAgentNudgeBody(
     tools,
     handedOff: () => handoffState.completed === true,
   });
+  if (cfg.turnErrors !== "off") {
+    const format = cfg.turnErrors;
+    closing.turnErrors = async () => {
+      await postTurnErrors({
+        client,
+        conversationId,
+        format,
+        items: turnErrors.items(toolLogger.failedTools()),
+        flow,
+      });
+    };
+  }
   if (cfg.toolsUsedNote) {
     closing.toolsUsedNote = async () => {
       await postToolsUsedNote({
@@ -2073,7 +2104,10 @@ async function runAgentNudgeBody(
       cfg: cfg.guardrails,
       apiKey: cfg.guardrailsApiKey,
       credentialBaseUrl: cfg.guardrailsCredentialBaseUrl,
-      announce: chatwootNoteSink(client, conversationId),
+      announce: async (r) => {
+        turnErrors.guardrail(r);
+        await chatwootNoteSink(client, conversationId)(r);
+      },
       flow,
       systemPrompt: cfg.systemPrompt,
       makeModel: params.deps?.makeModel,

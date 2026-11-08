@@ -394,6 +394,7 @@ export interface TakeoverState {
 // Mirrors agent.settings.conversationNotes / readConversationNotesConfig.
 export interface ConversationNotesState {
   toolsUsed: boolean;
+  errors: "off" | "activity" | "note";
 }
 
 // Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
@@ -4140,12 +4141,14 @@ export function BehaviorTab({
             title={t("editor.conversationNotes", "Notes in the conversation")}
             help={t(
               "editor.conversationNotesHelp",
-              "Private notes the agent leaves in the Chatwoot conversation for your team. The customer never sees them, and the agent does not read them back on later turns.",
+              "Notes and messages the agent leaves in the Chatwoot conversation for your team. The customer never sees them, and the agent does not read them back on later turns.",
             )}
           >
             <SwitchField
               checked={conversationNotes.toolsUsed}
-              onCheckedChange={(v) => setConversationNotes({ toolsUsed: v })}
+              onCheckedChange={(v) =>
+                setConversationNotes({ ...conversationNotes, toolsUsed: v })
+              }
               label={t(
                 "editor.conversationNotesToolsUsed",
                 "Leave a note with the tools used in each turn",
@@ -4155,6 +4158,42 @@ export function BehaviorTab({
                 "One note per turn that used a tool, with the tool names only. What each tool was given and returned stays out, since it can carry the customer's data; the Logs page shows it.",
               )}
             />
+            <FormField
+              label={t(
+                "editor.conversationNotesErrors",
+                "Errors in the middle of a turn",
+              )}
+              help={t(
+                "editor.conversationNotesErrorsHelp",
+                "When a tool fails, only the fallback model answers or a guardrail holds the reply, and the turn still ends, one message per turn says what failed, a short reason and whether the turn recovered, with a link to the turn on the Logs page.\n\nThe same failure on the next turns is not repeated. A turn that is lost already leaves its own note and hands the conversation over.",
+              )}
+            >
+              <Select
+                value={conversationNotes.errors}
+                onChange={(e) =>
+                  setConversationNotes({
+                    ...conversationNotes,
+                    errors: e.target.value as ConversationNotesState["errors"],
+                  })
+                }
+              >
+                <option value="off">
+                  {t("editor.conversationNotesErrorsOff", "Do not show")}
+                </option>
+                <option value="activity">
+                  {t(
+                    "editor.conversationNotesErrorsActivity",
+                    "Activity message (discreet, in the timeline)",
+                  )}
+                </option>
+                <option value="note">
+                  {t(
+                    "editor.conversationNotesErrorsNote",
+                    "Private note (stands out to the team)",
+                  )}
+                </option>
+              </Select>
+            </FormField>
           </Section>
 
           <Section

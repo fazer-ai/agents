@@ -130,6 +130,7 @@ export function makeConfig(
     logToolValues: false,
     fullDetail: false,
     toolsUsedNote: false,
+    turnErrors: "off",
     ...over,
   } as AgentConfig;
 }

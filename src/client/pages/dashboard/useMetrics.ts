@@ -120,6 +120,8 @@ interface View {
   win: Window;
   openedAt: Date;
   retentionDays: number | null;
+  // The tenant's first day, where an all-time window starts.
+  firstDay: string | null;
   // What a block's retry and a new view key their requests on.
   opening: number;
   shared: Map<string, Promise<Answer>>;
@@ -133,6 +135,7 @@ export function DashboardMetricsProvider({
   win,
   openedAt,
   retentionDays,
+  firstDay = null,
   children,
 }: {
   query: Query;
@@ -140,6 +143,7 @@ export function DashboardMetricsProvider({
   win: Window;
   openedAt: Date;
   retentionDays: number | null;
+  firstDay?: string | null;
   children: ReactNode;
 }) {
   const opening = openedAt.getTime();
@@ -147,8 +151,17 @@ export function DashboardMetricsProvider({
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new opening is a new set of requests.
   const shared = useMemo(() => new Map<string, Promise<Answer>>(), [opening]);
   const value = useMemo(
-    () => ({ query, prevQuery, win, openedAt, retentionDays, opening, shared }),
-    [query, prevQuery, win, openedAt, retentionDays, opening, shared],
+    () => ({
+      query,
+      prevQuery,
+      win,
+      openedAt,
+      retentionDays,
+      firstDay,
+      opening,
+      shared,
+    }),
+    [query, prevQuery, win, openedAt, retentionDays, firstDay, opening, shared],
   );
   return createElement(DashboardView.Provider, { value }, children);
 }
@@ -207,7 +220,12 @@ export function useMetricsBlock<T>(
       : ((pickRef.current as (b: unknown) => T | undefined)(block.data) ??
         null);
   const coverage = opts.flowLog
-    ? flowLogCoverage(view.win, view.openedAt, view.retentionDays)
+    ? flowLogCoverage(
+        view.win,
+        view.openedAt,
+        view.retentionDays,
+        view.firstDay,
+      )
     : null;
   return {
     data,

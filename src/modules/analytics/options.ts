@@ -23,7 +23,11 @@ export interface InboxOption extends FilterOption {
 export async function getFilterOptions(
   ctx: TenantContext,
   base: PrismaClient = metricsPrisma,
-): Promise<{ agents: FilterOption[]; inboxes: InboxOption[] }> {
+): Promise<{
+  agents: FilterOption[];
+  inboxes: InboxOption[];
+  firstConversationAt: Date | null;
+}> {
   return runMetricsScoped(base, ctx, async (db) => {
     const agents = await db.agent.findMany({
       select: { id: true, name: true },
@@ -37,9 +41,16 @@ export async function getFilterOptions(
       },
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
+    // Where an "all time" view starts: the console marks the flow-log days from there up to the
+    // retention cutoff as no data. One row through the (tenant, created_at) index.
+    const first = await db.conversation.findFirst({
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
     const seen = new Map<string, number>();
     for (const i of inboxes) seen.set(i.name, (seen.get(i.name) ?? 0) + 1);
     return {
+      firstConversationAt: first?.createdAt ?? null,
       agents: agents.map((a) => ({ id: String(a.id), name: a.name })),
       inboxes: inboxes.map((i) => ({
         id: String(i.id),

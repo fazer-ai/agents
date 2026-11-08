@@ -136,6 +136,10 @@ let retentionDays = 30;
 let logExpired = false;
 // The tenant a SUPER_ADMIN selected, deleted while the page loads: every metrics route refuses it.
 let tenantGone: string | null = null;
+// The KPIs' route fails; every other route answers.
+let kpisFail = false;
+// The tenant's first conversation, which an all-time view starts from; null for none.
+let firstConversationAt: string | null = null;
 let optionsFail = false;
 const ONE_INBOX = [{ id: "3", name: "WhatsApp" }];
 let inboxOptions: {
@@ -159,6 +163,7 @@ const stubFetch = (async (input: unknown) => {
         "X-Tenant-Id-Invalid": tenantGone,
       },
     });
+  if (p.endsWith("/metrics/kpis") && kpisFail) return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/kpis")) return json({ instance: "i", kpis });
   if (p.endsWith("/metrics/outcomes"))
     return json({
@@ -295,6 +300,7 @@ const stubFetch = (async (input: unknown) => {
       ],
       inboxes: inboxOptions,
       flowLogRetentionDays: retentionDays,
+      firstConversationAt,
     });
   return json({ error: "nope" }, 500);
 }) as unknown as typeof globalThis.fetch;
@@ -361,6 +367,8 @@ beforeEach(() => {
   costsHang = false;
   retentionDays = 30;
   tenantGone = null;
+  kpisFail = false;
+  firstConversationAt = null;
   logExpired = false;
 });
 afterEach(cleanup);
@@ -816,6 +824,20 @@ describe("the funnel's own controls", () => {
   });
 });
 
+describe("the funnel trend", () => {
+  test("loads on its own: a failed KPI request leaves the trend and its controls in place", async () => {
+    kpisFail = true;
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(has("Funnel over time")).toBe(true);
+      expect(asks("/metrics/outcomes").length).toBeGreaterThan(0);
+      // The KPIs' failure, with its retry, in their own slot.
+      expect(has("Could not load metrics.")).toBe(true);
+    });
+    expect(screen.queryAllByRole("radio", { name: "By agent" }).length).toBe(1);
+  });
+});
+
 describe("a block still loading", () => {
   test("offers no CSV until its figures arrive", async () => {
     const exportDaily = () =>
@@ -871,6 +893,18 @@ describe("silences and where the transfers went", () => {
 });
 
 describe("all time", () => {
+  test("starts at the tenant's first conversation, so flow-log days past retention read as no data", async () => {
+    retentionDays = 30;
+    logExpired = true;
+    firstConversationAt = new Date(Date.now() - 60 * 86_400_000).toISOString();
+    await renderDash("/?range=all");
+    await waitFor(() => {
+      expect(has("no data for")).toBe(true);
+    });
+    expect(has("No handoffs in this period.")).toBe(false);
+    expect(has("No warnings or errors in this period.")).toBe(false);
+  });
+
   test("silences before the first handoff keep their days", async () => {
     await renderDash("/?range=all");
     const rowsOf = (caption: string) =>

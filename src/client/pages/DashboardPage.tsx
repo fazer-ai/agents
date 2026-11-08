@@ -11,19 +11,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
-  DataBoundary,
   Input,
   PageContainer,
   SegmentedControl,
   Select,
-  Skeleton,
 } from "@/client/components";
 import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { type InboxOption, inboxOptionLabel } from "@/client/lib/inboxOption";
-import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
-import { metricsErrorMessage } from "./dashboard/Block";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
 import {
@@ -43,8 +39,6 @@ import {
 import { AutomationSection, HealthSection } from "./dashboard/HealthSection";
 import {
   DEFAULT_PERFORMANCE_VIEW,
-  KPI_GRID,
-  KPI_SPANS,
   type Kpis,
   PerformanceSection,
   type PerformanceView,
@@ -201,24 +195,6 @@ function FilterBar({
   );
 }
 
-const SKELETON_KEYS = ["k0", "k1", "k2", "k3", "k4"];
-
-function DashboardSkeleton() {
-  return (
-    <div className="flex flex-col gap-6" aria-hidden="true">
-      <div className="@container">
-        <div className={KPI_GRID}>
-          {SKELETON_KEYS.map((k, i) => (
-            <Skeleton key={k} className={cn("h-24 w-full", KPI_SPANS[i])} />
-          ))}
-        </div>
-      </div>
-      <Skeleton className="h-28 w-full" />
-      <Skeleton className="h-72 w-full" />
-    </div>
-  );
-}
-
 function DashboardBlocks({
   filters,
   win,
@@ -234,7 +210,6 @@ function DashboardBlocks({
   view: PerformanceView;
   onView: (patch: Partial<PerformanceView>) => void;
 }) {
-  const { t } = useTranslation();
   const kpis = useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis);
   const prevKpis = useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis, {
     which: "previous",
@@ -242,28 +217,16 @@ function DashboardBlocks({
   return (
     <div className="flex min-w-0 flex-col gap-8">
       <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
-        <DataBoundary
-          loading={kpis.loading && !kpis.data}
-          error={kpis.error}
-          errorStatus={kpis.status ?? undefined}
-          onRetry={kpis.reload}
-          loadingLabel={t("dashboard.loading", "Loading metrics…")}
-          errorLabel={metricsErrorMessage(t, kpis.status, kpis.field)}
-          skeleton={<DashboardSkeleton />}
-        >
-          {kpis.data && (
-            <PerformanceSection
-              filters={filters}
-              win={win}
-              prev={prev}
-              kpis={kpis.data}
-              prevKpis={prevKpis.data}
-              onFilter={onFilter}
-              view={view}
-              onView={onView}
-            />
-          )}
-        </DataBoundary>
+        <PerformanceSection
+          filters={filters}
+          win={win}
+          prev={prev}
+          kpis={kpis}
+          prevKpis={prevKpis.data}
+          onFilter={onFilter}
+          view={view}
+          onView={onView}
+        />
       </div>
 
       <ReasonsSection win={win} />
@@ -302,6 +265,7 @@ export function DashboardPage() {
   );
   const [inboxes, setInboxes] = useState<InboxOption[] | null>(null);
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
+  const [firstDay, setFirstDay] = useState<string | null>(null);
   const [perfView, setPerfView] = useState<PerformanceView>(
     DEFAULT_PERFORMANCE_VIEW,
   );
@@ -323,6 +287,11 @@ export function DashboardPage() {
         setAgents(r.data.agents);
         setInboxes(r.data.inboxes);
         setRetentionDays(r.data.flowLogRetentionDays);
+        setFirstDay(
+          r.data.firstConversationAt
+            ? localDayKey(new Date(r.data.firstConversationAt))
+            : null,
+        );
       })
       .catch(() => {});
   }, []);
@@ -419,6 +388,7 @@ export function DashboardPage() {
         win={win}
         openedAt={openedAt}
         retentionDays={retentionDays}
+        firstDay={firstDay}
       >
         <DashboardBlocks
           filters={filters}

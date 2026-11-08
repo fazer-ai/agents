@@ -225,7 +225,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/flowlog-astral-detail.test.ts": 1,
   "tests/modules/flowlog-debug-mode-e2e.test.ts": 2,
   "tests/modules/flowlog-detail-pii.test.ts": 1,
-  "tests/modules/flowlog-retention.test.ts": 2,
+  "tests/modules/flowlog-retention.test.ts": 1,
   "tests/modules/flowlog-settle.test.ts": 1,
   "tests/modules/flowlog.test.ts": 1,
   // NOTE: Two reads, tenant-wide on purpose: their subject is HOW MANY lines a lost follow-up sequence wrote

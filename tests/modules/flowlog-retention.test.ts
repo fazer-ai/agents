@@ -10,7 +10,6 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import {
-  emptyKeptDays,
   ensureFlowlogSweep,
   forgetSweepBatchSizesForTest,
   nextBatchSize,
@@ -123,130 +122,6 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     });
     const turns = remaining.map((r) => r.turnId).sort();
     expect(turns).toEqual(["new1"]);
-  });
-
-  // The kept days and their queue have no reader any more: their tables stay one release for a
-  // rollback, and the sweep empties both for the tenant, so a rollback never reads a kept day whose
-  // invalidation was dropped.
-  test("empties the tenant's kept days and their queue, and no other tenant's", async () => {
-    const other = (
-      await suDb.tenant.create({
-        data: { name: "FlowR2", slug: `flow-r2-${process.pid}` },
-      })
-    ).id;
-    try {
-      for (const t of [tenantId, other])
-        await suDb.$executeRawUnsafe(
-          `INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
-           VALUES (${t}, 'v', 'k', 'UTC', '2026-09-01', 'conv', '{}');
-           INSERT INTO dashboard_dirty (tenant_id, section) VALUES (${t}, 'probe')`,
-        );
-      registerFlowlogRetentionHandler();
-      const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
-        ReturnType<typeof getJobHandler>
-      >;
-      await handler(
-        {
-          id: phantomJobId,
-          tenantId,
-          kind: "FLOWLOG_SWEEP",
-          payload: {},
-          attempts: 0,
-          claimSeq: 0,
-        },
-        appDb,
-      );
-      const count = async (table: string, t: bigint) =>
-        Number(
-          (
-            await suDb.$queryRawUnsafe<{ n: number }[]>(
-              `SELECT COUNT(*)::int AS n FROM ${table} WHERE tenant_id = ${t}`,
-            )
-          )[0]?.n,
-        );
-      expect(await count("dashboard_days", tenantId)).toBe(0);
-      expect(await count("dashboard_dirty", tenantId)).toBe(0);
-      expect(await count("dashboard_days", other)).toBe(1);
-      expect(await count("dashboard_dirty", other)).toBe(1);
-    } finally {
-      for (const table of ["dashboard_days", "dashboard_dirty"])
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE tenant_id IN (${tenantId}, ${other})`,
-        );
-      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${other}`);
-    }
-  });
-
-  // Each batch of the kept days commits on its own, after the log is pruned: a tenant whose kept days
-  // outlast one transaction's budget keeps the log's pruning, and the queue of a day still kept.
-  test("a failure emptying the kept days takes back neither the log's pruning nor a kept day's queue", async () => {
-    const old = new Date(
-      Date.now() - (config.flowlog.retentionDays + 5) * 86_400_000,
-    );
-    await suDb.$executeRawUnsafe(
-      `INSERT INTO execution_logs (tenant_id, turn_id, stage, level, source, created_at)
-       VALUES (${tenantId}, 'stale', 'generate', 'info', 'inbox', '${old.toISOString()}');
-       INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
-       VALUES (${tenantId}, 'v', 'k', 'UTC', '2026-09-01', 'conv', '{}');
-       INSERT INTO dashboard_dirty (tenant_id, section) VALUES (${tenantId}, 'probe')`,
-    );
-    // Stands in for a delete that ran out of time: only this tenant's kept days refuse it.
-    await suDb.$executeRawUnsafe(
-      `CREATE FUNCTION retention_test_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
-       BEGIN
-         IF OLD.tenant_id = ${tenantId} THEN RAISE EXCEPTION 'out of time' USING ERRCODE = '57014'; END IF;
-         RETURN OLD;
-       END $$`,
-    );
-    await suDb.$executeRawUnsafe(
-      `CREATE TRIGGER retention_test_refuse BEFORE DELETE ON dashboard_days
-       FOR EACH ROW EXECUTE FUNCTION retention_test_refuse()`,
-    );
-    try {
-      registerFlowlogRetentionHandler();
-      const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
-        ReturnType<typeof getJobHandler>
-      >;
-      const outcome = await handler(
-        {
-          id: phantomJobId,
-          tenantId,
-          kind: "FLOWLOG_SWEEP",
-          payload: {},
-          attempts: 0,
-          claimSeq: 0,
-        },
-        appDb,
-      ).catch((e: unknown) => e);
-      expect(outcome).toBeInstanceOf(Error);
-      // flowlog-scope: tenant-wide, the assertion is that the stale line is gone.
-      const stale = await flowLogRows(suDb, {
-        orderBy: { id: "asc" },
-        where: { tenantId, turnId: "stale" },
-        select: { turnId: true },
-      });
-      expect(stale).toEqual([]);
-      const count = async (table: string) =>
-        Number(
-          (
-            await suDb.$queryRawUnsafe<{ n: number }[]>(
-              `SELECT COUNT(*)::int AS n FROM ${table} WHERE tenant_id = ${tenantId}`,
-            )
-          )[0]?.n,
-        );
-      expect(await count("dashboard_days")).toBe(1);
-      // The probe, and whatever the log's own triggers queued for the inserted line.
-      expect(await count("dashboard_dirty")).toBeGreaterThan(0);
-    } finally {
-      await suDb.$executeRawUnsafe(
-        "DROP TRIGGER retention_test_refuse ON dashboard_days",
-      );
-      await suDb.$executeRawUnsafe("DROP FUNCTION retention_test_refuse()");
-      for (const table of ["dashboard_days", "dashboard_dirty"])
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
-        );
-    }
   });
 });
 
@@ -632,42 +507,4 @@ describe.skipIf(!dbUp)("flowlog retention under a backlog", () => {
     expect(r).toEqual({ deleted: 10, done: true, timeouts: 0 });
     expect(await expiredLeft()).toBe(0);
   }, 30_000);
-
-  // The kept days share the sweep's pass budget: past the pass's end no further batch starts, but a
-  // pass always takes one, so a pass the log's sweep spent still makes progress on them.
-  test("the kept days take one batch past the pass's end, and the rest in the next pass", async () => {
-    const tenantId = (
-      await suDb.tenant.create({
-        data: { name: "FlowKept", slug: `flow-kept-${process.pid}` },
-      })
-    ).id;
-    await suDb.$executeRawUnsafe(
-      `INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
-       SELECT ${tenantId}, 'v', 'k' || g, 'UTC', '2026-09-01', 'conv', '{}'
-         FROM generate_series(1, ${SWEEP_BATCH_ROWS + 3}) g`,
-    );
-    const count = async () =>
-      Number(
-        (
-          await suDb.$queryRawUnsafe<{ n: number }[]>(
-            `SELECT COUNT(*)::int AS n FROM dashboard_days WHERE tenant_id = ${tenantId}`,
-          )
-        )[0]?.n,
-      );
-    try {
-      expect(await emptyKeptDays(appDb, tenantId, Date.now() - 1)).toBe(false);
-      expect(await count()).toBe(3);
-      expect(await emptyKeptDays(appDb, tenantId, Date.now() + 60_000)).toBe(
-        true,
-      );
-      expect(await count()).toBe(0);
-    } finally {
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM dashboard_days WHERE tenant_id = ${tenantId}`,
-      );
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM tenants WHERE id = ${tenantId}`,
-      );
-    }
-  });
 });

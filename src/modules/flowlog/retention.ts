@@ -34,11 +34,6 @@ const SWEEP_PAUSE_MS = 100;
 const TURN_DELIVERY_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 // The proactive breaker's automatic limit reads the largest 24h of the last 30 days from these rows.
 const PROACTIVE_DELIVERY_RETENTION_MS = 31 * 24 * 60 * 60 * 1000;
-// The dashboard's kept days and their queue of late changes have no reader since the console reads
-// each block directly (docs/dashboard.md, "How the console loads"). Their tables and triggers stay one
-// release, for a rollback to the previous image. The sweep empties both, the kept days with the queue
-// that would have invalidated them, so a rollback finds either everything it kept (before the first
-// sweep) or nothing, and computes its days again: never a kept day a change no longer reaches.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -207,10 +202,6 @@ export async function sweepFlowlog(
   return { deleted, done: true, timeouts };
 }
 
-// Tenants whose log is within the window and whose kept days a pass left unfinished. Kept per
-// process; a restart sweeps the log once more first.
-const keptDaysLeft = new Set<string>();
-
 let handlerOptionsForTest: SweepOptions = {};
 /** Test-only: the options the job handler passes to `sweepFlowlog`. Production never calls it. */
 export function setSweepOptionsForTest(opts: SweepOptions): void {
@@ -221,19 +212,11 @@ export async function flowlogSweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {
-  const key = String(job.tenantId);
-  const passEnds = Date.now() + (handlerOptionsForTest.passMs ?? SWEEP_PASS_MS);
-  // A tenant whose log is already within the window and whose kept days were cut goes straight to
-  // them: the log's checks are not run again before every pass of the kept days.
-  const swept = keptDaysLeft.has(key)
-    ? { deleted: 0, done: true, timeouts: 0 }
-    : await sweepFlowlog(base, job.tenantId, handlerOptionsForTest);
-  const { deleted, timeouts } = swept;
-  // The kept days go once the log is within the window, on what is left of the same pass.
-  const done =
-    swept.done && (await emptyKeptDays(base, job.tenantId, passEnds));
-  if (swept.done && !done) keptDaysLeft.add(key);
-  else keptDaysLeft.delete(key);
+  const { deleted, done, timeouts } = await sweepFlowlog(
+    base,
+    job.tenantId,
+    handlerOptionsForTest,
+  );
   if (timeouts > 0)
     logger.warn(
       { tenantId: String(job.tenantId), timeouts },
@@ -248,40 +231,6 @@ export async function flowlogSweepHandler(
     outcome: "reschedule",
     runAt: new Date(Date.now() + (done ? SWEEP_INTERVAL_MS : SWEEP_CATCHUP_MS)),
   };
-}
-
-// Each batch commits on its own, after the log is pruned, and none starts past the pass's end: a
-// tenant with a backlog of kept days keeps what it emptied and goes on in the next short pass, and
-// never takes the log's pruning back with it. The kept days go before their queue, so a day still
-// kept always has its invalidations. Raw SQL: the tables have no Prisma model any more. Gone already
-// on a database a later release migrated, hence the check. Resolves to whether both are empty.
-export async function emptyKeptDays(
-  base: PrismaClient,
-  tenantId: bigint,
-  deadline: number,
-): Promise<boolean> {
-  for (const table of ["dashboard_days", "dashboard_dirty"]) {
-    const found = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.$queryRaw<{ t: string | null }[]>(
-        Prisma.sql`SELECT to_regclass(${table})::text AS t`,
-      ),
-    );
-    if (!found[0]?.t) continue;
-    const name = Prisma.raw(`"${table}"`);
-    let first = true;
-    while (true) {
-      // At least one batch per pass, so a pass the log's sweep spent still makes progress here.
-      if (!first && Date.now() >= deadline) return false;
-      first = false;
-      const deleted = await runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.$executeRaw(Prisma.sql`
-          DELETE FROM ${name}
-          WHERE id IN (SELECT id FROM ${name} LIMIT ${SWEEP_BATCH_ROWS})`),
-      );
-      if (deleted < SWEEP_BATCH_ROWS) break;
-    }
-  }
-  return true;
 }
 
 let registered = false;

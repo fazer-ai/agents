@@ -42,12 +42,12 @@ export type TurnErrorItem =
 // Past this many tools the rest is counted, so a runaway turn still posts a short message.
 export const TURN_ERRORS_MAX_TOOLS = 10;
 
-// The closed list a reason is read into. The first line of an HTTP tool's failure is `HTTP <status>`
-// (src/graph/tools/http.ts), and a provider's failure names its status the same way.
+// The closed list a reason is read into. A status is read only where the engine wrote it, at the
+// start of the cause: an HTTP tool's failure begins `HTTP <status>` (src/graph/tools/http.ts), and so
+// does a provider failure's reason. A number anywhere else may be the customer's (a code, an amount),
+// so the rest is matched by words alone and never copied.
 export function errorReason(cause: string): string {
-  const http =
-    /\bHTTP (\d{3})\b/.exec(cause) ??
-    /\b(?:status|code)[ :=]+(\d{3})\b/i.exec(cause);
+  const http = /^HTTP ([1-5]\d\d)\b/.exec(cause.trimStart());
   if (http) return `HTTP ${http[1]}`;
   if (/time ?out|timed out|deadline|abort/i.test(cause))
     return "tempo esgotado";
@@ -57,11 +57,9 @@ export function errorReason(cause: string): string {
     )
   )
     return "sem conexão";
-  if (
-    /\b(?:401|403)\b|unauthori[sz]ed|forbidden|credential|api key/i.test(cause)
-  )
+  if (/unauthori[sz]ed|forbidden|credential|api key/i.test(cause))
     return "credencial recusada";
-  if (/\b429\b|rate.?limit/i.test(cause)) return "limite de uso";
+  if (/rate.?limit|too many requests/i.test(cause)) return "limite de uso";
   return "erro";
 }
 
@@ -76,7 +74,8 @@ export class TurnErrors {
   }[] = [];
 
   fallbackAnswered(info: { reason: string; failure: string }): void {
-    this.fallback = errorReason(`${info.failure} ${info.reason}`);
+    // NOTE: The reason first, where a provider failure names its status.
+    this.fallback = errorReason(`${info.reason} ${info.failure}`);
   }
 
   modelRetried(): void {

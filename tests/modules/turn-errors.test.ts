@@ -93,12 +93,19 @@ describe("the two notes are set apart", () => {
 describe("errorReason", () => {
   test("reads a cause into a closed list, never quoting it", () => {
     expect(errorReason("HTTP 500")).toBe("HTTP 500");
-    expect(errorReason("upstream said status 503")).toBe("HTTP 503");
+    expect(errorReason("upstream said status 503")).toBe("erro");
     expect(errorReason("The operation timed out")).toBe("tempo esgotado");
     expect(errorReason("fetch failed: ECONNREFUSED 10.0.0.5:8080")).toBe(
       "sem conexão",
     );
     expect(errorReason("401 Unauthorized")).toBe("credencial recusada");
+    // A number the engine did not put first may be the customer's, and is never copied.
+    for (const cause of [
+      "invalid security code: 123",
+      "pedido 404 não encontrado",
+      "valor HTTP 500 informado",
+    ])
+      expect(errorReason(cause)).toBe("erro");
     expect(
       errorReason(
         "cliente Ana Souza cpf 123.456.789-09 em /srv/app/x.ts token abc",

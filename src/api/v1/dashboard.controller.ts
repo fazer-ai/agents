@@ -22,7 +22,7 @@ import {
   BREAKDOWN_DIMENSIONS,
   getBreakdown,
 } from "@/modules/analytics/breakdown";
-import type { DashboardFilter } from "@/modules/analytics/filter";
+import { type DashboardFilter, flowLogFloor } from "@/modules/analytics/filter";
 import { getHealth } from "@/modules/analytics/health";
 import { getFilterOptions } from "@/modules/analytics/options";
 import { normalizeTimeZone } from "@/modules/analytics/service";
@@ -107,6 +107,20 @@ export function parseDashboardFilter(query: {
     // Refused here, for every route that takes the filter: a read that buckets no days (the KPIs,
     // the breakdown, the labels) never looks at the zone, and must not accept one it cannot read.
     tz: query.tz === undefined ? undefined : normalizeTimeZone(query.tz),
+  };
+}
+
+// The flow log's floor for this request, taken once: the read starts there, and the answer carries it
+// so the console marks as no data exactly the days the read left out, whatever the clock said when
+// the view was opened.
+function withFlowLogFloor(filter: DashboardFilter): {
+  filter: DashboardFilter;
+  flowLogFrom: string;
+} {
+  const now = Date.now();
+  return {
+    filter: { ...filter, flowLogNow: now },
+    flowLogFrom: flowLogFloor(filter.tz ?? "UTC", now).toISOString(),
   };
 }
 
@@ -198,14 +212,17 @@ export const dashboardController = new Elysia({
   )
   .get(
     "/handoffs",
-    async ({ tenantContext, query }) => ({
-      instance: instanceIdentity,
-      handoffs: await (async () => {
-        const ctx = ctxOrThrow(tenantContext);
-        const filter = parseDashboardFilter(query);
-        return getHandoffReasons(ctx, filter);
-      })(),
-    }),
+    async ({ tenantContext, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const { filter, flowLogFrom } = withFlowLogFloor(
+        parseDashboardFilter(query),
+      );
+      return {
+        instance: instanceIdentity,
+        handoffs: await getHandoffReasons(ctx, filter),
+        flowLogFrom,
+      };
+    },
     {
       requireAuth: true,
       query: filterOnly,
@@ -238,14 +255,17 @@ export const dashboardController = new Elysia({
   )
   .get(
     "/health",
-    async ({ tenantContext, query }) => ({
-      instance: instanceIdentity,
-      health: await (async () => {
-        const ctx = ctxOrThrow(tenantContext);
-        const filter = parseDashboardFilter(query);
-        return getHealth(ctx, filter);
-      })(),
-    }),
+    async ({ tenantContext, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const { filter, flowLogFrom } = withFlowLogFloor(
+        parseDashboardFilter(query),
+      );
+      return {
+        instance: instanceIdentity,
+        health: await getHealth(ctx, filter),
+        flowLogFrom,
+      };
+    },
     {
       requireAuth: true,
       query: filterOnly,
@@ -258,14 +278,17 @@ export const dashboardController = new Elysia({
   )
   .get(
     "/follow-ups",
-    async ({ tenantContext, query }) => ({
-      instance: instanceIdentity,
-      followUps: await (async () => {
-        const ctx = ctxOrThrow(tenantContext);
-        const filter = parseDashboardFilter(query);
-        return getFollowUpActivity(ctx, filter);
-      })(),
-    }),
+    async ({ tenantContext, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const { filter, flowLogFrom } = withFlowLogFloor(
+        parseDashboardFilter(query),
+      );
+      return {
+        instance: instanceIdentity,
+        followUps: await getFollowUpActivity(ctx, filter),
+        flowLogFrom,
+      };
+    },
     {
       requireAuth: true,
       query: filterOnly,

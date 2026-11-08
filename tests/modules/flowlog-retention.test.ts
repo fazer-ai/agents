@@ -10,6 +10,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import {
+  emptyKeptDays,
   ensureFlowlogSweep,
   forgetSweepBatchSizesForTest,
   nextBatchSize,
@@ -631,4 +632,42 @@ describe.skipIf(!dbUp)("flowlog retention under a backlog", () => {
     expect(r).toEqual({ deleted: 10, done: true, timeouts: 0 });
     expect(await expiredLeft()).toBe(0);
   }, 30_000);
+
+  // The kept days share the sweep's pass budget: past the pass's end no batch starts, and the handler
+  // runs again shortly instead of holding the scheduler's lane.
+  test("the kept days stop at the pass's end and are taken up again by the next pass", async () => {
+    const tenantId = (
+      await suDb.tenant.create({
+        data: { name: "FlowKept", slug: `flow-kept-${process.pid}` },
+      })
+    ).id;
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
+       SELECT ${tenantId}, 'v', 'k' || g, 'UTC', '2026-09-01', 'conv', '{}'
+         FROM generate_series(1, 3) g`,
+    );
+    const count = async () =>
+      Number(
+        (
+          await suDb.$queryRawUnsafe<{ n: number }[]>(
+            `SELECT COUNT(*)::int AS n FROM dashboard_days WHERE tenant_id = ${tenantId}`,
+          )
+        )[0]?.n,
+      );
+    try {
+      expect(await emptyKeptDays(appDb, tenantId, Date.now() - 1)).toBe(false);
+      expect(await count()).toBe(3);
+      expect(await emptyKeptDays(appDb, tenantId, Date.now() + 60_000)).toBe(
+        true,
+      );
+      expect(await count()).toBe(0);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM dashboard_days WHERE tenant_id = ${tenantId}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+  });
 });

@@ -33,6 +33,20 @@ describe("a flow-log block's coverage", () => {
     expect(hasNoData(c)).toBe(true);
   });
 
+  test("marks from the floor the server read from, not from the opening's clock", () => {
+    // Opened at noon on Sep 30, read after midnight: the server's floor is the start of Sep 1.
+    const c = flowLogCoverage(
+      win("2026-08-27", "2026-09-30"),
+      openedAt,
+      30,
+      null,
+      new Date("2026-09-01T00:00:00").toISOString(),
+    );
+    expect(c?.noData).toBe(5);
+    expect(dayState(c, "2026-08-31")).toBe("noData");
+    expect(dayState(c, "2026-09-01")).toBe("ready");
+  });
+
   test("has nothing to mark in a window inside the retention", () => {
     const c = flowLogCoverage(win("2026-09-01", "2026-09-30"), openedAt, 30);
     expect(c?.noData).toBe(0);

@@ -2,6 +2,7 @@ import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
 import config from "@/config";
+import { flowLogFloor } from "@/modules/analytics/filter";
 import type { DashboardKpis } from "@/modules/analytics/service";
 import {
   type MockUserEntity,
@@ -38,6 +39,18 @@ const getFilterOptions = spyOn(options, "getFilterOptions").mockImplementation(
     inboxes: [],
   })) as unknown as typeof options.getFilterOptions,
 );
+const activity = await import("@/modules/analytics/activity");
+const getFollowUpActivity = spyOn(
+  activity,
+  "getFollowUpActivity",
+).mockImplementation((async (
+  _ctx: unknown,
+  filter: { flowLogNow?: number },
+) => {
+  seenFlowLogNow = filter.flowLogNow;
+  return { stepsSent: 0, conversations: 0, cameBack: 0, closedByLastStep: 0 };
+}) as unknown as typeof activity.getFollowUpActivity);
+let seenFlowLogNow: number | undefined;
 const analytics = await import("@/modules/analytics/service");
 const getKpis = spyOn(analytics, "getKpis").mockImplementation(
   (async () => kpis) as unknown as typeof analytics.getKpis,
@@ -45,6 +58,7 @@ const getKpis = spyOn(analytics, "getKpis").mockImplementation(
 const app = (await import("@/app")).default;
 afterAll(() => {
   getKpis.mockRestore();
+  getFollowUpActivity.mockRestore();
   getFilterOptions.mockRestore();
 });
 
@@ -77,6 +91,27 @@ describe("GET /v1/metrics/filter-options response contract", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { flowLogRetentionDays: unknown };
     expect(body.flowLogRetentionDays).toBe(config.flowlog.retentionDays);
+  });
+});
+
+describe("a flow-log route's answer", () => {
+  // The console marks the days before this floor as no data: the read and the mark take the same
+  // instant, so a view opened before midnight and read after it marks the day the read left out.
+  test("carries the floor its read started at, taken at the instant the read used", async () => {
+    const BunReq = (globalThis as unknown as { BunRequest: typeof Request })
+      .BunRequest;
+    const res = await app.handle(
+      new BunReq(
+        "http://localhost/api/v1/metrics/follow-ups?tz=America%2FSao_Paulo",
+        { headers: { cookie: await adminCookie() } },
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { flowLogFrom: unknown };
+    expect(typeof seenFlowLogNow).toBe("number");
+    expect(body.flowLogFrom).toBe(
+      flowLogFloor("America/Sao_Paulo", seenFlowLogNow as number).toISOString(),
+    );
   });
 });
 

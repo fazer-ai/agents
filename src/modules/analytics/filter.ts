@@ -24,6 +24,9 @@ export interface DashboardFilter {
   inboxId?: bigint;
   // IANA zone the daily buckets are cut in; validated by the caller (normalizeTimeZone).
   tz?: string;
+  // The instant the flow log's floor is taken at (flowLogFloor); now when absent. A route that reads
+  // the flow log sets it and answers the floor it gives, so the console marks the same days as no data.
+  flowLogNow?: number;
 }
 
 const NON_TURN = Prisma.join(NON_AGENT_TURN_NODES.map((n) => Prisma.sql`${n}`));
@@ -135,7 +138,7 @@ export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
   const agent = f.agentId ?? null;
   const inbox = f.inboxId ?? null;
   // As text: node-pg writes a Date in the process's zone, which a test file may have changed.
-  const floor = flowLogFloor(zoneOrRefuse(f.tz)).toISOString();
+  const floor = flowLogFloor(zoneOrRefuse(f.tz), f.flowLogNow).toISOString();
   return Prisma.sql`${windowSql(Prisma.sql`${l}.created_at`, f)}
     AND ${l}.created_at >= (${floor}::timestamptz AT TIME ZONE 'UTC')
     AND (${source}::text IS NULL OR ${l}.source = ${source})

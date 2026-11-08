@@ -110,15 +110,24 @@ export function hasNoData(coverage: BlockCoverage | null | undefined): boolean {
   return (coverage?.noData ?? 0) > 0;
 }
 
+function floorOf(body: unknown): string | null {
+  const v = (body as { flowLogFrom?: unknown } | null)?.flowLogFrom;
+  return typeof v === "string" ? v : null;
+}
+
 export function flowLogCoverage(
   win: Window,
   openedAt: Date,
   retentionDays: number | null,
   earliest?: string | null,
+  // The floor the server read from (`flowLogFrom` in the answer), which wins over the opening's clock.
+  floor?: string | null,
 ): BlockCoverage | null {
   if (retentionDays === null) return null;
   const cutoffDay = localDayKey(
-    new Date(openedAt.getTime() - retentionDays * 86_400_000),
+    floor
+      ? new Date(floor)
+      : new Date(openedAt.getTime() - retentionDays * 86_400_000),
   );
   const days = daysOf(win, earliest);
   const gone = days.filter((d) => d < cutoffDay);
@@ -287,6 +296,7 @@ export function useMetricsBlock<T>(
         view.openedAt,
         view.retentionDays,
         view.firstDay,
+        floorOf(block.data),
       )
     : null;
   return {

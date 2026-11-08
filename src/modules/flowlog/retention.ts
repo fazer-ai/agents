@@ -217,11 +217,12 @@ export async function flowlogSweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {
-  const { deleted, done, timeouts } = await sweepFlowlog(
-    base,
-    job.tenantId,
-    handlerOptionsForTest,
-  );
+  const passEnds = Date.now() + (handlerOptionsForTest.passMs ?? SWEEP_PASS_MS);
+  const swept = await sweepFlowlog(base, job.tenantId, handlerOptionsForTest);
+  const { deleted, timeouts } = swept;
+  // The kept days go once the log is within the window, on what is left of the same pass.
+  const done =
+    swept.done && (await emptyKeptDays(base, job.tenantId, passEnds));
   if (timeouts > 0)
     logger.warn(
       { tenantId: String(job.tenantId), timeouts },
@@ -232,22 +233,22 @@ export async function flowlogSweepHandler(
       { tenantId: String(job.tenantId), deleted },
       "flowlog sweep: pass ran out of time with a backlog left; running again shortly",
     );
-  await emptyKeptDays(base, job.tenantId);
   return {
     outcome: "reschedule",
     runAt: new Date(Date.now() + (done ? SWEEP_INTERVAL_MS : SWEEP_CATCHUP_MS)),
   };
 }
 
-// Each batch commits on its own, after the log is pruned: a tenant with more kept days than one
-// transaction's budget deletes keeps what it emptied and goes on the next day, and never takes the
-// log's pruning back with it. The kept days go before their queue, so a day still kept always has
-// its invalidations. Raw SQL: the tables have no Prisma model any more. Gone already on a database a
-// later release migrated, hence the check.
-async function emptyKeptDays(
+// Each batch commits on its own, after the log is pruned, and none starts past the pass's end: a
+// tenant with a backlog of kept days keeps what it emptied and goes on in the next short pass, and
+// never takes the log's pruning back with it. The kept days go before their queue, so a day still
+// kept always has its invalidations. Raw SQL: the tables have no Prisma model any more. Gone already
+// on a database a later release migrated, hence the check. Resolves to whether both are empty.
+export async function emptyKeptDays(
   base: PrismaClient,
   tenantId: bigint,
-): Promise<void> {
+  deadline: number,
+): Promise<boolean> {
   for (const table of ["dashboard_days", "dashboard_dirty"]) {
     const found = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.$queryRaw<{ t: string | null }[]>(
@@ -257,6 +258,7 @@ async function emptyKeptDays(
     if (!found[0]?.t) continue;
     const name = Prisma.raw(`"${table}"`);
     while (true) {
+      if (Date.now() >= deadline) return false;
       const deleted = await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.$executeRaw(Prisma.sql`
           DELETE FROM ${name}
@@ -265,6 +267,7 @@ async function emptyKeptDays(
       if (deleted < SWEEP_BATCH_ROWS) break;
     }
   }
+  return true;
 }
 
 let registered = false;

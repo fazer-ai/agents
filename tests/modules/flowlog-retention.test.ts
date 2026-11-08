@@ -1,8 +1,27 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
-import { registerFlowlogRetentionHandler } from "@/modules/flowlog/retention";
+import {
+  ensureFlowlogSweep,
+  forgetSweepBatchSizesForTest,
+  nextBatchSize,
+  registerFlowlogRetentionHandler,
+  SWEEP_BATCH_ROWS,
+  SWEEP_BOOT_DELAY_MS,
+  SWEEP_CATCHUP_MS,
+  SWEEP_PASS_MS,
+  setSweepOptionsForTest,
+  sweepBatchSizeForTest,
+  sweepFlowlog,
+} from "@/modules/flowlog/retention";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler, type JobResult } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -104,4 +123,388 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     const turns = remaining.map((r) => r.turnId).sort();
     expect(turns).toEqual(["new1"]);
   });
+});
+
+// A backlog on a database where each DELETE statement is slow, which is what a large production
+// table with its triggers and indexes is: a statement-level trigger on this tenant's deletes sleeps a
+// fraction of the transaction timeout, so three batches in one transaction outlive it and three
+// batches in three transactions do not.
+describe.skipIf(!dbUp)("flowlog retention under a backlog", () => {
+  let backlogTenant = 0n;
+  let jobId = 0n;
+  const trig = `flowlog_slow_${process.pid}`;
+  const sleepSec = (config.dbTx.timeoutMs * 0.4) / 1000;
+
+  const expiredAt = () =>
+    new Date(Date.now() - (config.flowlog.retentionDays + 3) * 86_400_000);
+  async function seedExpired(rows: number) {
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO execution_logs (tenant_id, turn_id, stage, level, source, created_at)
+       SELECT ${backlogTenant}, 'old' || g, 'generate', 'info', 'inbox', '${expiredAt().toISOString()}'
+         FROM generate_series(1, ${rows}) g`,
+    );
+  }
+  async function expiredLeft(): Promise<number> {
+    const r = await suDb.$queryRawUnsafe<{ n: number }[]>(
+      `SELECT count(*)::int AS n FROM execution_logs
+        WHERE tenant_id = ${backlogTenant} AND created_at < now() - interval '${config.flowlog.retentionDays} days'`,
+    );
+    return r[0]?.n ?? -1;
+  }
+  function job(): ClaimedJob {
+    return {
+      id: jobId,
+      tenantId: backlogTenant,
+      kind: "FLOWLOG_SWEEP",
+      payload: {},
+      attempts: 0,
+      claimSeq: 0,
+    };
+  }
+
+  beforeAll(async () => {
+    jobId = await burnSchedulerJobId(suDb);
+    backlogTenant = (
+      await suDb.tenant.create({
+        data: { name: "FlowBacklog", slug: `flow-backlog-${process.pid}` },
+      })
+    ).id;
+    await suDb.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION ${trig}() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF current_setting('app.tenant_id', true) = '${backlogTenant}' THEN
+           PERFORM pg_sleep(${sleepSec});
+         END IF;
+         RETURN NULL;
+       END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${trig} AFTER DELETE ON execution_logs
+       FOR EACH STATEMENT EXECUTE FUNCTION ${trig}()`,
+    );
+    registerFlowlogRetentionHandler();
+  });
+
+  afterAll(async () => {
+    setSweepOptionsForTest({});
+    await suDb.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS ${trig} ON execution_logs`,
+    );
+    await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${trig}()`);
+    if (backlogTenant) {
+      await clearFlowLog(suDb, { tenantId: backlogTenant });
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${backlogTenant}`,
+      );
+    }
+  });
+
+  beforeEach(() => forgetSweepBatchSizesForTest());
+
+  test("a backlog of three batches drains in one pass and the sweep goes back to its daily rhythm", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    await seedExpired(2 * SWEEP_BATCH_ROWS + 500);
+    setSweepOptionsForTest({
+      batchRows: SWEEP_BATCH_ROWS,
+      targetBatchMs: 0,
+      pauseMs: 0,
+      passMs: 60_000,
+    });
+    const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
+      ReturnType<typeof getJobHandler>
+    >;
+    const result = (await handler(job(), appDb)) as JobResult;
+    expect(await expiredLeft()).toBe(0);
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule")
+      expect(result.runAt.getTime()).toBeGreaterThan(
+        Date.now() + 23 * 3_600_000,
+      );
+  }, 60_000);
+
+  test("a pass cut by its deadline keeps every batch it committed and runs again shortly", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    const total = 6_000;
+    await seedExpired(total);
+    const batchRows = 1_000;
+    // Two slow statements fit the pass, six do not.
+    setSweepOptionsForTest({
+      batchRows,
+      targetBatchMs: 0,
+      pauseMs: 0,
+      passMs: Math.ceil(sleepSec * 1000 * 1.5),
+    });
+    const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
+      ReturnType<typeof getJobHandler>
+    >;
+    const before = Date.now();
+    const result = (await handler(job(), appDb)) as JobResult;
+    const left = await expiredLeft();
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(total);
+    expect((total - left) % batchRows).toBe(0);
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule") {
+      expect(result.runAt.getTime()).toBeGreaterThanOrEqual(
+        before + SWEEP_CATCHUP_MS,
+      );
+      expect(result.runAt.getTime()).toBeLessThan(
+        Date.now() + SWEEP_CATCHUP_MS + 5_000,
+      );
+    }
+  }, 60_000);
+
+  test("with the default budget the handler hands the scheduler back within one pass and one batch", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    await seedExpired(6 * 1_000);
+    setSweepOptionsForTest({ batchRows: 1_000, pauseMs: 0 });
+    const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
+      ReturnType<typeof getJobHandler>
+    >;
+    const started = Date.now();
+    const result = (await handler(job(), appDb)) as JobResult;
+    expect(Date.now() - started).toBeLessThan(
+      SWEEP_PASS_MS + sleepSec * 1000 + 1_500,
+    );
+    expect(await expiredLeft()).toBeGreaterThan(0);
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule")
+      expect(result.runAt.getTime()).toBeLessThan(
+        Date.now() + SWEEP_CATCHUP_MS + 5_000,
+      );
+  }, 60_000);
+
+  test("a batch that outlives the transaction is taken again at half the size, in the next pass when this one is spent", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    const batchRows = 400;
+    await seedExpired(batchRows);
+    // Per row, so a full batch outlives the transaction and half of one does not.
+    const perRow = `${trig}_row`;
+    const rowSec = (config.dbTx.timeoutMs * 1.4) / 1000 / batchRows;
+    await suDb.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION ${perRow}() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF current_setting('app.tenant_id', true) = '${backlogTenant}' THEN
+             PERFORM pg_sleep(${rowSec});
+           END IF;
+           RETURN NULL;
+         END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${perRow} AFTER DELETE ON execution_logs
+         FOR EACH ROW EXECUTE FUNCTION ${perRow}()`,
+    );
+    // The per-statement delay of the other cases off, so only the batch's size decides its time.
+    await suDb.$executeRawUnsafe(
+      `ALTER TABLE execution_logs DISABLE TRIGGER ${trig}`,
+    );
+    forgetSweepBatchSizesForTest();
+    try {
+      // The default pass budget: the batch that times out spends the pass, as it does in production.
+      const passes: { deleted: number; done: boolean }[] = [];
+      while (passes.length < 4 && !passes.at(-1)?.done)
+        passes.push(
+          await sweepFlowlog(appDb, backlogTenant, { batchRows, pauseMs: 0 }),
+        );
+      expect(passes.at(-1)?.done).toBe(true);
+      expect(passes.reduce((t, p) => t + p.deleted, 0)).toBe(batchRows);
+      expect(await expiredLeft()).toBe(0);
+    } finally {
+      forgetSweepBatchSizesForTest();
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${perRow} ON execution_logs`,
+      );
+      await suDb.$executeRawUnsafe(
+        `ALTER TABLE execution_logs ENABLE TRIGGER ${trig}`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${perRow}()`);
+    }
+  }, 90_000);
+
+  test("a batch is sized by its own time, so a slow table never runs a batch out of time", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    const total = 3_000;
+    await seedExpired(total);
+    // Per row: a first batch of 1,000 takes half the transaction's budget, and a batch of 5,000 (the
+    // old fixed size) would take two and a half budgets.
+    const perRow = `${trig}_cost`;
+    const rowSec = (config.dbTx.timeoutMs * 0.5) / 1000 / 1_000;
+    await suDb.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION ${perRow}() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF current_setting('app.tenant_id', true) = '${backlogTenant}' THEN
+             PERFORM pg_sleep(${rowSec});
+           END IF;
+           RETURN NULL;
+         END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${perRow} AFTER DELETE ON execution_logs
+         FOR EACH ROW EXECUTE FUNCTION ${perRow}()`,
+    );
+    await suDb.$executeRawUnsafe(
+      `ALTER TABLE execution_logs DISABLE TRIGGER ${trig}`,
+    );
+    try {
+      const passes: { deleted: number; done: boolean; timeouts: number }[] = [];
+      passes.push(await sweepFlowlog(appDb, backlogTenant, { pauseMs: 0 }));
+      // The next pass starts from what the table settled on, not from the first size again.
+      expect(sweepBatchSizeForTest(`${backlogTenant}:0`)).toBeLessThan(1_000);
+      while (passes.length < 6 && !passes.at(-1)?.done)
+        passes.push(await sweepFlowlog(appDb, backlogTenant, { pauseMs: 0 }));
+      expect(passes.at(-1)?.done).toBe(true);
+      expect(passes.reduce((t, p) => t + p.timeouts, 0)).toBe(0);
+      expect(await expiredLeft()).toBe(0);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${perRow} ON execution_logs`,
+      );
+      await suDb.$executeRawUnsafe(
+        `ALTER TABLE execution_logs ENABLE TRIGGER ${trig}`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${perRow}()`);
+    }
+  }, 90_000);
+
+  test("the next batch grows when one ran fast and shrinks when one ran slow, within its bounds", () => {
+    expect(nextBatchSize(1_000, 250)).toBe(2_000);
+    expect(nextBatchSize(1_000, 4_000)).toBe(500);
+    expect(nextBatchSize(1_000, 1_250)).toBe(800);
+    expect(nextBatchSize(4_000, 100)).toBe(SWEEP_BATCH_ROWS);
+    expect(nextBatchSize(150, 4_000)).toBe(100);
+    expect(nextBatchSize(1_000, 4_000, 0)).toBe(1_000);
+  });
+
+  test("a catch-up pass takes up the tables the sweep has left, so slow checks neither starve a table nor keep the sweep from finishing", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    const channel = await suDb.alertChannel.create({
+      data: {
+        tenantId: backlogTenant,
+        name: "starve",
+        type: "generic",
+        url: "https://alerts.example.invalid/hook",
+      },
+    });
+    await suDb.alertDelivery.create({
+      data: {
+        tenantId: backlogTenant,
+        channelId: channel.id,
+        level: "error",
+        summary: "expired",
+        status: "DELIVERED",
+        createdAt: expiredAt(),
+      },
+    });
+    // The per-statement delay on the two delivery tables too: no table has a backlog, but every
+    // table's check takes the same slow statement, so a pass finishes two tables at most.
+    const others = ["alert_deliveries", "agent_turn_deliveries"];
+    for (const table of others)
+      await suDb.$executeRawUnsafe(
+        `CREATE TRIGGER ${trig} AFTER DELETE ON ${table}
+           FOR EACH STATEMENT EXECUTE FUNCTION ${trig}()`,
+      );
+    try {
+      const passMs = Math.ceil(sleepSec * 1000 * 1.5);
+      const passes: { done: boolean }[] = [];
+      while (passes.length < 3 && !passes.at(-1)?.done)
+        passes.push(
+          await sweepFlowlog(appDb, backlogTenant, { pauseMs: 0, passMs }),
+        );
+      expect(passes.at(-1)?.done).toBe(true);
+      expect(
+        await suDb.alertDelivery.count({ where: { tenantId: backlogTenant } }),
+      ).toBe(0);
+    } finally {
+      for (const table of others)
+        await suDb.$executeRawUnsafe(
+          `DROP TRIGGER IF EXISTS ${trig} ON ${table}`,
+        );
+      await suDb.alertChannel.delete({ where: { id: channel.id } });
+    }
+  }, 60_000);
+
+  test("an expired alert delivery goes only once it is delivered or dead", async () => {
+    const old = expiredAt();
+    const channel = await suDb.alertChannel.create({
+      data: {
+        tenantId: backlogTenant,
+        name: "sweep",
+        type: "generic",
+        url: "https://alerts.example.invalid/hook",
+      },
+    });
+    for (const status of ["DELIVERED", "DEAD", "PENDING"] as const)
+      await suDb.alertDelivery.create({
+        data: {
+          tenantId: backlogTenant,
+          channelId: channel.id,
+          level: "error",
+          summary: status,
+          status,
+          createdAt: old,
+        },
+      });
+    await sweepFlowlog(appDb, backlogTenant, { pauseMs: 0 });
+    const left = await suDb.alertDelivery.findMany({
+      where: { tenantId: backlogTenant },
+      select: { status: true },
+    });
+    expect(left.map((d) => d.status)).toEqual(["PENDING"]);
+    await suDb.alertChannel.delete({ where: { id: channel.id } });
+  }, 30_000);
+
+  test("each batch costs its own rows, not a rescan of the tenant's backlog", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    const total = 20_000;
+    await seedExpired(total);
+    await suDb.$executeRawUnsafe(
+      `ALTER TABLE execution_logs DISABLE TRIGGER ${trig}`,
+    );
+    try {
+      // Two hundred batches of 100: picking a batch's rows once each fits; rescanning the
+      // tenant's 20k rows for every row picked does not.
+      const r = await sweepFlowlog(appDb, backlogTenant, {
+        batchRows: 100,
+        targetBatchMs: 0,
+        pauseMs: 0,
+        passMs: 20_000,
+      });
+      expect(r).toEqual({ deleted: total, done: true, timeouts: 0 });
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `ALTER TABLE execution_logs ENABLE TRIGGER ${trig}`,
+      );
+    }
+  }, 60_000);
+
+  test("a boot re-arm runs the sweep minutes after the restart, not a day later", async () => {
+    // The row a drain leaves: pending, run_at one catch-up away.
+    await ensureFlowlogSweep(backlogTenant, suDb);
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET run_at = now() + interval '60 seconds'
+        WHERE tenant_id = ${backlogTenant} AND kind = 'FLOWLOG_SWEEP'`,
+    );
+    const before = Date.now();
+    await ensureFlowlogSweep(backlogTenant, suDb);
+    const row = await suDb.schedulerJob.findFirst({
+      where: { tenantId: backlogTenant, kind: "FLOWLOG_SWEEP" },
+      select: { runAt: true, status: true },
+    });
+    expect(row?.status).toBe("PENDING");
+    expect(row?.runAt.getTime()).toBeLessThanOrEqual(
+      Date.now() + SWEEP_BOOT_DELAY_MS,
+    );
+    expect(row?.runAt.getTime()).toBeLessThan(before + 3_600_000);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${backlogTenant} AND kind = 'FLOWLOG_SWEEP'`,
+    );
+  });
+
+  test("sweepFlowlog reports done only when every table is within the window", async () => {
+    await clearFlowLog(suDb, { tenantId: backlogTenant });
+    await seedExpired(10);
+    const r = await sweepFlowlog(appDb, backlogTenant, { pauseMs: 0 });
+    expect(r).toEqual({ deleted: 10, done: true, timeouts: 0 });
+    expect(await expiredLeft()).toBe(0);
+  }, 30_000);
 });

@@ -3057,9 +3057,10 @@ model DbStatementText {
   userid     BigInt
   dbid       BigInt
   queryid    BigInt
-  query       String
-  lastSeenAt  DateTime @map("last_seen_at")
-  budgetClass String?  @map("budget_class")
+  query      String
+  lastSeenAt DateTime @map("last_seen_at")
+  // 'metrics' or 'default': the budget the statement ran under (src/lib/statement-budgets.ts).
+  budgetKind String?  @map("budget_class")
 
   @@id([userid, dbid, queryid])
   @@index([lastSeenAt])

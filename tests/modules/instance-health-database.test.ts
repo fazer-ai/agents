@@ -145,9 +145,9 @@ async function seed(
       queryid,
       query,
       lastSeenAt: new Date(points[points.length - 1]?.at ?? T0),
-      budgetClass,
+      budgetKind: budgetClass,
     },
-    update: { query, budgetClass },
+    update: { query, budgetKind: budgetClass },
   });
 }
 

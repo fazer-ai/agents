@@ -137,6 +137,8 @@ const CONV_ON = 1601;
 const CONV_OFF = 1602;
 const CONV_NUDGE = 1603;
 const CONV_NO_TOOL = 1604;
+const CONV_ACTIVITY = 1605;
+const CONV_NUDGE_ACTIVITY = 1606;
 
 describe.skipIf(!dbUp)("the tools-used note", () => {
   beforeAll(async () => {
@@ -169,13 +171,18 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
           settings: { split: { enabled: false }, ...settings },
         },
       });
+    // The switch stored before the formats: read as the private note it posted.
     const on = await agentWith("Com nota", {
       conversationNotes: { toolsUsed: true },
     });
     const off = await agentWith("Sem nota", {});
+    const act = await agentWith("Atividade", {
+      conversationNotes: { toolsUsed: "activity" },
+    });
     for (const [agent, botId] of [
       [on, 30],
       [off, 31],
+      [act, 32],
     ] as const) {
       await suDb.chatwootAgentBot.create({
         data: {
@@ -195,6 +202,8 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
       [off, 62, CONV_OFF],
       [on, 63, CONV_NUDGE],
       [on, 64, CONV_NO_TOOL],
+      [act, 65, CONV_ACTIVITY],
+      [act, 66, CONV_NUDGE_ACTIVITY],
     ] as const) {
       const inbox = await suDb.inbox.create({
         data: {
@@ -280,9 +289,22 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
       "Ferramentas usadas pelo agente neste turno: get_current_time (2x), calculator.",
     );
     expect(note.text).not.toContain(EXPRESSION);
-    expect(note.opts).toEqual({ activity: "tools" });
+    expect(note.opts).toEqual({ private: true, activity: "tools" });
     // NOTE: The reply first, so the note reads below it in the timeline.
     expect(cw.sent.map((s) => s.private)).toEqual([false, true]);
+  });
+
+  test("the activity format posts an activity row instead", async () => {
+    const { cw, run } = turn(CONV_ACTIVITY, 65, true);
+    expect(await run()).toBe("posted");
+    const marked = cw.sent.filter(
+      (x) => (x.opts as { activity?: string }).activity === "tools",
+    );
+    expect(marked).toHaveLength(1);
+    expect(marked[0]?.opts).toEqual({
+      messageType: "activity",
+      activity: "tools",
+    });
   });
 
   test("a turn that called no tool posts no note", async () => {
@@ -315,7 +337,10 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
     const notes = notesOf(cw.sent);
     expect(notes).toHaveLength(1);
     expect((notes[0] as Sent).text).toContain("get_current_time (2x)");
-    expect((notes[0] as Sent).opts).toEqual({ activity: "tools" });
+    expect((notes[0] as Sent).opts).toEqual({
+      private: true,
+      activity: "tools",
+    });
     expect(cw.sent.at(-1)?.private).toBe(true);
     // The outcome line closes the turn AFTER the note, so the note is one of the messages it
     // names (what the conversation screen hangs the turn's usage on).
@@ -335,5 +360,25 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
     const noteId = (notes[0] as Sent).id;
     expect(cw.sent.at(-1)?.id).toBe(noteId);
     expect(outcomeLines[0]?.sentMessageIds).toEqual(cw.sent.map((s) => s.id));
+  });
+
+  test("a proactive turn takes the agent's format too", async () => {
+    const cw = chatwoot();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:${CONV_NUDGE_ACTIVITY}`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new ScriptedModel(true) as never,
+        makeClient: cw.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(cw.sent.at(-1)?.opts).toEqual({
+      messageType: "activity",
+      activity: "tools",
+    });
   });
 });

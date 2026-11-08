@@ -170,7 +170,7 @@ export function behaviorTabProps(
     otherInboxes: readOtherInboxesState({}),
     setOtherInboxes: () => {},
     setTakeover: () => {},
-    conversationNotes: { toolsUsed: false },
+    conversationNotes: { toolsUsed: "off", errors: "off" },
     setConversationNotes: () => {},
     attributeContext: { conversation: [], contact: [], task: [] },
     contactFields: { context: [], writable: [] },

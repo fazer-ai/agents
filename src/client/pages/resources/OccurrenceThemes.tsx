@@ -339,6 +339,13 @@ export function OccurrenceThemes({
                           )}
                         </time>
                       )}
+                      {th.critical && (
+                        <span data-critical-badge className="contents">
+                          <Badge variant="error">
+                            {t("dashboards.themes.critical", "Critical")}
+                          </Badge>
+                        </span>
+                      )}
                       {th.flags.map((f) => (
                         <Badge
                           key={f}

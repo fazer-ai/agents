@@ -24725,6 +24725,16 @@
                     "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
                     "type": "string"
                   },
+                  "criticalSubjects": {
+                    "maxItems": 20,
+                    "description": "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+                    "type": "array",
+                    "items": {
+                      "maxLength": 200,
+                      "description": "One subject, in the account's words.",
+                      "type": "string"
+                    }
+                  },
                   "recoverMedia": {
                     "description": "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
                     "type": "boolean"
@@ -24994,6 +25004,16 @@
                     "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
                     "type": "string"
                   },
+                  "criticalSubjects": {
+                    "maxItems": 20,
+                    "description": "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+                    "type": "array",
+                    "items": {
+                      "maxLength": 200,
+                      "description": "One subject, in the account's words.",
+                      "type": "string"
+                    }
+                  },
                   "recoverMedia": {
                     "description": "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
                     "type": "boolean"
@@ -25262,6 +25282,16 @@
                     "maxLength": 2000,
                     "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
                     "type": "string"
+                  },
+                  "criticalSubjects": {
+                    "maxItems": 20,
+                    "description": "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+                    "type": "array",
+                    "items": {
+                      "maxLength": 200,
+                      "description": "One subject, in the account's words.",
+                      "type": "string"
+                    }
                   },
                   "recoverMedia": {
                     "description": "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
@@ -27500,6 +27530,16 @@
                     "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
                     "type": "string"
                   },
+                  "criticalSubjects": {
+                    "maxItems": 20,
+                    "description": "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+                    "type": "array",
+                    "items": {
+                      "maxLength": 200,
+                      "description": "One subject, in the account's words.",
+                      "type": "string"
+                    }
+                  },
                   "recoverMedia": {
                     "description": "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
                     "type": "boolean"
@@ -27769,6 +27809,16 @@
                     "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
                     "type": "string"
                   },
+                  "criticalSubjects": {
+                    "maxItems": 20,
+                    "description": "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+                    "type": "array",
+                    "items": {
+                      "maxLength": 200,
+                      "description": "One subject, in the account's words.",
+                      "type": "string"
+                    }
+                  },
                   "recoverMedia": {
                     "description": "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
                     "type": "boolean"
@@ -28037,6 +28087,16 @@
                     "maxLength": 2000,
                     "description": "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
                     "type": "string"
+                  },
+                  "criticalSubjects": {
+                    "maxItems": 20,
+                    "description": "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+                    "type": "array",
+                    "items": {
+                      "maxLength": 200,
+                      "description": "One subject, in the account's words.",
+                      "type": "string"
+                    }
                   },
                   "recoverMedia": {
                     "description": "Transcribe and describe again, at reading time, a voice note or image upstream Chatwoot no longer holds, with the inbox agent's speech-to-text and vision. Off by default; billed on its own cost lines.",
@@ -28385,7 +28445,7 @@
           "Resources"
         ],
         "summary": "List a monitor's open themes",
-        "description": "The open themes, flagged first: title, why it is flagged, its reference, how many conversations (absorbed themes included) and when it was first and last seen. `total` counts every open theme, past the limit too.",
+        "description": "The open themes, the critical flagged ones first, then the other flagged ones: title, whether the model judged it critical (`critical`), why it is flagged, its reference, how many conversations (absorbed themes included) and when it was first and last seen. `total` counts every open theme, past the limit too.",
         "parameters": [
           {
             "name": "id",

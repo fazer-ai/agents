@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { chatwootLinkBase } from "@/modules/chatwoot/client";
+import { criticalBasis, criticalNow } from "./critical";
 import { countThemesAt } from "./flags";
 import {
   type OccurrencesConfig,
@@ -23,6 +24,9 @@ export interface ThemeListItem {
   id: string;
   title: string;
   flags: string[];
+  // The model judged the theme a critical subject for the business (docs/occurrences.md, "Critical
+  // themes"); false while it is not, or not judged yet.
+  critical: boolean;
   // The canonical reference most of its conversations in the recent window share, as the last round
   // counted; null when none of them has a reference, the monitor has no reference field, or the
   // window is empty.
@@ -179,10 +183,18 @@ async function themeSpans(
   monitorId: bigint,
   inboxIds: bigint[],
   flaggedOnly?: boolean,
+  // The monitor's critical basis now (critical.ts): a mark judged by another list does not lead.
+  basis = "",
 ) {
   const open = await db.occurrenceTheme.findMany({
     where: openThemesWhere(monitorId, inboxIds, flaggedOnly),
-    select: { id: true, flaggedAt: true },
+    select: {
+      id: true,
+      flaggedAt: true,
+      flags: true,
+      critical: true,
+      criticalBasis: true,
+    },
   });
   const stats = open.length
     ? await db.occurrenceThemeMember.groupBy({
@@ -205,6 +217,8 @@ async function themeSpans(
         {
           id: t.id,
           flaggedAt: t.flaggedAt,
+          // A critical theme that is flagged leads the list: it is what the screen exists to show.
+          criticalFlagged: criticalNow(t, basis) && t.flags.length > 0,
           count: x?._count._all ?? 0,
           first: x?._min.readAt ?? null,
           last: x?._max.readAt ?? null,
@@ -214,7 +228,7 @@ async function themeSpans(
   );
 }
 
-// A monitor's open themes, flagged first, inside a scope the caller holds (the console's, or a
+// A monitor's open themes, the critical flagged ones first, then the other flagged ones, inside a scope the caller holds (the console's, or a
 // dashboard panel's metrics read). `links` adds each theme's first conversations, oldest first.
 export async function themeRowsOn(
   db: ScopedDb,
@@ -236,11 +250,18 @@ export async function themeRowsOn(
   const inboxIds = cfg.inboxIds.map(BigInt);
   // Counted, dated and ordered over the conversations of the inboxes monitored now: the stored first
   // and last seen still hold an inbox taken off the list until the next assignment prunes it.
-  const spans = await themeSpans(db, monitorId, inboxIds, opts.flaggedOnly);
+  const spans = await themeSpans(
+    db,
+    monitorId,
+    inboxIds,
+    opts.flaggedOnly,
+    criticalBasis(cfg),
+  );
   const time = (d: Date | null) => d?.getTime() ?? -Infinity;
   const order = [...spans.values()]
     .sort(
       (a, b) =>
+        Number(b.criticalFlagged) - Number(a.criticalFlagged) ||
         time(b.flaggedAt) - time(a.flaggedAt) ||
         time(b.last) - time(a.last) ||
         // Ties broken by the row, so two reads of the same themes list them in the same order.
@@ -325,6 +346,7 @@ export async function themeRowsOn(
     id: String(t.id),
     title: t.title,
     flags: t.flags,
+    critical: criticalNow(t, criticalBasis(cfg)),
     reference:
       t.flagReferenceId === null
         ? null
@@ -558,6 +580,7 @@ export async function getTheme(
       title: t.title,
       status: t.status,
       flags: t.flags,
+      critical: criticalNow(t, criticalBasis(cfg)),
       reference: flagReference?.name ?? null,
       conversations,
       firstSeenAt: iso(span._min.readAt),

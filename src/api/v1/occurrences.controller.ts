@@ -40,6 +40,8 @@ import {
   CONCENTRATION_SHARE_RANGE,
   CONSOLIDATION_MINUTES_RANGE,
   CREDENTIAL_REF_MAX,
+  CRITICAL_SUBJECT_MAX,
+  CRITICAL_SUBJECTS_MAX,
   FIELD_DESCRIPTION_MAX,
   FIELD_NAME_MAX,
   FIELDS_MAX,
@@ -201,6 +203,19 @@ const patchBody = t.Object({
       description:
         "What every step is told about the business, appended to its fixed prompt; empty sends nothing.",
     }),
+  ),
+  criticalSubjects: t.Optional(
+    t.Array(
+      t.String({
+        maxLength: CRITICAL_SUBJECT_MAX,
+        description: "One subject, in the account's words.",
+      }),
+      {
+        maxItems: CRITICAL_SUBJECTS_MAX,
+        description:
+          "The subjects the account calls critical. A theme that is one of them, or that is clearly urgent for the business, is marked critical; the list guides that judgment and does not limit it. Changing it (or the business context) judges every open theme again at the next round. Empty by default.",
+      },
+    ),
   ),
   recoverMedia: t.Optional(
     t.Boolean({
@@ -707,7 +722,7 @@ export const occurrencesController = new Elysia({
       query: themesQuery,
       detail: doc(
         "List a monitor's open themes",
-        "The open themes, flagged first: title, why it is flagged, its reference, how many conversations (absorbed themes included) and when it was first and last seen. `total` counts every open theme, past the limit too.",
+        "The open themes, the critical flagged ones first, then the other flagged ones: title, whether the model judged it critical (`critical`), why it is flagged, its reference, how many conversations (absorbed themes included) and when it was first and last seen. `total` counts every open theme, past the limit too.",
       ),
       response: errors(400, 401, 403, 404, 422),
     },

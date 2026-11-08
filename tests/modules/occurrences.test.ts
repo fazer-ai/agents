@@ -73,6 +73,26 @@ describe("the settings block", () => {
     expect(OCCURRENCES_DEFAULTS.model).toBeNull();
   });
 
+  test("the critical subjects are empty by default, kept in order and trimmed, at their caps", () => {
+    expect(OCCURRENCES_DEFAULTS.criticalSubjects).toEqual([]);
+    const parsed = occurrencesSettingsSchema.parse({
+      ...OCCURRENCES_DEFAULTS,
+      criticalSubjects: [
+        " falha no pagamento ",
+        "x".repeat(200),
+        ...Array.from({ length: 18 }, (_, i) => `assunto ${i}`),
+      ],
+    });
+    expect(parsed.criticalSubjects).toHaveLength(20);
+    expect(parsed.criticalSubjects[0]).toBe("falha no pagamento");
+    expect(parsed.criticalSubjects[1]).toBe("x".repeat(200));
+    // A block saved before the list existed reads it as empty.
+    const { criticalSubjects: _, ...before } = OCCURRENCES_DEFAULTS;
+    expect(
+      readOccurrencesConfig({ occurrences: before }).criticalSubjects,
+    ).toEqual([]);
+  });
+
   test("a damaged block reads as the default instead of failing the turn", () => {
     expect(
       readOccurrencesConfig({ occurrences: { enabled: "sim", fields: 3 } }),
@@ -219,6 +239,21 @@ describe("the settings block", () => {
       { ...ok, models: { reading: READING } },
       { ...ok, businessContext: "x".repeat(2_001) },
       { ...ok, businessContext: "meio \ud800 contexto" },
+      // docs/occurrences.md, "Critical themes": a list of short storable texts, none empty, at most 20.
+      { ...ok, criticalSubjects: 42 },
+      { ...ok, criticalSubjects: "falha no pagamento" },
+      { ...ok, criticalSubjects: ["   "] },
+      { ...ok, criticalSubjects: ["x".repeat(201)] },
+      {
+        ...ok,
+        criticalSubjects: Array.from({ length: 21 }, (_, i) => `a${i}`),
+      },
+      { ...ok, criticalSubjects: ["meio \ud800 assunto"] },
+      { ...ok, criticalSubjects: [7] },
+      // One line each: the console edits them one per line, and the model gets one per line.
+      { ...ok, criticalSubjects: ["pagou\nnão chegou"] },
+      { ...ok, criticalSubjects: ["pagou\rnão chegou"] },
+      { ...ok, criticalSubjects: ["pagou\u2028não chegou"] },
       { ...ok, recoverMedia: "true" },
       { ...ok, recoverMedia: null },
       { ...ok, referenceField: "inexistente" },

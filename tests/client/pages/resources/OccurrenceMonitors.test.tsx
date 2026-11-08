@@ -72,6 +72,7 @@ const CONFIG = {
     baseURL: null,
   },
   businessContext: "",
+  criticalSubjects: [] as string[],
   recoverMedia: false,
 };
 

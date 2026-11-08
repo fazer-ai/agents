@@ -27,7 +27,11 @@ import { runReadingStep } from "./reading";
 import type { RecoveryDeps } from "./recovery";
 import { runThreadId } from "./runs";
 import type { OccurrencesConfig } from "./settings";
-import { runAssignmentStep, runConsolidationStep } from "./themes";
+import {
+  runAssignmentStep,
+  runConsolidationStep,
+  runCriticalityStep,
+} from "./themes";
 
 // ONE ROUND OF THE OCCURRENCE MONITOR (docs/occurrences.md). Every round leaves an `occurrence_runs`
 // row, ok or failed, with what it read and how long it took, so "is it running, and what does it
@@ -154,6 +158,10 @@ export async function runOccurrenceRound(
         // they are now.
         detail.flags = await runFlagsStep(base, m, now(), { runId: run.id });
       }
+      // The themes not judged critical by the monitor's list and context now (a split's part, a mark of
+      // an older list), last among the theme steps: the flags never wait on it, and a theme born this
+      // round already carries the assignment's word.
+      detail.criticality = await runCriticalityStep(base, m, models);
       // Last, so a slow Chatwoot spends only what the analytical steps left.
       canonical.copied = await runCanonicalCopy(
         base,

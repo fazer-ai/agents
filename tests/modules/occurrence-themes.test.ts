@@ -25,6 +25,7 @@ import {
   rememberPosted,
   runCanonicalCopy,
 } from "@/modules/occurrences/canonicals";
+import { criticalBasis } from "@/modules/occurrences/critical";
 import {
   flagsOf,
   flagWriteOf,
@@ -51,6 +52,7 @@ import { listOccurrenceRuns, parseSkipped } from "@/modules/occurrences/runs";
 import {
   OCCURRENCES_DEFAULTS,
   type OccurrencesConfig,
+  readMonitorConfig,
 } from "@/modules/occurrences/settings";
 import {
   occurrenceSweepHandler,
@@ -80,6 +82,7 @@ type Step =
   | "assignment"
   | "consolidation"
   | "partition"
+  | "criticality"
   | "fit"
   | "merge";
 const stepOf = (system: string): Step =>
@@ -91,9 +94,11 @@ const stepOf = (system: string): Step =>
         ? "consolidation"
         : system.startsWith("A theme of customer contact reasons")
           ? "partition"
-          : system.startsWith("You unify the free spellings")
-            ? "fit"
-            : "merge";
+          : system.startsWith("You judge which themes")
+            ? "criticality"
+            : system.startsWith("You unify the free spellings")
+              ? "fit"
+              : "merge";
 
 // What a fixed prompt may not say: the monitor groups any reason of contact, so no prompt assumes
 // one business (events, tickets, shows, venues), a role it no longer has, or carries an example.
@@ -554,7 +559,9 @@ const nothing: Script = (step) =>
         ? { fits: [] }
         : step === "partition"
           ? { parts: [] }
-          : { merges: [], splits: [], renames: [] };
+          : step === "criticality"
+            ? { critical: [] }
+            : { merges: [], splits: [], renames: [] };
 
 const count = (tenantId: bigint, themeId: bigint) =>
   suDb.occurrenceThemeMember.count({ where: { tenantId, themeId } });
@@ -6095,5 +6102,438 @@ describe.skipIf(!dbUp)("detection latency", () => {
       select: { config: true },
     });
     expect((after.config as { cadenceMinutes: number }).cadenceMinutes).toBe(1);
+  });
+});
+
+// Critical themes (docs/occurrences.md, "Critical themes"): the model's word on whether a theme is a
+// serious subject for the business, said when it creates or renames the theme, judged on its own for a
+// theme with no word yet, and asked again of every open theme when the list or the context changes.
+describe.skipIf(!dbUp)("critical themes", () => {
+  const LIST = ["falha no pagamento", "sistema fora do ar"];
+  const CONTEXT =
+    "Loja online de planos de assinatura; o cliente compra pelo site.";
+  // The basis the theme's monitor judges by now, from its stored block.
+  const basisOf = async (themeId: bigint) => {
+    const t = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id: themeId },
+      select: { monitor: { select: { config: true } } },
+    });
+    return criticalBasis(readMonitorConfig(t.monitor.config));
+  };
+  // The mark as the reads see it: null when the theme was not judged by the monitor's list and context
+  // now, whatever it holds.
+  const criticalOf = async (id: bigint) => {
+    const t = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id },
+      select: { critical: true, criticalBasis: true },
+    });
+    return t.criticalBasis !== null && t.criticalBasis === (await basisOf(id))
+      ? t.critical
+      : null;
+  };
+  // A mark as a round leaves it: the word, judged by the monitor's basis now.
+  const mark = async (id: bigint, critical: boolean) =>
+    suDb.occurrenceTheme.update({
+      where: { id },
+      data: { critical, criticalBasis: await basisOf(id) },
+    });
+  const byTitle = (tenantId: bigint, title: string) =>
+    suDb.occurrenceTheme.findFirstOrThrow({ where: { tenantId, title } });
+
+  test("a new theme is born with the model's word, and the request that made it carries the list and the context", async () => {
+    const a = await account({
+      criticalSubjects: LIST,
+      businessContext: CONTEXT,
+    });
+    for (const s of [
+      "o cartao nao passa no final",
+      "erro no cartao ao pagar",
+      "qual o preco do plano anual",
+    ])
+      await a.read(await a.conv(), { queixa: s });
+    await a.round((step, user) =>
+      step === "assignment"
+        ? {
+            assignments: numbered(user, "New sentences:").map((s, i) =>
+              s.includes("cartao")
+                ? { i, new: "Pagamento no cartao recusado", critical: true }
+                : { i, new: "Preco do plano", critical: false },
+            ),
+          }
+        : nothing(step, user),
+    );
+    const paying = await byTitle(a.tenantId, "Pagamento no cartao recusado");
+    const price = await byTitle(a.tenantId, "Preco do plano");
+    expect([paying.critical, price.critical]).toEqual([true, false]);
+    const req = a.calls.find((c) => c.step === "assignment") as Call;
+    for (const s of LIST) expect(req.system).toContain(`- ${s}`);
+    expect(req.system).toContain(CONTEXT);
+    expect(req.system).toContain('"critical":<true or false>');
+    expect(NOT_GENERIC.test(req.system.split("<critical>")[0] ?? "")).toBe(
+      false,
+    );
+    // Both born judged: the round asks no one about them.
+    expect(a.calls.filter((c) => c.step === "criticality")).toEqual([]);
+    // Every read says it, critical theme or not.
+    const listed = await listThemes(a.ctx, a.monitorId, {}, appDb);
+    expect(
+      Object.fromEntries(listed.map((t) => [t.title, t.critical])),
+    ).toEqual({
+      "Pagamento no cartao recusado": true,
+      "Preco do plano": false,
+    });
+    expect(
+      (await getTheme(a.ctx, a.monitorId, paying.id, appDb)).critical,
+    ).toBe(true);
+  });
+
+  test("with no list the model is still asked, judging by clear urgency alone", async () => {
+    const a = await account({ businessContext: CONTEXT });
+    await a.read(await a.conv(), { queixa: "o site caiu e ninguem compra" });
+    await a.round((step, user) =>
+      step === "assignment"
+        ? { assignments: [{ i: 0, new: "Site fora do ar", critical: true }] }
+        : nothing(step, user),
+    );
+    expect((await byTitle(a.tenantId, "Site fora do ar")).critical).toBe(true);
+    const req = a.calls.find((c) => c.step === "assignment") as Call;
+    expect(req.system).toContain("The account has no critical list");
+    expect(req.system).not.toContain("<critical>");
+  });
+
+  test("a title proposed critical by any of its sentences is critical; one with no word is judged in the same round", async () => {
+    const a = await account({ criticalSubjects: LIST });
+    for (const s of ["pix nao entra 1", "pix nao entra 2", "troca de senha"])
+      await a.read(await a.conv(), { queixa: s });
+    await a.round((step, user) => {
+      if (step === "assignment")
+        return {
+          assignments: numbered(user, "New sentences:").map((s, i) =>
+            s.startsWith("pix")
+              ? {
+                  i,
+                  new: "Pix nao entra",
+                  critical: s.endsWith("1"),
+                }
+              : { i, new: "Troca de senha" },
+          ),
+        };
+      if (step === "criticality")
+        return {
+          critical: user
+            .split("\n")
+            .filter((l) => /^T\d+: Troca de senha$/.test(l))
+            .map((l) => l.split(":")[0]),
+        };
+      return nothing(step, user);
+    });
+    expect((await byTitle(a.tenantId, "Pix nao entra")).critical).toBe(true);
+    // The title with no word was judged by the round's own call, after the assignment.
+    expect((await byTitle(a.tenantId, "Troca de senha")).critical).toBe(true);
+    const judge = a.calls.filter((c) => c.step === "criticality");
+    expect(judge).toHaveLength(1);
+    expect(judge[0]?.user).toContain("Troca de senha");
+    expect(judge[0]?.user).not.toContain("Pix nao entra");
+    for (const s of LIST) expect(judge[0]?.system).toContain(`- ${s}`);
+    expect(
+      NOT_GENERIC.test(judge[0]?.system.split("<critical>")[0] ?? ""),
+    ).toBe(false);
+  });
+
+  test("a rename judges the new title again, and a rename with no word leaves it to the round's own call", async () => {
+    const a = await account({ criticalSubjects: ["cobranca sem entrega"] });
+    const t1 = await a.theme("Duvida sobre plano");
+    const t2 = await a.theme("Cobranca sem entrega do pedido");
+    const t3 = await a.theme("Senha");
+    await mark(t1.id, false);
+    await mark(t2.id, true);
+    await mark(t3.id, false);
+    for (const [t, s] of [
+      [t1, "cobrei e nao chegou"],
+      [t2, "quando chega o pedido"],
+      [t3, "nao consigo entrar"],
+    ] as const)
+      await a.member(t.id, await a.conv(), s);
+    const t0 = new Date();
+    await a.round(
+      (step, user) =>
+        step === "consolidation"
+          ? {
+              merges: [],
+              splits: [],
+              renames: [
+                {
+                  theme: `T${t1.id}`,
+                  title: "Cobrado e o pedido nao chegou",
+                  critical: true,
+                },
+                {
+                  theme: `T${t2.id}`,
+                  title: "Duvida sobre prazo de entrega",
+                  critical: false,
+                },
+                { theme: `T${t3.id}`, title: "Acesso a conta bloqueado" },
+              ],
+            }
+          : step === "criticality"
+            ? { critical: [`T${t3.id}`] }
+            : nothing(step, user),
+      t0,
+      { ...a.cfg, consolidationMinutes: 60 },
+    );
+    expect([
+      await criticalOf(t1.id),
+      await criticalOf(t2.id),
+      await criticalOf(t3.id),
+    ]).toEqual([true, false, true]);
+    const cons = a.calls.find((c) => c.step === "consolidation") as Call;
+    expect(cons.system).toContain("- cobranca sem entrega");
+    expect(cons.system).toContain('"critical":<true or false>');
+    const renames = await suDb.occurrenceThemeEvent.count({
+      where: { tenantId: a.tenantId, kind: "rename" },
+    });
+    expect(renames).toBe(3);
+  });
+
+  test("the mark does not change while a theme only gains conversations", async () => {
+    const a = await account({ criticalSubjects: LIST });
+    const tc = await a.theme("Pagamento recusado");
+    const tn = await a.theme("Preco do plano");
+    await mark(tc.id, true);
+    await mark(tn.id, false);
+    for (const s of ["cartao recusado", "qual o preco", "cartao negado"])
+      await a.read(await a.conv(), { queixa: s });
+    const script: Script = (step, user) =>
+      step === "assignment"
+        ? {
+            assignments: numbered(user, "New sentences:").map((s, i) => ({
+              i,
+              theme: `T${s.startsWith("cartao") ? tc.id : tn.id}`,
+            })),
+          }
+        : step === "criticality"
+          ? { critical: [`T${tn.id}`] }
+          : nothing(step, user);
+    await a.round(script);
+    await a.round(script);
+    expect([await criticalOf(tc.id), await criticalOf(tn.id)]).toEqual([
+      true,
+      false,
+    ]);
+    expect([
+      await count(a.tenantId, tc.id),
+      await count(a.tenantId, tn.id),
+    ]).toEqual([2, 1]);
+    expect(a.calls.filter((c) => c.step === "criticality")).toEqual([]);
+  });
+
+  test("changing the list or the context asks again of every open theme at the next round; another change keeps the marks", async () => {
+    const a = await account();
+    const tp = await a.theme("Pagamento recusado no cartao");
+    const tq = await a.theme("Duvida de horario");
+    await mark(tp.id, false);
+    await mark(tq.id, false);
+    for (const [t, s] of [
+      [tp, "cartao recusado"],
+      [tq, "que horas abre"],
+    ] as const)
+      await a.member(t.id, await a.conv(), s);
+    // A change to anything else keeps the marks.
+    await updateOccurrencesSettings(a.ctx, { cadenceMinutes: 30 }, appDb);
+    expect([await criticalOf(tp.id), await criticalOf(tq.id)]).toEqual([
+      false,
+      false,
+    ]);
+    const saved = await updateOccurrencesSettings(
+      a.ctx,
+      { criticalSubjects: ["falha no pagamento"] },
+      appDb,
+    );
+    expect(saved.criticalSubjects).toEqual(["falha no pagamento"]);
+    expect([await criticalOf(tp.id), await criticalOf(tq.id)]).toEqual([
+      null,
+      null,
+    ]);
+    // Nothing was written to the themes: the old marks stay, read as not judged by the new list.
+    expect(
+      (
+        await suDb.occurrenceTheme.findUniqueOrThrow({
+          where: { id: tp.id },
+          select: { critical: true },
+        })
+      ).critical,
+    ).toBe(false);
+    expect(
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).map((t) => t.critical),
+    ).toEqual([false, false]);
+    const cfg = { ...a.cfg, criticalSubjects: ["falha no pagamento"] };
+    await a.round(
+      (step, user) =>
+        step === "criticality"
+          ? { critical: [`T${tp.id}`] }
+          : nothing(step, user),
+      new Date(),
+      cfg,
+    );
+    expect([await criticalOf(tp.id), await criticalOf(tq.id)]).toEqual([
+      true,
+      false,
+    ]);
+    const judge = a.calls.filter((c) => c.step === "criticality");
+    expect(judge).toHaveLength(1);
+    expect(judge[0]?.system).toContain("- falha no pagamento");
+    // The business context counts too.
+    await updateOccurrencesSettings(
+      a.ctx,
+      { businessContext: "Clinica com agenda online." },
+      appDb,
+    );
+    expect([await criticalOf(tp.id), await criticalOf(tq.id)]).toEqual([
+      null,
+      null,
+    ]);
+  });
+
+  test("a judgment made by a list the monitor no longer has is not kept", async () => {
+    const a = await account({ criticalSubjects: ["falha no pagamento"] });
+    const tp = await a.theme("Pagamento recusado");
+    await a.member(tp.id, await a.conv(), "cartao recusado");
+    await a.round(async (step, user) => {
+      if (step !== "criticality") return nothing(step, user);
+      // Saved while the model ran: the round's word was given by the old list.
+      await updateOccurrencesSettings(
+        a.ctx,
+        { criticalSubjects: ["sistema fora do ar"] },
+        appDb,
+      );
+      return { critical: [`T${tp.id}`] };
+    });
+    expect(await criticalOf(tp.id)).toBeNull();
+    // The new one does not wait: the next round asks with it.
+    await a.round(
+      (step, user) =>
+        step === "criticality" ? { critical: [] } : nothing(step, user),
+      new Date(),
+      { ...a.cfg, criticalSubjects: ["sistema fora do ar"] },
+    );
+    expect(await criticalOf(tp.id)).toBe(false);
+    expect(
+      a.calls.filter((c) => c.step === "criticality").at(-1)?.system,
+    ).toContain("- sistema fora do ar");
+  });
+
+  test("an answer without the list is no judgment: the themes wait for the next round", async () => {
+    const a = await account();
+    const t = await a.theme("Pagamento recusado");
+    await a.member(t.id, await a.conv(), "cartao recusado");
+    await a.round((step, user) =>
+      step === "criticality" ? {} : nothing(step, user),
+    );
+    expect(await criticalOf(t.id)).toBeNull();
+    await a.round((step, user) =>
+      step === "criticality" ? { critical: [`T${t.id}`] } : nothing(step, user),
+    );
+    expect(await criticalOf(t.id)).toBe(true);
+  });
+
+  test("a critical mark judged by another list reads as not critical and does not lead until judged again", async () => {
+    const a = await account({ criticalSubjects: ["falha no pagamento"] });
+    const now = Date.now();
+    const old = await a.theme("Pagamento recusado");
+    const other = await a.theme("Duvida de horario");
+    await mark(old.id, true);
+    await mark(other.id, false);
+    for (const [t, ago, n] of [
+      [old, 30, 2],
+      [other, 1, 6],
+    ] as const) {
+      await suDb.occurrenceTheme.update({
+        where: { id: t.id },
+        data: { flags: ["new"], flaggedAt: new Date(now - ago * 60_000) },
+      });
+      for (let i = 0; i < n; i += 1)
+        await a.member(t.id, await a.conv(), `${t.title} ${i}`);
+    }
+    const read = async () =>
+      (await listThemes(a.ctx, a.monitorId, {}, appDb)).map((t) => [
+        t.title,
+        t.critical,
+      ]);
+    expect(await read()).toEqual([
+      ["Pagamento recusado", true],
+      ["Duvida de horario", false],
+    ]);
+    await updateOccurrencesSettings(
+      a.ctx,
+      { criticalSubjects: ["sistema fora do ar"] },
+      appDb,
+    );
+    expect(await read()).toEqual([
+      ["Duvida de horario", false],
+      ["Pagamento recusado", false],
+    ]);
+    expect((await getTheme(a.ctx, a.monitorId, old.id, appDb)).critical).toBe(
+      false,
+    );
+  });
+
+  test("a judgment of a theme backlog drains over rounds, newest first", async () => {
+    const a = await account();
+    const ids: bigint[] = [];
+    for (let i = 0; i < 65; i += 1) {
+      const t = await a.theme(`Tema ${i}`);
+      await suDb.occurrenceTheme.update({
+        where: { id: t.id },
+        data: { lastSeenAt: new Date(Date.now() - (65 - i) * 60_000) },
+      });
+      ids.push(t.id);
+    }
+    await a.round(nothing);
+    const unjudged = () =>
+      suDb.occurrenceTheme.count({
+        where: { tenantId: a.tenantId, critical: null },
+      });
+    expect(await unjudged()).toBe(5);
+    // The oldest wait.
+    expect(await criticalOf(ids[0] as bigint)).toBeNull();
+    expect(await criticalOf(ids[64] as bigint)).toBe(false);
+    await a.round(nothing);
+    expect(await unjudged()).toBe(0);
+  });
+
+  test("a critical flagged theme comes first, ahead of flagged themes with more conversations, and one not flagged keeps its place", async () => {
+    const a = await account();
+    const now = Date.now();
+    const mk = async (
+      title: string,
+      critical: boolean,
+      flagged: number | null,
+      n: number,
+    ) => {
+      const t = await a.theme(title);
+      await mark(t.id, critical);
+      await suDb.occurrenceTheme.update({
+        where: { id: t.id },
+        data: {
+          flags: flagged === null ? [] : ["new"],
+          flaggedAt: flagged === null ? null : new Date(now - flagged * 60_000),
+        },
+      });
+      for (let i = 0; i < n; i += 1)
+        await a.member(t.id, await a.conv(), `${title} ${i}`);
+      return t;
+    };
+    // TN flagged more recently and with more conversations; TC critical and flagged earlier; TX
+    // critical, not flagged; TP not critical, not flagged.
+    await mk("TN", false, 1, 20);
+    await mk("TC", true, 30, 4);
+    await mk("TX", true, null, 9);
+    await mk("TP", false, null, 2);
+    const titles = async (opts: { flaggedOnly?: boolean; limit?: number }) =>
+      (await listThemes(a.ctx, a.monitorId, opts, appDb)).map((t) => t.title);
+    expect((await titles({})).slice(0, 2)).toEqual(["TC", "TN"]);
+    expect((await titles({})).slice(2).sort()).toEqual(["TP", "TX"]);
+    expect(await titles({ limit: 1 })).toEqual(["TC"]);
+    expect(await titles({ flaggedOnly: true })).toEqual(["TC", "TN"]);
   });
 });

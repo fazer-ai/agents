@@ -17,11 +17,11 @@ const BATCH = 5000;
 const TURN_DELIVERY_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 // The proactive breaker's automatic limit reads the largest 24h of the last 30 days from these rows.
 const PROACTIVE_DELIVERY_RETENTION_MS = 31 * 24 * 60 * 60 * 1000;
-// The dashboard's queue of late changes for kept days has no reader since the console reads each
-// block directly (docs/dashboard.md, "How the console loads"). Its triggers stay one release, so a
-// rollback to the previous image still invalidates its kept days; a week of the queue is what that
-// rollback settles, and anything older goes here. The next release drops the triggers and the table.
-const DASHBOARD_DIRTY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// The dashboard's kept days and their queue of late changes have no reader since the console reads
+// each block directly (docs/dashboard.md, "How the console loads"). Their tables and triggers stay one
+// release, for a rollback to the previous image. The sweep empties both, the kept days with the queue
+// that would have invalidated them, so a rollback finds either everything it kept (before the first
+// sweep) or nothing, and computes its days again: never a kept day a change no longer reaches.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -58,21 +58,18 @@ async function flowlogSweepHandler(
       DELETE FROM agent_turn_deliveries
       WHERE (NOT proactive AND delivered_at < ${new Date(Date.now() - TURN_DELIVERY_RETENTION_MS)})
          OR delivered_at < ${new Date(Date.now() - PROACTIVE_DELIVERY_RETENTION_MS)}`);
-    // Raw SQL: the table has no Prisma model any more. Gone already on a database a later release
+    // Raw SQL: the tables have no Prisma model any more. Gone already on a database a later release
     // migrated, hence the check.
-    const [dirty] = await db.$queryRaw<{ t: string | null }[]>(
-      Prisma.sql`SELECT to_regclass('dashboard_dirty')::text AS t`,
-    );
-    if (dirty?.t) {
-      const dirtyCutoff = new Date(Date.now() - DASHBOARD_DIRTY_RETENTION_MS);
+    for (const table of ["dashboard_days", "dashboard_dirty"]) {
+      const [found] = await db.$queryRaw<{ t: string | null }[]>(
+        Prisma.sql`SELECT to_regclass(${table})::text AS t`,
+      );
+      if (!found?.t) continue;
+      const name = Prisma.raw(`"${table}"`);
       while (true) {
         const deleted = await db.$executeRaw(Prisma.sql`
-          DELETE FROM dashboard_dirty
-          WHERE id IN (
-            SELECT id FROM dashboard_dirty
-            WHERE created_at < ${dirtyCutoff}
-            LIMIT ${BATCH}
-          )`);
+          DELETE FROM ${name}
+          WHERE id IN (SELECT id FROM ${name} LIMIT ${BATCH})`);
         if (deleted < BATCH) break;
       }
     }

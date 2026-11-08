@@ -105,22 +105,22 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     expect(turns).toEqual(["new1"]);
   });
 
-  // The kept days' queue has no reader any more: its triggers stay one release for a rollback, and
-  // the sweep keeps a week of it, this tenant's only.
-  test("prunes the dashboard queue past a week, this tenant's only", async () => {
+  // The kept days and their queue have no reader any more: their tables stay one release for a
+  // rollback, and the sweep empties both for the tenant, so a rollback never reads a kept day whose
+  // invalidation was dropped.
+  test("empties the tenant's kept days and their queue, and no other tenant's", async () => {
     const other = (
       await suDb.tenant.create({
         data: { name: "FlowR2", slug: `flow-r2-${process.pid}` },
       })
     ).id;
     try {
-      const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
-      const recent = new Date(Date.now() - 86_400_000).toISOString();
-      await suDb.$executeRawUnsafe(
-        `INSERT INTO dashboard_dirty (tenant_id, section, created_at)
-         VALUES (${tenantId}, 'old', '${old}'), (${tenantId}, 'recent', '${recent}'),
-                (${other}, 'other-old', '${old}')`,
-      );
+      for (const t of [tenantId, other])
+        await suDb.$executeRawUnsafe(
+          `INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
+           VALUES (${t}, 'v', 'k', 'UTC', '2026-09-01', 'conv', '{}');
+           INSERT INTO dashboard_dirty (tenant_id, section) VALUES (${t}, 'probe')`,
+        );
       registerFlowlogRetentionHandler();
       const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
         ReturnType<typeof getJobHandler>
@@ -136,14 +136,23 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
         },
         appDb,
       );
-      const left = await suDb.$queryRawUnsafe<{ section: string }[]>(
-        `SELECT section FROM dashboard_dirty WHERE tenant_id IN (${tenantId}, ${other}) AND section IN ('old', 'recent', 'other-old') ORDER BY section`,
-      );
-      expect(left.map((r) => r.section)).toEqual(["other-old", "recent"]);
+      const count = async (table: string, t: bigint) =>
+        Number(
+          (
+            await suDb.$queryRawUnsafe<{ n: number }[]>(
+              `SELECT COUNT(*)::int AS n FROM ${table} WHERE tenant_id = ${t}`,
+            )
+          )[0]?.n,
+        );
+      expect(await count("dashboard_days", tenantId)).toBe(0);
+      expect(await count("dashboard_dirty", tenantId)).toBe(0);
+      expect(await count("dashboard_days", other)).toBe(1);
+      expect(await count("dashboard_dirty", other)).toBe(1);
     } finally {
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM dashboard_dirty WHERE tenant_id IN (${tenantId}, ${other})`,
-      );
+      for (const table of ["dashboard_days", "dashboard_dirty"])
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id IN (${tenantId}, ${other})`,
+        );
       await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${other}`);
     }
   });

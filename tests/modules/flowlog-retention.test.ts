@@ -633,9 +633,9 @@ describe.skipIf(!dbUp)("flowlog retention under a backlog", () => {
     expect(await expiredLeft()).toBe(0);
   }, 30_000);
 
-  // The kept days share the sweep's pass budget: past the pass's end no batch starts, and the handler
-  // runs again shortly instead of holding the scheduler's lane.
-  test("the kept days stop at the pass's end and are taken up again by the next pass", async () => {
+  // The kept days share the sweep's pass budget: past the pass's end no further batch starts, but a
+  // pass always takes one, so a pass the log's sweep spent still makes progress on them.
+  test("the kept days take one batch past the pass's end, and the rest in the next pass", async () => {
     const tenantId = (
       await suDb.tenant.create({
         data: { name: "FlowKept", slug: `flow-kept-${process.pid}` },
@@ -644,7 +644,7 @@ describe.skipIf(!dbUp)("flowlog retention under a backlog", () => {
     await suDb.$executeRawUnsafe(
       `INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
        SELECT ${tenantId}, 'v', 'k' || g, 'UTC', '2026-09-01', 'conv', '{}'
-         FROM generate_series(1, 3) g`,
+         FROM generate_series(1, ${SWEEP_BATCH_ROWS + 3}) g`,
     );
     const count = async () =>
       Number(

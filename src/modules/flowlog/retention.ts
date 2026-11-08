@@ -207,6 +207,10 @@ export async function sweepFlowlog(
   return { deleted, done: true, timeouts };
 }
 
+// Tenants whose log is within the window and whose kept days a pass left unfinished. Kept per
+// process; a restart sweeps the log once more first.
+const keptDaysLeft = new Set<string>();
+
 let handlerOptionsForTest: SweepOptions = {};
 /** Test-only: the options the job handler passes to `sweepFlowlog`. Production never calls it. */
 export function setSweepOptionsForTest(opts: SweepOptions): void {
@@ -217,12 +221,19 @@ export async function flowlogSweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {
+  const key = String(job.tenantId);
   const passEnds = Date.now() + (handlerOptionsForTest.passMs ?? SWEEP_PASS_MS);
-  const swept = await sweepFlowlog(base, job.tenantId, handlerOptionsForTest);
+  // A tenant whose log is already within the window and whose kept days were cut goes straight to
+  // them: the log's checks are not run again before every pass of the kept days.
+  const swept = keptDaysLeft.has(key)
+    ? { deleted: 0, done: true, timeouts: 0 }
+    : await sweepFlowlog(base, job.tenantId, handlerOptionsForTest);
   const { deleted, timeouts } = swept;
   // The kept days go once the log is within the window, on what is left of the same pass.
   const done =
     swept.done && (await emptyKeptDays(base, job.tenantId, passEnds));
+  if (swept.done && !done) keptDaysLeft.add(key);
+  else keptDaysLeft.delete(key);
   if (timeouts > 0)
     logger.warn(
       { tenantId: String(job.tenantId), timeouts },
@@ -257,8 +268,11 @@ export async function emptyKeptDays(
     );
     if (!found[0]?.t) continue;
     const name = Prisma.raw(`"${table}"`);
+    let first = true;
     while (true) {
-      if (Date.now() >= deadline) return false;
+      // At least one batch per pass, so a pass the log's sweep spent still makes progress here.
+      if (!first && Date.now() >= deadline) return false;
+      first = false;
       const deleted = await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.$executeRaw(Prisma.sql`
           DELETE FROM ${name}

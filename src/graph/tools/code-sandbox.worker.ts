@@ -1,14 +1,13 @@
-// The thread that runs ONE operator-authored code tool body and exits, spawned per call by
-// code-sandbox.ts; this file is the interpreter side and knows nothing about the tool. QuickJS over
-// WebAssembly has no ambient authority: its global object is ECMAScript plus the `console` below
-// (no fetch, process, require, timers or path to this thread's globals), and the runtime enforces a
-// CPU deadline (the interrupt handler), a heap ceiling and a stack ceiling.
+// The interpreter side of the thread that runs ONE operator-authored code tool body and exits,
+// spawned per call by code-sandbox.ts through code-sandbox.thread.ts; it knows nothing about the
+// tool. QuickJS over WebAssembly has no ambient authority: its global object is ECMAScript plus the
+// `console` below (no fetch, process, require, timers or path to this thread's globals), and the
+// runtime enforces a CPU deadline (the interrupt handler), a heap ceiling and a stack ceiling.
 import variant from "@jitl/quickjs-wasmfile-release-sync";
 import {
   newQuickJSWASMModuleFromVariant,
   type QuickJSContext,
   type QuickJSHandle,
-  shouldInterruptAfterDeadline,
 } from "quickjs-emscripten-core";
 import { clipText, makeStorable } from "@/lib/text";
 import { zoneFormatter, zoneOffsetSeconds } from "./zone-offset";
@@ -780,14 +779,21 @@ interface Session {
   logs: string[];
 }
 
-function open(req: SandboxRequest): Session {
+// What every deadline is read against: the wall clock in the thread, a clock the test drives in a
+// fixture thread, so a test of how a budget is spent does not depend on how fast the machine is.
+export type Clock = () => number;
+
+function interruptAfter(now: Clock, ms: number): () => boolean {
+  const deadline = now() + ms;
+  return () => now() > deadline;
+}
+
+function open(req: SandboxRequest, now: Clock): Session {
   const logs: string[] = [];
   const runtime = QuickJS.newRuntime();
   runtime.setMemoryLimit(req.memoryBytes);
   runtime.setMaxStackSize(req.stackBytes);
-  runtime.setInterruptHandler(
-    shouldInterruptAfterDeadline(Date.now() + req.timeoutMs),
-  );
+  runtime.setInterruptHandler(interruptAfter(now, req.timeoutMs));
   const vm = runtime.newContext();
   const renderer = makeRenderer(vm);
   const thenable = makeThenableProbe(vm);
@@ -799,11 +805,11 @@ function open(req: SandboxRequest): Session {
   return { runtime, vm, renderer, thenable, errors, logs };
 }
 
-function run(req: SandboxRequest): SandboxReply {
+function run(req: SandboxRequest, now: Clock): SandboxReply {
   const started = performance.now();
   let session: Session;
   try {
-    session = open(req);
+    session = open(req, now);
   } catch (e) {
     // The thread is discarded with the reply, so nothing half-built is freed here.
     const reason = e instanceof Error ? e.message : String(e);
@@ -815,9 +821,7 @@ function run(req: SandboxRequest): SandboxReply {
   const { runtime, vm, renderer, thenable, errors, logs } = session;
   const render = renderer.render;
   const renewDeadline = () =>
-    runtime.setInterruptHandler(
-      shouldInterruptAfterDeadline(Date.now() + RENDER_BUDGET_MS),
-    );
+    runtime.setInterruptHandler(interruptAfter(now, RENDER_BUDGET_MS));
   let unwound = false;
   try {
     const out = evaluate(vm, req.code, errors.read, req.call !== undefined);
@@ -893,8 +897,9 @@ function run(req: SandboxRequest): SandboxReply {
   }
 }
 
-self.onmessage = (ev: MessageEvent<SandboxRequest>) => {
-  self.postMessage(run(ev.data) satisfies SandboxReply);
-};
-
-self.postMessage({ kind: "ready" } satisfies SandboxReply);
+export function serve(now: Clock): void {
+  self.onmessage = (ev: MessageEvent<SandboxRequest>) => {
+    self.postMessage(run(ev.data, now) satisfies SandboxReply);
+  };
+  self.postMessage({ kind: "ready" } satisfies SandboxReply);
+}

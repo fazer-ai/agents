@@ -6,6 +6,7 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
   test,
 } from "bun:test";
 import {
@@ -364,6 +365,7 @@ beforeEach(invalidateVault);
 
 afterEach(() => {
   cleanup();
+  setSystemTime();
   runsOverride = null;
   runsFailures = 0;
   costFailures = 0;
@@ -1670,7 +1672,10 @@ describe("OccurrencesPanel", () => {
       enabled: true,
       model: READING,
     });
-    const finished = new Date(Date.now() - 5 * 60_000);
+    // Pinned so the last round's two seconds straddle a minute: it started at 16:39:59 and finished
+    // at 16:40:01, local time, five minutes before now.
+    setSystemTime(new Date(2026, 10, 8, 16, 45, 1));
+    const finished = new Date(2026, 10, 8, 16, 40, 1);
     runsOverride = () => ({
       total: 1,
       nextBefore: null,
@@ -1717,11 +1722,11 @@ describe("OccurrencesPanel", () => {
       "Conversation reading did not complete: its API key is no longer in the vault (choose another one).",
     );
     expect(text).toContain("1 more step did not complete.");
-    // Fifteen minutes after it ended.
-    const next = new Date(finished.getTime() + 15 * 60_000).toLocaleTimeString(
-      "en",
-      { timeStyle: "short" },
-    );
+    // Fifteen minutes after it started, the scheduler's start-to-start rule (16:54), not after it
+    // ended (16:55).
+    const next = new Date(
+      finished.getTime() - 2000 + 15 * 60_000,
+    ).toLocaleTimeString("en", { timeStyle: "short" });
     expect(text).toContain(`The next round is expected around ${next}.`);
     fireEvent.click(screen.getByRole("button", { name: "See the rounds" }));
     await waitFor(() => expect(location).toContain("tab=rounds"));

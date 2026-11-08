@@ -125,7 +125,7 @@ const entry = (patch: Record<string, unknown> & { source: string }) => ({
   ...patch,
 });
 
-let costs: Record<string, unknown> | "error" = COSTS;
+let costs: Record<string, unknown> | "error" | "slow" = COSTS;
 let kpis = KPIS;
 let ceilingPollMs = 300_000;
 let healthFails = false;
@@ -219,7 +219,9 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
   if (p.endsWith("/metrics/costs"))
     return costs === "error"
       ? json({ error: "x" }, 500)
-      : json({ instance: "i", costs });
+      : costs === "slow"
+        ? json({ error: "too slow", field: "since" }, 503)
+        : json({ instance: "i", costs });
   // Agent 8's breakdown never answers: what is on screen while it loads is the test.
   if (
     p.endsWith("/metrics/breakdown") &&
@@ -728,12 +730,28 @@ describe("the cost is the ledger's", () => {
     expect(has("llama-local-70b")).toBe(true);
   });
 
-  test("a cost that cannot be read says so in its slot", async () => {
+  test("a cost that cannot be read says so in its slot, with a retry", async () => {
     costs = "error";
     await renderDash("/");
     await waitFor(() => {
       expect(has("Could not read the cost.")).toBe(true);
     });
+    expect(has("This period took too long to compute.")).toBe(false);
+    // The tiles' retry and the two cost charts' retries.
+    expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(
+      3,
+    );
+  });
+
+  test("a cost refused as too slow says the period took too long, in the tiles too", async () => {
+    costs = "slow";
+    await renderDash("/");
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/This period took too long to compute/),
+      ).toHaveLength(3);
+    });
+    expect(has("Could not read the cost.")).toBe(false);
   });
 });
 

@@ -22,7 +22,13 @@ import { api } from "@/client/lib/api";
 import { lazyWithReload } from "@/client/lib/staleBuild";
 import type { BreakdownRow } from "@/modules/analytics/breakdown";
 import type { DashboardCosts } from "@/modules/analytics/costs";
-import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
+import {
+  Block,
+  type BlockTable,
+  Delta,
+  metricsErrorMessage,
+  SectionHeading,
+} from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -380,7 +386,23 @@ export function CostSection({
                   className="mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
-                {t("dashboard.costsError", "Could not read the cost.")}
+                <span>
+                  {costs.status === 503 && costs.field === "since"
+                    ? metricsErrorMessage(t, costs.status, costs.field)
+                    : t(
+                        "dashboard.costsError",
+                        "Could not read the cost.",
+                      )}{" "}
+                  {costs.error && (
+                    <button
+                      type="button"
+                      onClick={costs.reload}
+                      className="text-accent hover:underline"
+                    >
+                      {t("dashboard.retry", "Try again")}
+                    </button>
+                  )}
+                </span>
               </p>
             )}
           </Card>

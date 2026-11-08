@@ -66,18 +66,36 @@ export async function runMetricsScoped<T>(
   // A caller that went away (a console view left or replaced) while its request waited for a
   // connection gets nothing run for it: the connection goes straight back to the views still open.
   if (signal?.aborted) throw callerGone();
-  try {
-    return await runScopedOn(
+  const run = (serial: boolean) =>
+    runScopedOn(
       base,
       ctx,
       async (db) => {
         if (signal?.aborted) throw callerGone();
+        if (serial)
+          await db.$executeRaw`SELECT set_config('max_parallel_workers_per_gather', '0', true)`;
         return fn(db);
       },
       metricsBudget(deadline),
     );
+  try {
+    try {
+      return await run(false);
+    } catch (error) {
+      if (!isOutOfSharedMemory(error) || Date.now() >= deadline) throw error;
+      // The reads are pure, so the same read runs again without parallel workers, which take no
+      // shared memory segment (docs/dashboard.md, "How the console loads").
+      return await run(true);
+    }
   } catch (error) {
     if (isOverMetricsBudget(error)) throw metricsTooSlow(deadline);
     throw error;
   }
+}
+
+// 53100, "could not resize shared memory segment": parallel workers exchange rows through dynamic
+// shared memory, which lives in /dev/shm, and Docker gives a container 64 MB of it unless its compose
+// says otherwise. Three metrics reads with parallel hash joins at once can fill it.
+export function isOutOfSharedMemory(error: unknown): boolean {
+  return postgresCodeOf(error) === "53100";
 }

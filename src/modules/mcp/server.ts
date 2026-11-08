@@ -1526,7 +1526,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "metrics_get",
       {
         description:
-          "Get the dashboard KPIs (conversation involvement/resolution/automation rates) plus consolidated LLM usage (tokens/calls by agent/inbox/model/source) and conversation counts by status. Optional since (ISO), source and audience. A long cold period may be refused as too slow; calling again resumes.",
+          "Get the dashboard KPIs (conversation involvement/resolution/automation rates) plus consolidated LLM usage (tokens/calls by agent/inbox/model/source) and conversation counts by status. Optional since (ISO), source and audience. A long period may be refused as too slow; a shorter period answers sooner.",
         inputSchema: {
           since: z.string().optional(),
           source: z.enum(["inbox", "playground", "client"]).optional(),

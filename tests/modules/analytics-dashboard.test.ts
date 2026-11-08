@@ -11,7 +11,11 @@ import {
 import { getBreakdown } from "@/modules/analytics/breakdown";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import type { DashboardFilter } from "@/modules/analytics/filter";
-import { getHealth } from "@/modules/analytics/health";
+import {
+  getHealth,
+  latencyOrder,
+  problemOrder,
+} from "@/modules/analytics/health";
 import { getInstanceMetrics, getKpis } from "@/modules/analytics/service";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
@@ -793,6 +797,86 @@ describe.skipIf(!dbUp)("the dashboard's one view", () => {
     const tool = h.problems.find((p) => p.tool === "consultar_pedido");
     expect(tool).toMatchObject({ stage: "tool", level: "warn", lines: 3 });
     expect(h.problems.find((p) => p.stage === "delivery")?.lines).toBe(2);
+  });
+
+  test("health: whatever order Postgres hands tied rows back in, they leave in one", () => {
+    const row = (
+      stage: string,
+      level: "warn" | "error",
+      tool: string | null,
+    ) => ({
+      stage,
+      level,
+      tool,
+      lines: 1,
+      conversations: 1,
+    });
+    const sorted = [
+      row("delivery", "warn", null),
+      row("generate", "error", null),
+      row("split", "error", null),
+      row("tool", "error", "alfa"),
+      row("tool", "warn", "alfa"),
+      row("tool", "warn", "zeta"),
+    ];
+    expect([...sorted].reverse().sort(problemOrder)).toEqual(sorted);
+    expect(
+      [
+        { model: "b", calls: 3 },
+        { model: "a", calls: 3 },
+        { model: "c", calls: 9 },
+      ].sort(latencyOrder),
+    ).toEqual([
+      { model: "c", calls: 9 },
+      { model: "a", calls: 3 },
+      { model: "b", calls: 3 },
+    ]);
+  });
+
+  test("health: problem rows that tie on lines come in one fixed order, by stage, tool and level", async () => {
+    // A window of its own, far from every other test's lines: one line per pair, so all of them tie.
+    const at = new Date("2020-03-04T12:00:00Z");
+    const pairs: [string, string, string | null][] = [
+      ["split", "error", null],
+      ["generate", "warn", null],
+      ["tool", "warn", "zeta"],
+      ["generate", "error", null],
+      ["tool", "warn", "alfa"],
+      ["delivery", "warn", null],
+      ["split", "warn", null],
+      ["tool", "error", "alfa"],
+    ];
+    for (const [stage, level, tool] of pairs)
+      await suDb.executionLog.create({
+        data: {
+          tenantId: fx.tenantId,
+          turnId: crypto.randomUUID(),
+          stage,
+          level,
+          source: "inbox",
+          detail: tool ? { tool } : {},
+          createdAt: at,
+        },
+      });
+    const h = await getHealth(
+      ctx(fx.tenantId),
+      {
+        since: new Date("2020-03-04T00:00:00Z"),
+        until: new Date("2020-03-05T00:00:00Z"),
+        tz: "UTC",
+      },
+      appDb,
+    );
+    expect(h.problems.map((p) => [p.stage, p.tool, p.level])).toEqual([
+      ["delivery", null, "warn"],
+      ["generate", null, "error"],
+      ["generate", null, "warn"],
+      ["split", null, "error"],
+      ["split", null, "warn"],
+      ["tool", "alfa", "error"],
+      ["tool", "alfa", "warn"],
+      ["tool", "zeta", "warn"],
+    ]);
   });
 
   test("first response is read as a median and a 90th percentile", async () => {

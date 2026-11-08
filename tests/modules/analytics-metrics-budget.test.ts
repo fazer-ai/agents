@@ -725,6 +725,42 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     }
   });
 
+  // Parallel workers share rows through /dev/shm, 64 MB in a Docker container by default; three reads
+  // with parallel hash joins at once can fill it (53100). The read runs again with no workers.
+  test("a read refused for want of shared memory runs again without parallel workers", async () => {
+    const settings: string[] = [];
+    const answer = await runMetricsScoped(
+      app as PrismaClient,
+      ctx,
+      async (db) => {
+        const [row] = await db.$queryRaw<{ w: string }[]>`
+        SELECT current_setting('max_parallel_workers_per_gather') AS w`;
+        settings.push(row?.w ?? "");
+        if (settings.length === 1)
+          await db.$executeRaw`DO $$ BEGIN RAISE EXCEPTION 'could not resize shared memory segment' USING ERRCODE = '53100'; END $$`;
+        return "figures";
+      },
+    );
+    expect(answer).toBe("figures");
+    expect(settings).toHaveLength(2);
+    expect(settings[0]).not.toBe("0");
+    expect(settings[1]).toBe("0");
+  });
+
+  test("any other failure is not run again", async () => {
+    let runs = 0;
+    const error = await runMetricsScoped(
+      app as PrismaClient,
+      ctx,
+      async (db) => {
+        runs += 1;
+        await db.$executeRaw`DO $$ BEGIN RAISE EXCEPTION 'out of memory' USING ERRCODE = '53200'; END $$`;
+      },
+    ).catch((e: unknown) => e);
+    expect(postgresCodeOf(error)).toBe("53200");
+    expect(runs).toBe(1);
+  });
+
   test("a read inside the budget answers with its figures", async () => {
     // A tenant no row names: tenant 1 is the first one a fresh database hands out, and the files that
     // share this database may have billed usage to it.

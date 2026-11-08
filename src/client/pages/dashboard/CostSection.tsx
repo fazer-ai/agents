@@ -360,6 +360,32 @@ export function CostSection({
             <Skeleton key={k} className="h-28 w-full" />
           ))}
         </div>
+      ) : !c ? (
+        // One failure for the four tiles: they read one answer, and a tile with no answer has no
+        // number to show, not a 0.
+        <Card
+          className="flex items-start gap-1.5 text-sm"
+          data-testid="cost-tiles-error"
+        >
+          <TriangleAlert
+            className="text-text-muted mt-0.5 h-4 w-4 shrink-0"
+            aria-hidden="true"
+          />
+          <span className="text-text-muted">
+            {costs.status === 503 && costs.field === "since"
+              ? metricsErrorMessage(t, costs.status, costs.field)
+              : t("dashboard.costsError", "Could not read the cost.")}{" "}
+            {costs.error && (
+              <button
+                type="button"
+                onClick={costs.reload}
+                className="text-accent hover:underline"
+              >
+                {t("dashboard.retry", "Try again")}
+              </button>
+            )}
+          </span>
+        </Card>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card className="flex flex-col gap-2">
@@ -367,44 +393,16 @@ export function CostSection({
               <Coins className="text-accent h-4 w-4" aria-hidden="true" />
               {t("dashboard.totalCost", "LLM cost")}
             </div>
-            {c ? (
-              <>
-                <p className="text-text-primary text-2xl font-semibold tabular-nums">
-                  {cf.format(c.totalCostUsd)}
-                </p>
-                <Delta
-                  kind="amount"
-                  current={c.totalCostUsd}
-                  previous={p?.totalCostUsd}
-                  format={(v) => cf.format(v)}
-                  lowerIsBetter
-                />
-              </>
-            ) : (
-              <p className="text-text-muted flex items-start gap-1.5 text-sm">
-                <TriangleAlert
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  aria-hidden="true"
-                />
-                <span>
-                  {costs.status === 503 && costs.field === "since"
-                    ? metricsErrorMessage(t, costs.status, costs.field)
-                    : t(
-                        "dashboard.costsError",
-                        "Could not read the cost.",
-                      )}{" "}
-                  {costs.error && (
-                    <button
-                      type="button"
-                      onClick={costs.reload}
-                      className="text-accent hover:underline"
-                    >
-                      {t("dashboard.retry", "Try again")}
-                    </button>
-                  )}
-                </span>
-              </p>
-            )}
+            <p className="text-text-primary text-2xl font-semibold tabular-nums">
+              {cf.format(c.totalCostUsd)}
+            </p>
+            <Delta
+              kind="amount"
+              current={c.totalCostUsd}
+              previous={p?.totalCostUsd}
+              format={(v) => cf.format(v)}
+              lowerIsBetter
+            />
           </Card>
           <Card className="flex flex-col gap-2">
             <div className="text-text-muted flex items-center gap-2 text-xs">
@@ -419,8 +417,8 @@ export function CostSection({
                 "dashboard.cost.acrossConversations",
                 "across {{n}} conversations",
                 {
-                  count: c?.conversations ?? 0,
-                  n: nf.format(c?.conversations ?? 0),
+                  count: c.conversations,
+                  n: nf.format(c.conversations),
                 },
               )}
             </p>
@@ -445,8 +443,8 @@ export function CostSection({
             </p>
             <p className="text-text-muted text-xs">
               {t("dashboard.cost.acrossResolved", "across {{n}} resolved", {
-                count: c?.resolvedConversations ?? 0,
-                n: nf.format(c?.resolvedConversations ?? 0),
+                count: c.resolvedConversations,
+                n: nf.format(c.resolvedConversations),
               })}
             </p>
             <Delta
@@ -469,8 +467,8 @@ export function CostSection({
             </p>
             <p className="text-text-muted text-xs">
               {t("dashboard.calls", "{{n}} requests", {
-                count: c?.requests ?? 0,
-                n: nf.format(c?.requests ?? 0),
+                count: c.requests,
+                n: nf.format(c.requests),
               })}
             </p>
           </Card>

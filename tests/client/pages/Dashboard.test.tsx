@@ -762,6 +762,12 @@ describe("the cost is the ledger's", () => {
       expect(has("Could not read the cost.")).toBe(true);
     });
     expect(has("This period took too long to compute.")).toBe(false);
+    // The other tiles read the same answer: no figure of theirs is shown, least of all a 0.
+    expect(has("across 0 conversations")).toBe(false);
+    expect(has("across 0 resolved")).toBe(false);
+    expect(has("0 requests")).toBe(false);
+    expect(screen.queryByText("Tokens (in / out)")).toBeNull();
+    expect(screen.getByTestId("cost-tiles-error")).toBeTruthy();
     // The tiles' retry and the two cost charts' retries.
     expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(
       3,
@@ -828,6 +834,8 @@ describe("the cost is the ledger's", () => {
       ).toHaveLength(3);
     });
     expect(has("Could not read the cost.")).toBe(false);
+    expect(has("0 requests")).toBe(false);
+    expect(has("across 0 conversations")).toBe(false);
   });
 });
 
@@ -1051,6 +1059,8 @@ describe("the funnel trend", () => {
       // The KPIs' failure, with its retry, in their own slot.
       expect(has("Could not load metrics.")).toBe(true);
     });
+    // The funnel and the tiles read that answer: none of their figures shows, not even as 0.
+    expect(has("handled by AI")).toBe(false);
     expect(screen.queryAllByRole("radio", { name: "By agent" }).length).toBe(1);
   });
 });

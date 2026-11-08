@@ -129,7 +129,8 @@ export function makeConfig(
     choiceCheckCredentialBaseUrl: null,
     logToolValues: false,
     fullDetail: false,
-    toolsUsedNote: false,
+    toolsUsedNote: "off",
+    turnErrors: "off",
     ...over,
   } as AgentConfig;
 }

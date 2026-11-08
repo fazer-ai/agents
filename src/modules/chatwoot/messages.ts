@@ -4,6 +4,7 @@ import {
   ACTIVITY_NOTE_KINDS,
   type ActivityNoteKind,
   CHATWOOT_ACTIVITY_NOTE_KEY,
+  CHATWOOT_ERRORS_KEY_KEY,
   CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
   CHATWOOT_SEND_ID_KEY,
@@ -132,6 +133,8 @@ export interface ChatwootMessageRow {
   // `CHATWOOT_ACTIVITY_NOTE_KEY`: the engine's own note about a turn, and which kind. Optional
   // because a hand-built row carries none.
   activityNote?: ActivityNoteKind;
+  // `CHATWOOT_ERRORS_KEY_KEY`, on a turn-errors message: what failed, for the next turn's dedup.
+  activityErrorsKey?: string;
 }
 
 function isActivityNoteKind(v: unknown): v is ActivityNoteKind {
@@ -389,9 +392,17 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
           ? (ca[CHATWOOT_SEND_ID_KEY] as string)
           : null,
       platformSent: ca?.[CHATWOOT_PLATFORM_SENT_KEY] === true,
-      ...(item.private === true &&
+      // NOTE: On the rows we write it on only (a private note, an activity row), so a contact's
+      // message that carries the key is still the contact's.
+      ...((item.private === true ||
+        messageTypeOf(item.message_type) === "activity") &&
       isActivityNoteKind(ca?.[CHATWOOT_ACTIVITY_NOTE_KEY])
-        ? { activityNote: ca?.[CHATWOOT_ACTIVITY_NOTE_KEY] as ActivityNoteKind }
+        ? {
+            activityNote: ca?.[CHATWOOT_ACTIVITY_NOTE_KEY] as ActivityNoteKind,
+            ...(typeof ca?.[CHATWOOT_ERRORS_KEY_KEY] === "string"
+              ? { activityErrorsKey: ca[CHATWOOT_ERRORS_KEY_KEY] as string }
+              : {}),
+          }
         : {}),
     });
   }

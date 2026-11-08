@@ -392,8 +392,10 @@ export interface TakeoverState {
 }
 
 // Mirrors agent.settings.conversationNotes / readConversationNotesConfig.
+export type ConversationNoteFormat = "off" | "activity" | "note";
 export interface ConversationNotesState {
-  toolsUsed: boolean;
+  toolsUsed: ConversationNoteFormat;
+  errors: ConversationNoteFormat;
 }
 
 // Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
@@ -4140,20 +4142,36 @@ export function BehaviorTab({
             title={t("editor.conversationNotes", "Notes in the conversation")}
             help={t(
               "editor.conversationNotesHelp",
-              "Private notes the agent leaves in the Chatwoot conversation for your team. The customer never sees them, and the agent does not read them back on later turns.",
+              "Notes and messages the agent leaves in the Chatwoot conversation for your team. The customer never sees them, and the agent does not read them back on later turns.",
             )}
           >
-            <SwitchField
-              checked={conversationNotes.toolsUsed}
-              onCheckedChange={(v) => setConversationNotes({ toolsUsed: v })}
+            <NoteFormatField
               label={t(
                 "editor.conversationNotesToolsUsed",
-                "Leave a note with the tools used in each turn",
+                "Tools used in each turn",
               )}
               help={t(
                 "editor.conversationNotesToolsUsedHelp",
-                "One note per turn that used a tool, with the tool names only. What each tool was given and returned stays out, since it can carry the customer's data; the Logs page shows it.",
+                "One message per turn that used a tool, with the tool names only. What each tool was given and returned stays out, since it can carry the customer's data; the Logs page shows it.",
               )}
+              value={conversationNotes.toolsUsed}
+              onChange={(v) =>
+                setConversationNotes({ ...conversationNotes, toolsUsed: v })
+              }
+            />
+            <NoteFormatField
+              label={t(
+                "editor.conversationNotesErrors",
+                "Errors in the middle of a turn",
+              )}
+              help={t(
+                "editor.conversationNotesErrorsHelp",
+                "When a tool fails, only the fallback model answers or a guardrail holds the reply, and the turn still ends, one message per turn says what failed, a short reason and whether the turn recovered, with a link to the turn on the Logs page. The same failure is not repeated.",
+              )}
+              value={conversationNotes.errors}
+              onChange={(v) =>
+                setConversationNotes({ ...conversationNotes, errors: v })
+              }
             />
           </Section>
 
@@ -4945,5 +4963,54 @@ export function BehaviorTab({
         onOpenPlayground={onOpenPlayground}
       />
     </div>
+  );
+}
+
+// One kind of conversation note: the same three formats and the same words about them for every kind,
+// after what that kind says.
+function NoteFormatField({
+  label,
+  help,
+  value,
+  onChange,
+}: {
+  label: string;
+  help: string;
+  value: ConversationNoteFormat;
+  onChange: (v: ConversationNoteFormat) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <FormField
+      label={label}
+      help={`${help}\n\n${t(
+        "editor.conversationNoteFormatHelp",
+        "An activity message is a gray line in the timeline that notifies nobody. A private note stands out to whoever handles the conversation. The customer sees neither.",
+      )}\n\n${t(
+        "editor.conversationNoteFormatActivityContact",
+        "Until the Chatwoot fork is updated, an activity message is recorded as sent by the contact, and in a follow-up it also updates the contact's last activity.",
+      )}`}
+    >
+      <Select
+        value={value}
+        onChange={(e) => onChange(e.target.value as ConversationNoteFormat)}
+      >
+        <option value="off">
+          {t("editor.conversationNoteFormatOff", "Do not show")}
+        </option>
+        <option value="activity">
+          {t(
+            "editor.conversationNoteFormatActivity",
+            "Activity message (discreet, notifies nobody)",
+          )}
+        </option>
+        <option value="note">
+          {t(
+            "editor.conversationNoteFormatNote",
+            "Private note (stands out to the team)",
+          )}
+        </option>
+      </Select>
+    </FormField>
   );
 }

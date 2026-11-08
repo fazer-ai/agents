@@ -3,6 +3,8 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { formatSendOptions } from "./send";
+import type { ConversationNoteFormat } from "./settings";
 
 // The tools one turn called, as the private note the team reads in Chatwoot. Names only: an
 // argument or a result is the customer's data (a CPF, an address), and the note is read by
@@ -30,20 +32,22 @@ export function toolsUsedNoteText(
 // Best-effort: the turn is over when this runs, so a note that does not land costs the team a line
 // and nothing else. Never throws.
 export async function postToolsUsedNote(params: {
-  client: Pick<ChatwootClient, "sendPrivateNote">;
+  client: Pick<ChatwootClient, "sendMessage">;
   conversationId: number;
+  format: ConversationNoteFormat;
   called: readonly CalledTool[];
   flow: FlowContext;
 }): Promise<"posted" | "nothing" | "failed"> {
+  if (params.format === "off") return "nothing";
   const text = toolsUsedNoteText(params.called);
   if (text === null) return "nothing";
   try {
     // NOTE: A tool name is the operator's, but Chatwoot renders a note through Liquid, so it is
     // escaped like any text we did not write.
-    await params.client.sendPrivateNote(
+    await params.client.sendMessage(
       params.conversationId,
       literalForChatwoot(text),
-      { activity: "tools" },
+      { ...formatSendOptions(params.format), activity: "tools" },
     );
     return "posted";
   } catch (err) {

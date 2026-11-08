@@ -45,6 +45,10 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
 import { postToolsUsedNote } from "@/modules/conversation-notes/tools-used";
+import {
+  postTurnErrors,
+  TurnErrors,
+} from "@/modules/conversation-notes/turn-errors";
 import { recordConversationError } from "@/modules/conversations/error";
 import { armNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
 import {
@@ -1180,6 +1184,9 @@ async function runTurnBody(
   let fallbackAnswered = false;
   // The model that answered once the fallback took the turn, for the stage's closing line.
   let answeredBy: { provider: string; model: string } | null = null;
+  // What this turn survives, for the turn-errors message the closing block posts.
+  const turnErrors = new TurnErrors();
+  const telemetry = modelTelemetry(flow, loaded.mc.provider);
   const graph = await buildModelAndGraph(loaded, tools, {
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
@@ -1203,15 +1210,20 @@ async function runTurnBody(
     // world, and an unreadable mark is not a withdrawal. See docs/graph.md, "The tool boundary,
     // when the turn was called off".
     stillWanted: stillWantedFence,
-    ...modelTelemetry(flow, loaded.mc.provider),
+    ...telemetry,
     // NOTE: To the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
+    onModelRetry: (info) => {
+      telemetry.onModelRetry?.(info);
+      turnErrors.modelRetried();
+    },
     // NOTE: the shared telemetry, plus the turn's own record of which model answered.
     onModelFallback: (info) => {
       fallbackAnswered = true;
       answeredBy = { provider: info.provider, model: info.model };
-      modelTelemetry(flow, loaded.mc.provider).onModelFallback?.(info);
+      telemetry.onModelFallback?.(info);
+      turnErrors.fallbackAnswered(info);
     },
   });
   const callbacks = buildCallbacks(loaded, {
@@ -1262,7 +1274,10 @@ async function runTurnBody(
     cfg: loaded.guardrails,
     apiKey: loaded.guardrailsApiKey,
     credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
-    announce: chatwootNoteSink(client, conversationId),
+    announce: async (r) => {
+      turnErrors.guardrail(r);
+      await chatwootNoteSink(client, conversationId)(r);
+    },
     flow,
     systemPrompt: loaded.systemPrompt,
     logValues: loaded.logToolValues,
@@ -1302,7 +1317,10 @@ async function runTurnBody(
     secretMissing: loaded.guardrailsExternalSecretMissing,
     logValues: loaded.logToolValues,
     flow,
-    announce: chatwootNoteSink(client, conversationId),
+    announce: async (r) => {
+      turnErrors.guardrail(r);
+      await chatwootNoteSink(client, conversationId)(r);
+    },
     deps: params.deps?.externalCheck,
   });
   // The transfer a guardrail `handoff` verdict asks for, gated after the judge's model call:
@@ -1731,6 +1749,9 @@ async function runTurnBody(
   // The hand-back note was owed but an older invoke was reading the channel, so it rides in
   // this turn's own invoke input: the durable write waits, the correction does not.
   let handbackDeferred = false;
+  // A turn that throws is retried or lost, and a lost one writes the failure note: neither says
+  // anything here.
+  let turnThrew = false;
   try {
     // NOTE: Attendance boundary. A new conversation on this thread is claimed inside the `ingest:`
     // section ingestion also takes: the divider is written as its own message and the marker
@@ -2858,6 +2879,9 @@ async function runTurnBody(
     // holds, and the `finally` clears it before the queued rollback runs. The call still takes its
     // place in the `ingest:` queue now, before the durable claim is released.
     return ended.undo ? rollBack(ended.outcome) : ended.outcome;
+  } catch (err) {
+    turnThrew = true;
+    throw err;
   } finally {
     clearTurnInFlight(threadId);
     // NOTE: Before the durable claim is released: the next turn on this thread waits on it, and its
@@ -2945,11 +2969,26 @@ async function runTurnBody(
     // out: a lone `skip_reply` does not end the turn, so its own stamp can precede a delivered line.
     // NOTE: On every way out, since a tool that ran acted whether or not the reply went out, and
     // after the reply, so the note reads below it.
-    if (loaded.toolsUsedNote)
+    if (loaded.toolsUsedNote !== "off")
       await postToolsUsedNote({
         client,
         conversationId,
+        format: loaded.toolsUsedNote,
         called: toolLogger.calledTools(),
+        flow,
+      });
+    if (
+      loaded.turnErrors !== "off" &&
+      !turnThrew &&
+      // NOTE: These two throw at the end of this block, so the turn does not return either.
+      !handoffFailed &&
+      !turnLimitHandoffFailed
+    )
+      await postTurnErrors({
+        client,
+        conversationId,
+        format: loaded.turnErrors,
+        items: turnErrors.items(toolLogger.failedTools()),
         flow,
       });
     const sentMessageIds = recorded.sentIds();

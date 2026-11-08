@@ -2,6 +2,7 @@ import { Prisma } from "@/../generated/prisma/client";
 import config from "@/config";
 import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
 import type { ClientAudience } from "@/graph/usage-sources";
+import { badQueryParam } from "@/lib/query-param";
 import { dayStart, localDay } from "./days";
 
 // THE DASHBOARD'S ONE FILTER. Every block of the page reads the same window, agent, inbox and source,
@@ -116,13 +117,25 @@ export function flowLogFloor(tz: string, now: number = Date.now()): Date {
   );
 }
 
+// normalizeTimeZone's rule, here so the floor can use it without importing the service: an unknown
+// zone is the caller's 400 naming `tz`, never a RangeError's 500.
+function zoneOrRefuse(tz: string | undefined): string {
+  if (tz === undefined) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return tz;
+  } catch {
+    badQueryParam("tz");
+  }
+}
+
 export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
   const l = Prisma.raw(alias);
   const source = f.source ?? null;
   const agent = f.agentId ?? null;
   const inbox = f.inboxId ?? null;
   // As text: node-pg writes a Date in the process's zone, which a test file may have changed.
-  const floor = flowLogFloor(f.tz ?? "UTC").toISOString();
+  const floor = flowLogFloor(zoneOrRefuse(f.tz)).toISOString();
   return Prisma.sql`${windowSql(Prisma.sql`${l}.created_at`, f)}
     AND ${l}.created_at >= (${floor}::timestamptz AT TIME ZONE 'UTC')
     AND (${source}::text IS NULL OR ${l}.source = ${source})

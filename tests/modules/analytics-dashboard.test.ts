@@ -826,6 +826,18 @@ describe.skipIf(!dbUp)("the dashboard's one view", () => {
     }
   });
 
+  test("an unknown zone is refused as the caller's tz, by the flow-log reads too", async () => {
+    for (const tz of ["Not/AZone", ""]) {
+      const error = await getHealth(
+        ctx(other.tenantId),
+        { ...WEEK, tz },
+        appDb,
+      ).catch((e: unknown) => e);
+      expect(error).toMatchObject({ statusCode: 400 });
+      expect(String((error as Error).message)).toContain("tz");
+    }
+  });
+
   test("a line on a day before the cutoff's, not yet swept, is not read", async () => {
     // A tenant and a window of their own; one line the day before the cutoff's, one on the cutoff's day.
     const days = 30;

@@ -141,7 +141,14 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   // every call it made is the turn's degraded outcome.
   private readonly outcomes = new Map<
     string,
-    { failed: number; succeeded: number; cause: string; warned: boolean }
+    {
+      failed: number;
+      succeeded: number;
+      cause: string;
+      warned: boolean;
+      // A call succeeded AFTER the last failure: what the turn-errors message calls recovered.
+      recovered: boolean;
+    }
   >();
   // Every tool the turn started, in the order of its first call, with how many calls it made.
   private readonly called = new Map<string, number>();
@@ -241,7 +248,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   }
 
   // The tools that failed at least once this turn, first call first: how many calls failed, whether
-  // a later call of the same tool succeeded, and the last cause (sanitized, as its flow line says).
+  // a call of the same tool succeeded after the last failure, and the last cause (sanitized).
   failedTools(): {
     name: string;
     failed: number;
@@ -255,7 +262,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         out.push({
           name,
           failed: o.failed,
-          recovered: o.succeeded > 0,
+          recovered: o.recovered,
           cause: o.cause,
         });
     }
@@ -268,11 +275,15 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       succeeded: 0,
       cause: "",
       warned: false,
+      recovered: false,
     };
-    if (failure === null) o.succeeded += 1;
-    else {
+    if (failure === null) {
+      o.succeeded += 1;
+      if (o.failed > 0) o.recovered = true;
+    } else {
       o.failed += 1;
       o.cause = failure;
+      o.recovered = false;
     }
     this.outcomes.set(tool, o);
     if (this.settled) this.settleTool(tool, o);

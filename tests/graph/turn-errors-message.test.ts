@@ -79,7 +79,7 @@ type Sent = {
 
 // A Chatwoot that keeps what was sent and lists it back, so a second turn can read the first one's
 // message the way the real page does.
-function chatwoot(failFirst: number) {
+function chatwoot(failFirst: number, failAfter = Number.POSITIVE_INFINITY) {
   const sent: Sent[] = [];
   let id = 100;
   let lookups = 0;
@@ -98,7 +98,8 @@ function chatwoot(failFirst: number) {
       send(conv, text, { ...opts, private: true }),
     getLatestIncomingMessage: async () => {
       lookups++;
-      if (lookups <= failFirst) throw new Error("cliente Ana Souza não achado");
+      if (lookups <= failFirst || lookups > failAfter)
+        throw new Error("cliente Ana Souza não achado");
       return { id: 1, isReaction: false };
     },
     addMessageReaction: async () => ({}),
@@ -153,6 +154,7 @@ const CONV_NOTE = 1705;
 const CONV_REPEAT = 1706;
 const CONV_THROWS = 1707;
 const CONV_FALLBACK = 1708;
+const CONV_WORKED_THEN_FAILED = 1709;
 
 describe.skipIf(!dbUp)("the turn-errors message", () => {
   beforeAll(async () => {
@@ -228,6 +230,7 @@ describe.skipIf(!dbUp)("the turn-errors message", () => {
       [on, 76, CONV_REPEAT],
       [on, 77, CONV_THROWS],
       [withFallback, 78, CONV_FALLBACK],
+      [on, 79, CONV_WORKED_THEN_FAILED],
     ] as const) {
       const inbox = await suDb.inbox.create({
         data: {
@@ -326,6 +329,16 @@ describe.skipIf(!dbUp)("the turn-errors message", () => {
     expect(errs).toHaveLength(1);
     expect((errs[0] as Sent).text).toContain(
       "react_to_message: falhou (erro). Se recuperou",
+    );
+  });
+
+  test("a tool that worked and then failed did not recover", async () => {
+    const cw = chatwoot(0, 1);
+    await turn(CONV_WORKED_THEN_FAILED, 79, cw, new ScriptedModel(2));
+    const errs = errorsOf(cw.sent);
+    expect(errs).toHaveLength(1);
+    expect((errs[0] as Sent).text).toContain(
+      "react_to_message: falhou (erro). Não se recuperou",
     );
   });
 

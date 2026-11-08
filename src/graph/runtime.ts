@@ -2976,7 +2976,13 @@ async function runTurnBody(
         called: toolLogger.calledTools(),
         flow,
       });
-    if (loaded.turnErrors !== "off" && !turnThrew)
+    if (
+      loaded.turnErrors !== "off" &&
+      !turnThrew &&
+      // NOTE: These two throw at the end of this block, so the turn does not return either.
+      !handoffFailed &&
+      !turnLimitHandoffFailed
+    )
       await postTurnErrors({
         client,
         conversationId,

@@ -1953,6 +1953,10 @@
     "contactFieldsHint": "The contact's own Chatwoot fields. The agent sees the current value of each one you check, and can save what the customer tells it in the ones marked as updatable.",
     "contactFieldVisible": "In context",
     "contactFieldWritable": "Agent can update",
+    "conversationNotes": "Notes in the conversation",
+    "conversationNotesHelp": "Private notes the agent leaves in the Chatwoot conversation for your team. The customer never sees them, and the agent does not read them back on later turns.",
+    "conversationNotesToolsUsed": "Leave a note with the tools used in each turn",
+    "conversationNotesToolsUsedHelp": "One note per turn that used a tool, with the tool names only. What each tool was given and returned stays out, since it can carry the customer's data; the Logs page shows it.",
     "credential": "API key",
     "crossInboxCase": {
       "attributeKey": "Case number attribute",

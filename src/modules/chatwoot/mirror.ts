@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { isForeignKeyViolation, isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { endsTestPark } from "@/modules/agents/test-mode";
 import { ADDITIONAL_CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { retireJobsByDedupeKeyOn } from "@/modules/scheduler/service";
@@ -257,6 +258,8 @@ export async function mirrorChatwootEvent(
             status: true,
             resolvedBy: true,
             resolvedByAt: true,
+            testParkedOpenAt: true,
+            testParkedAssigneeId: true,
             redirectOriginDisplayId: true,
             // Read so the stale branch can tell a reading it already has from one it does not, and
             // skip the UPDATE in the common case rather than rewriting the same two values.
@@ -627,6 +630,16 @@ export async function mirrorChatwootEvent(
                   assigneeType: n.assigneeType ?? null,
                   assigneeName: n.assigneeName ?? null,
                 }
+              : {}),
+            ...(assigneeKnown &&
+            endsTestPark(
+              {
+                parkedAt: existing.testParkedOpenAt,
+                parkedAssigneeId: existing.testParkedAssigneeId,
+              },
+              { assigneeType: nextAssigneeType, assigneeId: nextAssigneeId },
+            )
+              ? { testParkedOpenAt: null, testParkedAssigneeId: null }
               : {}),
             lastEventAt: effectiveLastEventAt,
             ...(decision.statusAt != null

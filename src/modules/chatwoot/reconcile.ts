@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { endsTestPark } from "@/modules/agents/test-mode";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
 import { firstOwnershipStamp } from "./state-order";
@@ -131,6 +132,8 @@ export async function reconcileMirrorFromLive(
             statusClaimFrom: true,
             statusClaimStampedAt: true,
             statusClaimRefusedAt: true,
+            testParkedOpenAt: true,
+            testParkedAssigneeId: true,
           },
         });
         if (!current) return;
@@ -329,6 +332,16 @@ export async function reconcileMirrorFromLive(
                 assigneeId: nextAssigneeId,
                 assigneeName: nextAssigneeName,
               }
+            : {}),
+          ...(assigneeOrdered &&
+          endsTestPark(
+            {
+              parkedAt: current.testParkedOpenAt,
+              parkedAssigneeId: current.testParkedAssigneeId,
+            },
+            { assigneeType: nextAssigneeType, assigneeId: nextAssigneeId },
+          )
+            ? { testParkedOpenAt: null, testParkedAssigneeId: null }
             : {}),
           ...(advancesActivity ? { lastEventAt: nextEventAt } : {}),
           ...(nextStatus !== null &&

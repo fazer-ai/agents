@@ -45,7 +45,11 @@ import {
 } from "@/lib/tenancy";
 import { ingestsContinuously, isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
-import { shouldRunReset } from "@/modules/agents/test-mode";
+import {
+  shouldRunReset,
+  type TestPark,
+  testParkHolds,
+} from "@/modules/agents/test-mode";
 import { cancelThreadAppointments } from "@/modules/appointments/reminders";
 import {
   awayMessageDue,
@@ -60,7 +64,10 @@ import {
   scheduleCanClose,
 } from "@/modules/business-hours/hours";
 import { linkRedirectConversations } from "@/modules/channel-redirect/cross-link";
-import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
+import {
+  episodeTestActivatedAt,
+  redirectSide,
+} from "@/modules/channel-redirect/episode";
 import {
   armRedirectChatFollowUp,
   deliverRedirectClosing,
@@ -195,7 +202,7 @@ import {
   forgetMediaFallbacks,
   handleChannelFailure,
 } from "./channel-failure";
-import type { ChatwootClient } from "./client";
+import { type ChatwootClient, ChatwootStatusConflictError } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
 import { resetAckSendId } from "./constants";
 import {
@@ -2643,6 +2650,8 @@ async function maybeConsumeCommandOrGate(params: {
         contactInboxId: true,
         testActivatedAt: true,
         testNoticeSentAt: true,
+        testParkedOpenAt: true,
+        testParkedAssigneeId: true,
         status: true,
         assigneeType: true,
         assigneeId: true,
@@ -2862,7 +2871,7 @@ async function maybeConsumeCommandOrGate(params: {
       }
     } catch (err) {
       logger.warn(
-        "chatwoot: /reset could not refresh the conversation before %s (conv=%s): %s",
+        "chatwoot: could not refresh the conversation before %s (conv=%s): %s",
         guarding,
         String(conversationId),
         errMsg(err),
@@ -2976,6 +2985,216 @@ async function maybeConsumeCommandOrGate(params: {
       teamUsable,
     })) === "opened";
 
+  // A conversation the test-mode silence keeps quiet goes to the team: on a bot inbox Chatwoot starts
+  // it `pending`, which the team does not watch, and this agent will not answer it before /teste. The
+  // bot's `open` is Chatwoot's handoff (the inbox's members are notified and auto-assignment runs in
+  // the same save), fenced like every other gate's. The holder Chatwoot gave it in that write is
+  // recorded with the park, so /teste can tell it from somebody who took the conversation later.
+  // A /teste that lands while this delivery is still on its way to the park finds no park to return,
+  // so the activation is asked again once the mark is written, and the park is handed straight back
+  // under the same fence /teste uses. "activated" means the conversation is the agent's again.
+  const parkTestSilenced = async (): Promise<
+    "parked" | "not-parked" | "activated"
+  > => {
+    if (!(await openConversationForHumans("test-mode", null)))
+      return "not-parked";
+    await refreshFromLive("the test-mode park", null);
+    const mark: TestPark = {
+      parkedAt: new Date(),
+      parkedAssigneeId:
+        ctx.conv.assigneeType === "User" ? ctx.conv.assigneeId : null,
+    };
+    try {
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.update({
+          where: { id: ctx.conv.id },
+          data: {
+            testParkedOpenAt: mark.parkedAt,
+            testParkedAssigneeId: mark.parkedAssigneeId,
+          },
+        }),
+      );
+    } catch (err) {
+      logger.warn(
+        "chatwoot: test-mode park mark write failed (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+    }
+    logger.info(
+      "chatwoot: test-mode silent conversation opened for the team (conv=%s)",
+      String(conversationId),
+    );
+    if (!(await activatedSinceRead())) return "parked";
+    await returnConversationToAgent(
+      sysCtx(tenantId),
+      ctx.conv.id,
+      {},
+      base,
+      { assigneeType: ctx.conv.assigneeType, assigneeId: ctx.conv.assigneeId },
+      { status: "open", stillValid: () => parkStands(ctx.conv.id, mark) },
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not return a conversation /teste activated while it was parked (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+    });
+    await clearTestPark(ctx.conv.id);
+    return "activated";
+  };
+
+  // Whether /teste activated this conversation (or its redirect episode) after this delivery read it.
+  const activatedSinceRead = async (): Promise<boolean> => {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: { id: ctx.conv.id },
+        select: { testActivatedAt: true },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not re-read the test activation (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+      return null;
+    });
+    const own = row?.testActivatedAt ?? null;
+    if (own !== null) return true;
+    if (ctx.agentSettings == null) return false;
+    return (
+      (await episodeTestActivatedAt({
+        tenantId,
+        instanceId,
+        cfg: readChannelRedirectConfig(ctx.agentSettings),
+        agentMode: ctx.mode,
+        conv: {
+          testActivatedAt: null,
+          contactId: ctx.conv.contactId,
+          chatwootInboxId: ctx.inboxChatwootId,
+        },
+        base,
+      })) !== null
+    );
+  };
+
+  // The park a hand-back was decided on is still the row's: neither ended by the mirror nor replaced.
+  const parkStands = async (rowId: bigint, decidedOn: TestPark) => {
+    const now = await readTestPark(rowId);
+    return (
+      now !== null &&
+      now.parkedAt !== null &&
+      decidedOn.parkedAt !== null &&
+      now.parkedAt.getTime() === decidedOn.parkedAt.getTime() &&
+      now.parkedAssigneeId === decidedOn.parkedAssigneeId
+    );
+  };
+
+  // The park as the row holds it. Read again at each decision rather than carried from the delivery's
+  // start, since the mirror ends it the moment it writes another person as the assignee.
+  const readTestPark = async (rowId: bigint): Promise<TestPark | null> => {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: { id: rowId },
+        select: { testParkedOpenAt: true, testParkedAssigneeId: true },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not read the test-mode park (row=%s): %s",
+        String(rowId),
+        errMsg(err),
+      );
+      return null;
+    });
+    return row
+      ? {
+          parkedAt: row.testParkedOpenAt,
+          parkedAssigneeId: row.testParkedAssigneeId,
+        }
+      : null;
+  };
+
+  // Cleared by /teste once it decided: the park only means something while the conversation is
+  // silenced, and after the decision nothing reads it.
+  const clearTestPark = async (rowId: bigint): Promise<void> => {
+    await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.update({
+        where: { id: rowId },
+        data: { testParkedOpenAt: null, testParkedAssigneeId: null },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not clear the test-mode park (row=%s): %s",
+        String(rowId),
+        errMsg(err),
+      );
+    });
+  };
+
+  // The other half of a redirect episode, when the silence parked it: /teste activates the episode
+  // (every gate reads its activation), so a parked sibling goes back to the agent under the same rule
+  // as this conversation. Best-effort, logged; it never changes this command's acknowledgement.
+  const returnParkedEpisodeSiblings = async (): Promise<void> => {
+    const cfg =
+      ctx.agentSettings != null
+        ? readChannelRedirectConfig(ctx.agentSettings)
+        : null;
+    const side = cfg ? redirectSide(cfg, ctx.inboxChatwootId) : null;
+    if (!cfg || side === null || ctx.conv.contactId === null) return;
+    const siblingInboxId =
+      side === "widget" ? cfg.entryInboxId : cfg.widgetInboxId;
+    if (siblingInboxId === null) return;
+    const contactId = ctx.conv.contactId;
+    const siblings = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findMany({
+        where: {
+          contactId,
+          chatwootInstanceId: instanceId,
+          inbox: { chatwootInboxId: siblingInboxId },
+          testParkedOpenAt: { not: null },
+        },
+        select: { id: true, chatwootConversationId: true },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: /teste could not read the episode's parked sibling (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+      return [];
+    });
+    for (const sib of siblings) {
+      try {
+        const live = parseLiveConversation(
+          await (await personaClient()).getConversation(
+            sib.chatwootConversationId,
+          ),
+        );
+        const sibPark = await readTestPark(sib.id);
+        if (live && sibPark && testParkHolds(sibPark, live)) {
+          // NOTE: A status that moved since this read refuses the hand-back, and that is the decision too.
+          await returnConversationToAgent(
+            sysCtx(tenantId),
+            sib.id,
+            {},
+            base,
+            { assigneeType: live.assigneeType, assigneeId: live.assigneeId },
+            { status: "open", stillValid: () => parkStands(sib.id, sibPark) },
+          ).catch((err: unknown) => {
+            if (!(err instanceof ChatwootStatusConflictError)) throw err;
+          });
+        }
+        await clearTestPark(sib.id);
+      } catch (err) {
+        logger.warn(
+          "chatwoot: /teste could not return the episode's parked sibling (conv=%s): %s",
+          String(sib.chatwootConversationId),
+          errMsg(err),
+        );
+      }
+    }
+  };
+
   // ── Redirect cross-link: on the widget conversation's first inbound after the merge, link it to its
   //    WhatsApp sibling — propagate that side's /teste activation + post cross-link private notes, once.
   //    Runs BEFORE the test-mode gate so a propagated activation is honored on this same turn. ──
@@ -3033,6 +3252,10 @@ async function maybeConsumeCommandOrGate(params: {
   // ── /teste: activate test mode for THIS conversation, ACK, consume. ──
   if (isTeste) {
     const activatedAt = new Date();
+    const park: TestPark = {
+      parkedAt: ctx.conv.testParkedOpenAt,
+      parkedAssigneeId: ctx.conv.testParkedAssigneeId,
+    };
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.conversation.update({
         where: { id: ctx.conv.id },
@@ -3070,7 +3293,43 @@ async function maybeConsumeCommandOrGate(params: {
     // decided for the bot whose route carried the delivery (Chatwoot also fans to the assigned bot). No
     // holder is named: a human, another persona's bot and an `open` status all land here. Only diagnosed
     // here; /reset acts on it, since silently pulling a conversation away is a bigger surprise.
-    const testeBlocker = await answerBlocker();
+    let testeBlocker = await answerBlocker();
+    // NOTE: A conversation the silence parked open for the team goes back to the agent, as /reset
+    // would hand it back, while nobody but the park's own assignee holds it; a person who took it since
+    // keeps it, and the ack names /reset as before.
+    if (testeBlocker === "ownership" && park.parkedAt !== null) {
+      await refreshFromLive("the test-mode hand-back", null);
+      // The park as the mirror holds it now, after the refresh: a person who took the conversation
+      // and let it go while this command ran has ended it there.
+      const parkNow = await readTestPark(ctx.conv.id);
+      if (parkNow && testParkHolds(parkNow, ctx.conv)) {
+        try {
+          await returnConversationToAgent(
+            sysCtx(tenantId),
+            ctx.conv.id,
+            {},
+            base,
+            {
+              assigneeType: ctx.conv.assigneeType,
+              assigneeId: ctx.conv.assigneeId,
+            },
+            {
+              status: "open",
+              stillValid: () => parkStands(ctx.conv.id, parkNow),
+            },
+          );
+        } catch (err) {
+          logger.warn(
+            "chatwoot: /teste could not return the parked conversation (conv=%s): %s",
+            String(conversationId),
+            errMsg(err),
+          );
+        }
+        testeBlocker = await answerBlocker();
+      }
+    }
+    await returnParkedEpisodeSiblings();
+    await clearTestPark(ctx.conv.id);
     await postAcknowledgement(
       testeBlocker === "none"
         ? "🧪 Modo teste ativado para esta conversa."
@@ -3732,6 +3991,9 @@ async function maybeConsumeCommandOrGate(params: {
             String(conversationId),
             verdict.outcome,
           );
+          // NOTE: Not the gate's handoff, which stays off here: the test-mode silence's own park,
+          // since the conversation is as unanswered as one the test-mode gate below would keep.
+          await parkTestSilenced();
           return true;
         }
         // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
@@ -3859,16 +4121,24 @@ async function maybeConsumeCommandOrGate(params: {
     // One-shot private note (operator-only) so whoever watches the inbox knows WHY the bot is quiet
     // and how to activate it. Anti-spam: posted once per conversation (testNoticeSentAt watermark).
     const noticeBlocker = await answerBlocker();
+    const park =
+      noticeBlocker === "ownership" ? "not-parked" : await parkTestSilenced();
+    if (park === "activated") return true;
+    const parked = park === "parked";
     if (
       ctx.conv.testNoticeSentAt === null &&
       (await postPrivateNote(
         noticeBlocker === "none"
-          ? "🧪 Este agente está em modo teste. Ele não responde automaticamente nesta conversa. Envie /teste para ativar as respostas aqui."
+          ? parked
+            ? "🧪 Este agente está em modo teste e não responde automaticamente nesta conversa, então ela foi aberta para a equipe. Envie /teste para que o agente passe a responder aqui."
+            : "🧪 Este agente está em modo teste. Ele não responde automaticamente nesta conversa. Envie /teste para ativar as respostas aqui."
           : noticeBlocker === "ownership"
             ? // NOTE: /reset needs `testActivatedAt`, so pointing at it alone is a no-op
               // path the one-shot watermark then locks in: both commands, in working order.
               "🧪 Este agente está em modo teste e esta conversa não está com ele, então ele não vai responder. Envie /teste para ativar as respostas aqui e, em seguida, /reset para devolver a conversa ao agente."
-            : "🧪 Este agente está desativado, então ele não vai responder nesta conversa.",
+            : parked
+              ? "🧪 Este agente está desativado, então ele não vai responder nesta conversa. Ela foi aberta para a equipe."
+              : "🧪 Este agente está desativado, então ele não vai responder nesta conversa.",
       ))
     ) {
       try {

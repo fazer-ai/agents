@@ -241,6 +241,32 @@ the agent's rule and the external allowed/denied check, each at its own position
 delivery still advances the handled watermark, and the message is folded into the memory thread
 like any other unanswered one.
 
+**A conversation the test-mode silence keeps quiet is opened for the team.** On an inbox with an
+active bot Chatwoot starts every conversation `pending` (`set_active_bot_conversation`, not
+configurable), and `pending` is a tab the team does not watch; a test-mode agent answers nothing
+there before `/teste`, so, left there, a test agent bound to an inbox real customers write to would leave every
+new conversation with nobody. The test-mode gate (and the contact rule's refusal it silences, which
+would otherwise leave first) toggles the conversation to `open` with the persona's token and
+`expected_status: pending`, behind the same `stillOurs` fence as every other gate's open. The bot's
+`open` is Chatwoot's handoff: the inbox's members get the `conversation_creation` notification (none
+was sent at creation, since `conversation_created` skips a `pending` conversation) and the inbox's
+auto-assignment runs in the same save. The park is recorded on the row (`testParkedOpenAt`, and
+`testParkedAssigneeId`, the person Chatwoot's assignment picked in that write, read back live).
+`/teste` on a parked conversation returns it to the agent through `returnConversationToAgent`, the
+hand-back `/reset` uses, while it is still `open` and held by nobody or by that person; the mirror
+ends the park when it writes any other person as the assignee (`endsTestPark`), so somebody who took
+the conversation keeps it, and `/teste` answers with the ownership message that names `/reset`, even
+after they let it go. On a redirect episode the parked sibling on the other inbox goes back under
+the same rule. The hand-back is automatic (`automatic: { status: "open", stillValid }`): a
+conversation resolved, snoozed or claimed by another person after `/teste` looked is refused on the
+hand-back's last live read, a park the mirror ended meanwhile is refused by `stillValid`, which
+re-reads it right before the first write, and the status call carries `expected_status`. A `/teste`
+that lands while an earlier message is on its way to the park finds nothing to return, so the park
+asks for the activation again once its mark is written and hands the conversation straight back; the fork's bot assignment has no conditional form, so a resolve landing
+between that read and the assignment is still undone. Switching the agent to production, or unbinding it, touches no parked conversation:
+by then it belongs to whoever is answering it. An inbox on Chatwoot's assignment V2 assigns in a job
+after the save, so the person it picks is recorded as somebody who took the conversation.
+
 **`/reset` leaves an audit row, and it is the only durable trace the command has** (#398,
 [`api-and-fleet.md`](api-and-fleet.md)). The acknowledgement it posts is a chat message in a
 conversation that can be deleted, and the flow log only ever gets a line when the command does NOT
@@ -372,6 +398,18 @@ The persona's bot row is required and checked before anything is claimed: withou
 `agent.settings.takeover.onHumanReply` switches it off, and it is **on by default** — see `src/modules/handoff/settings.ts` for why, and for why it is a block of its own rather than a field on `handoff` (the console's Tools tab replaces that one wholesale).
 
 The mark comes from `dashboard_seed_message`, which Chatwoot selects with `ORDER BY created_at DESC, id DESC`, an order that is not the id order: on conversations that received a bulk write carrying past timestamps, the seed can sit below the conversation's highest id. That costs coverage and nothing else, because the seed is always a message that exists, so the mark can land below the newest id but never above it; a reply between the mark and the true maximum still gets through, which is the unfenced behaviour. A message id is allocated when the INSERT runs, not when it commits, so a colleague's reply still uncommitted during the console's read compares at or below the mark and is treated as pre-click, which it is in the only order the source records (the colleague pressed send first); no scalar can give the operator sight of it. The costly direction stays closed by allocation: `messages_id_seq` is `CACHE 1`, `INCREMENT 1` (the Rails default), so `nextval` hands out values in call order across backends, and a reply written after the click calls `nextval` after the read and gets a strictly greater id. A deployment that raised that sequence cache would break this argument; Chatwoot's schema exposes no such knob. The REST show partial renders `messages` on every Chatwoot version, including those older than the one that added `updated_at` (4.0.2), so every deployment whose unversioned fallback is the only path renders the sequence this orders by. A live read that failed outright leaves no mark, because the id needed is that of a message we have not seen; no watermark of ours (`lastHandledMessageId`, `lastRepliedMessageId`, the thread's sync marks) can supply it, and an operator who sees the conversation leave the agent again clicks a second time.
+
+## Notes the engine writes about a turn (`conversationNotes`, `src/modules/conversation-notes/`)
+
+The tools a turn ran show up in the execution log and in Langfuse, which the person reading the conversation in Chatwoot does not have open. With `conversationNotes.toolsUsed` on (per agent, off by default, a switch in the editor's "Notes in the conversation" section), a turn that called at least one tool ends with ONE private note listing the tool names in the order of their first call, with a count when a tool ran more than once (`get_current_time (2x), calculator`). Names only: an argument or a result is the customer's data, and the note is read by everyone on the inbox. Past 20 distinct tools the rest is counted. The list comes from `ToolFlowLogger.calledTools()`, so it holds what STARTED, the tools that acted whether or not the reply went out; that is also why the note is posted on every way out of the turn, refusals included, after the reply.
+
+Both the reactive turn (`runTurnBody`) and the proactive one (`runAgentNudge`) post it, through the persona's bot token. The monitoring agent does not: what it changes (labels, its own notes) is already in the conversation. The playground and the client channel have no Chatwoot conversation.
+
+What keeps it from costing anything else:
+
+- **It is marked.** `content_attributes.fazer_ai_activity` carries the kind (`"tools"`; `ACTIVITY_NOTE_KINDS` in `constants.ts`). `sendMessage` writes the mark on private notes only, and `parseChatwootMessages` reads it only off a private row with a known kind, so an automation's key of the same name on a public message is not ours.
+- **No model reads it.** The responder's memory is the checkpoint, never the Chatwoot thread, and the only reader that hands private notes to a model is the monitoring agent's notes block (`notesFromRows`), which skips a marked row.
+- **It is not a turn.** Chatwoot sends the note back to the bot as `message_created`, outgoing and private: not an incoming message, not a person's reply (`isHumanAgentMessage` excludes private notes), not a foreign bot message (private is exempt), so nothing arms. Chatwoot does not reopen a conversation on an outgoing message, and every boundary reader in this repo (debounce, follow-ups, nothing-to-answer, re-engage) already skips private rows. It does move the conversation's `last_activity_at`, as any message does, seconds after the reply that moved it already.
 
 ## Opening the case in another inbox (`open_case_in_inbox`, issue #700)
 

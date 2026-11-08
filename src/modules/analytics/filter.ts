@@ -1,6 +1,8 @@
 import { Prisma } from "@/../generated/prisma/client";
+import config from "@/config";
 import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
 import type { ClientAudience } from "@/graph/usage-sources";
+import { dayStart, localDay } from "./days";
 
 // THE DASHBOARD'S ONE FILTER. Every block of the page reads the same window, agent, inbox and source,
 // so a number in one block can be checked against another, and the drill-down to the conversation
@@ -103,12 +105,26 @@ export function usageWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
 // difference: some lines name the conversation and not the inbox (a person taking over is written
 // from the webhook, before any inbox is resolved), so under an inbox filter a line with no inbox is
 // the inbox of its conversation. The Logs page reads the same rule (`buildLogWhere`).
+// Where the flow log starts for a read made now: the start of the local day the retention cutoff
+// falls in. A day before it may still have lines the daily sweep has not reached yet, and reading
+// them would make a figure that changes when the sweep runs; it reads as no data instead, as it did
+// when the console kept its days.
+export function flowLogFloor(tz: string, now: number = Date.now()): Date {
+  return dayStart(
+    localDay(now - config.flowlog.retentionDays * 86_400_000, tz),
+    tz,
+  );
+}
+
 export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
   const l = Prisma.raw(alias);
   const source = f.source ?? null;
   const agent = f.agentId ?? null;
   const inbox = f.inboxId ?? null;
+  // As text: node-pg writes a Date in the process's zone, which a test file may have changed.
+  const floor = flowLogFloor(f.tz ?? "UTC").toISOString();
   return Prisma.sql`${windowSql(Prisma.sql`${l}.created_at`, f)}
+    AND ${l}.created_at >= (${floor}::timestamptz AT TIME ZONE 'UTC')
     AND (${source}::text IS NULL OR ${l}.source = ${source})
     AND ${audienceSql(alias, f)}
     AND (${agent}::bigint IS NULL OR ${l}.agent_id = ${agent})

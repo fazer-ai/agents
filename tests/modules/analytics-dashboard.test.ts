@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   getFollowUpActivity,
@@ -10,7 +11,7 @@ import {
 } from "@/modules/analytics/activity";
 import { getBreakdown } from "@/modules/analytics/breakdown";
 import { getDashboardCosts } from "@/modules/analytics/costs";
-import type { DashboardFilter } from "@/modules/analytics/filter";
+import { type DashboardFilter, flowLogFloor } from "@/modules/analytics/filter";
 import {
   getHealth,
   latencyOrder,
@@ -55,6 +56,16 @@ const suDb = su as PrismaClient;
 const noFetch = (() => {
   throw new Error("no network in this test");
 }) as unknown as typeof fetch;
+
+// The fixtures sit on fixed days of 2026: a retention that keeps them all, so the flow-log reads see
+// them, except where a test moves it to say what the retention cuts.
+const keptDays = config.flowlog.retentionDays;
+beforeAll(() => {
+  config.flowlog.retentionDays = 100_000;
+});
+afterAll(() => {
+  config.flowlog.retentionDays = keptDays;
+});
 
 // Day 1 and day 2 of the window, at noon UTC; the window is the whole week around them.
 const D1 = new Date("2026-09-02T12:00:00Z");
@@ -797,6 +808,61 @@ describe.skipIf(!dbUp)("the dashboard's one view", () => {
     const tool = h.problems.find((p) => p.tool === "consultar_pedido");
     expect(tool).toMatchObject({ stage: "tool", level: "warn", lines: 3 });
     expect(h.problems.find((p) => p.stage === "delivery")?.lines).toBe(2);
+  });
+
+  test("the flow log starts at the local day the retention cutoff falls in", () => {
+    config.flowlog.retentionDays = 30;
+    try {
+      // Thirty days before 08/11 02:10 UTC is 09/10 02:10 UTC, still 08/10 in São Paulo.
+      const now = Date.parse("2026-11-08T02:10:00Z");
+      expect(flowLogFloor("America/Sao_Paulo", now).toISOString()).toBe(
+        "2026-10-08T03:00:00.000Z",
+      );
+      expect(flowLogFloor("UTC", now).toISOString()).toBe(
+        "2026-10-09T00:00:00.000Z",
+      );
+    } finally {
+      config.flowlog.retentionDays = 100_000;
+    }
+  });
+
+  test("a line on a day before the cutoff's, not yet swept, is not read", async () => {
+    // A tenant and a window of their own; one line the day before the cutoff's, one on the cutoff's day.
+    const days = 30;
+    const now = Date.now();
+    const cutoffDay = flowLogFloorAt(days, now);
+    const before = new Date(cutoffDay.getTime() - 3_600_000);
+    const within = new Date(cutoffDay.getTime() + 3_600_000);
+    for (const [at, stage] of [
+      [before, "split"],
+      [within, "generate"],
+    ] as const)
+      await suDb.executionLog.create({
+        data: {
+          tenantId: other.tenantId,
+          turnId: crypto.randomUUID(),
+          stage,
+          level: "error",
+          source: "inbox",
+          detail: {},
+          createdAt: at,
+        },
+      });
+    config.flowlog.retentionDays = days;
+    try {
+      const h = await getHealth(
+        ctx(other.tenantId),
+        {
+          since: new Date(cutoffDay.getTime() - 86_400_000),
+          until: new Date(cutoffDay.getTime() + 86_400_000),
+          tz: "UTC",
+        },
+        appDb,
+      );
+      expect(h.problems.map((p) => p.stage)).toEqual(["generate"]);
+    } finally {
+      config.flowlog.retentionDays = 100_000;
+    }
   });
 
   test("health: whatever order Postgres hands tied rows back in, they leave in one", () => {
@@ -1668,3 +1734,13 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect(all.conversations.total).toBeGreaterThan(inInbox);
   });
 });
+
+function flowLogFloorAt(days: number, now: number): Date {
+  const kept = config.flowlog.retentionDays;
+  config.flowlog.retentionDays = days;
+  try {
+    return flowLogFloor("UTC", now);
+  } finally {
+    config.flowlog.retentionDays = kept;
+  }
+}

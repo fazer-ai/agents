@@ -251,6 +251,8 @@ function renderContactAuth(
       otherInboxes: readOtherInboxesState({}),
       setOtherInboxes: noop,
       setTakeover: noop,
+      conversationNotes: { toolsUsed: false },
+      setConversationNotes: noop,
       setSendImage: noop,
       resolveConversation: { assignLabels: [] },
       setResolveConversation: noop,

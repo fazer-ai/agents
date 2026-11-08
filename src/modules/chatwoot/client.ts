@@ -15,6 +15,8 @@ import {
   type TemplateDefinition,
 } from "@/modules/service-window/service";
 import {
+  type ActivityNoteKind,
+  CHATWOOT_ACTIVITY_NOTE_KEY,
   CHATWOOT_AUTH_HEADER,
   CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
@@ -715,6 +717,8 @@ export class ChatwootClient {
       // A name for this send, echoed back by Chatwoot so a delivery can be proved without comparing
       // text. Passed by callers with a resend to decide; every other create gets `engineSendId()`.
       sendId?: string;
+      // The engine's own note about a turn (`CHATWOOT_ACTIVITY_NOTE_KEY`). Private notes only.
+      activity?: ActivityNoteKind;
     } = {},
   ): Promise<unknown> {
     return this.request(
@@ -727,9 +731,13 @@ export class ChatwootClient {
         message_type: opts.messageType ?? "outgoing",
         // NOTE: Only an opaque send name goes here: this bag reaches the CONTACT on a website inbox
         // (the widget's messages jbuilder renders it, and `Message#push_event_data` ships it), so
-        // nothing about the account's own state belongs in it.
+        // nothing about the account's own state belongs in it. The activity kind rides on private
+        // notes only, which the widget never lists.
         content_attributes: {
           [CHATWOOT_SEND_ID_KEY]: opts.sendId ?? engineSendId(),
+          ...(opts.activity && opts.private === true
+            ? { [CHATWOOT_ACTIVITY_NOTE_KEY]: opts.activity }
+            : {}),
         },
       },
     );
@@ -739,11 +747,12 @@ export class ChatwootClient {
   sendPrivateNote(
     conversationId: number,
     content: string,
-    opts: { sendId?: string } = {},
+    opts: { sendId?: string; activity?: ActivityNoteKind } = {},
   ): Promise<unknown> {
     return this.sendMessage(conversationId, content, {
       private: true,
       sendId: opts.sendId,
+      activity: opts.activity,
     });
   }
 

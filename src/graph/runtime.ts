@@ -44,6 +44,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
+import { postToolsUsedNote } from "@/modules/conversation-notes/tools-used";
 import { recordConversationError } from "@/modules/conversations/error";
 import { armNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
 import {
@@ -2942,6 +2943,15 @@ async function runTurnBody(
     // The closing line of a turn that reached a model or sent something: its duration and sent ids,
     // for the conversation screen. When the silence tool asked, it also carries what actually went
     // out: a lone `skip_reply` does not end the turn, so its own stamp can precede a delivered line.
+    // NOTE: On every way out, since a tool that ran acted whether or not the reply went out, and
+    // after the reply, so the note reads below it.
+    if (loaded.toolsUsedNote)
+      await postToolsUsedNote({
+        client,
+        conversationId,
+        called: toolLogger.calledTools(),
+        flow,
+      });
     const sentMessageIds = recorded.sentIds();
     if (reachedModel || sentMessageIds.length > 0)
       emitFlowEvent(flow, {

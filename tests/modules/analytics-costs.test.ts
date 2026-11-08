@@ -190,6 +190,73 @@ describe.skipIf(!dbUp)("getDashboardCosts (DB)", () => {
     }
   });
 
+  // The rows are summed per quarter hour of UTC before they are placed in a local day: a zone 45 or
+  // 30 minutes off the hour still puts each call in its own day, to the millisecond.
+  test("a quarter-hour zone splits its days at its own midnight", async () => {
+    const t = (
+      await suDb.tenant.create({
+        data: { name: "CostQuarter", slug: `costquarter-${process.pid}` },
+      })
+    ).id;
+    try {
+      // Kathmandu (+05:45) starts Sep 11 at 18:15:00 UTC; Kolkata (+05:30) at 18:30:00 UTC.
+      await seed(
+        t,
+        "gpt-a",
+        "inbox",
+        [1],
+        new Date("2026-09-10T18:14:59.999Z"),
+      );
+      await seed(
+        t,
+        "gpt-a",
+        "inbox",
+        [2],
+        new Date("2026-09-10T18:15:00.000Z"),
+      );
+      await seed(
+        t,
+        "gpt-b",
+        "inbox",
+        [4],
+        new Date("2026-09-10T18:29:59.999Z"),
+      );
+      await seed(
+        t,
+        "gpt-b",
+        "inbox",
+        [8],
+        new Date("2026-09-10T18:30:00.000Z"),
+      );
+      const ktm = await getDashboardCosts(
+        ctx(t),
+        { tz: "Asia/Kathmandu" },
+        appDb,
+        noFetch,
+      );
+      expect(ktm.days.map((d) => [d.date, d.costUsd])).toEqual([
+        ["2026-09-10", 1],
+        ["2026-09-11", 14],
+      ]);
+      const kol = await getDashboardCosts(
+        ctx(t),
+        { tz: "Asia/Kolkata" },
+        appDb,
+        noFetch,
+      );
+      expect(kol.days.map((d) => [d.date, d.costUsd])).toEqual([
+        ["2026-09-10", 7],
+        ["2026-09-11", 8],
+      ]);
+      expect(kol.totalCostUsd).toBe(15);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM llm_usage WHERE tenant_id = ${t}`,
+      );
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${t}`);
+    }
+  });
+
   // The link stays where Langfuse is configured, and asking for it never holds the figures: on a
   // miss the base URL is answered now and the project id is resolved in the background.
   test("a tenant with Langfuse gets the link, and the same figures however Langfuse answers", async () => {

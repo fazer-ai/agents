@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
+import config from "@/config";
 import type { DashboardKpis } from "@/modules/analytics/service";
 import {
   type MockUserEntity,
@@ -30,6 +31,13 @@ const kpis: DashboardKpis = {
   firstResponseSampled: 6,
 };
 
+const options = await import("@/modules/analytics/options");
+const getFilterOptions = spyOn(options, "getFilterOptions").mockImplementation(
+  (async () => ({
+    agents: [],
+    inboxes: [],
+  })) as unknown as typeof options.getFilterOptions,
+);
 const analytics = await import("@/modules/analytics/service");
 const getKpis = spyOn(analytics, "getKpis").mockImplementation(
   (async () => kpis) as unknown as typeof analytics.getKpis,
@@ -37,9 +45,40 @@ const getKpis = spyOn(analytics, "getKpis").mockImplementation(
 const app = (await import("@/app")).default;
 afterAll(() => {
   getKpis.mockRestore();
+  getFilterOptions.mockRestore();
 });
 
 const admin: MockUserEntity = { ...mockUser, role: "TENANT_ADMIN" };
+
+async function adminCookie(): Promise<string> {
+  mockFindUnique.mockImplementation(() => Promise.resolve(admin));
+  const { token } = (await (
+    await new Elysia()
+      .use(authPlugin)
+      .post("/mint", async ({ setAuthCookie }) => ({
+        token: await setAuthCookie(admin, admin.passwordHash),
+      }))
+      .handle(new Request("http://localhost/mint", { method: "POST" }))
+  ).json()) as { token: string };
+  return `fazerai_auth_token=${token}`;
+}
+
+describe("GET /v1/metrics/filter-options response contract", () => {
+  // The console marks a flow-log day past retention as no data from this number: dropped by the
+  // response schema, every such day would read as zero.
+  test("carries the flow log's retention in days", async () => {
+    const BunReq = (globalThis as unknown as { BunRequest: typeof Request })
+      .BunRequest;
+    const res = await app.handle(
+      new BunReq("http://localhost/api/v1/metrics/filter-options", {
+        headers: { cookie: await adminCookie() },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { flowLogRetentionDays: unknown };
+    expect(body.flowLogRetentionDays).toBe(config.flowlog.retentionDays);
+  });
+});
 
 describe("GET /v1/metrics/kpis response contract", () => {
   test("every KPI the service computes reaches the client", async () => {

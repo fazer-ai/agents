@@ -2969,10 +2969,11 @@ async function runTurnBody(
     // out: a lone `skip_reply` does not end the turn, so its own stamp can precede a delivered line.
     // NOTE: On every way out, since a tool that ran acted whether or not the reply went out, and
     // after the reply, so the note reads below it.
-    if (loaded.toolsUsedNote)
+    if (loaded.toolsUsedNote !== "off")
       await postToolsUsedNote({
         client,
         conversationId,
+        format: loaded.toolsUsedNote,
         called: toolLogger.calledTools(),
         flow,
       });

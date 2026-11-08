@@ -710,12 +710,7 @@ function readBehaviorState(a: Agent) {
         ((s.takeover ?? {}) as Record<string, unknown>).onHumanReply !== false,
     },
     // NOTE: Off unless the stored bag says otherwise, through readConversationNotesConfig.
-    conversationNotes: {
-      toolsUsed:
-        ((s.conversationNotes ?? {}) as Record<string, unknown>).toolsUsed ===
-        true,
-      errors: readConversationNotesConfig(s).errors,
-    },
+    conversationNotes: readConversationNotesConfig(s),
     // NOTE: through the SAME reader the runtime uses, not a hand-rolled check: a bag that came from
     // REST or an import can carry the string "true", which the runtime honors — reading it stricter
     // here would show the switch off while values were being logged, and would then persist that lie
@@ -1183,7 +1178,7 @@ function AgentEditor() {
     onHumanReply: true,
   });
   const [conversationNotes, setConversationNotes] =
-    useState<ConversationNotesState>({ toolsUsed: false, errors: "off" });
+    useState<ConversationNotesState>({ toolsUsed: "off", errors: "off" });
   const [otherInboxes, setOtherInboxes] = useState<OtherInboxesState>(() =>
     readOtherInboxesState({}),
   );

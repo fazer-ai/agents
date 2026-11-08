@@ -2009,11 +2009,13 @@ async function runAgentNudgeBody(
       });
     };
   }
-  if (cfg.toolsUsedNote) {
+  if (cfg.toolsUsedNote !== "off") {
+    const toolsFormat = cfg.toolsUsedNote;
     closing.toolsUsedNote = async () => {
       await postToolsUsedNote({
         client,
         conversationId,
+        format: toolsFormat,
         called: toolLogger.calledTools(),
         flow,
       });

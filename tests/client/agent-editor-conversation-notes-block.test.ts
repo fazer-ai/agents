@@ -6,8 +6,9 @@ import {
   stubEditorApi,
 } from "../utils/agent-editor";
 
-// The tools-used note through the editor: a stored block loads as stored, the operator's flip is what
-// the save writes, and the next load reads it back.
+// The conversationNotes block through the editor: a stored block loads as stored (the old switch as
+// the private note it posted), the operator's picks are what the save writes, and the next load reads
+// them back.
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -15,57 +16,45 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-const notesSwitch = () =>
-  screen.getByRole("switch", {
-    name: /Leave a note with the tools used in each turn/,
-  });
+const select = (label: RegExp) =>
+  screen.getByLabelText(label) as HTMLSelectElement;
+const TOOLS = /^Tools used in each turn$/;
+const ERRORS = /^Errors in the middle of a turn$/;
 
 describe("the agent editor carries the conversationNotes block through a Behavior save", () => {
-  test("an agent with no block loads as OFF, and turning it on is saved and read back", async () => {
+  test("an agent with no block loads as off, and the picks are saved and read back", async () => {
     const stub = stubEditorApi({ settings: {} });
     await renderEditor(stub, "behavior");
-    expect(notesSwitch().getAttribute("aria-checked")).toBe("false");
-    fireEvent.click(notesSwitch());
+    expect(select(TOOLS).value).toBe("off");
+    expect(select(ERRORS).value).toBe("off");
+    fireEvent.change(select(TOOLS), { target: { value: "activity" } });
+    fireEvent.change(select(ERRORS), { target: { value: "note" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(lastSavedSettings(stub)?.conversationNotes).toEqual({
-        toolsUsed: true,
-        errors: "off",
+        toolsUsed: "activity",
+        errors: "note",
       }),
     );
     cleanup();
     await renderEditor(stub, "behavior");
-    expect(notesSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(select(TOOLS).value).toBe("activity");
+    expect(select(ERRORS).value).toBe("note");
   });
 
-  test("the errors format is saved as picked and read back, beside the tools-used switch", async () => {
-    const stub = stubEditorApi({
-      settings: { conversationNotes: { toolsUsed: true, errors: "note" } },
-    });
-    await renderEditor(stub, "behavior");
-    const select = () =>
-      screen.getByLabelText(
-        /^Errors in the middle of a turn$/,
-      ) as HTMLSelectElement;
-    expect(select().value).toBe("note");
-    fireEvent.change(select(), { target: { value: "activity" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(lastSavedSettings(stub)?.conversationNotes).toEqual({
-        toolsUsed: true,
-        errors: "activity",
-      }),
-    );
-    cleanup();
-    await renderEditor(stub, "behavior");
-    expect(select().value).toBe("activity");
-  });
-
-  test("a stored ON loads as ON", async () => {
+  test("the switch stored before the formats loads as the private note, and saves as the format", async () => {
     const stub = stubEditorApi({
       settings: { conversationNotes: { toolsUsed: true } },
     });
     await renderEditor(stub, "behavior");
-    expect(notesSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(select(TOOLS).value).toBe("note");
+    fireEvent.change(select(ERRORS), { target: { value: "activity" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(lastSavedSettings(stub)?.conversationNotes).toEqual({
+        toolsUsed: "note",
+        errors: "activity",
+      }),
+    );
   });
 });

@@ -55,7 +55,7 @@ describe("the errors format in the settings", () => {
       readConversationNotesConfig({
         conversationNotes: { errors: "activity" },
       }),
-    ).toEqual({ toolsUsed: false, errors: "activity" });
+    ).toEqual({ toolsUsed: "off", errors: "activity" });
   });
 
   test("the write path refuses a value off the list", () => {
@@ -71,17 +71,22 @@ describe("the errors format in the settings", () => {
 });
 
 describe("the two notes are set apart", () => {
-  test("a patch of one leaves the other as stored", () => {
+  test("a patch of one leaves the other as stored, the old switch included", () => {
     const stored = { conversationNotes: { toolsUsed: true, errors: "note" } };
     expect(
-      mergeBehaviorSettings(stored, {
-        conversationNotes: { errors: "activity" },
-      }).conversationNotes,
-    ).toEqual({ toolsUsed: true, errors: "activity" });
+      readConversationNotesConfig(
+        mergeBehaviorSettings(stored, {
+          conversationNotes: { errors: "activity" },
+        }),
+      ),
+    ).toEqual({ toolsUsed: "note", errors: "activity" });
     expect(
-      mergeBehaviorSettings(stored, { conversationNotes: { toolsUsed: false } })
-        .conversationNotes,
-    ).toEqual({ toolsUsed: false, errors: "note" });
+      readConversationNotesConfig(
+        mergeBehaviorSettings(stored, {
+          conversationNotes: { toolsUsed: "activity" },
+        }),
+      ),
+    ).toEqual({ toolsUsed: "activity", errors: "note" });
   });
 });
 

@@ -7,7 +7,8 @@ import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { parseChatwootMessages } from "@/modules/chatwoot/messages";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
-import type { TurnErrorsFormat } from "./settings";
+import { formatSendOptions } from "./send";
+import type { ConversationNoteFormat } from "./settings";
 
 // What went wrong inside one turn that still ended, told to the team in the Chatwoot conversation:
 // a tool that failed while the model carried on, a reply only the fallback model wrote, an empty
@@ -187,7 +188,7 @@ async function lastErrorsKey(
 export async function postTurnErrors(params: {
   client: Pick<ChatwootClient, "sendMessage" | "getMessages">;
   conversationId: number;
-  format: TurnErrorsFormat;
+  format: ConversationNoteFormat;
   items: readonly TurnErrorItem[];
   flow: FlowContext;
 }): Promise<"posted" | "nothing" | "repeated" | "failed"> {
@@ -205,9 +206,7 @@ export async function postTurnErrors(params: {
       params.conversationId,
       literalForChatwoot(text),
       {
-        ...(params.format === "note"
-          ? { private: true }
-          : { messageType: "activity" }),
+        ...formatSendOptions(params.format),
         activity: "errors",
         activityAttributes: { [CHATWOOT_ERRORS_KEY_KEY]: key },
       },

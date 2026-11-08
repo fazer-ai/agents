@@ -88,8 +88,8 @@ import {
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
 import {
+  type ConversationNoteFormat,
   readConversationNotesConfig,
-  type TurnErrorsFormat,
 } from "@/modules/conversation-notes/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
 import type {
@@ -448,11 +448,11 @@ export interface AgentConfig {
   // agent's settings, so the emit path never pays a settings read per log line.
   fullDetail: boolean;
   // Whether a turn that called a tool leaves a private note naming them in the Chatwoot conversation
-  // (agent.settings.conversationNotes.toolsUsed; off by default — src/modules/conversation-notes).
-  toolsUsedNote: boolean;
+  // (agent.settings.conversationNotes.toolsUsed; "off" by default — src/modules/conversation-notes).
+  toolsUsedNote: ConversationNoteFormat;
   // Where a turn that hit an error and still ended says so in the conversation
   // (agent.settings.conversationNotes.errors; "off" by default).
-  turnErrors: TurnErrorsFormat;
+  turnErrors: ConversationNoteFormat;
 }
 
 export interface LoadAgentArgs {

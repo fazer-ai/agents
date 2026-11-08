@@ -8,12 +8,21 @@ import {
   expect,
   test,
 } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { behaviorTabProps } from "./behaviorTabProps";
 
-// The switch that turns on the tools-used note: off as the agent stored it, on when flipped, and not
-// on a watcher's screen, whose runs post no such note.
+const { default: i18n } = await import("@/client/lib/i18n");
+
+// The two kinds of conversation note: the same three formats on two identical selects, the stored
+// value shown, the pick handed to the form with the other kind left as it was, and no section on a
+// watcher's screen, whose runs post no such message.
 
 const realFetch = globalThis.fetch;
 const stubFetch = (async () =>
@@ -21,14 +30,10 @@ const stubFetch = (async () =>
     headers: { "content-type": "application/json" },
   })) as unknown as typeof globalThis.fetch;
 
-const LABEL =
-  /^(Leave a note with the tools used in each turn|Deixar uma nota com as ferramentas usadas em cada turno)$/;
-
-function switchOf(): HTMLElement {
-  const label = screen.getByText(LABEL);
-  const id = label.getAttribute("for") as string;
-  return document.getElementById(id) as HTMLElement;
-}
+const TOOLS = /^(Tools used in each turn|Ferramentas usadas em cada turno)$/;
+const ERRORS = /^(Errors in the middle of a turn|Erros no meio do turno)$/;
+const select = (label: RegExp) =>
+  screen.getByLabelText(label) as HTMLSelectElement;
 
 describe("the Behavior tab's conversation notes", () => {
   beforeAll(() => {
@@ -39,38 +44,86 @@ describe("the Behavior tab's conversation notes", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("shows the stored value and hands the flip to the form", () => {
+  test("two selects with the same three formats, each showing what is stored", () => {
+    render(
+      <BehaviorTab
+        {...behaviorTabProps({})}
+        mode="production"
+        conversationNotes={{ toolsUsed: "note", errors: "activity" }}
+      />,
+    );
+    const el = document.getElementById("conversationNotes");
+    expect(el?.className.split(/\s+/).includes("hidden")).toBe(false);
+    const options = (s: HTMLSelectElement) =>
+      [...s.options].map((o) => [o.value, o.text]);
+    expect(options(select(TOOLS))).toEqual(options(select(ERRORS)));
+    expect(options(select(TOOLS)).map(([v]) => v)).toEqual([
+      "off",
+      "activity",
+      "note",
+    ]);
+    expect(select(TOOLS).value).toBe("note");
+    expect(select(ERRORS).value).toBe("activity");
+  });
+
+  test("a pick changes its own kind and leaves the other as it was", () => {
     const calls: unknown[] = [];
     render(
       <BehaviorTab
         {...behaviorTabProps({})}
         mode="production"
-        conversationNotes={{ toolsUsed: false }}
+        conversationNotes={{ toolsUsed: "off", errors: "note" }}
         setConversationNotes={(v) => calls.push(v)}
       />,
     );
-    const el = document.getElementById("conversationNotes");
-    expect(el?.className.split(/\s+/).includes("hidden")).toBe(false);
-    const sw = switchOf();
-    expect(sw.getAttribute("aria-checked")).toBe("false");
-    fireEvent.click(sw);
-    expect(calls).toEqual([{ toolsUsed: true }]);
-  });
-
-  test("reads on when the agent has it on", () => {
-    render(
-      <BehaviorTab
-        {...behaviorTabProps({})}
-        mode="production"
-        conversationNotes={{ toolsUsed: true }}
-      />,
-    );
-    expect(switchOf().getAttribute("aria-checked")).toBe("true");
+    fireEvent.change(select(TOOLS), { target: { value: "activity" } });
+    fireEvent.change(select(ERRORS), { target: { value: "off" } });
+    expect(calls).toEqual([
+      { toolsUsed: "activity", errors: "note" },
+      { toolsUsed: "off", errors: "off" },
+    ]);
   });
 
   test("is not offered to a monitoring agent", () => {
     render(<BehaviorTab {...behaviorTabProps({})} mode="monitoring" />);
     const el = document.getElementById("conversationNotes");
     expect(el?.className.split(/\s+/).includes("hidden")).toBe(true);
+  });
+
+  test("the help about the formats names the Chatwoot version, never the fork", async () => {
+    const said = {
+      en: "In the current Chatwoot version, an activity message shows as sent by the contact, and in a follow-up it also updates the contact's last activity.",
+      "pt-BR":
+        "Na versão atual do Chatwoot, a mensagem de atividade aparece como enviada pelo contato e, num follow-up, também atualiza a última atividade dele.",
+    };
+    const starting = i18n.language;
+    try {
+      for (const [language, text] of Object.entries(said)) {
+        await i18n.changeLanguage(language);
+        render(
+          <BehaviorTab
+            {...behaviorTabProps({})}
+            mode="production"
+            conversationNotes={{ toolsUsed: "activity", errors: "activity" }}
+          />,
+        );
+        for (const kind of [TOOLS, ERRORS]) {
+          const label = select(kind).id
+            ? document.querySelector(`label[for="${select(kind).id}"]`)
+            : null;
+          const trigger = within(
+            (label?.parentElement ?? document.body) as HTMLElement,
+          ).getByRole("button");
+          fireEvent.click(trigger);
+          const box = screen.getByRole("dialog");
+          expect(box.textContent).toContain(text);
+          expect(box.textContent).not.toMatch(/\bfork\b/i);
+          fireEvent.keyDown(box, { key: "Escape" });
+        }
+        cleanup();
+      }
+    } finally {
+      await i18n.changeLanguage(starting);
+    }
   });
 });

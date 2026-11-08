@@ -25,50 +25,64 @@ const flow = {
 } as unknown as FlowContext;
 
 describe("readConversationNotesConfig", () => {
-  test("off unless the bag says true", () => {
-    expect(readConversationNotesConfig(undefined).toolsUsed).toBe(false);
-    expect(readConversationNotesConfig({}).toolsUsed).toBe(false);
+  test("off unless the bag names a format", () => {
+    expect(readConversationNotesConfig(undefined).toolsUsed).toBe("off");
+    expect(readConversationNotesConfig({}).toolsUsed).toBe("off");
     expect(
       readConversationNotesConfig({ conversationNotes: {} }).toolsUsed,
-    ).toBe(false);
-    for (const v of ["true", 1, null, "yes"]) {
+    ).toBe("off");
+    for (const v of ["true", 1, null, "yes", false]) {
       expect(
         readConversationNotesConfig({ conversationNotes: { toolsUsed: v } })
           .toolsUsed,
-      ).toBe(false);
+      ).toBe("off");
     }
+    for (const v of ["activity", "note"] as const)
+      expect(
+        readConversationNotesConfig({ conversationNotes: { toolsUsed: v } })
+          .toolsUsed,
+      ).toBe(v);
+  });
+
+  test("a switch stored before the formats reads as the private note it posted", () => {
     expect(
-      readConversationNotesConfig({ conversationNotes: { toolsUsed: true } })
-        .toolsUsed,
-    ).toBe(true);
+      readConversationNotesConfig({ conversationNotes: { toolsUsed: true } }),
+    ).toEqual({ toolsUsed: "note", errors: "off" });
+    expect(
+      readConversationNotesConfig({ conversationNotes: { toolsUsed: false } }),
+    ).toEqual({ toolsUsed: "off", errors: "off" });
   });
 });
 
 describe("the conversationNotes block on the write path", () => {
   const schema = z.object(BEHAVIOR_PATCH_SHAPE);
 
-  test("refuses a value that is not a boolean", () => {
-    for (const v of ["true", 1, null]) {
+  test("takes a format and nothing else, the old switch included", () => {
+    for (const v of ["true", 1, null, true, false, "email"]) {
       expect(
         schema.safeParse({ conversationNotes: { toolsUsed: v } }).success,
       ).toBe(false);
     }
-    expect(
-      schema.safeParse({ conversationNotes: { toolsUsed: true } }).success,
-    ).toBe(true);
+    for (const v of ["off", "activity", "note"])
+      expect(
+        schema.safeParse({ conversationNotes: { toolsUsed: v } }).success,
+      ).toBe(true);
   });
 
   test("a patch writes the block and leaves the others as stored", () => {
     const stored = { takeover: { onHumanReply: false } };
     const next = mergeBehaviorSettings(stored, {
-      conversationNotes: { toolsUsed: true },
+      conversationNotes: { toolsUsed: "activity" },
     });
-    expect(next.conversationNotes).toEqual({ toolsUsed: true });
+    expect(readConversationNotesConfig(next)).toEqual({
+      toolsUsed: "activity",
+      errors: "off",
+    });
     expect(next.takeover).toEqual({ onHumanReply: false });
     const off = mergeBehaviorSettings(next, {
-      conversationNotes: { toolsUsed: false },
+      conversationNotes: { toolsUsed: "off" },
     });
-    expect(readConversationNotesConfig(off).toolsUsed).toBe(false);
+    expect(readConversationNotesConfig(off).toolsUsed).toBe("off");
   });
 });
 
@@ -125,12 +139,13 @@ const clientOf = (fetchImpl: typeof fetch) =>
   );
 
 describe("the note on the wire", () => {
-  test("a private note with the activity mark, and the names alone", async () => {
+  test("note: a private note with the activity mark, and the names alone", async () => {
     const { bodies, fetchImpl } = fetchStub();
     const client = await clientOf(fetchImpl);
     const outcome = await postToolsUsedNote({
       client,
       conversationId: 42,
+      format: "note",
       called: [{ name: "consultar_agenda", calls: 1 }],
       flow,
     });
@@ -148,6 +163,43 @@ describe("the note on the wire", () => {
     expect(body.content_attributes[CHATWOOT_ACTIVITY_NOTE_KEY]).toBe("tools");
   });
 
+  test("activity: an activity row with the same mark and text", async () => {
+    const { bodies, fetchImpl } = fetchStub();
+    const client = await clientOf(fetchImpl);
+    await postToolsUsedNote({
+      client,
+      conversationId: 42,
+      format: "activity",
+      called: [{ name: "consultar_agenda", calls: 1 }],
+      flow,
+    });
+    const body = bodies[0] as {
+      private: boolean;
+      message_type: string;
+      content: string;
+      content_attributes: Record<string, unknown>;
+    };
+    expect(body.message_type).toBe("activity");
+    expect(body.private).toBe(false);
+    expect(body.content).toContain("consultar_agenda");
+    expect(body.content_attributes[CHATWOOT_ACTIVITY_NOTE_KEY]).toBe("tools");
+  });
+
+  test("off: no request", async () => {
+    const { bodies, fetchImpl } = fetchStub();
+    const client = await clientOf(fetchImpl);
+    expect(
+      await postToolsUsedNote({
+        client,
+        conversationId: 42,
+        format: "off",
+        called: [{ name: "x", calls: 1 }],
+        flow,
+      }),
+    ).toBe("nothing");
+    expect(bodies).toHaveLength(0);
+  });
+
   test("the mark never rides on a public message", async () => {
     const { bodies, fetchImpl } = fetchStub();
     const client = await clientOf(fetchImpl);
@@ -160,7 +212,7 @@ describe("the note on the wire", () => {
 
   test("a Chatwoot that refuses the note does not throw out of the turn", async () => {
     const client = {
-      sendPrivateNote: async () => {
+      sendMessage: async () => {
         throw new Error("HTTP 500");
       },
     };
@@ -168,6 +220,7 @@ describe("the note on the wire", () => {
       await postToolsUsedNote({
         client,
         conversationId: 42,
+        format: "note",
         called: [{ name: "x", calls: 1 }],
         flow,
       }),
@@ -178,7 +231,13 @@ describe("the note on the wire", () => {
     const { bodies, fetchImpl } = fetchStub();
     const client = await clientOf(fetchImpl);
     expect(
-      await postToolsUsedNote({ client, conversationId: 42, called: [], flow }),
+      await postToolsUsedNote({
+        client,
+        conversationId: 42,
+        format: "note",
+        called: [],
+        flow,
+      }),
     ).toBe("nothing");
     expect(bodies).toHaveLength(0);
   });

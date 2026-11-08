@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import config from "@/config";
+import { type BudgetClass, budgetClassOf } from "@/lib/statement-budgets";
 import type { TxBudget } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { budgetUntil, fleetWithin, plainWithin } from "./budget";
@@ -27,6 +28,8 @@ export interface StatementEntry {
   dbid: bigint;
   queryid: bigint;
   query: string;
+  // The budget class of the complete text, resolved before `query` is clipped.
+  budgetClass: BudgetClass | null;
   calls: number;
   totalExecMs: number;
   rows: number;
@@ -259,6 +262,7 @@ export async function readStatementsIn(
       dbid: r.dbid,
       queryid: r.queryid,
       query: clipText(r.query ?? "", TEXT_MAX),
+      budgetClass: budgetClassOf(r.query ?? ""),
       calls: Number(r.calls),
       totalExecMs: Number(r.total_exec_time),
       rows: Number(r.rows),
@@ -282,6 +286,62 @@ export function availabilityOfError(
 
 // One snapshot when the interval has passed since the last, then the retention prune. Returns
 // whether one was taken. Every statement runs under `budget` (one deadline for the whole run).
+// One statement for every text, not one upsert each. The class is the one this process learned from
+// the pool that sent each text (null when it never saw it, which keeps the stored class), and a text
+// stored as 'default' stays so: a later process that saw it only on the metrics pool does not undo it.
+export async function writeStatementTexts(
+  db: Pick<PrismaClient, "$executeRaw">,
+  list: {
+    userid: bigint | number;
+    dbid: bigint | number;
+    queryid: bigint | number;
+    query: string;
+    budgetClass: BudgetClass | null;
+  }[],
+  takenAt: number,
+): Promise<void> {
+  if (list.length === 0) return;
+  await db.$executeRaw`
+    INSERT INTO db_statement_texts (userid, dbid, queryid, query, last_seen_at, budget_class)
+    SELECT u, d, q, t, ${new Date(takenAt)}, b
+      FROM unnest(${list.map((e) => String(e.userid))}::bigint[],
+                  ${list.map((e) => String(e.dbid))}::bigint[],
+                  ${list.map((e) => String(e.queryid))}::bigint[],
+                  ${list.map((e) => e.query)}::text[],
+                  ${list.map((e) => e.budgetClass)}::text[]) AS x(u, d, q, t, b)
+    ON CONFLICT (userid, dbid, queryid)
+    DO UPDATE SET query = excluded.query, last_seen_at = excluded.last_seen_at,
+                  budget_class = CASE
+                    WHEN excluded.budget_class IS NULL THEN db_statement_texts.budget_class
+                    WHEN db_statement_texts.budget_class = 'default' THEN 'default'
+                    ELSE excluded.budget_class END`;
+}
+
+// The classes learned for texts already stored, whether or not they ran since the last snapshot: a
+// console read that ran once before the first snapshot after a restart and then went idle still gets
+// its class beside its history. Only a known class is written, and 'default' is never undone.
+export async function writeStatementClasses(
+  db: Pick<PrismaClient, "$executeRaw">,
+  entries: {
+    userid: bigint | number;
+    dbid: bigint | number;
+    queryid: bigint | number;
+    budgetClass: BudgetClass | null;
+  }[],
+): Promise<void> {
+  const known = entries.filter((e) => e.budgetClass !== null);
+  if (known.length === 0) return;
+  await db.$executeRaw`
+    UPDATE db_statement_texts t SET budget_class = x.b
+      FROM unnest(${known.map((e) => String(e.userid))}::bigint[],
+                  ${known.map((e) => String(e.dbid))}::bigint[],
+                  ${known.map((e) => String(e.queryid))}::bigint[],
+                  ${known.map((e) => e.budgetClass)}::text[]) AS x(u, d, q, b)
+     WHERE t.userid = x.u AND t.dbid = x.d AND t.queryid = x.q
+       AND t.budget_class IS DISTINCT FROM x.b
+       AND t.budget_class IS DISTINCT FROM 'default'`;
+}
+
 export async function snapshotIfDue(
   base: PrismaClient = instanceHealthPrisma,
   now: number = Date.now(),
@@ -355,18 +415,13 @@ export async function snapshotIfDue(
         })),
         skipDuplicates: true,
       });
-      // One statement for every text, not one upsert each.
-      const list = deltas.map((d) => d.entry);
-      await db.$executeRaw`
-        INSERT INTO db_statement_texts (userid, dbid, queryid, query, last_seen_at)
-        SELECT u, d, q, t, ${new Date(takenAt)}
-          FROM unnest(${list.map((e) => String(e.userid))}::bigint[],
-                      ${list.map((e) => String(e.dbid))}::bigint[],
-                      ${list.map((e) => String(e.queryid))}::bigint[],
-                      ${list.map((e) => e.query)}::text[]) AS x(u, d, q, t)
-        ON CONFLICT (userid, dbid, queryid)
-        DO UPDATE SET query = excluded.query, last_seen_at = excluded.last_seen_at`;
+      await writeStatementTexts(
+        db,
+        deltas.map((d) => d.entry),
+        takenAt,
+      );
     }
+    if (entries) await writeStatementClasses(db, entries);
     if (tables.length > 0) {
       await db.dbTableSnapshot.createMany({
         data: tables.map((t) => ({

@@ -113,8 +113,8 @@ const SETTINGS_DESC_CEILING = 2_000;
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
 // tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 38_550
-// with `calls`, `setLabels.removal`, the writable list, per-kind templates, `customer_choice`, `choiceCheck`; 38_660 with `conversationNotes`.
-const SETTINGS_SCHEMA_CEILING = 38_700;
+// with `calls`, `setLabels.removal`, the writable list, per-kind templates, `customer_choice`, `choiceCheck`; 38_660 with `conversationNotes`; 38_752 with `conversationNotes.errors` and both kinds on one format enum; 36_958 with the dialect and the empty `additionalProperties` left out of every listed schema (src/modules/mcp/tool-listing.ts).
+const SETTINGS_SCHEMA_CEILING = 36_970;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -218,6 +218,11 @@ describe("MCP tool descriptions", () => {
     }
   });
 
+  // The Free tree lists 30 fewer tools than Full and Pro, so a total measured on Full would leave the
+  // Free fence thousands of characters loose: each total has its own figure there, measured on that
+  // tree with the same principal (34_042 and 72_115).
+  const totals = { desc: 34_050, schema: 72_120 };
+
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema
   // land anywhere else and pass, so the totals are ratcheted too, with headroom smaller than one
@@ -232,7 +237,7 @@ describe("MCP tool descriptions", () => {
     }
     // Measured at 36_777 on the tree that ships, the dashboard, occurrence, voice and client channel
     // tools included, each cut to the sentence a caller cannot learn by trying (the raises are in git).
-    expect(desc).toBeLessThanOrEqual(36_900);
+    expect(desc).toBeLessThanOrEqual(totals.desc);
     // Measured at 82_062 with the agent_settings_set additions (limits, follow-ups, other inboxes,
     // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client
     // channel SDK's app tools (74_540 on the Free tree before the SDK); 84_599 with the
@@ -240,15 +245,16 @@ describe("MCP tool descriptions", () => {
     // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools; 88_157
     // with the hold and how long a theme stays new on occurrences_set, two settings of the monitor;
     // 88_437 with occurrence_flag_episodes_list, the flag history, a read no other tool does;
-    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update, 89_958 alert urls, `customer_choice` and `choiceCheck`; 90_099 with `conversationNotes`.
-    expect(schema).toBeLessThanOrEqual(90_100);
+    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update, 89_958 alert urls, `customer_choice` and `choiceCheck`; 90_099 with `conversationNotes`; 90_191 with `conversationNotes.errors` and both kinds on one format enum; 79_089 with the dialect and the empty `additionalProperties` left out of every listed schema.
+    expect(schema).toBeLessThanOrEqual(totals.schema);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in
   // document_template_schema instead: a six-variant discriminated union publishes as JSON Schema by
   // inlining every variant, about 3.2k characters PER TOOL, on both the create and the update. That
   // trade is part of why the totals above are where they are, so it is asserted here. Measured at
-  // 1_040 once next_number and approval_ttl_hours declared their ranges.
+  // 1_040 once next_number and approval_ttl_hours declared their ranges, 910 without the dialect and the
+  // empty `additionalProperties`.
   test("the document write tools keep their schemas compact", async () => {
     const all = await listed();
     for (const name of [
@@ -257,9 +263,7 @@ describe("MCP tool descriptions", () => {
     ]) {
       const t = all.get(name);
       expect(t).toBeDefined();
-      expect((t as { schema: string }).schema.length).toBeLessThanOrEqual(
-        1_100,
-      );
+      expect((t as { schema: string }).schema.length).toBeLessThanOrEqual(970);
     }
   });
 

@@ -114,6 +114,7 @@ import {
   type ContactFieldsConfig,
   readContactFieldsConfig,
 } from "@/modules/chatwoot/contact-fields";
+import { readConversationNotesConfig } from "@/modules/conversation-notes/settings";
 import {
   DECISION_ACTION_TOOLS,
   decisionsBlockFingerprint,
@@ -708,12 +709,8 @@ function readBehaviorState(a: Agent) {
       onHumanReply:
         ((s.takeover ?? {}) as Record<string, unknown>).onHumanReply !== false,
     },
-    // NOTE: Off unless the stored bag says `true`, mirroring readConversationNotesConfig.
-    conversationNotes: {
-      toolsUsed:
-        ((s.conversationNotes ?? {}) as Record<string, unknown>).toolsUsed ===
-        true,
-    },
+    // NOTE: Off unless the stored bag says otherwise, through readConversationNotesConfig.
+    conversationNotes: readConversationNotesConfig(s),
     // NOTE: through the SAME reader the runtime uses, not a hand-rolled check: a bag that came from
     // REST or an import can carry the string "true", which the runtime honors — reading it stricter
     // here would show the switch off while values were being logged, and would then persist that lie
@@ -1181,7 +1178,7 @@ function AgentEditor() {
     onHumanReply: true,
   });
   const [conversationNotes, setConversationNotes] =
-    useState<ConversationNotesState>({ toolsUsed: false });
+    useState<ConversationNotesState>({ toolsUsed: "off", errors: "off" });
   const [otherInboxes, setOtherInboxes] = useState<OtherInboxesState>(() =>
     readOtherInboxesState({}),
   );
@@ -2222,7 +2219,10 @@ function AgentEditor() {
         writable: contactFields.writable,
       },
       takeover: { onHumanReply: takeover.onHumanReply },
-      conversationNotes: { toolsUsed: conversationNotes.toolsUsed },
+      conversationNotes: {
+        toolsUsed: conversationNotes.toolsUsed,
+        errors: conversationNotes.errors,
+      },
       ...otherInboxesPatch(otherInboxes, agentMode === "monitoring"),
     };
   }

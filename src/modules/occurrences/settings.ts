@@ -28,9 +28,10 @@ export const READING_MESSAGES = 30;
 // How many open themes one read of the list returns at most (the console pages within one read).
 export const THEMES_LIMIT_RANGE = intRange(1, 500);
 
-// A round every few minutes at most often (the prototype's hourly round saw an outage an hour late),
-// once a day at least.
-export const CADENCE_MINUTES_RANGE = intRange(5, 1440);
+// A round every minute at most often, once a day at least. The prototype's hourly round saw an outage
+// an hour late, and a 15-minute cadence still showed a spike 10 to 15 minutes late (agents-master#427):
+// a shorter cadence flags sooner and re-reads the conversations whose customer wrote again more often.
+export const CADENCE_MINUTES_RANGE = intRange(1, 1440);
 // The stronger model's pass over the open themes, rarer than the rounds: hourly by default, weekly at
 // most rarely.
 export const CONSOLIDATION_MINUTES_RANGE = intRange(15, 10_080);

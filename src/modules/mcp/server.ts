@@ -99,6 +99,7 @@ import {
   resolveEffectivePrincipal,
   tenantSelectorField,
 } from "./tenant-target";
+import { publishCompactToolSchemas } from "./tool-listing";
 import {
   agentList,
   agentSettingsGet,
@@ -490,6 +491,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         "workspace.",
     },
   );
+  publishCompactToolSchemas(server);
 
   server.registerTool(
     "whoami",

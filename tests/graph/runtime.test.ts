@@ -11766,11 +11766,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         dir: "input" | "output",
         extra: { [k: string]: JsonValue },
         handoff: { [k: string]: JsonValue } = { mode: "route" },
+        more: { [k: string]: JsonValue } = {},
       ) =>
         suDb.agent.update({
           where: { id: gAgentId },
           data: {
             settings: {
+              ...more,
               split: { enabled: false },
               handoff,
               guardrails: {
@@ -11964,6 +11966,33 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         );
         expect(verdict).toBe("failed");
         expect(outcome).toBeInstanceOf(GuardrailHandoffFailedError);
+      });
+
+      // A failed transfer ends the turn in a throw, after the closing block: it is retried or lost,
+      // so the turn-errors message, which only a turn that returned posts, says nothing.
+      test("a failed transfer posts no turn-errors message", async () => {
+        await configure(
+          "output",
+          { action: "handoff", handoffMessage: "ENCAMINHADO" },
+          { mode: "route" },
+          { conversationNotes: { errors: "note" } },
+        );
+        const log = newLog();
+        const failing = async () =>
+          ({
+            ...(await handoffStub(log)()),
+            getMessages: async () => ({ payload: [] }),
+            toggleStatus: async () => {
+              throw new Error("chatwoot 500");
+            },
+          }) as unknown as ChatwootClient;
+        const { outcome } = await screenedMidTurn(7391, TRIP, log, failing);
+        expect(outcome).toBeInstanceOf(GuardrailHandoffFailedError);
+        expect(
+          [...log.sent, ...log.notes].filter(([, t]) =>
+            t.startsWith("Erros neste turno"),
+          ),
+        ).toEqual([]);
       });
 
       // The transfer is the turn's own: its status webhook, mirrored at once here, is not a person

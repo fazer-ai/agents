@@ -318,6 +318,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversation-notes/tools-used.ts": [1, "flow-event"],
+  "src/modules/conversation-notes/turn-errors.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [13, "read"],
   // The line a dead debounce flush writes: a fixed sentence and a count, never the job's error.
@@ -377,6 +378,7 @@ const GUARD_CALLS: Record<string, number> = {
   "src/graph/tool-flowlog.ts": 3,
   "src/lib/redact.ts": 1,
   "src/modules/conversation-notes/tools-used.ts": 1,
+  "src/modules/conversation-notes/turn-errors.ts": 1,
   "src/modules/conversations/error.ts": 1,
   "src/modules/conversations/failure-note.ts": 1,
   // The worker's send, shared with the console's Test button, sanitizes in its own `catch`. The

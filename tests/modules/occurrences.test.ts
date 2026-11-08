@@ -244,7 +244,7 @@ describe("the settings block", () => {
           key: `f${i}`,
         })),
       },
-      { ...ok, cadenceMinutes: 4 },
+      { ...ok, cadenceMinutes: 0 },
       { ...ok, cadenceMinutes: 1441 },
     ];
     for (const b of bad)

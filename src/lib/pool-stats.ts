@@ -1,6 +1,7 @@
 import { AsyncResource } from "node:async_hooks";
 import type { Pool, PoolClient } from "pg";
 import { currentDbScope, markedScope, scopeMarkIn } from "@/lib/db-scope";
+import { noteStatementPool } from "@/lib/statement-budgets";
 import { currentWorkLabel } from "@/lib/work-label";
 
 // What each database pool is doing, for the instance health sampler (docs/logs.md, instance alerts):
@@ -198,6 +199,7 @@ function watchClient(client: PoolClient, pool: string): void {
     ...args: unknown[]
   ) => {
     const text = textOf(args);
+    if (text) noteStatementPool(pool, text);
     // A transaction's first statement carries the mark of the scope that opened it: from then on
     // this connection's statements are that transaction's, whatever async context Prisma sent them
     // from (src/lib/db-scope.ts, ScopeMark). Cleared when the connection goes back to the pool.

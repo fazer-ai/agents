@@ -53,7 +53,9 @@ import {
   type OccurrencesConfig,
 } from "@/modules/occurrences/settings";
 import {
+  occurrenceSweepHandler,
   runOccurrenceSweep,
+  SWEEP_MIN_CADENCE_MINUTES,
   SWEEP_PAGES,
   SWEEP_REQUESTS_PER_ROUND,
   sweepInboxes,
@@ -5952,6 +5954,146 @@ describe.skipIf(!dbUp)("flag history: episodes", () => {
     expect(eps).toHaveLength(2);
     expect(eps.filter((e) => e.endedAt === null)).toHaveLength(1);
     const absorbed = eps.find((e) => e.title === "Estorno");
-    expect(absorbed?.endedAt?.getTime()).toBe(t0.getTime());
+    // The flags run before the consolidation (agents-master#427): the absorbed theme was still flagged
+    // in this round, before the merge, so that is the last round it was flagged.
+    expect(absorbed?.endedAt?.getTime()).toBe(t0.getTime() + 20 * MIN);
+  });
+});
+
+// HOW SOON A SPIKE SHOWS (agents-master#427): rounds are paced from one start to the next, and a
+// round publishes its flags before the consolidation, so a slow or long consolidation never holds a
+// theme that is already counted.
+describe.skipIf(!dbUp)("detection latency", () => {
+  const job = (a: Awaited<ReturnType<typeof account>>) =>
+    ({
+      tenantId: a.tenantId,
+      payload: { monitorId: String(a.monitorId) },
+    }) as unknown as ClaimedJob;
+  // The handler's first reading of the clock is the round's start; every later one is `after`.
+  const clock = (start: Date, after: Date) => {
+    let first = true;
+    return () => {
+      if (first) {
+        first = false;
+        return start;
+      }
+      return after;
+    };
+  };
+
+  test("the next round is due one cadence after this one started, not after it ended", async () => {
+    const a = await account({ cadenceMinutes: 5 });
+    const t0 = new Date("2026-11-06T12:00:00Z");
+    const t1 = new Date(t0.getTime() + 90_000);
+    const res = await occurrenceRoundHandler(job(a), appDb, {
+      now: clock(t0, t1),
+      makeModel: (mc) => new ScriptedModel(mc, nothing, a.calls),
+      makeChatwootClient: a.makeChatwootClient,
+    });
+    expect(res).toEqual({
+      outcome: "reschedule",
+      runAt: new Date(t0.getTime() + 5 * 60_000),
+    });
+  });
+
+  test("a round longer than the cadence is followed at once, not one cadence after it ended", async () => {
+    const a = await account({ cadenceMinutes: 1 });
+    const t0 = new Date("2026-11-06T12:00:00Z");
+    const t1 = new Date(t0.getTime() + 90_000);
+    const res = await occurrenceRoundHandler(job(a), appDb, {
+      now: clock(t0, t1),
+      makeModel: (mc) => new ScriptedModel(mc, nothing, a.calls),
+      makeChatwootClient: a.makeChatwootClient,
+    });
+    expect(res).toEqual({ outcome: "reschedule", runAt: t1 });
+  });
+
+  test("a theme is flagged before the consolidation is asked anything", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      newWithinMinutes: 60,
+      flagHoldMinutes: 0,
+    });
+    const now = new Date();
+    const theme = await a.theme("Pagamento recusado");
+    for (let i = 0; i < 5; i++)
+      await a.member(theme.id, await a.conv(), `pagamento recusado ${i}`, now);
+    // What the theme's flags were while the consolidation call was still open.
+    let seen: string[] | null = null;
+    const script: Script = async (step, user) => {
+      if (step === "consolidation" && seen === null)
+        seen = (
+          await suDb.occurrenceTheme.findUniqueOrThrow({
+            where: { id: theme.id },
+            select: { flags: true },
+          })
+        ).flags;
+      return nothing(step, user);
+    };
+    const r = await a.round(script, now);
+    expect(r.status).toBe("ok");
+    expect(a.calls.some((c) => c.step === "consolidation")).toBe(true);
+    expect(seen).not.toBeNull();
+    expect(seen as unknown as string[]).toContain("new");
+  });
+
+  test("a theme that reaches the rule through a merge is flagged in the round that merged it", async () => {
+    const a = await account({
+      windowMinutes: 60,
+      newMinConversations: 5,
+      newWithinMinutes: 60,
+      flagHoldMinutes: 0,
+    });
+    const now = new Date();
+    const A = await a.theme("Cartão recusado");
+    const B = await a.theme("Pagamento recusado");
+    for (let i = 0; i < 3; i++)
+      await a.member(A.id, await a.conv(), `cartão recusado ${i}`, now);
+    for (let i = 0; i < 2; i++)
+      await a.member(B.id, await a.conv(), `pagamento recusado ${i}`, now);
+    const script: Script = (step, user) =>
+      step === "consolidation"
+        ? { merges: [{ absorbed: `T${A.id}`, into: `T${B.id}` }] }
+        : nothing(step, user);
+    const r = await a.round(script, now);
+    expect(r.status).toBe("ok");
+    const survivor = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id: B.id },
+      select: { flags: true },
+    });
+    expect(survivor.flags).toContain("new");
+  });
+
+  test("a one-minute round does not make the Chatwoot listing run every minute", async () => {
+    const a = await account({ cadenceMinutes: 1 });
+    const t0 = new Date("2026-11-06T12:00:00Z");
+    const res = await occurrenceSweepHandler(job(a), appDb, {
+      now: () => t0,
+      makeChatwootClient: a.makeChatwootClient,
+    });
+    expect(res).toEqual({
+      outcome: "reschedule",
+      runAt: new Date(t0.getTime() + SWEEP_MIN_CADENCE_MINUTES * 60_000),
+    });
+    expect(SWEEP_MIN_CADENCE_MINUTES).toBe(5);
+  });
+
+  test("the cadence takes one minute and refuses zero", async () => {
+    const a = await account();
+    await updateOccurrencesSettings(a.ctx, { cadenceMinutes: 1 }, appDb);
+    const row = await suDb.occurrenceMonitor.findUniqueOrThrow({
+      where: { id: a.monitorId },
+      select: { config: true },
+    });
+    expect((row.config as { cadenceMinutes: number }).cadenceMinutes).toBe(1);
+    await expect(
+      updateOccurrencesSettings(a.ctx, { cadenceMinutes: 0 }, appDb),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    const after = await suDb.occurrenceMonitor.findUniqueOrThrow({
+      where: { id: a.monitorId },
+      select: { config: true },
+    });
+    expect((after.config as { cadenceMinutes: number }).cadenceMinutes).toBe(1);
   });
 });

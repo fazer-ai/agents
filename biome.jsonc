@@ -124,7 +124,8 @@
       "includes": ["src/**/*.ts", "tests/lint/.probe-src-*/**/*.ts"],
       "plugins": [
         "./biome-plugins/require-pool-connect-bound.grit",
-        "./biome-plugins/require-pool-session-zone.grit"
+        "./biome-plugins/require-pool-session-zone.grit",
+        "./biome-plugins/require-pool-error-listener.grit"
       ]
     },
     // The scripts an operator runs against a live database (set-admin, reprice-usage) open their own

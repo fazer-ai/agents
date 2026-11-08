@@ -708,6 +708,7 @@ async function provisionRuntimeRole(
         `runtime role "${role}" is ${attrs}, which makes RLS a no-op, and this administrative ` +
           `role cannot take that away (${message(err)}). Run as a superuser: ` +
           `ALTER ROLE "${role}" NOSUPERUSER NOBYPASSRLS;`,
+        { cause: err },
       );
     }
   } else if (plan === "syncPassword") {
@@ -904,7 +905,11 @@ export async function provisionDatabase(
   );
 }
 
-async function main() {
+// One provisioning pass. Run on its own (`bun db:bootstrap`) it fails at the first refused connection;
+// the image's boot runs it through scripts/db-boot.ts, which waits for a database that is not up yet.
+export async function bootstrap(
+  opts: { connectTimeoutMs?: number } = {},
+): Promise<void> {
   const migrationUrl = process.env.MIGRATION_DATABASE_URL;
   const appUrl = process.env.DATABASE_URL;
   if (!migrationUrl) {
@@ -916,7 +921,14 @@ async function main() {
 
   const { role, password } = parseAppRole(substitutePort(appUrl));
 
-  const client = new Client({ connectionString: substitutePort(migrationUrl) });
+  const client = new Client({
+    connectionString: substitutePort(migrationUrl),
+    connectionTimeoutMillis: opts.connectTimeoutMs ?? 10_000,
+  });
+  // NOTE: a connection the server drops between two statements is an `error` event, which unheard
+  // ends the process; the next statement fails instead, and the boot's wait reads it as a lost
+  // connection (scripts/db-boot.ts).
+  client.on("error", () => {});
   await client.connect();
   try {
     await provisionDatabase(client, role, password);
@@ -926,7 +938,7 @@ async function main() {
 }
 
 if (import.meta.main) {
-  main().catch((err) => {
+  bootstrap().catch((err) => {
     console.error(
       "db-bootstrap failed:",
       err instanceof Error ? err.message : err,

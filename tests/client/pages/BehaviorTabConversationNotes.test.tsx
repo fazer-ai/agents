@@ -8,9 +8,17 @@ import {
   expect,
   test,
 } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { behaviorTabProps } from "./behaviorTabProps";
+
+const { default: i18n } = await import("@/client/lib/i18n");
 
 // The two kinds of conversation note: the same three formats on two identical selects, the stored
 // value shown, the pick handed to the form with the other kind left as it was, and no section on a
@@ -80,5 +88,42 @@ describe("the Behavior tab's conversation notes", () => {
     render(<BehaviorTab {...behaviorTabProps({})} mode="monitoring" />);
     const el = document.getElementById("conversationNotes");
     expect(el?.className.split(/\s+/).includes("hidden")).toBe(true);
+  });
+
+  test("the help about the formats names the Chatwoot version, never the fork", async () => {
+    const said = {
+      en: "In the current Chatwoot version, an activity message shows as sent by the contact, and in a follow-up it also updates the contact's last activity.",
+      "pt-BR":
+        "Na versão atual do Chatwoot, a mensagem de atividade aparece como enviada pelo contato e, num follow-up, também atualiza a última atividade dele.",
+    };
+    const starting = i18n.language;
+    try {
+      for (const [language, text] of Object.entries(said)) {
+        await i18n.changeLanguage(language);
+        render(
+          <BehaviorTab
+            {...behaviorTabProps({})}
+            mode="production"
+            conversationNotes={{ toolsUsed: "activity", errors: "activity" }}
+          />,
+        );
+        for (const kind of [TOOLS, ERRORS]) {
+          const label = select(kind).id
+            ? document.querySelector(`label[for="${select(kind).id}"]`)
+            : null;
+          const trigger = within(
+            (label?.parentElement ?? document.body) as HTMLElement,
+          ).getByRole("button");
+          fireEvent.click(trigger);
+          const box = screen.getByRole("dialog");
+          expect(box.textContent).toContain(text);
+          expect(box.textContent).not.toMatch(/\bfork\b/i);
+          fireEvent.keyDown(box, { key: "Escape" });
+        }
+        cleanup();
+      }
+    } finally {
+      await i18n.changeLanguage(starting);
+    }
   });
 });

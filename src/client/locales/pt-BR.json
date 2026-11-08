@@ -2032,7 +2032,7 @@
     "contactFieldVisible": "No contexto",
     "contactFieldWritable": "Agente pode alterar",
     "conversationNoteFormatActivity": "Mensagem de atividade (discreta, não notifica ninguém)",
-    "conversationNoteFormatActivityContact": "Até o fork do Chatwoot ser atualizado, a mensagem de atividade fica registrada como enviada pelo contato e, num follow-up, também atualiza a última atividade dele.",
+    "conversationNoteFormatActivityContact": "Na versão atual do Chatwoot, a mensagem de atividade aparece como enviada pelo contato e, num follow-up, também atualiza a última atividade dele.",
     "conversationNoteFormatHelp": "A mensagem de atividade é uma linha cinza na linha do tempo que não notifica ninguém. A nota privada chama a atenção de quem atende a conversa. O cliente não vê nenhuma das duas.",
     "conversationNoteFormatNote": "Nota privada (chama a atenção da equipe)",
     "conversationNoteFormatOff": "Não mostrar",

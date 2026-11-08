@@ -4988,7 +4988,7 @@ function NoteFormatField({
         "An activity message is a gray line in the timeline that notifies nobody. A private note stands out to whoever handles the conversation. The customer sees neither.",
       )}\n\n${t(
         "editor.conversationNoteFormatActivityContact",
-        "Until the Chatwoot fork is updated, an activity message is recorded as sent by the contact, and in a follow-up it also updates the contact's last activity.",
+        "In the current Chatwoot version, an activity message shows as sent by the contact, and in a follow-up it also updates the contact's last activity.",
       )}`}
     >
       <Select

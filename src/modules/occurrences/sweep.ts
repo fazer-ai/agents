@@ -398,6 +398,10 @@ export async function runOccurrenceSweep(
   });
 }
 
+// The sweep lists inboxes through the Chatwoot API, so it never runs more often than this, whatever the
+// round's cadence: a one-minute round does not become a Chatwoot listing every minute.
+export const SWEEP_MIN_CADENCE_MINUTES = 5;
+
 // The job, one per monitor, beside its round. ON: sweep and re-arm one cadence later. OFF, or
 // deleted: end the loop; the save that switches it on arms it again. It never throws.
 export async function occurrenceSweepHandler(
@@ -436,7 +440,10 @@ export async function occurrenceSweepHandler(
   }
   return {
     outcome: "reschedule",
-    runAt: new Date(now().getTime() + cfg.cadenceMinutes * 60_000),
+    runAt: new Date(
+      now().getTime() +
+        Math.max(cfg.cadenceMinutes, SWEEP_MIN_CADENCE_MINUTES) * 60_000,
+    ),
   };
 }
 

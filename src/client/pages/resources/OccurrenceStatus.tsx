@@ -11,9 +11,19 @@ type Run = NonNullable<
 // Read again this often while the configuration tab is open, so the line follows the rounds.
 const STATUS_MS = 60_000;
 
+// When the round after `last` is expected: one cadence after it started, or as soon as it ended
+// when it ran longer than the cadence (round.ts, occurrenceRoundHandler).
+export function nextRoundAt(
+  last: { startedAt: string | Date; finishedAt: string | Date | null },
+  cadenceMinutes: number,
+): Date {
+  const started = new Date(last.startedAt).getTime();
+  const ended = new Date(last.finishedAt ?? last.startedAt).getTime();
+  return new Date(Math.max(ended, started + cadenceMinutes * 60_000));
+}
+
 // Whether a monitor that is on is working, under its switch: the last round (when, and how it went,
-// in words when it failed or a step did not complete) and when the next one is expected. The next
-// round is armed one cadence after the last one ends (round.ts, occurrenceRoundHandler).
+// in words when it failed or a step did not complete) and when the next one is expected.
 export function OccurrenceStatus({
   monitorId,
   cadenceMinutes,
@@ -67,8 +77,7 @@ export function OccurrenceStatus({
   else if (last.status === "running")
     lines.push(t("occurrences.status.running", "A round is running now."));
   else {
-    const ended = new Date(last.finishedAt ?? last.startedAt);
-    const next = new Date(ended.getTime() + cadenceMinutes * 60_000);
+    const next = nextRoundAt(last, cadenceMinutes);
     lines.push(
       last.status === "failed"
         ? t(

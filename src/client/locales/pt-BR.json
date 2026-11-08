@@ -4173,7 +4173,7 @@
     "businessContextIntroGeneric": "Opcional. Vai para todas as etapas: com o que o seu negócio trabalha, como as coisas se chamam, quais contatos são rotina.",
     "businessContextTooLong": "No máximo {{max}} caracteres.",
     "cadence": "Minutos entre rodadas",
-    "cadenceIntroGeneric": "Uma rodada lê, dá nome às referências, coloca os motivos em temas e os sinaliza. A consolidação roda com menos frequência.",
+    "cadenceIntroGeneric": "Uma rodada lê, dá nome às referências, coloca os motivos em temas e os sinaliza; o intervalo conta do início de uma rodada ao início da seguinte. Um intervalo menor sinaliza um pico mais cedo e relê com mais frequência as conversas em que o cliente escreveu de novo, então custa mais. A consolidação roda com menos frequência.",
     "cadenceTitle": "Com que frequência roda",
     "concentrationNeedsReference": "Desligado: precisa de um campo de referência.",
     "cost30": "Custo, últimos 30 dias",

@@ -4052,7 +4052,7 @@
     "businessContextIntroGeneric": "Optional. Told to every step: what your business deals with, what things are called, which contacts are routine.",
     "businessContextTooLong": "At most {{max}} characters.",
     "cadence": "Minutes between rounds",
-    "cadenceIntroGeneric": "A round reads, names the references, places the reasons into themes and flags them. The consolidation runs less often.",
+    "cadenceIntroGeneric": "A round reads, names the references, places the reasons into themes and flags them; the interval counts from one round's start to the next. A shorter interval flags a spike sooner and reads again, more often, the conversations whose customer wrote again, so it costs more. The consolidation runs less often.",
     "cadenceTitle": "How often it runs",
     "concentrationNeedsReference": "Off: it needs a reference field.",
     "cost30": "Cost, last 30 days",

@@ -159,7 +159,7 @@ describe("what one turn survived", () => {
 
 describe("turnErrorsText", () => {
   test("nothing to say for a clean turn", () => {
-    expect(turnErrorsText([], "t")).toBeNull();
+    expect(turnErrorsText([], "t", 7n)).toBeNull();
   });
 
   test("names, reason, whether it recovered, and the turn's Logs link", () => {
@@ -171,6 +171,7 @@ describe("turnErrorsText", () => {
         failing("consultar_estoque", "timeout", true),
       ]),
       "turn-abc",
+      7n,
     ) as string;
     expect(text).toContain(
       "Ferramenta consultar_pedido: falhou 2x (HTTP 500). Não se recuperou",
@@ -181,7 +182,9 @@ describe("turnErrorsText", () => {
     expect(text).toContain(
       "Modelo principal: falhou (HTTP 503). Se recuperou: o modelo de fallback respondeu.",
     );
-    expect(text).toMatch(/Detalhes do turno: \S+\/logs\?turnId=turn-abc$/);
+    expect(text).toMatch(
+      /Detalhes do turno: \S+\/logs\?turnId=turn-abc&switchTenant=7$/,
+    );
   });
 
   test("the error's own text never reaches the message", () => {
@@ -193,6 +196,7 @@ describe("turnErrorsText", () => {
         ),
       ]),
       "t",
+      7n,
     ) as string;
     for (const leak of [
       "Ana Souza",
@@ -208,7 +212,11 @@ describe("turnErrorsText", () => {
     const tools = Array.from({ length: TURN_ERRORS_MAX_TOOLS + 3 }, (_, i) =>
       failing(`t${i}`),
     );
-    const text = turnErrorsText(new TurnErrors().items(tools), "t") as string;
+    const text = turnErrorsText(
+      new TurnErrors().items(tools),
+      "t",
+      7n,
+    ) as string;
     expect(text).toContain(`t${TURN_ERRORS_MAX_TOOLS - 1}`);
     expect(text).not.toContain(`t${TURN_ERRORS_MAX_TOOLS}:`);
     expect(text).toContain("E mais 3 ferramenta(s) com falha.");

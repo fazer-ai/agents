@@ -316,7 +316,9 @@ describe.skipIf(!dbUp)("the turn-errors message", () => {
     expect(msg.opts.private).toBeUndefined();
     expect(msg.text).toContain("react_to_message: falhou 2x (erro)");
     expect(msg.text).toContain("Não se recuperou");
-    expect(msg.text).toMatch(/\/logs\?turnId=\S+$/);
+    expect(msg.text).toMatch(
+      new RegExp(`/logs\\?turnId=\\S+&switchTenant=${tenantId}$`),
+    );
     expect(msg.text).not.toContain("Ana Souza");
     // NOTE: The reply first, so the message reads below it in the timeline.
     expect(cw.sent.at(-1)).toBe(msg);

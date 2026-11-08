@@ -1,5 +1,4 @@
 import logger from "@/api/lib/logger";
-import config from "@/config";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CHATWOOT_ERRORS_KEY_KEY } from "@/modules/chatwoot/constants";
@@ -7,6 +6,7 @@ import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { parseChatwootMessages } from "@/modules/chatwoot/messages";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
+import { consoleUrl } from "@/modules/mcp/console-links";
 import { formatSendOptions } from "./send";
 import type { ConversationNoteFormat } from "./settings";
 
@@ -147,13 +147,18 @@ function line(i: TurnErrorItem): string {
   }
 }
 
-export function turnLogsUrl(turnId: string): string {
-  return `${config.publicUrl.replace(/\/+$/, "")}/logs?turnId=${encodeURIComponent(turnId)}`;
+// The turn on the Logs page, switching the console to the turn's tenant first, so an operator on
+// another account lands on the right rows.
+export function turnLogsUrl(turnId: string, tenantId: bigint): string {
+  return consoleUrl(`/logs?turnId=${encodeURIComponent(turnId)}`, {
+    tenantId,
+  });
 }
 
 export function turnErrorsText(
   items: readonly TurnErrorItem[],
   turnId: string,
+  tenantId: bigint,
 ): string | null {
   if (items.length === 0) return null;
   const tools = items.filter((i) => i.kind === "tool");
@@ -164,7 +169,7 @@ export function turnErrorsText(
   return [
     "Erros neste turno do agente:",
     ...shown,
-    `Detalhes do turno: ${turnLogsUrl(turnId)}`,
+    `Detalhes do turno: ${turnLogsUrl(turnId, tenantId)}`,
   ].join("\n");
 }
 
@@ -192,7 +197,11 @@ export async function postTurnErrors(params: {
   flow: FlowContext;
 }): Promise<"posted" | "nothing" | "repeated" | "failed"> {
   if (params.format === "off") return "nothing";
-  const text = turnErrorsText(params.items, params.flow.turnId);
+  const text = turnErrorsText(
+    params.items,
+    params.flow.turnId,
+    params.flow.tenantId,
+  );
   if (text === null) return "nothing";
   const key = turnErrorsKey(params.items);
   try {

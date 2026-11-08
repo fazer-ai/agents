@@ -126,6 +126,9 @@ services:
       - DB_TX_MAX_WAIT_MS=${DB_TX_MAX_WAIT_MS:-}
       - DB_TX_TIMEOUT_MS=${DB_TX_TIMEOUT_MS:-}
       - DB_LOCK_TIMEOUT_MS=${DB_LOCK_TIMEOUT_MS:-}
+      # How long the boot waits for a database it cannot reach before exiting (docs/deploy.md). Empty
+      # takes the default, 120000.
+      - DB_BOOT_WAIT_MS=${DB_BOOT_WAIT_MS:-}
       - DB_STATS_RETENTION_DAYS=${DB_STATS_RETENTION_DAYS:-}
       # The turn capacities: model permits and debounce turn slots (docs/deploy.md). Empty takes the
       # app default.

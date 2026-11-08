@@ -1,6 +1,7 @@
 import { AsyncResource } from "node:async_hooks";
 import type { Pool, PoolClient } from "pg";
 import { currentDbScope, markedScope, scopeMarkIn } from "@/lib/db-scope";
+import { absorbPoolErrors } from "@/lib/pool-errors";
 import { noteStatementPool } from "@/lib/statement-budgets";
 import { currentWorkLabel } from "@/lib/work-label";
 
@@ -232,8 +233,10 @@ function watchClient(client: PoolClient, pool: string): void {
 }
 
 // Registers a pool under `name` and returns it, so a construction site reads
-// `instrumentPool("main", new Pool(...))`.
+// `instrumentPool("main", new Pool(...))`. A registered pool also survives a dropped connection
+// (src/lib/pool-errors.ts).
 export function instrumentPool<P extends Pool>(name: string, pool: P): P {
+  absorbPoolErrors(name, pool);
   const tracked: Tracked = { pool, waits: new Map(), next: 0 };
   // A released connection belongs to no transaction any more: the next one marks it again.
   pool.on("release", (_err: unknown, client: PoolClient) => {

@@ -45,12 +45,15 @@ export async function databaseScreenTick(
     setSignalDetail(DRIFT_SIGNAL, null);
     return 0;
   }
-  const { pct, query, meanMs } = await slowestMeanShare(
+  const { pct, query, meanMs, budgetMs } = await slowestMeanShare(
     base,
     now,
     undefined,
     budgetUntil(deadline),
   );
-  setSignalDetail(DRIFT_SIGNAL, query ? driftFacts(query, meanMs) : null);
+  setSignalDetail(
+    DRIFT_SIGNAL,
+    query ? driftFacts(query, meanMs, budgetMs) : null,
+  );
   return pct;
 }

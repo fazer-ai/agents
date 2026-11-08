@@ -1004,7 +1004,7 @@ export function OccurrenceSettings({
             title={t("occurrences.cadenceTitle", "How often it runs")}
             intro={t(
               "occurrences.cadenceIntroGeneric",
-              "A round reads, names the references, places the reasons into themes and flags them. The consolidation runs less often.",
+              "A round reads, names the references, places the reasons into themes and flags them; the interval counts from one round's start to the next. A shorter interval flags a spike sooner and reads again, more often, the conversations whose customer wrote again, so it costs more. The consolidation runs less often.",
             )}
           >
             <div className="grid gap-3 sm:grid-cols-2">

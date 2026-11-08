@@ -24531,7 +24531,7 @@
                     ]
                   },
                   "cadenceMinutes": {
-                    "minimum": 5,
+                    "minimum": 1,
                     "maximum": 1440,
                     "description": "Minutes between rounds.",
                     "anyOf": [
@@ -24541,7 +24541,7 @@
                         "type": "string"
                       },
                       {
-                        "minimum": 5,
+                        "minimum": 1,
                         "maximum": 1440,
                         "description": "Minutes between rounds.",
                         "type": "integer"
@@ -24800,7 +24800,7 @@
                     ]
                   },
                   "cadenceMinutes": {
-                    "minimum": 5,
+                    "minimum": 1,
                     "maximum": 1440,
                     "description": "Minutes between rounds.",
                     "anyOf": [
@@ -24810,7 +24810,7 @@
                         "type": "string"
                       },
                       {
-                        "minimum": 5,
+                        "minimum": 1,
                         "maximum": 1440,
                         "description": "Minutes between rounds.",
                         "type": "integer"
@@ -25069,7 +25069,7 @@
                     ]
                   },
                   "cadenceMinutes": {
-                    "minimum": 5,
+                    "minimum": 1,
                     "maximum": 1440,
                     "description": "Minutes between rounds.",
                     "anyOf": [
@@ -25079,7 +25079,7 @@
                         "type": "string"
                       },
                       {
-                        "minimum": 5,
+                        "minimum": 1,
                         "maximum": 1440,
                         "description": "Minutes between rounds.",
                         "type": "integer"
@@ -27306,7 +27306,7 @@
                     ]
                   },
                   "cadenceMinutes": {
-                    "minimum": 5,
+                    "minimum": 1,
                     "maximum": 1440,
                     "description": "Minutes between rounds.",
                     "anyOf": [
@@ -27316,7 +27316,7 @@
                         "type": "string"
                       },
                       {
-                        "minimum": 5,
+                        "minimum": 1,
                         "maximum": 1440,
                         "description": "Minutes between rounds.",
                         "type": "integer"
@@ -27575,7 +27575,7 @@
                     ]
                   },
                   "cadenceMinutes": {
-                    "minimum": 5,
+                    "minimum": 1,
                     "maximum": 1440,
                     "description": "Minutes between rounds.",
                     "anyOf": [
@@ -27585,7 +27585,7 @@
                         "type": "string"
                       },
                       {
-                        "minimum": 5,
+                        "minimum": 1,
                         "maximum": 1440,
                         "description": "Minutes between rounds.",
                         "type": "integer"
@@ -27844,7 +27844,7 @@
                     ]
                   },
                   "cadenceMinutes": {
-                    "minimum": 5,
+                    "minimum": 1,
                     "maximum": 1440,
                     "description": "Minutes between rounds.",
                     "anyOf": [
@@ -27854,7 +27854,7 @@
                         "type": "string"
                       },
                       {
-                        "minimum": 5,
+                        "minimum": 1,
                         "maximum": 1440,
                         "description": "Minutes between rounds.",
                         "type": "integer"

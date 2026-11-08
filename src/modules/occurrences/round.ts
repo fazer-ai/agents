@@ -134,6 +134,10 @@ export async function runOccurrenceRound(
       const canonical = await runCanonicalStep(base, m, cfg, models);
       detail.canonical = canonical;
       detail.assignment = await runAssignmentStep(base, m, cfg, models);
+      // The flags right after the assignment, before the consolidation: what this round read is
+      // flagged as soon as it is counted, and a consolidation that runs long, or out of time, never
+      // holds a spike back (agents-master#427). A consolidation that ran counts them again below.
+      detail.flags = await runFlagsStep(base, m, now(), { runId: run.id });
       if (await consolidationDue(base, m, cfg, startedAt)) {
         const themes = await runConsolidationStep(base, m, models, run.id);
         const canonicals = await runCanonicalConsolidation(
@@ -146,8 +150,10 @@ export async function runOccurrenceRound(
         detail.canonicalMerges = canonicals;
         // Only a pass that completed starts the next interval; a skipped one is tried next round.
         consolidated = themes.completed && canonicals.completed;
+        // Merges, splits and renames moved members between themes: the flags over the themes as
+        // they are now.
+        detail.flags = await runFlagsStep(base, m, now(), { runId: run.id });
       }
-      detail.flags = await runFlagsStep(base, m, now(), { runId: run.id });
       // Last, so a slow Chatwoot spends only what the analytical steps left.
       canonical.copied = await runCanonicalCopy(
         base,
@@ -190,7 +196,7 @@ export async function runOccurrenceRound(
   return { runId: run.id, status, readings, durationMs, error };
 }
 
-// The job, one per monitor. ON: run and re-arm one cadence later. OFF, or deleted: end the loop; the
+// The job, one per monitor. ON: run and re-arm one cadence after this round started. OFF, or deleted: end the loop; the
 // next save that switches it on arms it again. It never throws, so the ladder never reaches DEAD.
 export async function occurrenceRoundHandler(
   job: ClaimedJob,
@@ -212,6 +218,9 @@ export async function occurrenceRoundHandler(
     return { outcome: "reschedule", runAt: new Date(now().getTime() + 60_000) };
   }
   if (!cfg?.enabled) return { outcome: "done" };
+  // The cadence counts from this round's start, so the round's own time is not added to every
+  // interval; a round longer than the cadence is followed at once (agents-master#427).
+  const startedAt = now();
   try {
     // A round's writes are not taken back on a retry, so a run cut past its deadline still has its
     // reschedule written (scheduler/worker.ts, JobContext.commit).
@@ -231,7 +240,12 @@ export async function occurrenceRoundHandler(
   }
   return {
     outcome: "reschedule",
-    runAt: new Date(now().getTime() + cfg.cadenceMinutes * 60_000),
+    runAt: new Date(
+      Math.max(
+        now().getTime(),
+        startedAt.getTime() + cfg.cadenceMinutes * 60_000,
+      ),
+    ),
   };
 }
 

@@ -63,14 +63,15 @@ describe("the timeout alert's line", () => {
 });
 
 describe("the drift alert's line", () => {
-  test("names the mean and the table before the statement", () => {
+  test("names the mean, the budget it ran under and the table before the statement", () => {
     expect(
       driftDetail(
         "WITH due AS MATERIALIZED (SELECT id FROM scheduler_jobs WHERE status = 'PENDING')",
         2_940,
+        5_000,
       ),
     ).toBe(
-      "Slowest over the last hour: 2.9 s mean, on scheduler_jobs. Statement: WITH due AS MATERIALIZED (SELECT id FROM scheduler_jobs WHERE status = 'PENDING')",
+      "Closest to its budget over the last hour: 2.9 s mean, 5.0 s budget, on scheduler_jobs. Statement: WITH due AS MATERIALIZED (SELECT id FROM scheduler_jobs WHERE status = 'PENDING')",
     );
   });
 });

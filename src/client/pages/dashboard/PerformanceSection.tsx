@@ -38,7 +38,7 @@ import {
   trendPointHref,
   type Window,
 } from "./filters";
-import { dayState, useMetricsBlock } from "./useMetrics";
+import { dayState, useMetricsBlock, withComparison } from "./useMetrics";
 
 const LineTrend = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -245,16 +245,21 @@ export function PerformanceSection({
     }).format(v);
   const kpis = kpisBlock.data;
 
-  const trend = useMetricsBlock(
-    "outcomes",
-    (b: { trend: Trend }) => b.trend,
-    breakdown === "none" ? {} : { params: { breakdown } },
-  );
   const prevTrend = useMetricsBlock(
     "outcomes",
     (b: { trend: Trend }) => b.trend,
     { which: "previous" },
   );
+  const currentTrend = useMetricsBlock(
+    "outcomes",
+    (b: { trend: Trend }) => b.trend,
+    breakdown === "none" ? {} : { params: { breakdown } },
+  );
+  // Split, the trend draws no previous period, so its comparison has nothing to hold.
+  const trend =
+    breakdown === "none"
+      ? withComparison(currentTrend, prevTrend)
+      : currentTrend;
 
   const metricLabel: Record<Metric, string> = {
     involvement: t("dashboard.kpi.involvement", "Involvement"),

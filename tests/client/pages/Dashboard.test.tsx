@@ -133,6 +133,8 @@ let healthFails = false;
 let healthFailStatus = 500;
 let healthFailField: string | undefined;
 let costsHang = false;
+// How many more times a previous-period request of these routes fails.
+let prevFails: Record<string, number> = {};
 // The flow log's retention the filter options carry: past it, a flow-log day has no data.
 let retentionDays = 30;
 // A whole view whose flow-log days are all past retention: no handoffs, no silences and no problems,
@@ -180,6 +182,19 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
         "X-Tenant-Id-Invalid": tenantGone,
       },
     });
+  {
+    // The previous period ends a period before the view's opening; the view's own ends at it.
+    const until = url.searchParams.get("until");
+    const route = p.split("/metrics/")[1] ?? "";
+    if (
+      until &&
+      new Date(until).getTime() < Date.now() - 3_600_000 &&
+      (prevFails[route] ?? 0) > 0
+    ) {
+      prevFails[route] = (prevFails[route] ?? 0) - 1;
+      return json({ error: "x" }, 500);
+    }
+  }
   if (p.endsWith("/metrics/kpis") && kpisFail) return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/kpis")) return json({ instance: "i", kpis });
   if (p.endsWith("/metrics/outcomes"))
@@ -386,6 +401,7 @@ beforeEach(() => {
   optionsFail = false;
   inboxOptions = ONE_INBOX;
   costsHang = false;
+  prevFails = {};
   retentionDays = 30;
   tenantGone = null;
   kpisFail = false;
@@ -741,6 +757,43 @@ describe("the cost is the ledger's", () => {
     expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(
       3,
     );
+  });
+
+  test("a failed previous period holds the figures it compares, and the retry asks only it again", async () => {
+    prevFails = { costs: 1 };
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Could not read the cost.")).toBe(true);
+    });
+    expect(asks("/metrics/costs")).toHaveLength(2);
+    const [tilesRetry] = screen.getAllByRole("button", { name: "Try again" });
+    fireEvent.click(tilesRetry as HTMLElement);
+    await waitFor(() => {
+      expect(has("Could not read the cost.")).toBe(false);
+    });
+    expect(asks("/metrics/costs")).toHaveLength(3);
+  });
+
+  test("the KPIs and the funnel trend hold their figures the same way", async () => {
+    prevFails = { kpis: 1, outcomes: 1 };
+    await renderDash("/");
+    const retries = () => [
+      ...screen.queryAllByRole("button", { name: "Retry" }),
+      ...screen.queryAllByRole("button", { name: "Try again" }),
+    ];
+    // The KPI tiles' failure (Retry) and the trend's (Try again), each in its own slot.
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "Retry" })).toHaveLength(
+        1,
+      );
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }),
+      ).toHaveLength(1);
+    });
+    for (const b of retries()) fireEvent.click(b);
+    await waitFor(() => {
+      expect(retries()).toHaveLength(0);
+    });
   });
 
   test("a cost refused as too slow says the period took too long, in the tiles too", async () => {

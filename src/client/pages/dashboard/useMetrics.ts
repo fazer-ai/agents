@@ -301,3 +301,28 @@ export function useMetricsBlock<T>(
     coverage,
   };
 }
+
+type MetricsBlock<T> = ReturnType<typeof useMetricsBlock<T>>;
+
+// A block that compares against the previous period shows both or neither: figures whose comparison
+// failed are not final, so the block shows its failure, and its retry asks again whichever of the two
+// requests failed (or the current one, when neither did).
+export function withComparison<T, P>(
+  current: MetricsBlock<T>,
+  previous: MetricsBlock<P>,
+): MetricsBlock<T> {
+  const failed = [current, previous].filter((b) => b.error);
+  const first = failed[0];
+  if (!first) return current;
+  return {
+    ...current,
+    data: null,
+    loading: false,
+    error: true,
+    status: first.status,
+    field: first.field,
+    reload: () => {
+      for (const b of failed) b.reload();
+    },
+  };
+}

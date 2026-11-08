@@ -47,6 +47,7 @@ import { ReasonsSection } from "./dashboard/ReasonsSection";
 import {
   DashboardMetricsProvider,
   useMetricsBlock,
+  withComparison,
 } from "./dashboard/useMetrics";
 
 // THE OPERATOR'S DASHBOARD, organised by the question an operator brings: is the agent
@@ -210,10 +211,13 @@ function DashboardBlocks({
   view: PerformanceView;
   onView: (patch: Partial<PerformanceView>) => void;
 }) {
-  const kpis = useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis);
   const prevKpis = useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis, {
     which: "previous",
   });
+  const kpis = withComparison(
+    useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis),
+    prevKpis,
+  );
   return (
     <div className="flex min-w-0 flex-col gap-8">
       <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">

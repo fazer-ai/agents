@@ -58,26 +58,40 @@ async function flowlogSweepHandler(
       DELETE FROM agent_turn_deliveries
       WHERE (NOT proactive AND delivered_at < ${new Date(Date.now() - TURN_DELIVERY_RETENTION_MS)})
          OR delivered_at < ${new Date(Date.now() - PROACTIVE_DELIVERY_RETENTION_MS)}`);
-    // Raw SQL: the tables have no Prisma model any more. Gone already on a database a later release
-    // migrated, hence the check.
-    for (const table of ["dashboard_days", "dashboard_dirty"]) {
-      const [found] = await db.$queryRaw<{ t: string | null }[]>(
-        Prisma.sql`SELECT to_regclass(${table})::text AS t`,
-      );
-      if (!found?.t) continue;
-      const name = Prisma.raw(`"${table}"`);
-      while (true) {
-        const deleted = await db.$executeRaw(Prisma.sql`
-          DELETE FROM ${name}
-          WHERE id IN (SELECT id FROM ${name} LIMIT ${BATCH})`);
-        if (deleted < BATCH) break;
-      }
-    }
   });
+  await emptyKeptDays(base, tenantId);
   return {
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
   };
+}
+
+// Each batch commits on its own, after the log is pruned: a tenant with more kept days than one
+// transaction's budget deletes keeps what it emptied and goes on the next day, and never takes the
+// log's pruning back with it. The kept days go before their queue, so a day still kept always has
+// its invalidations. Raw SQL: the tables have no Prisma model any more. Gone already on a database a
+// later release migrated, hence the check.
+async function emptyKeptDays(
+  base: PrismaClient,
+  tenantId: bigint,
+): Promise<void> {
+  for (const table of ["dashboard_days", "dashboard_dirty"]) {
+    const found = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.$queryRaw<{ t: string | null }[]>(
+        Prisma.sql`SELECT to_regclass(${table})::text AS t`,
+      ),
+    );
+    if (!found[0]?.t) continue;
+    const name = Prisma.raw(`"${table}"`);
+    while (true) {
+      const deleted = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.$executeRaw(Prisma.sql`
+          DELETE FROM ${name}
+          WHERE id IN (SELECT id FROM ${name} LIMIT ${BATCH})`),
+      );
+      if (deleted < BATCH) break;
+    }
+  }
 }
 
 let registered = false;

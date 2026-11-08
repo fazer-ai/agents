@@ -156,4 +156,76 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
       await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${other}`);
     }
   });
+
+  // Each batch of the kept days commits on its own, after the log is pruned: a tenant whose kept days
+  // outlast one transaction's budget keeps the log's pruning, and the queue of a day still kept.
+  test("a failure emptying the kept days takes back neither the log's pruning nor a kept day's queue", async () => {
+    const old = new Date(
+      Date.now() - (config.flowlog.retentionDays + 5) * 86_400_000,
+    );
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO execution_logs (tenant_id, turn_id, stage, level, source, created_at)
+       VALUES (${tenantId}, 'stale', 'generate', 'info', 'inbox', '${old.toISOString()}');
+       INSERT INTO dashboard_days (tenant_id, version, filter_key, tz, day, section, data)
+       VALUES (${tenantId}, 'v', 'k', 'UTC', '2026-09-01', 'conv', '{}');
+       INSERT INTO dashboard_dirty (tenant_id, section) VALUES (${tenantId}, 'probe')`,
+    );
+    // Stands in for a delete that ran out of time: only this tenant's kept days refuse it.
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION retention_test_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF OLD.tenant_id = ${tenantId} THEN RAISE EXCEPTION 'out of time' USING ERRCODE = '57014'; END IF;
+         RETURN OLD;
+       END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER retention_test_refuse BEFORE DELETE ON dashboard_days
+       FOR EACH ROW EXECUTE FUNCTION retention_test_refuse()`,
+    );
+    try {
+      registerFlowlogRetentionHandler();
+      const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
+        ReturnType<typeof getJobHandler>
+      >;
+      const outcome = await handler(
+        {
+          id: phantomJobId,
+          tenantId,
+          kind: "FLOWLOG_SWEEP",
+          payload: {},
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+      ).catch((e: unknown) => e);
+      expect(outcome).toBeInstanceOf(Error);
+      // flowlog-scope: tenant-wide, the assertion is that the stale line is gone.
+      const stale = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: { tenantId, turnId: "stale" },
+        select: { turnId: true },
+      });
+      expect(stale).toEqual([]);
+      const count = async (table: string) =>
+        Number(
+          (
+            await suDb.$queryRawUnsafe<{ n: number }[]>(
+              `SELECT COUNT(*)::int AS n FROM ${table} WHERE tenant_id = ${tenantId}`,
+            )
+          )[0]?.n,
+        );
+      expect(await count("dashboard_days")).toBe(1);
+      // The probe, and whatever the log's own triggers queued for the inserted line.
+      expect(await count("dashboard_dirty")).toBeGreaterThan(0);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        "DROP TRIGGER retention_test_refuse ON dashboard_days",
+      );
+      await suDb.$executeRawUnsafe("DROP FUNCTION retention_test_refuse()");
+      for (const table of ["dashboard_days", "dashboard_dirty"])
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+        );
+    }
+  });
 });

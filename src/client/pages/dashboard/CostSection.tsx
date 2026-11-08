@@ -38,7 +38,7 @@ import {
   type Window,
 } from "./filters";
 import { useBlock } from "./useBlock";
-import { dayState, inGap, useMetricsBlock } from "./useMetrics";
+import { dayState, inGap, useMetricsBlock, withComparison } from "./useMetrics";
 
 const COST_TILES = ["cost", "perConversation", "cache", "tokens"] as const;
 
@@ -144,14 +144,14 @@ export function CostSection({
     }).format(v);
 
   const query = apiQuery(filters, win);
-  const costs = useMetricsBlock(
-    "costs",
-    (b: { costs: DashboardCosts }) => b.costs,
-  );
   const prevCosts = useMetricsBlock(
     "costs",
     (b: { costs: DashboardCosts }) => b.costs,
     { which: "previous" },
+  );
+  const costs = withComparison(
+    useMetricsBlock("costs", (b: { costs: DashboardCosts }) => b.costs),
+    prevCosts,
   );
   const cache = useMetricsBlock(
     "breakdown",

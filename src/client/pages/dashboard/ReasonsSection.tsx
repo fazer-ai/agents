@@ -10,13 +10,7 @@ import type {
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import { daysOf, type Window } from "./filters";
-import {
-  axisStart,
-  dayState,
-  hasNoData,
-  inGap,
-  useMetricsBlock,
-} from "./useMetrics";
+import { axisStart, hasNoData, inGap, useMetricsBlock } from "./useMetrics";
 
 const StackedBars = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
@@ -76,10 +70,14 @@ export function ReasonsSection({ win }: { win: Window }) {
     label: causeLabel[c] ?? c,
   }));
   const days = daysOf(win, axisStart(handoffs.coverage, h?.days[0]?.date));
+  // A day before the retention cutoff that still has lines (the daily sweep has not reached it yet)
+  // shows them, as the period's totals count them: only a day with none left reads as no data.
+  const handoffDays = new Set(h?.days.map((d) => d.date) ?? []);
   const rows: ChartRow[] = days.map((day) => {
-    const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
+    const gone = inGap(handoffs.coverage, day) && !handoffDays.has(day);
+    const row: ChartRow = { day, state: gone ? "noData" : "ready" };
     for (const s of series)
-      row[s.key] = inGap(handoffs.coverage, day)
+      row[s.key] = gone
         ? null
         : (h?.days.find((d) => d.date === day && d.cause === s.raw)
             ?.conversations ?? 0);
@@ -119,10 +117,12 @@ export function ReasonsSection({ win }: { win: Window }) {
     win,
     axisStart(handoffs.coverage, h?.silenceDays[0]?.date),
   );
+  const silenceHas = new Set(h?.silenceDays.map((d) => d.date) ?? []);
   const silenceRows: ChartRow[] = silenceDays.map((day) => {
-    const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
+    const gone = inGap(handoffs.coverage, day) && !silenceHas.has(day);
+    const row: ChartRow = { day, state: gone ? "noData" : "ready" };
     for (const s of silenceSeries)
-      row[s.key] = inGap(handoffs.coverage, day)
+      row[s.key] = gone
         ? null
         : (h?.silenceDays.find((d) => d.date === day && d.reason === s.raw)
             ?.turns ?? 0);

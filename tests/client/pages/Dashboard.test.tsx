@@ -142,6 +142,8 @@ let logExpired = false;
 let tenantGone: string | null = null;
 // The KPIs' route fails; every other route answers.
 let kpisFail = false;
+// The day the fixture's handoffs fall on.
+let handoffOn = "2026-10-01";
 // Holds the filter options' answer until released, to answer the metrics routes first.
 let optionsGate: Promise<void> | null = null;
 // The tenant's first record, which an all-time view starts from; null for none.
@@ -241,7 +243,7 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
     return json({
       instance: "i",
       handoffs: {
-        days: [{ date: "2026-10-01", cause: "person", conversations: 2 }],
+        days: [{ date: handoffOn, cause: "person", conversations: 2 }],
         totals: [{ cause: "person", conversations: 2 }],
         silences: [{ reason: "needs_human", turns: 3 }],
         // Earlier than the first handoff: under "all time" the silences keep their own range.
@@ -385,6 +387,7 @@ beforeEach(() => {
   retentionDays = 30;
   tenantGone = null;
   kpisFail = false;
+  handoffOn = "2026-10-01";
   optionsGate = null;
   firstRecordAt = null;
   logExpired = false;
@@ -1244,6 +1247,32 @@ describe("days with no data", () => {
       expect(cells().filter((c) => c === "").length).toBeGreaterThan(0);
     });
     expect(cells().filter((c) => c === "0").length).toBeLessThan(zeros);
+  });
+});
+
+describe("a day past the cutoff the sweep has not reached yet", () => {
+  test("shows its lines, as the totals count them, and only the days with none read as no data", async () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 3);
+    handoffOn = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    retentionDays = 0;
+    await renderDash("/?range=7d");
+    const rowOf = (day: string) =>
+      [
+        ...(screen
+          .getAllByText("Handoffs by cause")
+          .find((e) => e.tagName === "CAPTION")
+          ?.closest("table")
+          ?.querySelectorAll("tbody tr") ?? []),
+      ]
+        .map((tr) =>
+          [...tr.querySelectorAll("th, td")].map((c) => c.textContent),
+        )
+        .find((cells) => cells[0]?.includes(day.slice(8)) ?? false);
+    await waitFor(() => {
+      expect(has("no data · 5 days")).toBe(true);
+    });
+    expect(rowOf(handoffOn)?.slice(1)).toContain("2");
   });
 });
 

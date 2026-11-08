@@ -2990,17 +2990,27 @@ async function maybeConsumeCommandOrGate(params: {
   // bot's `open` is Chatwoot's handoff (the inbox's members are notified and auto-assignment runs in
   // the same save), fenced like every other gate's. The holder Chatwoot gave it in that write is
   // recorded with the park, so /teste can tell it from somebody who took the conversation later.
-  const parkTestSilenced = async (): Promise<boolean> => {
-    if (!(await openConversationForHumans("test-mode", null))) return false;
+  // A /teste that lands while this delivery is still on its way to the park finds no park to return,
+  // so the activation is asked again once the mark is written, and the park is handed straight back
+  // under the same fence /teste uses. "activated" means the conversation is the agent's again.
+  const parkTestSilenced = async (): Promise<
+    "parked" | "not-parked" | "activated"
+  > => {
+    if (!(await openConversationForHumans("test-mode", null)))
+      return "not-parked";
     await refreshFromLive("the test-mode park", null);
+    const mark: TestPark = {
+      parkedAt: new Date(),
+      parkedAssigneeId:
+        ctx.conv.assigneeType === "User" ? ctx.conv.assigneeId : null,
+    };
     try {
       await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.conversation.update({
           where: { id: ctx.conv.id },
           data: {
-            testParkedOpenAt: new Date(),
-            testParkedAssigneeId:
-              ctx.conv.assigneeType === "User" ? ctx.conv.assigneeId : null,
+            testParkedOpenAt: mark.parkedAt,
+            testParkedAssigneeId: mark.parkedAssigneeId,
           },
         }),
       );
@@ -3015,7 +3025,69 @@ async function maybeConsumeCommandOrGate(params: {
       "chatwoot: test-mode silent conversation opened for the team (conv=%s)",
       String(conversationId),
     );
-    return true;
+    if (!(await activatedSinceRead())) return "parked";
+    await returnConversationToAgent(
+      sysCtx(tenantId),
+      ctx.conv.id,
+      {},
+      base,
+      { assigneeType: ctx.conv.assigneeType, assigneeId: ctx.conv.assigneeId },
+      { status: "open", stillValid: () => parkStands(ctx.conv.id, mark) },
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not return a conversation /teste activated while it was parked (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+    });
+    await clearTestPark(ctx.conv.id);
+    return "activated";
+  };
+
+  // Whether /teste activated this conversation (or its redirect episode) after this delivery read it.
+  const activatedSinceRead = async (): Promise<boolean> => {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: { id: ctx.conv.id },
+        select: { testActivatedAt: true },
+      }),
+    ).catch((err: unknown) => {
+      logger.warn(
+        "chatwoot: could not re-read the test activation (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+      return null;
+    });
+    const own = row?.testActivatedAt ?? null;
+    if (own !== null) return true;
+    if (ctx.agentSettings == null) return false;
+    return (
+      (await episodeTestActivatedAt({
+        tenantId,
+        instanceId,
+        cfg: readChannelRedirectConfig(ctx.agentSettings),
+        agentMode: ctx.mode,
+        conv: {
+          testActivatedAt: null,
+          contactId: ctx.conv.contactId,
+          chatwootInboxId: ctx.inboxChatwootId,
+        },
+        base,
+      })) !== null
+    );
+  };
+
+  // The park a hand-back was decided on is still the row's: neither ended by the mirror nor replaced.
+  const parkStands = async (rowId: bigint, decidedOn: TestPark) => {
+    const now = await readTestPark(rowId);
+    return (
+      now !== null &&
+      now.parkedAt !== null &&
+      decidedOn.parkedAt !== null &&
+      now.parkedAt.getTime() === decidedOn.parkedAt.getTime() &&
+      now.parkedAssigneeId === decidedOn.parkedAssigneeId
+    );
   };
 
   // The park as the row holds it. Read again at each decision rather than carried from the delivery's
@@ -3107,7 +3179,7 @@ async function maybeConsumeCommandOrGate(params: {
             {},
             base,
             { assigneeType: live.assigneeType, assigneeId: live.assigneeId },
-            "open",
+            { status: "open", stillValid: () => parkStands(sib.id, sibPark) },
           ).catch((err: unknown) => {
             if (!(err instanceof ChatwootStatusConflictError)) throw err;
           });
@@ -3241,7 +3313,10 @@ async function maybeConsumeCommandOrGate(params: {
               assigneeType: ctx.conv.assigneeType,
               assigneeId: ctx.conv.assigneeId,
             },
-            "open",
+            {
+              status: "open",
+              stillValid: () => parkStands(ctx.conv.id, parkNow),
+            },
           );
         } catch (err) {
           logger.warn(
@@ -4046,7 +4121,10 @@ async function maybeConsumeCommandOrGate(params: {
     // One-shot private note (operator-only) so whoever watches the inbox knows WHY the bot is quiet
     // and how to activate it. Anti-spam: posted once per conversation (testNoticeSentAt watermark).
     const noticeBlocker = await answerBlocker();
-    const parked = noticeBlocker !== "ownership" && (await parkTestSilenced());
+    const park =
+      noticeBlocker === "ownership" ? "not-parked" : await parkTestSilenced();
+    if (park === "activated") return true;
+    const parked = park === "parked";
     if (
       ctx.conv.testNoticeSentAt === null &&
       (await postPrivateNote(

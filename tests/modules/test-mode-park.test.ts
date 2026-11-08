@@ -819,6 +819,88 @@ describe.skipIf(!dbUp)(
         },
       );
 
+    test("a person who takes and lets go while the hand-back probes keeps the conversation from it", async () => {
+      const convId = await seedConversation();
+      const live = new Map<number, LiveConv>([
+        [convId, { status: "pending", assigneeType: null, assigneeId: null }],
+      ]);
+      let readsInTeste: number | null = null;
+      const cw = fakeChatwoot(live, {
+        autoAssign: true,
+        beforeRead: async (id) => {
+          if (readsInTeste === null || id !== convId) return;
+          readsInTeste += 1;
+          if (readsInTeste !== 2) return;
+          // After /teste read the park: a person takes it (the mirror ends the park) and lets go.
+          await suDb.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: convId },
+            data: { testParkedOpenAt: null, testParkedAssigneeId: null },
+          });
+          const c = live.get(convId);
+          if (c) {
+            c.assigneeType = null;
+            c.assigneeId = null;
+          }
+        },
+      });
+      globalThis.fetch = cw.impl;
+      await deliver(convId, "oi", {
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+      });
+      readsInTeste = 0;
+      await deliver(convId, "/teste", {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: AUTO_AGENT,
+      });
+      expect(readsInTeste).toBeGreaterThanOrEqual(2);
+      expect(handBacks(cw.calls, convId)).toHaveLength(0);
+      expect(live.get(convId)).toEqual({
+        status: "open",
+        assigneeType: null,
+        assigneeId: null,
+      });
+    });
+
+    test("a /teste that lands while a message is on its way to the park leaves the conversation with the agent", async () => {
+      const convId = await seedConversation();
+      const live = new Map<number, LiveConv>([
+        [convId, { status: "pending", assigneeType: null, assigneeId: null }],
+      ]);
+      let activateOnRead = true;
+      const cw = fakeChatwoot(live, {
+        autoAssign: true,
+        beforeRead: async (id) => {
+          if (!activateOnRead || id !== convId) return;
+          activateOnRead = false;
+          // The /teste delivery committed its activation while this one was past its gate read.
+          await suDb.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: convId },
+            data: { testActivatedAt: new Date() },
+          });
+        },
+      });
+      globalThis.fetch = cw.impl;
+      await deliver(convId, "oi", {
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+      });
+      expect(activateOnRead).toBe(false);
+      expect(live.get(convId)).toEqual({
+        status: "pending",
+        assigneeType: "AgentBot",
+        assigneeId: BOT_ID,
+      });
+      const row = await rowOf(convId);
+      expect(row.testParkedOpenAt).toBeNull();
+      expect(
+        posts(cw.calls, convId).filter((c) => textOf(c).includes("modo teste")),
+      ).toHaveLength(0);
+    });
+
     test("/teste on an open conversation the agent never parked keeps today's answer", async () => {
       const convId = await seedConversation({ status: "open" });
       const live = new Map<number, LiveConv>([

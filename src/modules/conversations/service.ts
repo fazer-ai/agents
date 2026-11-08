@@ -2328,6 +2328,11 @@ export interface ReturnToAgentHolder {
   assigneeId: number | null;
 }
 
+export interface AutomaticHandBack {
+  status: string;
+  stillValid?: () => Promise<boolean>;
+}
+
 export async function returnConversationToAgent(
   ctx: TenantContext,
   id: bigint,
@@ -2337,13 +2342,14 @@ export async function returnConversationToAgent(
   // decides first, and somebody else can arrive in between). Reading the baseline here would adopt
   // the newcomer. The console and MCP omit it; omitting it can only ever refuse to unassign somebody.
   expectedHolder?: ReturnToAgentHolder,
-  // Set by an AUTOMATIC hand-back (the test-mode park returns only an `open` conversation): the
-  // status the conversation must still hold. A moved status, or a holder other than the baseline, on
-  // the last read refuses before any write with ChatwootStatusConflictError, and the status call is
-  // conditional on it. A person's hand-back omits it: returning a resolved conversation, or pulling
-  // one from a colleague's queue, is what they asked for.
-  expectedStatus?: string,
+  // Set by an AUTOMATIC hand-back (the test-mode park): the status the conversation must still hold,
+  // and the caller's own condition, asked last before the first write. A moved status, a holder other
+  // than the baseline or a false `stillValid` refuses with ChatwootStatusConflictError, and the
+  // status call is conditional on the status. A person's hand-back omits it: returning a resolved
+  // conversation, or pulling one from a colleague's queue, is what they asked for.
+  automatic?: AutomaticHandBack,
 ): Promise<ReturnToAgentOutcome> {
+  const expectedStatus = automatic?.status;
   const tenantId = requireTenant(ctx);
   const conv = await loadConvRef(ctx, id, base);
   // The responder is asked once, late, against the inbox Chatwoot names (a transfer webhook
@@ -2563,6 +2569,8 @@ export async function returnConversationToAgent(
       "errors.returnResponderChanged",
     );
   }
+  if (automatic?.stillValid && !(await automatic.stillValid()))
+    throw new ChatwootStatusConflictError(conv.chatwootConversationId);
   // ONE WRITE when the bot can take it. The fork's bot assignment removes the person, names the
   // bot and sets `pending` in one locked write, so it replaces the status call rather than following
   // it: two writes would leave a window in which a resolve, or a rebinding of the inbox, lands between

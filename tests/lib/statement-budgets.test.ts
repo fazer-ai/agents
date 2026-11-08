@@ -59,11 +59,11 @@ describe("the budget class of a statement text", () => {
     // the dashboard's `COUNT(*) FILTER (WHERE false)` is stored as `FILTER (WHERE $3)`.
     noteStatementPool(
       "metrics",
-      "SELECT count(*) FILTER (WHERE false) AS n, NULL::bigint AS t FROM firsts WHERE d > now() - interval '7 days' AND s = -1",
+      "SELECT count(*) FILTER (WHERE false) AS n, NULL::bigint AS t, avg(EXTRACT(EPOCH FROM (c.resolved_at - c.created_at))) AS secs FROM firsts WHERE d > now() - interval '7 days' AND s = -1",
     );
     expect(
       budgetClassOf(
-        "SELECT count(*) FILTER (WHERE $1) AS n, $2::bigint AS t FROM firsts WHERE d > now() - $3 AND s = $4",
+        "SELECT count(*) FILTER (WHERE $1) AS n, $2::bigint AS t, avg(EXTRACT($3 FROM (c.resolved_at - c.created_at))) AS secs FROM firsts WHERE d > now() - $4 AND s = $5",
       ),
     ).toBe("metrics");
     expect(

@@ -30,10 +30,10 @@ function registry(): Registry {
 
 // The text as pg_stat_statements stores it, reduced to what both sides agree on: every constant and
 // placeholder becomes `?` (the server replaces constants, booleans and NULL included, with `$N`; a
-// typed literal such as `interval '1 day'` or a signed number is one constant), comments go, and runs
-// of whitespace become one space. Literals and comments are scanned together, so an apostrophe in a
-// comment opens no string. Both sides go through this, so reducing more than the server does only
-// merges texts that differ in constants, which share a class anyway.
+// typed literal such as `interval '1 day'`, a signed number or the field of `EXTRACT(EPOCH FROM x)`
+// is one constant), comments go, and runs of whitespace become one space. Literals and comments are
+// scanned together, so an apostrophe in a comment opens no string. Both sides go through this, so
+// reducing more than the server does only merges texts that differ in constants, which share a class.
 const LITERAL_OR_COMMENT = /'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//g;
 
 export function canonicalStatement(text: string): string {
@@ -43,6 +43,7 @@ export function canonicalStatement(text: string): string {
     .replace(/\b\d+(?:\.\d+)?\b/g, "?")
     .replace(/\b(?:true|false|null)\b/gi, "?")
     .replace(/\b(?:interval|date|time|timestamp|timestamptz)\s+\?/gi, "?")
+    .replace(/\bextract\s*\(\s*[\w?]+\s+from\b/gi, "extract(? from")
     .replace(/-\s*\?/g, "?")
     .replace(/\s+/g, " ")
     .trim();

@@ -143,7 +143,9 @@ export async function runSecretTest(
     bases = [base];
   } else {
     const entryBase = spec.entryBaseFirst ? (input.baseURL ?? "").trim() : "";
-    bases = entryBase ? [entryBase] : (spec.bases ?? []);
+    bases = entryBase
+      ? [entryBase]
+      : (spec.basesForValue?.(input.value) ?? spec.bases ?? []);
   }
 
   let lastFailure: Extract<SecretTestResult, { testable: true; ok: false }> = {

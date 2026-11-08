@@ -233,7 +233,7 @@ type Form = {
 function defaultConfig(catalogType: string): Record<string, unknown> {
   switch (catalogType) {
     case "ASAAS":
-      return { environment: "sandbox", notifyOnPayment: true };
+      return { notifyOnPayment: true };
     case "GOOGLE_CALENDAR":
       return {
         calendarIds: [],
@@ -1353,11 +1353,25 @@ export function IntegrationEditModal({
             {form.catalogType === "ASAAS" && (
               <FormField
                 label={t("integrations.config.environment", "Environment")}
+                help={t(
+                  "integrations.env.fromKeyHelp",
+                  "Asaas keys name their environment: $aact_prod_ for production, $aact_hmlg_ for sandbox. Automatic follows the key, and a key without that prefix uses sandbox. A choice that contradicts the key is refused when the agent calls Asaas.",
+                )}
               >
                 <Select
-                  value={(cfg.environment as string) ?? "sandbox"}
-                  onChange={(e) => setCfg({ environment: e.target.value })}
+                  value={
+                    cfg.environment === "production" ||
+                    cfg.environment === "sandbox"
+                      ? cfg.environment
+                      : ""
+                  }
+                  onChange={(e) =>
+                    setCfg({ environment: e.target.value || undefined })
+                  }
                 >
+                  <option value="">
+                    {t("integrations.env.fromKey", "Automatic (from the key)")}
+                  </option>
                   <option value="sandbox">
                     {t("integrations.env.sandbox", "Sandbox (test)")}
                   </option>

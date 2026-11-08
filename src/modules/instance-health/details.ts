@@ -1,3 +1,4 @@
+import config from "@/config";
 import { clipText } from "@/lib/text";
 
 // A line that names WHAT is behind a signal's value, appended to its firing alert: the statement
@@ -27,6 +28,8 @@ export interface TimeoutFacts {
 export interface DriftFacts {
   kind: "drift";
   meanMs: number;
+  // The budget that statement ran under, which the share is of.
+  budgetMs: number;
   table: string | null;
   statement: string;
 }
@@ -138,10 +141,15 @@ export function timeoutFacts(ev: TimeoutLine): TimeoutFacts {
 
 // The line under the drift share: how slow the slowest statement runs on average, and on which
 // table, then the statement.
-export function driftFacts(sql: string, meanMs: number): DriftFacts {
+export function driftFacts(
+  sql: string,
+  meanMs: number,
+  budgetMs: number = config.dbTx.timeoutMs,
+): DriftFacts {
   return {
     kind: "drift",
     meanMs,
+    budgetMs,
     table: statementTable(sql),
     statement: statementLine(sql),
   };
@@ -150,7 +158,7 @@ export function driftFacts(sql: string, meanMs: number): DriftFacts {
 // The English line the alert channel (which has no locale), REST and MCP carry.
 export function detailText(f: SignalFacts): string {
   if (f.kind === "drift") {
-    return `Slowest over the last hour: ${durationText(f.meanMs)} mean${f.table ? `, on ${f.table}` : ""}. Statement: ${f.statement}`;
+    return `Closest to its budget over the last hour: ${durationText(f.meanMs)} mean, ${durationText(f.budgetMs)} budget${f.table ? `, on ${f.table}` : ""}. Statement: ${f.statement}`;
   }
   const parts = [workText(f.work)];
   if (f.fleet) parts.push("all tenants");
@@ -164,6 +172,10 @@ export function timeoutDetail(ev: TimeoutLine): string {
   return detailText(timeoutFacts(ev));
 }
 
-export function driftDetail(sql: string, meanMs: number): string {
-  return detailText(driftFacts(sql, meanMs));
+export function driftDetail(
+  sql: string,
+  meanMs: number,
+  budgetMs: number = config.dbTx.timeoutMs,
+): string {
+  return detailText(driftFacts(sql, meanMs, budgetMs));
 }

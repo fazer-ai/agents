@@ -35,10 +35,13 @@ export function factsLine(
   if (f.kind === "drift") {
     const head = t(
       "database.detail.slowest",
-      "Slowest over the last hour: {{mean}} mean",
+      "Closest to its budget over the last hour: {{mean}} mean",
       { mean: fmt.ms(f.meanMs) },
     );
-    return onTable ? `${head}, ${onTable}` : head;
+    const budget = t("database.budget", "budget {{budget}}", {
+      budget: fmt.ms(f.budgetMs),
+    });
+    return [head, budget, onTable].filter(Boolean).join(", ");
   }
   const parts = [workText(f.work, t)];
   if (f.fleet) parts.push(t("database.detail.allTenants", "all tenants"));

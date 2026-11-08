@@ -13,7 +13,7 @@ import { MeanSpark, Meter, SectionIntro, SqlText, type Tone } from "./parts";
 import type { Screen, StatementRow } from "./types";
 
 // "What is slow?": the statements that cost the most in the window, by total or by mean time, each
-// mean drawn against the transaction budget it has to fit in.
+// mean drawn against the budget it ran under.
 
 export type Sort = "total" | "mean";
 
@@ -141,8 +141,11 @@ export function StatementsPanel({
           <span className="text-text-muted text-xs">
             {t(
               "database.budgetNote",
-              "Bars: mean time against the {{budget}} transaction budget",
-              { budget: fmt.ms(st.budgetMs) },
+              "Bars: mean time against the budget the query ran under ({{metrics}} for console reads, {{tx}} for the rest)",
+              {
+                metrics: fmt.ms(st.metricsBudgetMs),
+                tx: fmt.ms(st.budgetMs),
+              },
             )}
           </span>
         ) : null
@@ -320,7 +323,10 @@ function StatementLine({
                 "text-error font-medium": tone === "error",
               })}
             >
-              {fmt.percent(r.meanBudgetPct)}
+              {t("database.budgetShare", "{{pct}} of {{budget}}", {
+                pct: fmt.percent(r.meanBudgetPct),
+                budget: fmt.ms(r.budgetMs),
+              })}
             </span>
           )}
         </div>

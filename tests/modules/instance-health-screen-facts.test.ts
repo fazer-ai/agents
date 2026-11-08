@@ -69,17 +69,21 @@ describe("a signal's parts, beside its English line", () => {
     });
   });
 
-  test("the drift line keeps its mean and table as fields", () => {
+  test("the drift line keeps its mean, budget and table as fields", () => {
     const sql = "SELECT * FROM business_hours WHERE tenant_id = $1";
-    expect(driftFacts(sql, 1_300)).toEqual({
+    expect(driftFacts(sql, 1_300, 15_000)).toEqual({
       kind: "drift",
       meanMs: 1_300,
+      budgetMs: 15_000,
       table: "business_hours",
       statement: sql,
     });
-    setSignalDetail("statement_mean_budget_pct", driftFacts(sql, 1_300));
+    setSignalDetail(
+      "statement_mean_budget_pct",
+      driftFacts(sql, 1_300, 15_000),
+    );
     expect(signalDetail("statement_mean_budget_pct")).toBe(
-      driftDetail(sql, 1_300),
+      driftDetail(sql, 1_300, 15_000),
     );
     setSignalDetail("statement_mean_budget_pct", null);
   });

@@ -826,9 +826,9 @@ describe("the day a stacked chart's detail opens", () => {
       expect(document.activeElement).toBe(days[0] as HTMLElement);
     });
 
-  test("is a day still loading or with no data, which has no segment to hit", async () => {
+  test("is a day with no data, which has no segment to hit", async () => {
     const banded: ChartRow[] = [
-      { day: "2026-01-01", state: "loading" } as ChartRow,
+      { day: "2026-01-01", state: "noData" } as ChartRow,
       { day: "2026-01-02", state: "noData" } as ChartRow,
       { ...(data[1] as ChartRow), day: "2026-01-03" },
     ];
@@ -839,12 +839,12 @@ describe("the day a stacked chart's detail opens", () => {
     // The bands drawn over those days let a click through to the columns.
     await dayColumn(container, "2026-01-01");
     const bands = [...container.querySelectorAll(".recharts-reference-area")];
-    expect(bands).toHaveLength(2);
+    expect(bands).toHaveLength(1);
     for (const b of bands)
       expect(b.classList.contains("pointer-events-none")).toBe(true);
     await clickDay(container, "2026-01-01");
     let detail = await openDetail(container);
-    expect(head(detail)).toBe("Jan 1 · computing…");
+    expect(head(detail)).toMatch(/^Jan 1 · no data/);
     expect(detail.querySelectorAll("li")).toHaveLength(0);
     await clickDay(container, "2026-01-02");
     detail = await openDetail(container);
@@ -853,7 +853,7 @@ describe("the day a stacked chart's detail opens", () => {
 
   test("a click on a band's own label lets it through too", async () => {
     const banded: ChartRow[] = [1, 2, 3].map(
-      (d) => ({ day: `2026-01-0${d}`, state: "loading" }) as ChartRow,
+      (d) => ({ day: `2026-01-0${d}`, state: "noData" }) as ChartRow,
     );
     const { container } = renderChart(StackedBars, {
       ...stacked,
@@ -861,7 +861,7 @@ describe("the day a stacked chart's detail opens", () => {
     });
     const label = await waitFor(() => {
       const t = [...container.querySelectorAll("text")].find(
-        (el) => el.textContent === "loading",
+        (el) => el.textContent === "no data",
       );
       if (!t) throw new Error("no band label yet");
       return t;

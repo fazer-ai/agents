@@ -3,11 +3,14 @@ import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/client/components";
 import { lazyWithReload } from "@/client/lib/staleBuild";
+import type {
+  HandoffReasons,
+  LabelOutcomes,
+} from "@/modules/analytics/activity";
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import { daysOf, type Window } from "./filters";
-import { hasNoData, isProvisional } from "./Provisional";
-import { dayState, inGap, useStreamBlock } from "./useStream";
+import { dayState, hasNoData, inGap, useMetricsBlock } from "./useMetrics";
 
 const StackedBars = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
@@ -25,8 +28,15 @@ export function ReasonsSection({ win }: { win: Window }) {
       style: "percent",
       maximumFractionDigits: 1,
     }).format(v);
-  const handoffs = useStreamBlock((f) => f.handoffs, ["log.handoffs"]);
-  const labels = useStreamBlock((f) => f.labels, ["conv"]);
+  const handoffs = useMetricsBlock(
+    "handoffs",
+    (b: { handoffs: HandoffReasons }) => b.handoffs,
+    { flowLog: true },
+  );
+  const labels = useMetricsBlock(
+    "labels",
+    (b: { labels: LabelOutcomes }) => b.labels,
+  );
 
   const causeLabel: Record<string, string> = {
     agent: t("dashboard.cause.agent", "The agent handed over"),
@@ -59,10 +69,7 @@ export function ReasonsSection({ win }: { win: Window }) {
     raw: c,
     label: causeLabel[c] ?? c,
   }));
-  const days = daysOf(
-    win,
-    handoffs.coverage?.first ?? h?.days[0]?.date ?? null,
-  );
+  const days = daysOf(win, h?.days[0]?.date ?? null);
   const rows: ChartRow[] = days.map((day) => {
     const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
     for (const s of series)
@@ -102,10 +109,7 @@ export function ReasonsSection({ win }: { win: Window }) {
   }));
   // Its own range: under "all time" the window starts at the first event, and a silence can come
   // before the first handoff.
-  const silenceDays = daysOf(
-    win,
-    handoffs.coverage?.first ?? h?.silenceDays[0]?.date ?? null,
-  );
+  const silenceDays = daysOf(win, h?.silenceDays[0]?.date ?? null);
   const silenceRows: ChartRow[] = silenceDays.map((day) => {
     const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
     for (const s of silenceSeries)
@@ -224,11 +228,9 @@ export function ReasonsSection({ win }: { win: Window }) {
           )
         }
       >
-        {handoffs.loading && !h && !isProvisional(handoffs.coverage) ? (
+        {handoffs.loading && !h ? (
           <Skeleton className="h-56 w-full" />
-        ) : series.length === 0 &&
-          !isProvisional(handoffs.coverage) &&
-          !hasNoData(handoffs.coverage) ? (
+        ) : series.length === 0 && !hasNoData(handoffs.coverage) ? (
           <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.handoffs.none", "No handoffs in this period.")}
           </p>
@@ -281,11 +283,9 @@ export function ReasonsSection({ win }: { win: Window }) {
           )
         }
       >
-        {handoffs.loading && !h && !isProvisional(handoffs.coverage) ? (
+        {handoffs.loading && !h ? (
           <Skeleton className="h-48 w-full" />
-        ) : silenceSeries.length === 0 &&
-          !isProvisional(handoffs.coverage) &&
-          !hasNoData(handoffs.coverage) ? (
+        ) : silenceSeries.length === 0 && !hasNoData(handoffs.coverage) ? (
           <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.silences.none", "No silences in this period.")}
           </p>
@@ -303,7 +303,6 @@ export function ReasonsSection({ win }: { win: Window }) {
       </Block>
 
       <Block
-        coverage={labels.coverage}
         error={labels.error}
         errorStatus={labels.status}
         errorField={labels.field}

@@ -34,18 +34,9 @@ const analytics = await import("@/modules/analytics/service");
 const getKpis = spyOn(analytics, "getKpis").mockImplementation(
   (async () => kpis) as unknown as typeof analytics.getKpis,
 );
-// The kept days answer an aligned window with the same type; the live reader is the stubbed one.
-const answer = await import("@/modules/analytics/rollup/answer");
-const fromKeptDays = spyOn(answer, "fromKeptDays").mockImplementation(((
-  ..._args: unknown[]
-) =>
-  (
-    _args[4] as () => Promise<unknown>
-  )()) as unknown as typeof answer.fromKeptDays);
 const app = (await import("@/app")).default;
 afterAll(() => {
   getKpis.mockRestore();
-  fromKeptDays.mockRestore();
 });
 
 const admin: MockUserEntity = { ...mockUser, role: "TENANT_ADMIN" };
@@ -72,39 +63,5 @@ describe("GET /v1/metrics/kpis response contract", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { kpis: unknown };
     expect(body.kpis).toEqual(kpis);
-  });
-
-  // A route answers once, after every part is in: a client that goes away stops the computation,
-  // which the kept days only see through the request's own signal.
-  test("the route hands the kept days the request's signal, aborted when the client goes away", async () => {
-    mockFindUnique.mockImplementation(() => Promise.resolve(admin));
-    const { token } = (await (
-      await new Elysia()
-        .use(authPlugin)
-        .post("/mint", async ({ setAuthCookie }) => ({
-          token: await setAuthCookie(admin, admin.passwordHash),
-        }))
-        .handle(new Request("http://localhost/mint", { method: "POST" }))
-    ).json()) as { token: string };
-    const native = globalThis as unknown as {
-      BunRequest: typeof Request;
-      BunAbortController: typeof AbortController;
-      BunAbortSignal: typeof AbortSignal;
-    };
-    const BunReq = native.BunRequest;
-    fromKeptDays.mockClear();
-    const client = new native.BunAbortController();
-    const res = await app.handle(
-      new BunReq("http://localhost/api/v1/metrics/kpis", {
-        headers: { cookie: `fazerai_auth_token=${token}` },
-        signal: client.signal,
-      }),
-    );
-    expect(res.status).toBe(200);
-    const signal = fromKeptDays.mock.calls[0]?.[6];
-    expect(signal).toBeInstanceOf(native.BunAbortSignal);
-    expect(signal?.aborted).toBe(false);
-    client.abort();
-    expect(signal?.aborted).toBe(true);
   });
 });

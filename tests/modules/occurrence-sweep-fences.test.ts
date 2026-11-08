@@ -9,8 +9,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A conversation only the occurrences sweep knows of (docs/occurrences.md, "Inboxes no agent
 // receives") is no agent's: the conversation list and the analytics leave it out (the dashboard
-// panels too, in dashboards-sweep-only.test.ts), and the moment a webhook makes it an agent's queues
-// its kept day.
+// panels too, in dashboards-sweep-only.test.ts).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -93,7 +92,6 @@ describe.skipIf(!dbUp)("conversations only the sweep knows of", () => {
 
   afterAll(async () => {
     for (const table of [
-      "dashboard_dirty",
       "conversations",
       "inboxes",
       "chatwoot_instances",
@@ -118,22 +116,5 @@ describe.skipIf(!dbUp)("conversations only the sweep knows of", () => {
       until: NOW,
     };
     expect((await getKpis(ctx(), window, appDb)).totalConversations).toBe(1);
-  });
-
-  test("a webhook making an old swept conversation an agent's queues its kept day", async () => {
-    const old = await conversation(
-      3,
-      true,
-      new Date(NOW.getTime() - 72 * HOUR),
-    );
-    await suDb.$executeRaw`DELETE FROM dashboard_dirty WHERE tenant_id = ${tenant}`;
-    await suDb.conversation.update({
-      where: { id: old },
-      data: { sweepOnly: false },
-    });
-    const [row] = await suDb.$queryRaw<{ n: number }[]>`
-      SELECT COUNT(*)::int AS n FROM dashboard_dirty
-       WHERE tenant_id = ${tenant} AND conversation_id = ${old}`;
-    expect(row?.n).toBe(1);
   });
 });

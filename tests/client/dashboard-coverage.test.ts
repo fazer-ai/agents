@@ -1,76 +1,49 @@
 import { describe, expect, test } from "bun:test";
+import type { Window } from "@/client/pages/dashboard/filters";
 import {
-  coverageOf,
-  type StreamState,
-} from "@/client/pages/dashboard/useStream";
+  dayState,
+  flowLogCoverage,
+  hasNoData,
+} from "@/client/pages/dashboard/useMetrics";
 
-// A block is complete when each family it reads has every day in or out of reach on its own: the
-// flow-log days the retention sweep emptied cannot stand in for ledger days still computing.
+// A flow-log block's days before the day the retention cutoff falls in have no lines left: they read
+// as no data, never as zero. The cutoff's own day is partly swept and is read as the reader reads it.
 
-const state = (
-  ledger: [number, number],
-  log: [number, number],
-): StreamState => ({
-  figures: null,
-  progress: null,
-  coverage: {
-    total: 45,
-    ready: 0,
-    computing: null,
-    pending: [],
-    families: {
-      conv: { total: 45, ready: 45, noData: 0, gaps: [] },
-      ledger: { total: 45, ready: ledger[0], noData: ledger[1], gaps: [] },
-      log: { total: 45, ready: log[0], noData: log[1], gaps: [] },
-      know: { total: 45, ready: 45, noData: 0, gaps: [] },
-    },
-  },
-  done: false,
-  graced: true,
-  failed: false,
-  status: null,
-  field: null,
+const win = (firstDay: string, lastDay: string): Window => ({
+  since: new Date(`${firstDay}T00:00:00`),
+  until: new Date(`${lastDay}T23:59:59`),
+  firstDay,
+  lastDay,
+  days: null,
 });
 
-describe("a block's coverage", () => {
-  test("is not complete while one family is still computing, whatever another cannot fill", () => {
-    const c = coverageOf(state([25, 0], [25, 20]), ["ledger", "log"]);
+const openedAt = new Date("2026-09-30T12:00:00");
+
+describe("a flow-log block's coverage", () => {
+  test("marks the days before the cutoff's day, and only those", () => {
+    // 30 days of retention from noon on Sep 30: the cutoff is noon on Aug 31.
+    const c = flowLogCoverage(win("2026-08-27", "2026-09-30"), openedAt, 30);
     expect(c).toEqual({
-      total: 45,
-      ready: 25,
-      noData: 20,
-      done: false,
-      gaps: [],
-      none: [],
-      refused: null,
-      first: null,
-      arriving: true,
-      graced: true,
+      total: 35,
+      noData: 4,
+      none: [["2026-08-27", "2026-08-30"]],
     });
+    expect(dayState(c, "2026-08-30")).toBe("noData");
+    expect(dayState(c, "2026-08-31")).toBe("ready");
+    expect(hasNoData(c)).toBe(true);
   });
 
-  test("is complete when every family is in or out of reach", () => {
-    const c = coverageOf(state([45, 0], [25, 20]), ["ledger", "log"]);
-    expect(c?.done).toBe(true);
+  test("has nothing to mark in a window inside the retention", () => {
+    const c = flowLogCoverage(win("2026-09-01", "2026-09-30"), openedAt, 30);
+    expect(c?.noData).toBe(0);
+    expect(c?.none).toEqual([]);
+    expect(hasNoData(c)).toBe(false);
   });
 
-  test("of a flow-log block is its own section's, which past retention another section cannot blank", () => {
-    const s = state([45, 0], [25, 20]);
-    if (!s.coverage) throw new Error("no coverage");
-    s.coverage.families.log.gaps = [["2026-08-29", "2026-09-17"]];
-    s.coverage.sections = {
-      "log.handoffs": { total: 45, ready: 45, noData: 0, gaps: [] },
-      "log.followups": {
-        total: 45,
-        ready: 25,
-        noData: 20,
-        gaps: [["2026-08-29", "2026-09-17"]],
-      },
-    };
-    expect(coverageOf(s, ["log.handoffs"])?.gaps).toEqual([]);
-    expect(coverageOf(s, ["log.handoffs"])?.noData).toBe(0);
-    expect(coverageOf(s, ["log.followups"])?.gaps).toEqual([
-      ["2026-08-29", "2026-09-17"],
-    ]);
+  test("is unknown until the retention is known, and then marks nothing", () => {
+    const c = flowLogCoverage(win("2026-01-01", "2026-09-30"), openedAt, null);
+    expect(c).toBeNull();
+    expect(dayState(c, "2026-01-01")).toBe("ready");
+    expect(hasNoData(c)).toBe(false);
   });
 });

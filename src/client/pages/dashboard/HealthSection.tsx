@@ -2,10 +2,14 @@ import { Activity, BookOpen, Bot, Clock, Repeat } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { Skeleton } from "@/client/components";
+import type {
+  FollowUpActivity,
+  KnowledgeActivity,
+} from "@/modules/analytics/activity";
+import type { HealthReport } from "@/modules/analytics/health";
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { DashboardFilters, Window } from "./filters";
-import { hasNoData } from "./Provisional";
-import { useStreamBlock } from "./useStream";
+import { hasNoData, useMetricsBlock } from "./useMetrics";
 
 // IS IT HEALTHY, AND WHAT ELSE DOES IT DO. Latency by model from the ledger, the flow log's warnings
 // and errors by stage and tool (each row opens the Logs page on exactly those lines), then the
@@ -46,10 +50,17 @@ export function HealthSection({
   // The unit is in the column header, as in the CSV.
   const ms = (v: number | null) =>
     v === null ? "\u2014" : nf.format(Math.round(v));
-  // Latency comes from the ledger and problems from the flow log: each block covers, and fails, by
-  // its own family.
-  const latency = useStreamBlock((f) => f.health?.latency, ["ledger"]);
-  const problems = useStreamBlock((f) => f.health?.problems, ["log.problems"]);
+  // One request for both: latency from the ledger, problems from the flow log, whose days past
+  // retention are no data.
+  const latency = useMetricsBlock(
+    "health",
+    (b: { health: HealthReport }) => b.health.latency,
+  );
+  const problems = useMetricsBlock(
+    "health",
+    (b: { health: HealthReport }) => b.health.problems,
+    { flowLog: true },
+  );
   const latencyTable: BlockTable = {
     name: "dashboard-latency",
     header: [
@@ -91,7 +102,6 @@ export function HealthSection({
         {t("dashboard.health.title", "Health")}
       </SectionHeading>
       <Block
-        coverage={latency.coverage}
         error={latency.error}
         errorStatus={latency.status}
         errorField={latency.field}
@@ -218,8 +228,15 @@ export function HealthSection({
 export function AutomationSection() {
   const { t, i18n } = useTranslation();
   const nf = new Intl.NumberFormat(i18n.language);
-  const followUps = useStreamBlock((f) => f.followUps, ["log.followups"]);
-  const knowledge = useStreamBlock((f) => f.knowledge, ["know"]);
+  const followUps = useMetricsBlock(
+    "follow-ups",
+    (b: { followUps: FollowUpActivity }) => b.followUps,
+    { flowLog: true },
+  );
+  const knowledge = useMetricsBlock(
+    "knowledge",
+    (b: { knowledge: KnowledgeActivity }) => b.knowledge,
+  );
   const f = followUps.data;
   const k = knowledge.data;
   const fuRows: [string, number | undefined][] = [
@@ -294,7 +311,6 @@ export function AutomationSection() {
           )}
         </Block>
         <Block
-          coverage={knowledge.coverage}
           error={knowledge.error}
           errorStatus={knowledge.status}
           errorField={knowledge.field}

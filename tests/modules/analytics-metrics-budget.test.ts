@@ -376,7 +376,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
   });
 
   test("a write under the budget runs, and gets only the time left too", async () => {
-    // The kept days of the dashboard are written inside the read that computed them.
+    // A write inside a metrics read, which a read-only route never makes but the budget still bounds.
     const usage = await lockTable("llm_usage");
     const clock = skewedClock();
     try {

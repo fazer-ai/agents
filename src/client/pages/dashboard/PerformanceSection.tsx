@@ -20,13 +20,7 @@ import type { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
 import { lazyWithReload } from "@/client/lib/staleBuild";
 import { cn } from "@/client/lib/utils";
-import {
-  Block,
-  type BlockTable,
-  CoverageChip,
-  Delta,
-  SectionHeading,
-} from "./Block";
+import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
   type DashboardFilters,
@@ -37,13 +31,7 @@ import {
   trendPointHref,
   type Window,
 } from "./filters";
-import {
-  CoverageBar,
-  isProvisional,
-  PartialBadge,
-  ProvisionalValue,
-} from "./Provisional";
-import { type BlockCoverage, dayState, useStreamBlock } from "./useStream";
+import { dayState, useMetricsBlock } from "./useMetrics";
 
 const LineTrend = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -102,7 +90,6 @@ function KpiTile({
   help,
   href,
   className,
-  coverage,
 }: {
   icon: typeof Bot;
   label: string;
@@ -113,8 +100,6 @@ function KpiTile({
   help?: React.ReactNode;
   href?: string;
   className?: string;
-  // The days the figure covers while the page fills: until it is whole, it reads as provisional.
-  coverage?: BlockCoverage | null;
 }) {
   const navigate = useNavigate();
   return (
@@ -128,31 +113,22 @@ function KpiTile({
         {help ? <HelpPopover content={help} label={label} /> : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <ProvisionalValue coverage={coverage}>
-          {href ? (
-            <button
-              type="button"
-              onClick={() => navigate(href)}
-              className="text-text-primary hover:text-accent self-start text-2xl font-semibold tabular-nums hover:underline"
-            >
-              {primary}
-            </button>
-          ) : (
-            <p
-              className={cn(
-                "text-2xl font-semibold tabular-nums",
-                !isProvisional(coverage) && "text-text-primary",
-              )}
-            >
-              {primary}
-            </p>
-          )}
-        </ProvisionalValue>
-        <PartialBadge coverage={coverage} />
+        {href ? (
+          <button
+            type="button"
+            onClick={() => navigate(href)}
+            className="text-text-primary hover:text-accent self-start text-2xl font-semibold tabular-nums hover:underline"
+          >
+            {primary}
+          </button>
+        ) : (
+          <p className="text-text-primary text-2xl font-semibold tabular-nums">
+            {primary}
+          </p>
+        )}
       </div>
       <p className="text-text-muted text-xs">{secondary}</p>
       {delta}
-      <CoverageBar coverage={coverage} />
     </Card>
   );
 }
@@ -209,7 +185,6 @@ export function PerformanceSection({
   win,
   prev,
   kpis,
-  kpisCoverage,
   prevKpis,
   onFilter,
   view,
@@ -219,7 +194,6 @@ export function PerformanceSection({
   win: Window;
   prev: Window | null;
   kpis: Kpis;
-  kpisCoverage?: BlockCoverage | null;
   prevKpis: Kpis | null;
   onFilter: (patch: Partial<DashboardFilters>) => void;
   view: PerformanceView;
@@ -238,14 +212,16 @@ export function PerformanceSection({
       maximumFractionDigits: 1,
     }).format(v);
 
-  const trend = useStreamBlock<Trend>(
-    (f) =>
-      breakdown !== "none" && f.trend && f.series
-        ? { ...f.trend, series: f.series[breakdown] }
-        : f.trend,
-    ["conv"],
+  const trend = useMetricsBlock(
+    "outcomes",
+    (b: { trend: Trend }) => b.trend,
+    breakdown === "none" ? {} : { params: { breakdown } },
   );
-  const prevTrend = useStreamBlock<Trend>((f) => f.trend, ["conv"], "previous");
+  const prevTrend = useMetricsBlock(
+    "outcomes",
+    (b: { trend: Trend }) => b.trend,
+    { which: "previous" },
+  );
 
   const metricLabel: Record<Metric, string> = {
     involvement: t("dashboard.kpi.involvement", "Involvement"),
@@ -263,17 +239,12 @@ export function PerformanceSection({
             ? prevKpis.automationRate
             : prevKpis.handoffRate
       : null;
-  // A tile's list is the whole period's, so it links only once every day of it is in: while the
-  // period fills, the count is of fewer days than the list would hold.
-  const whole = !kpisCoverage || kpisCoverage.done;
   const periodHref = (m: Metric) =>
-    whole
-      ? drillDownHref(filters, { since: win.since, until: win.until }, DRILL[m])
-      : undefined;
+    drillDownHref(filters, { since: win.since, until: win.until }, DRILL[m]);
 
   // The chart's rows: every day of the window, the previous period's value at the same position.
   const tr = trend.data;
-  const days = daysOf(win, trend.coverage?.first ?? tr?.days[0]?.date ?? null);
+  const days = daysOf(win, tr?.days[0]?.date ?? null);
   const prevDays = prev ? daysOf(prev) : [];
   const prevByDay = new Map(prevTrend.data?.days.map((d) => [d.date, d]) ?? []);
   const byDay = new Map(tr?.days.map((d) => [d.date, d]) ?? []);
@@ -357,7 +328,6 @@ export function PerformanceSection({
           <SectionHeading icon={Target}>
             {t("dashboard.funnel", "Automation funnel")}
           </SectionHeading>
-          <CoverageChip coverage={kpisCoverage} />
         </div>
         <SegmentedControl
           aria-label={t("dashboard.funnelMode", "Show the funnel as")}
@@ -377,8 +347,7 @@ export function PerformanceSection({
             label={t("dashboard.kpi.total", "Conversations")}
             primary={nf.format(kpis.totalConversations)}
             secondary={t("dashboard.kpi.totalHint", "in the period")}
-            href={whole ? drillDownHref(filters, win, "all") : undefined}
-            coverage={kpisCoverage}
+            href={drillDownHref(filters, win, "all")}
             delta={
               <Delta
                 kind="amount"
@@ -407,7 +376,6 @@ export function PerformanceSection({
               },
             )}
             href={periodHref("involvement")}
-            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="rate"
@@ -440,7 +408,6 @@ export function PerformanceSection({
               "Of the conversations the agent took, the share it closed itself. Over every conversation in the period, the same closings are the automation rate (involvement × resolution), which the funnel over time also draws.",
             )}
             href={periodHref("resolution")}
-            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="rate"
@@ -463,7 +430,6 @@ export function PerformanceSection({
               { handoff: nf.format(kpis.handoff) },
             )}
             href={periodHref("handoff")}
-            coverage={kpisCoverage}
             delta={
               <Delta
                 kind="rate"
@@ -482,7 +448,6 @@ export function PerformanceSection({
             className={KPI_SPANS[4]}
             icon={Timer}
             label={t("dashboard.kpi.firstResponse", "First response")}
-            coverage={kpisCoverage}
             primary={
               formatDuration(kpis.firstResponseSeconds, i18n.language) ??
               "\u2014"
@@ -524,15 +489,7 @@ export function PerformanceSection({
       </div>
 
       <Card className="flex flex-col gap-3">
-        {isProvisional(kpisCoverage) && (
-          <div className="flex justify-end">
-            <PartialBadge coverage={kpisCoverage} />
-          </div>
-        )}
-        <ProvisionalValue
-          coverage={kpisCoverage}
-          className="flex flex-col gap-3"
-        >
+        <div className="flex flex-col gap-3">
           <FunnelBar
             label={t("dashboard.kpi.total", "Conversations")}
             count={kpis.totalConversations}
@@ -551,8 +508,7 @@ export function PerformanceSection({
             total={kpis.totalConversations}
             nf={nf}
           />
-        </ProvisionalValue>
-        <CoverageBar coverage={kpisCoverage} />
+        </div>
         {/* Conversations resolved before this instance started recording WHO closed them cannot be
             attributed either way. Saying so is the difference between a funnel that looks lower for
             a historical window and an operator concluding the agent got worse the day they upgraded. */}
@@ -617,9 +573,9 @@ export function PerformanceSection({
           </>
         }
       >
-        {trend.loading && !tr && !isProvisional(trend.coverage) ? (
+        {trend.loading && !tr ? (
           <Skeleton className="h-64 w-full" />
-        ) : (tr?.days.length ?? 0) === 0 && !isProvisional(trend.coverage) ? (
+        ) : (tr?.days.length ?? 0) === 0 ? (
           <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
@@ -650,47 +606,43 @@ export function PerformanceSection({
                 metric: metricLabel[metric],
               })}
             </h3>
-            <PartialBadge coverage={trend.coverage} />
           </div>
-          {/* The period's figures of each agent or inbox, as partial as the trend they come from. */}
-          <ProvisionalValue coverage={trend.coverage}>
-            <ul className="flex flex-col gap-1.5">
-              {tr.series.map((s) => (
-                <li
-                  key={s.key}
-                  className="flex items-center justify-between gap-4 text-sm"
+          {/* The period's figures of each agent or inbox. */}
+          <ul className="flex flex-col gap-1.5">
+            {tr.series.map((s) => (
+              <li
+                key={s.key}
+                className="flex items-center justify-between gap-4 text-sm"
+              >
+                <button
+                  type="button"
+                  className="text-text-secondary hover:text-accent truncate text-left hover:underline"
+                  onClick={() =>
+                    onFilter(
+                      breakdown === "agent"
+                        ? { agentId: s.key }
+                        : { inboxId: s.key },
+                    )
+                  }
                 >
-                  <button
-                    type="button"
-                    className="text-text-secondary hover:text-accent truncate text-left hover:underline"
-                    onClick={() =>
-                      onFilter(
-                        breakdown === "agent"
-                          ? { agentId: s.key }
-                          : { inboxId: s.key },
-                      )
-                    }
-                  >
-                    {s.label}
-                  </button>
-                  <span className="text-text-primary shrink-0 font-medium tabular-nums">
-                    {fmtRate(rate(s.totals, metric))}
-                    <span className="text-text-muted ml-1.5 text-xs">
-                      {t(
-                        "dashboard.trend.ofConversations",
-                        "{{n}} conversations",
-                        {
-                          count: s.totals.total,
-                          n: nf.format(s.totals.total),
-                        },
-                      )}
-                    </span>
+                  {s.label}
+                </button>
+                <span className="text-text-primary shrink-0 font-medium tabular-nums">
+                  {fmtRate(rate(s.totals, metric))}
+                  <span className="text-text-muted ml-1.5 text-xs">
+                    {t(
+                      "dashboard.trend.ofConversations",
+                      "{{n}} conversations",
+                      {
+                        count: s.totals.total,
+                        n: nf.format(s.totals.total),
+                      },
+                    )}
                   </span>
-                </li>
-              ))}
-            </ul>
-          </ProvisionalValue>
-          <CoverageBar coverage={trend.coverage} />
+                </span>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
     </section>

@@ -338,8 +338,7 @@ export function toCounts(r: OutcomeRow | undefined): OutcomeCounts {
   };
 }
 
-// The conversations a first-response time is read from, as `c`. The kept days' section repeats it
-// (rollup/sections.ts), so both read the same sample.
+// The conversations a first-response time is read from, as `c`.
 export const FIRST_RESPONSE_SAMPLE_SQL = Prisma.sql`c.chatwoot_created_at IS NOT NULL
          AND c.chatwoot_first_reply_at IS NOT NULL
          -- A reply cannot precede the conversation that carries it: a clock skew or a hand-written

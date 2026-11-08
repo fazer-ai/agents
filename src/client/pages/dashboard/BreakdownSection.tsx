@@ -8,7 +8,7 @@ import { cn } from "@/client/lib/utils";
 import { Block, type BlockTable } from "./Block";
 import { useNodeLabel } from "./CostSection";
 import type { DashboardFilters } from "./filters";
-import { useStreamBlock } from "./useStream";
+import { useMetricsBlock } from "./useMetrics";
 
 type Dimension = "agent" | "inbox" | "model" | "node";
 type BreakdownData = Awaited<
@@ -51,7 +51,11 @@ export function BreakdownSection({
       style: "percent",
       maximumFractionDigits: 1,
     }).format(v);
-  const block = useStreamBlock((f) => f.breakdown?.[dimension], ["ledger"]);
+  const block = useMetricsBlock(
+    "breakdown",
+    (b: NonNullable<BreakdownData>) => b.rows,
+    { params: { dimension } },
+  );
 
   const nameOf = (r: Row): string => {
     if (r.key === null)
@@ -134,7 +138,6 @@ export function BreakdownSection({
       className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
     >
       <Block
-        coverage={block.coverage}
         error={block.error}
         errorStatus={block.status}
         errorField={block.field}

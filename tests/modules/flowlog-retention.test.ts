@@ -104,4 +104,47 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     const turns = remaining.map((r) => r.turnId).sort();
     expect(turns).toEqual(["new1"]);
   });
+
+  // The kept days' queue has no reader any more: its triggers stay one release for a rollback, and
+  // the sweep keeps a week of it, this tenant's only.
+  test("prunes the dashboard queue past a week, this tenant's only", async () => {
+    const other = (
+      await suDb.tenant.create({
+        data: { name: "FlowR2", slug: `flow-r2-${process.pid}` },
+      })
+    ).id;
+    try {
+      const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+      const recent = new Date(Date.now() - 86_400_000).toISOString();
+      await suDb.$executeRawUnsafe(
+        `INSERT INTO dashboard_dirty (tenant_id, section, created_at)
+         VALUES (${tenantId}, 'old', '${old}'), (${tenantId}, 'recent', '${recent}'),
+                (${other}, 'other-old', '${old}')`,
+      );
+      registerFlowlogRetentionHandler();
+      const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
+        ReturnType<typeof getJobHandler>
+      >;
+      await handler(
+        {
+          id: phantomJobId,
+          tenantId,
+          kind: "FLOWLOG_SWEEP",
+          payload: {},
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+      );
+      const left = await suDb.$queryRawUnsafe<{ section: string }[]>(
+        `SELECT section FROM dashboard_dirty WHERE tenant_id IN (${tenantId}, ${other}) AND section IN ('old', 'recent', 'other-old') ORDER BY section`,
+      );
+      expect(left.map((r) => r.section)).toEqual(["other-old", "recent"]);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM dashboard_dirty WHERE tenant_id IN (${tenantId}, ${other})`,
+      );
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${other}`);
+    }
+  });
 });

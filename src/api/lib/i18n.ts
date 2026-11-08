@@ -47,6 +47,27 @@ export function currentLocale(): Locale {
   return requestContext.getStore()?.locale ?? "en";
 }
 
+// Runs `fn` with `signal` aborting its metrics reads too, beside the request's own (an MCP tool call
+// the client cancels, inside a request that stays open).
+export function withAbortSignal<T>(
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!signal) return fn();
+  const store = requestContext.getStore();
+  const signals = [store?.signal, signal].filter(
+    (s): s is AbortSignal => s !== undefined,
+  );
+  return requestContext.run(
+    {
+      locale: store?.locale ?? "en",
+      startedAt: store?.startedAt,
+      signal: AbortSignal.any(signals),
+    },
+    fn,
+  );
+}
+
 // The signal of the request being served; undefined outside a request.
 export function requestSignal(): AbortSignal | undefined {
   return requestContext.getStore()?.signal;

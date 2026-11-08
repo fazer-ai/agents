@@ -1,3 +1,4 @@
+import { withAbortSignal } from "@/api/lib/i18n";
 import basePrisma from "@/api/lib/prisma";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import {
@@ -1235,10 +1236,13 @@ export async function metricsGet(
   if ("ok" in ctx) return ctx;
   const filter = metricsFilter(args);
   try {
-    const [kpis, usage] = await Promise.all([
-      getKpis(ctx, filter, base),
-      getInstanceMetrics(ctx, filter, base),
-    ]);
+    // A cancelled call starts no read that has not started yet.
+    const [kpis, usage] = await withAbortSignal(deps.signal, () =>
+      Promise.all([
+        getKpis(ctx, filter, base),
+        getInstanceMetrics(ctx, filter, base),
+      ]),
+    );
     return ok({ kpis, usage });
   } catch (e) {
     return failOf(e);

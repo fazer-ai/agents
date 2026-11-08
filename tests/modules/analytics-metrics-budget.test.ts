@@ -291,6 +291,25 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     }
   });
 
+  test("a cancelled MCP metrics call starts no read", async () => {
+    const cancelled = new AbortController();
+    cancelled.abort();
+    let reads = 0;
+    const counting = new Proxy(app as PrismaClient, {
+      get(target, prop, receiver) {
+        if (prop === "$transaction") reads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const result = await metricsGet(
+      principal,
+      {},
+      { base: counting, signal: cancelled.signal },
+    );
+    expect(JSON.stringify(result)).not.toContain('"kpis"');
+    expect(reads).toBe(0);
+  });
+
   test("each statement is given what is left of the deadline, for the statement and for its lock wait", async () => {
     // Read back from the statement itself: what Postgres enforces, not how long anything took. Time
     // that passes only lowers what is left, so the bounds hold on any machine.

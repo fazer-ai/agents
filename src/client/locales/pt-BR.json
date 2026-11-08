@@ -3468,6 +3468,8 @@
     "emptyDesc": "Ative uma do catálogo (ex.: Asaas, Google Calendar).",
     "emptyTitle": "Nenhuma integração ainda",
     "env": {
+      "fromKey": "Automático (pela chave)",
+      "fromKeyHelp": "A chave do Asaas diz a qual ambiente pertence: $aact_prod_ é produção, $aact_hmlg_ é sandbox. No automático vale o que a chave diz, e uma chave sem esse prefixo usa o sandbox. Se a escolha aqui contradiz a chave, a chamada ao Asaas é recusada.",
       "production": "Produção (cobranças reais)",
       "sandbox": "Sandbox (teste)"
     },

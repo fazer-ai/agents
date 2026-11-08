@@ -1,0 +1,21 @@
+// Refuses, under src/, a `new Pool(…)` (also `new pg.Pool(…)`) not built inside `instrumentPool(…)` or
+// `absorbPoolErrors(…)`, and a `new PrismaPg(…)` not handed a pool built that way (given options, the
+// adapter builds a pool of its own that nothing here guards). A connection the server drops while it
+// sits idle is an `error` event, and one with no listener ends the process: a Postgres restart drops
+// every connection at once (src/lib/pool-errors.ts).
+language js;
+
+JsNewExpression() as $new where {
+    or {
+        and {
+            $new <: r"(?s)new\s+(?:[\w$]+\s*\.\s*)?Pool\s*\(.*",
+            not $new <: within `instrumentPool($...)`,
+            not $new <: within `absorbPoolErrors($...)`
+        },
+        and {
+            $new <: r"(?s)new\s+PrismaPg\s*\(.*",
+            not $new <: r"(?s)new\s+PrismaPg\s*\(\s*(?:instrumentPool|absorbPoolErrors)\s*\(.*"
+        }
+    },
+    register_diagnostic(span = $new, message = "A pool survives a dropped connection: build it inside `absorbPoolErrors(name, new Pool(…))` (src/lib/pool-errors.ts) or `instrumentPool(…)`, and hand `PrismaPg` that pool, never its options.")
+}

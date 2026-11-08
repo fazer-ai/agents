@@ -7,6 +7,10 @@
 // stays language-neutral.
 
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
+import {
+  ASAAS_ORIGINS,
+  asaasEnvFromKey,
+} from "@/modules/integrations/toolpacks/asaas-env";
 
 export type SecretInjection = "none" | "header" | "bearer" | "basic" | "query";
 
@@ -18,6 +22,9 @@ export interface SecretTestSpec {
   // Fixed bases to try in order. The first 2xx wins; on an auth/transport failure the runner falls
   // through to the next (used by asaas: production then sandbox). Mutually exclusive with needsBase.
   bases?: string[];
+  // Narrows `bases` from the secret itself, for a kind whose value names the one host it is valid
+  // on (an Asaas key's prefix). Returning null keeps `bases`.
+  basesForValue?: (value: string) => string[] | null;
   // When true the operator-supplied baseURL is the (only) base — for self-hosted/configurable APIs
   // (chatwoot, openai-compatible). The runner SSRF-guards it. No baseURL → result `missing_base_url`.
   needsBase?: boolean;
@@ -181,10 +188,14 @@ export const SECRET_TYPES: SecretType[] = [
     injection: "header",
     name: "access_token",
     service: "asaas",
-    // The vault credential is environment-agnostic; try production then sandbox (the key is valid
-    // for exactly one, so whichever 2xx-es identifies it).
+    // A key is valid in exactly one environment. One whose prefix names it is probed there only;
+    // an older key without the marker tries production then sandbox, and whichever 2xx-es wins.
     test: {
-      bases: ["https://api.asaas.com/v3", "https://api-sandbox.asaas.com/v3"],
+      bases: [ASAAS_ORIGINS.production, ASAAS_ORIGINS.sandbox],
+      basesForValue: (value) => {
+        const env = asaasEnvFromKey(value);
+        return env ? [ASAAS_ORIGINS[env]] : null;
+      },
       path: "/myAccount",
     },
   },

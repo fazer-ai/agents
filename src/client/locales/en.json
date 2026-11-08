@@ -3366,6 +3366,8 @@
     "emptyDesc": "Activate one from the catalog (e.g. Asaas, Google Calendar).",
     "emptyTitle": "No integrations yet",
     "env": {
+      "fromKey": "Automatic (from the key)",
+      "fromKeyHelp": "Asaas keys name their environment: $aact_prod_ for production, $aact_hmlg_ for sandbox. Automatic follows the key, and a key without that prefix uses sandbox. A choice that contradicts the key is refused when the agent calls Asaas.",
       "production": "Production (real charges)",
       "sandbox": "Sandbox (test)"
     },

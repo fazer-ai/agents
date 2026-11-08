@@ -92,7 +92,8 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
   CMD wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1
 
 # Default boot: provision the runtime role (idempotent), migrate as the owner, then run the server
-# interpreted (see the --compile NOTE above). Requires MIGRATION_DATABASE_URL (superuser) +
+# interpreted (see the --compile NOTE above). scripts/db-boot.ts runs the first two and waits, up to
+# DB_BOOT_WAIT_MS, for a database that is not reachable yet. Requires MIGRATION_DATABASE_URL (superuser) +
 # DATABASE_URL (runtime role). Orchestrators (e.g. docker-compose.coolify.yml) may override this
 # command, e.g. to run migrate as a one-shot pre-deploy step on platforms with rolling deploys.
-CMD ["sh", "-c", "bun scripts/db-bootstrap.ts && bun prisma migrate deploy && exec bun src/index.ts"]
+CMD ["sh", "-c", "bun scripts/db-boot.ts && exec bun src/index.ts"]

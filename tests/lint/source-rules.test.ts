@@ -93,6 +93,20 @@ const PROBES: Record<string, string> = {
   [P("zone-pinned.ts")]:
     'declare const Pool: new (o: object) => object;\ndeclare function withSessionOptions(u: string): object;\nexport const p = new Pool({ ...withSessionOptions("x"), connectionTimeoutMillis: 5_000 });\n',
 
+  // require-pool-error-listener
+  [P("drop-bare.ts")]:
+    "declare const Pool: new (o: object) => object;\ndeclare function opts(): object;\nexport const p = new Pool(opts());\n",
+  [P("drop-namespaced.ts")]:
+    "declare const pg: { Pool: new (o: object) => object };\ndeclare function opts(): object;\nexport const p = new pg.Pool(opts());\n",
+  [P("drop-adapter-options.ts")]:
+    "declare const PrismaPg: new (o: object) => object;\ndeclare function opts(): object;\nexport const a = new PrismaPg(opts());\n",
+  [P("drop-adapter-raw-pool.ts")]:
+    'declare const Pool: new (o: object) => object;\ndeclare const PrismaPg: new (o: object) => object;\ndeclare function absorbPoolErrors<T>(n: string, p: T): T;\ndeclare function opts(): object;\nconst raw = absorbPoolErrors("x", new Pool(opts()));\nexport const a = new PrismaPg(raw);\n',
+  [P("drop-absorbed.ts")]:
+    'declare const Pool: new (o: object) => object;\ndeclare function absorbPoolErrors<T>(n: string, p: T): T;\ndeclare function opts(): object;\nexport const p = absorbPoolErrors("x", new Pool(opts()));\n',
+  [P("drop-instrumented-adapter.ts")]:
+    'declare const Pool: new (o: object) => object;\ndeclare const PrismaPg: new (o: object, x?: object) => object;\ndeclare function instrumentPool<T>(n: string, p: T): T;\ndeclare function opts(): object;\nexport const a = new PrismaPg(\n  instrumentPool("main", new Pool(opts())),\n  { disposeExternalPool: true },\n);\n',
+
   // require-work-label-on-timer
   [P("timer-bare.ts")]:
     "export const t = setInterval(() => undefined, 1_000);\n",
@@ -275,6 +289,7 @@ const RULES = {
   violation: "A violation code read by hand misses the other shape",
   number: "A number field takes the range the server enforces",
   timer: "A recurring timer runs under a work label",
+  drop: "A pool survives a dropped connection",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -395,6 +410,27 @@ describe("require-pool-connect-bound", () => {
   ])("a bounded pool, or options built elsewhere, pass (%s)", (name) => {
     expect(of(P(name), "pool")).toBe(0);
   });
+});
+
+describe("require-pool-error-listener", () => {
+  test.each([
+    ["drop-bare.ts"],
+    ["drop-namespaced.ts"],
+    ["drop-adapter-options.ts"],
+    ["drop-adapter-raw-pool.ts"],
+  ])(
+    "a pool built outside the error listener, or an adapter not handed one, is refused (%s)",
+    (name) => {
+      expect(of(P(name), "drop")).toBe(1);
+    },
+  );
+
+  test.each([["drop-absorbed.ts"], ["drop-instrumented-adapter.ts"]])(
+    "a pool built inside the listener, and an adapter handed it, pass (%s)",
+    (name) => {
+      expect(of(P(name), "drop")).toBe(0);
+    },
+  );
 });
 
 describe("require-pool-session-zone", () => {

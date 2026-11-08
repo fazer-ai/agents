@@ -138,6 +138,257 @@ describe("asaas toolpack — environment is bound to config, never an arg", () =
   });
 });
 
+describe("asaas toolpack — the key's own prefix names its environment", () => {
+  const PROD_KEY = "$aact_prod_000MzkwODA2MWY2OGM3MWRl::$aach_bf3f";
+  const SANDBOX_KEY = "$aact_hmlg_000MzkwODA2MWY2OGM3MWRl::$aach_bf3f";
+  const LEGACY_KEY =
+    "$aact_YTU5YTE0M2M2N2I4MTliNzk0YTI5N2U5MzdjNWZmNDQ6OjAwMDAwMDAwMDAwMDAwMDAwMDA6OiRhYWNoXzBi";
+
+  function asaasLike(acceptedKey: string, acceptedHost: string) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const i = init ?? {};
+      calls.push({ url: String(url), init: i });
+      const u = new URL(String(url));
+      const tok = (i.headers as Record<string, string>).access_token;
+      const reply = (status: number, json: unknown) =>
+        new Response(JSON.stringify(json), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (tok !== acceptedKey)
+        return reply(401, {
+          errors: [{ code: "invalid_access_token", description: "invalid" }],
+        });
+      if (u.host !== acceptedHost)
+        return reply(401, {
+          errors: [
+            {
+              code: "invalid_environment",
+              description:
+                "A chave de API informada não pertence a este ambiente",
+            },
+          ],
+        });
+      if (u.pathname.endsWith("/customers") && i.method === "GET")
+        return reply(200, { data: [] });
+      if (u.pathname.endsWith("/customers")) return reply(200, { id: "cus_1" });
+      if (u.pathname.endsWith("/payments"))
+        return reply(200, { id: "pay_1", invoiceUrl: "https://x/i/pay_1" });
+      if (u.pathname.endsWith("/pixQrCode"))
+        return reply(200, { payload: "000201PIX", encodedImage: "aW1n" });
+      if (u.pathname.endsWith("/paymentLinks"))
+        return reply(200, { id: "lnk_1", url: "https://x/c/lnk_1" });
+      if (u.pathname.includes("/paymentLinks/"))
+        return reply(200, { id: "lnk_1", active: true });
+      return reply(404, {});
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  const PIX_ARGS = {
+    customerName: "Cliente Teste",
+    cpfCnpj: "52998224725",
+    value: 10.5,
+    description: "consulta",
+  };
+
+  function pix(
+    config: Record<string, unknown>,
+    key: string,
+    impl: typeof fetch,
+  ) {
+    return asaasToolpack.build(
+      sel({ enabledTools: ["asaas_create_pix_charge"], config }),
+      baseCtx({ fetchImpl: impl, resolveCredential: async () => key }),
+    )[0];
+  }
+
+  test("a production key with no environment configured charges in production", async () => {
+    const { impl, calls } = asaasLike(PROD_KEY, "api.asaas.com");
+    const out = (await pix({}, PROD_KEY, impl)?.invoke(PIX_ARGS)) as string;
+    expect(out).toContain("PIX charge created");
+    expect(out).toContain("000201PIX");
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) {
+      expect(new URL(c.url).origin).toBe("https://api.asaas.com");
+      expect((c.init.headers as Record<string, string>).access_token).toBe(
+        PROD_KEY,
+      );
+    }
+  });
+
+  test("every Asaas tool follows the key, not only the PIX charge", async () => {
+    const { impl, calls } = asaasLike(PROD_KEY, "api.asaas.com");
+    const [link, status] = asaasToolpack.build(
+      sel({
+        enabledTools: ["asaas_payment_link_create", "asaas_payment_status"],
+        config: {},
+      }),
+      baseCtx({ fetchImpl: impl, resolveCredential: async () => PROD_KEY }),
+    );
+    expect(String(await link?.invoke({ value: 10, name: "x" }))).toContain(
+      "https://x/c/lnk_1",
+    );
+    expect(
+      String(await status?.invoke({ paymentLinkId: "lnk_1" })),
+    ).not.toContain("HTTP");
+    expect(calls.map((c) => new URL(c.url).origin)).toEqual([
+      "https://api.asaas.com",
+      "https://api.asaas.com",
+    ]);
+  });
+
+  test("a sandbox key with no environment configured stays in sandbox", async () => {
+    const { impl, calls } = asaasLike(SANDBOX_KEY, "api-sandbox.asaas.com");
+    const out = (await pix({}, SANDBOX_KEY, impl)?.invoke(PIX_ARGS)) as string;
+    expect(out).toContain("PIX charge created");
+    expect(new URL(calls[0]?.url ?? "").origin).toBe(
+      "https://api-sandbox.asaas.com",
+    );
+  });
+
+  test("a key without the marker still defaults to sandbox", async () => {
+    const { impl, calls } = asaasLike(LEGACY_KEY, "api-sandbox.asaas.com");
+    await pix({}, LEGACY_KEY, impl)?.invoke(PIX_ARGS);
+    expect(new URL(calls[0]?.url ?? "").origin).toBe(
+      "https://api-sandbox.asaas.com",
+    );
+  });
+
+  test("an environment the key contradicts is refused before any request, naming both", async () => {
+    for (const [config, key] of [
+      [{ environment: "sandbox" }, PROD_KEY],
+      [{ environment: "production" }, SANDBOX_KEY],
+    ] as const) {
+      const { impl, calls } = asaasLike(key, "nowhere");
+      const out = (await pix(config, key, impl)?.invoke({
+        type: "tool_call",
+        id: "call_env",
+        name: "asaas_create_pix_charge",
+        args: PIX_ARGS,
+      })) as ToolMessage;
+      expect(out.status).toBe("error");
+      const text = String(out.content);
+      expect(text).toContain(config.environment);
+      expect(text).toContain(
+        config.environment === "sandbox" ? "production" : "sandbox",
+      );
+      expect(text).not.toContain(key);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  test("Asaas's invalid_environment answer reaches the agent as a wrong-environment message", async () => {
+    // A key minted before the prefixes carries no marker, so only Asaas can tell it is in the wrong
+    // environment, and it says so in the 401 body.
+    const { impl } = asaasLike(LEGACY_KEY, "api.asaas.com");
+    const out = (await pix({}, LEGACY_KEY, impl)?.invoke({
+      type: "tool_call",
+      id: "call_env2",
+      name: "asaas_create_pix_charge",
+      args: PIX_ARGS,
+    })) as ToolMessage;
+    expect(out.status).toBe("error");
+    const text = String(out.content);
+    expect(text).toContain("customer lookup (HTTP 401)");
+    expect(text).toContain("sandbox");
+    expect(text).toContain("production");
+    expect(text).not.toContain(LEGACY_KEY);
+  });
+
+  test("every rejecting call site carries the wrong-environment hint", async () => {
+    const wrongEnv = {
+      status: 401,
+      json: { errors: [{ code: "invalid_environment", description: "x" }] },
+    };
+    const get = (u: string, i: RequestInit) =>
+      u.includes("/customers?") && i.method === "GET";
+    const cases: Array<{
+      tool: string;
+      args: Record<string, unknown>;
+      routes: Parameters<typeof scriptedFetch>[0];
+      says: string;
+    }> = [
+      {
+        tool: "asaas_create_pix_charge",
+        args: PIX_ARGS,
+        routes: [
+          { match: get, status: 200, json: { data: [] } },
+          { match: (u) => u.endsWith("/customers"), ...wrongEnv },
+        ],
+        says: "rejected the customer (HTTP 401)",
+      },
+      {
+        tool: "asaas_create_pix_charge",
+        args: PIX_ARGS,
+        routes: [
+          { match: get, status: 200, json: { data: [{ id: "cus_1" }] } },
+          { match: (u) => u.endsWith("/payments"), ...wrongEnv },
+        ],
+        says: "rejected the request (HTTP 401)",
+      },
+      {
+        tool: "asaas_payment_link_create",
+        args: { value: 10 },
+        routes: [{ match: () => true, ...wrongEnv }],
+        says: "rejected the request (HTTP 401)",
+      },
+      {
+        tool: "asaas_payment_status",
+        args: { paymentId: "pay_1" },
+        routes: [{ match: () => true, ...wrongEnv }],
+        says: "returned HTTP 401",
+      },
+    ];
+    for (const c of cases) {
+      const { impl } = scriptedFetch(c.routes);
+      const tool = asaasToolpack.build(
+        sel({ enabledTools: [c.tool], config: {} }),
+        baseCtx({ fetchImpl: impl, resolveCredential: async () => LEGACY_KEY }),
+      )[0];
+      const out = String(await tool?.invoke(c.args));
+      expect(out).toContain(c.says);
+      expect(out).toContain(
+        "does not belong to the sandbox environment this integration calls; set the integration's environment to production",
+      );
+    }
+  });
+
+  test("a CPF that already has several customers in Asaas still gets its charge", async () => {
+    // Asaas pages the lookup at 10 by default, and a real customer object is about 700 bytes.
+    const lookups: string[] = [];
+    const { impl: rest } = asaasLike(PROD_KEY, "api.asaas.com");
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(String(url));
+      if (!(u.pathname.endsWith("/customers") && init?.method === "GET"))
+        return rest(url, init);
+      lookups.push(u.search);
+      const limit = Number(u.searchParams.get("limit") ?? 10);
+      const data = Array.from({ length: Math.min(limit, 5) }, (_, i) => ({
+        object: "customer",
+        id: `cus_${i + 1}`,
+        cpfCnpj: "52998224725",
+        notes: "x".repeat(600),
+      }));
+      return new Response(JSON.stringify({ totalCount: 5, data }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    const out = String(await pix({}, PROD_KEY, impl)?.invoke(PIX_ARGS));
+    expect(out).toContain("PIX charge created");
+    expect(lookups).toHaveLength(1);
+  });
+
+  test("a 401 that is not about the environment keeps the plain rejection", async () => {
+    const { impl } = asaasLike("someone-else", "api.asaas.com");
+    const out = (await pix({}, PROD_KEY, impl)?.invoke(PIX_ARGS)) as string;
+    expect(out).toBe(
+      "The payment provider rejected the customer lookup (HTTP 401).",
+    );
+  });
+});
+
 describe("asaas toolpack — PIX charge (hermetic)", () => {
   const CPF = "12345678909";
   function pixRoutes(customerLookup: unknown) {

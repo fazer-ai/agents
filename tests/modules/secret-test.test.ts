@@ -141,6 +141,24 @@ describe("runSecretTest", () => {
     ]);
   });
 
+  test("an asaas key whose prefix names its environment is probed there only", async () => {
+    for (const [value, host, status] of [
+      ["$aact_prod_000refused", "api.asaas.com", 401],
+      ["$aact_prod_000valid", "api.asaas.com", 200],
+      ["$aact_hmlg_000refused", "api-sandbox.asaas.com", 401],
+      ["$aact_hmlg_000valid", "api-sandbox.asaas.com", 200],
+    ] as const) {
+      const { calls, fetchImpl } = fakeFetch({ [host]: status });
+      const r = await runSecretTest(
+        { kind: "asaas", value },
+        { fetchImpl, assertSafe: passAssert },
+      );
+      expect(r.testable && r.ok).toBe(status === 200);
+      expect(calls.map((c) => new URL(c.url).host)).toEqual([host]);
+      expect(calls[0]?.headers.access_token).toBe(value);
+    }
+  });
+
   test("treats ElevenLabs missing_permissions (valid key, no scope) as a pass", async () => {
     const { calls, fetchImpl } = fakeFetch(
       { "api.elevenlabs.io": 401 },

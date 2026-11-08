@@ -4,6 +4,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -40,26 +41,28 @@ interface Answer {
 async function fetchRoute(
   route: MetricsRoute,
   query: Record<string, string>,
+  signal: AbortSignal,
 ): Promise<Answer> {
   const m = api.api.v1.metrics;
+  const o = { query, fetch: { signal } };
   const res =
     route === "kpis"
-      ? await m.kpis.get({ query })
+      ? await m.kpis.get(o)
       : route === "outcomes"
-        ? await m.outcomes.get({ query })
+        ? await m.outcomes.get(o)
         : route === "costs"
-          ? await m.costs.get({ query })
+          ? await m.costs.get(o)
           : route === "breakdown"
-            ? await m.breakdown.get({ query })
+            ? await m.breakdown.get(o)
             : route === "handoffs"
-              ? await m.handoffs.get({ query })
+              ? await m.handoffs.get(o)
               : route === "labels"
-                ? await m.labels.get({ query })
+                ? await m.labels.get(o)
                 : route === "health"
-                  ? await m.health.get({ query })
+                  ? await m.health.get(o)
                   : route === "follow-ups"
-                    ? await m["follow-ups"].get({ query })
-                    : await m.knowledge.get({ query });
+                    ? await m["follow-ups"].get(o)
+                    : await m.knowledge.get(o);
   if (res.error || !res.data) {
     const f = failureOf(res.error);
     return { data: null, status: f.status ?? null, field: f.field ?? null };
@@ -135,8 +138,14 @@ interface View {
   // The tenant's first day, where an all-time window starts.
   firstDay: string | null;
   // What a block's retry and a new view key their requests on.
-  opening: number;
+  opening: string;
   shared: Map<string, Promise<Answer>>;
+  // Aborted when the view is replaced or the page leaves: its requests stop, in the browser and on
+  // the server (a read not started yet does not start).
+  signal: AbortSignal;
+  // The flow log's retention could not be read: a flow-log block cannot tell no data from none.
+  retentionFailed: boolean;
+  retryRetention: () => void;
 }
 
 const DashboardView = createContext<View | null>(null);
@@ -148,6 +157,8 @@ export function DashboardMetricsProvider({
   openedAt,
   retentionDays,
   firstDay = null,
+  retentionFailed = false,
+  retryRetention = () => {},
   children,
 }: {
   query: Query;
@@ -156,12 +167,19 @@ export function DashboardMetricsProvider({
   openedAt: Date;
   retentionDays: number | null;
   firstDay?: string | null;
+  retentionFailed?: boolean;
+  retryRetention?: () => void;
   children: ReactNode;
 }) {
   const opening = openedAt.getTime();
-  // A new opening starts with nothing shared: the previous view's answers are not this one's.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new opening is a new set of requests.
-  const shared = useMemo(() => new Map<string, Promise<Answer>>(), [opening]);
+  const viewKey = `${opening}|${JSON.stringify(query)}`;
+  // A new opening starts with nothing shared: the previous view's answers are not this one's, and
+  // its requests still running are aborted.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view is a new set of requests.
+  const shared = useMemo(() => new Map<string, Promise<Answer>>(), [viewKey]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one controller per view.
+  const controller = useMemo(() => new AbortController(), [viewKey]);
+  useEffect(() => () => controller.abort(), [controller]);
   const value = useMemo(
     () => ({
       query,
@@ -170,10 +188,25 @@ export function DashboardMetricsProvider({
       openedAt,
       retentionDays,
       firstDay,
-      opening,
+      opening: viewKey,
       shared,
+      signal: controller.signal,
+      retentionFailed,
+      retryRetention,
     }),
-    [query, prevQuery, win, openedAt, retentionDays, firstDay, opening, shared],
+    [
+      query,
+      prevQuery,
+      win,
+      openedAt,
+      retentionDays,
+      firstDay,
+      viewKey,
+      shared,
+      controller,
+      retentionFailed,
+      retryRetention,
+    ],
   );
   return createElement(DashboardView.Provider, { value }, children);
 }
@@ -206,17 +239,23 @@ export function useMetricsBlock<T>(
   const query = base
     ? ({ ...base, ...(opts.params ?? {}) } as Record<string, string>)
     : null;
-  const [retries, setRetries] = useState(0);
+  // A retry belongs to the view it was asked in: a new view starts every block at the same key, so
+  // two blocks on one route share their request again.
+  const [retry, setRetry] = useState({ view: view.opening, n: 0 });
+  const retries = retry.view === view.opening ? retry.n : 0;
   const key = JSON.stringify([route, query, view.opening, retries]);
   const pickRef = useRef(pick);
   pickRef.current = pick;
   const shared = view.shared;
+  const signal = view.signal;
+  // A flow-log block waits for the retention, which tells its days with no data from days with none.
+  const waiting = opts.flowLog === true && view.retentionDays === null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` serializes the route and the query.
   const load = useCallback(async () => {
     if (!query) return { data: null };
     let pending = shared.get(key);
     if (!pending) {
-      pending = fetchRoute(route, query);
+      pending = fetchRoute(route, query, signal).catch(() => ({ data: null }));
       shared.set(key, pending);
     }
     const answer = await pending;
@@ -225,7 +264,16 @@ export function useMetricsBlock<T>(
     return answer;
   }, [key, shared]);
   const block = useBlock<unknown>(key, load);
-  const reload = useCallback(() => setRetries((n) => n + 1), []);
+  const opening = view.opening;
+  const retryRetention = view.retryRetention;
+  const reload = useCallback(() => {
+    if (waiting) retryRetention();
+    else
+      setRetry((r) => ({
+        view: opening,
+        n: (r.view === opening ? r.n : 0) + 1,
+      }));
+  }, [waiting, retryRetention, opening]);
   const data =
     block.data === null
       ? null
@@ -242,8 +290,9 @@ export function useMetricsBlock<T>(
   return {
     data,
     // No previous period ("all") is nothing to load.
-    loading: query !== null && block.loading,
-    error: query !== null && block.error,
+    loading:
+      query !== null && (waiting ? !view.retentionFailed : block.loading),
+    error: query !== null && (waiting ? view.retentionFailed : block.error),
     status: block.status,
     field: block.field,
     reload,

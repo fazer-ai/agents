@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { requestStartedAt } from "@/api/lib/i18n";
+import { requestSignal, requestStartedAt } from "@/api/lib/i18n";
 import config from "@/config";
-import { MetricsTooSlowError } from "@/lib/errors";
+import { MetricsTooSlowError, ServiceUnavailableError } from "@/lib/errors";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
 import {
   DeadlinePassedError,
@@ -47,16 +47,35 @@ export function isOverMetricsBudget(error: unknown): boolean {
   );
 }
 
+// Nobody reads the answer: a 503 with no translation, since no one is there to see it.
+function callerGone(): ServiceUnavailableError {
+  return new ServiceUnavailableError(
+    "The caller went away before the read began",
+  );
+}
+
 export async function runMetricsScoped<T>(
   base: PrismaClient,
   ctx: TenantContext,
   fn: (db: ScopedDb) => Promise<T>,
 ): Promise<T> {
   const deadline = metricsDeadline();
+  const signal = requestSignal();
   // Spent before the read began: asking for a connection now could only hold one past the deadline.
   if (Date.now() >= deadline) throw metricsTooSlow(deadline);
+  // A caller that went away (a console view left or replaced) while its request waited for a
+  // connection gets nothing run for it: the connection goes straight back to the views still open.
+  if (signal?.aborted) throw callerGone();
   try {
-    return await runScopedOn(base, ctx, fn, metricsBudget(deadline));
+    return await runScopedOn(
+      base,
+      ctx,
+      async (db) => {
+        if (signal?.aborted) throw callerGone();
+        return fn(db);
+      },
+      metricsBudget(deadline),
+    );
   } catch (error) {
     if (isOverMetricsBudget(error)) throw metricsTooSlow(deadline);
     throw error;

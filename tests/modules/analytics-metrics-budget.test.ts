@@ -13,6 +13,7 @@ import {
   findSessionUser,
   type JWTPayload,
 } from "@/api/lib/auth";
+import { requestContext } from "@/api/lib/i18n";
 import { metricsPoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import { postgresCodeOf } from "@/lib/pg-error";
@@ -222,6 +223,22 @@ test("a statement asked for after the deadline is refused before it is sent, and
 });
 
 describe.skipIf(!dbUp)("metrics time budget", () => {
+  // A console view replaced or left aborts its requests; one whose caller is gone runs nothing.
+  test("a read whose caller went away runs nothing", async () => {
+    const gone = new AbortController();
+    gone.abort();
+    let ran = false;
+    const before = await requestContext.run(
+      { locale: "en", startedAt: Date.now(), signal: gone.signal },
+      () =>
+        runMetricsScoped(app as PrismaClient, ctx, async () => {
+          ran = true;
+        }).catch((e) => e),
+    );
+    expect(statusOf(before)).toBe(503);
+    expect(ran).toBe(false);
+  });
+
   test("a read past METRICS_TIMEOUT_MS answers 503 while the lock still holds, and leaves no statement running", async () => {
     const usage = await lockTable("llm_usage");
     try {

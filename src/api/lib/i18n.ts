@@ -11,6 +11,9 @@ interface RequestContext {
   // When the request arrived (set by the same hook), for a budget that belongs to the whole request
   // rather than to one of its steps: the metrics reads' (src/modules/analytics/budget.ts).
   startedAt?: number;
+  // The request's own signal, aborted when its caller goes away: a metrics read that has not
+  // started yet by then does not start (src/modules/analytics/budget.ts).
+  signal?: AbortSignal;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
@@ -42,6 +45,11 @@ i18n.init({
 // not travel through `translate`. Same store, same default, one reader.
 export function currentLocale(): Locale {
   return requestContext.getStore()?.locale ?? "en";
+}
+
+// The signal of the request being served; undefined outside a request.
+export function requestSignal(): AbortSignal | undefined {
+  return requestContext.getStore()?.signal;
 }
 
 // When the request being served arrived; undefined outside a request.

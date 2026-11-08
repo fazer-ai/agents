@@ -23,7 +23,11 @@ import {
   getActiveTenantId,
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
-import { DashboardPage, useOpenedAt } from "@/client/pages/DashboardPage";
+import {
+  DashboardPage,
+  OPTIONS_RETRY_MS,
+  useOpenedAt,
+} from "@/client/pages/DashboardPage";
 import { withI18n } from "@/tests/utils/i18n";
 
 // THE DASHBOARD AS THE OPERATOR READS IT. Every block asks the API with the page's one filter, which
@@ -148,13 +152,22 @@ let inboxOptions: {
   account?: { id: number; name: string | null };
 }[] = ONE_INBOX;
 
-const stubFetch = (async (input: unknown) => {
+// The signal of every metrics request, by path and query, to see which ones a new view aborted.
+const signals: { url: URL; signal: AbortSignal | null }[] = [];
+
+const stubFetch = (async (input: unknown, init?: RequestInit) => {
   const url = new URL(
     String(typeof input === "string" ? input : (input as Request).url),
     "http://localhost",
   );
   const p = url.pathname;
   asked.push(url);
+  signals.push({
+    url,
+    signal:
+      init?.signal ??
+      (typeof input === "string" ? null : ((input as Request).signal ?? null)),
+  });
   if (tenantGone && p.includes("/metrics/") && !p.endsWith("/filter-options"))
     return new Response(JSON.stringify({ error: "x" }), {
       status: 404,
@@ -314,6 +327,7 @@ function Where() {
 
 async function renderDash(path = "/", settled = true, clientChannel?: boolean) {
   asked.length = 0;
+  signals.length = 0;
   const page = (
     <ThemeProvider>
       <MemoryRouter initialEntries={[path]}>
@@ -745,6 +759,83 @@ describe("a block whose request fails", () => {
     );
     // The retry asks the failed block again, and only it.
     expect(asks("/metrics/kpis").length).toBe(kpisAsked);
+  });
+});
+
+describe("a retry", () => {
+  test("belongs to its view: the next view asks a route two blocks share once again", async () => {
+    healthFails = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }).length,
+      ).toBe(2);
+    });
+    healthFails = false;
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Try again" })[1] as HTMLElement,
+    );
+    await waitFor(() => {
+      expect(has("No warnings or errors in this period.")).toBe(true);
+    });
+    const before = asks("/metrics/health").length;
+    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    await waitFor(() => {
+      expect(location).toBe("/?range=90d");
+      expect(asks("/metrics/health").length).toBeGreaterThan(before);
+    });
+    // Latency and problems read one request in the new view, whatever was retried in the old one.
+    const fresh = asks("/metrics/health").slice(before);
+    expect(new Set(fresh.map((u) => u.search)).size).toBe(fresh.length);
+    expect(fresh.length).toBe(1);
+  });
+});
+
+describe("a view replaced while its requests run", () => {
+  test("aborts them, so they stop holding the metrics pool", async () => {
+    costsHang = true;
+    await renderDash("/?range=7d");
+    const pending = signals.filter((s) =>
+      s.url.pathname.endsWith("/metrics/costs"),
+    );
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.every((s) => s.signal && !s.signal.aborted)).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    await waitFor(() => {
+      expect(location).toBe("/?range=90d");
+      expect(pending.every((s) => s.signal?.aborted)).toBe(true);
+    });
+  });
+});
+
+describe("filter options that cannot be read", () => {
+  test("leave the flow-log blocks saying they could not load, never that there was none", async () => {
+    const real = [...OPTIONS_RETRY_MS];
+    OPTIONS_RETRY_MS.splice(0, 2, 0, 0);
+    optionsFail = true;
+    retentionDays = 30;
+    logExpired = true;
+    try {
+      await renderDash("/?range=7d");
+      await waitFor(() => {
+        // Asked three times, then the blocks give up with their retry.
+        expect(asks("/metrics/filter-options").length).toBe(3);
+        expect(has("Could not load metrics.")).toBe(true);
+      });
+      expect(has("No handoffs in this period.")).toBe(false);
+      expect(has("No warnings or errors in this period.")).toBe(false);
+      // Their retry reads the options again, and once they answer the blocks show.
+      optionsFail = false;
+      fireEvent.click(
+        screen.getAllByRole("button", { name: "Try again" })[0] as HTMLElement,
+      );
+      await waitFor(() => {
+        expect(asks("/metrics/filter-options").length).toBe(4);
+        expect(has("Handoffs by cause")).toBe(true);
+      });
+    } finally {
+      OPTIONS_RETRY_MS.splice(0, 2, ...real);
+    }
   });
 });
 

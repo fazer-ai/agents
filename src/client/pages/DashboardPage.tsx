@@ -238,6 +238,10 @@ function DashboardBlocks({
   );
 }
 
+// The waits before the filter options are asked again after a failure. Exported so a test need not
+// wait for them.
+export const OPTIONS_RETRY_MS = [1000, 4000];
+
 // The instant a view was opened, which its window and the previous period's are computed at. Held
 // while the view stays the same: a fresh instant on every render would ask every block again, and the
 // previous period ends at that time of day. A new view or a new local day (a page left open past
@@ -278,12 +282,29 @@ export function DashboardPage() {
   );
 
   // An unreadable list leaves both null: the selects show only "All", and a link's ids are kept
-  // rather than dropped against a list that never arrived.
+  // rather than dropped against a list that never arrived. The flow-log blocks wait for the
+  // retention it carries, so a failed read is asked again twice, a second and then four seconds
+  // later; past that those blocks say they could not load, and their retry asks once more.
+  const [optionsTry, setOptionsTry] = useState(0);
+  const [optionsFailed, setOptionsFailed] = useState(false);
   useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const failed = () => {
+      if (!live) return;
+      if (optionsTry % 3 < 2)
+        timer = setTimeout(
+          () => setOptionsTry((n) => n + 1),
+          OPTIONS_RETRY_MS[optionsTry % 3] ?? 0,
+        );
+      else setOptionsFailed(true);
+    };
     void api.api.v1.metrics["filter-options"]
       .get()
       .then((r) => {
-        if (!r.data) return;
+        if (!live) return;
+        if (!r.data) return failed();
+        setOptionsFailed(false);
         setAgents(r.data.agents);
         setInboxes(r.data.inboxes);
         setRetentionDays(r.data.flowLogRetentionDays);
@@ -293,7 +314,15 @@ export function DashboardPage() {
             : null,
         );
       })
-      .catch(() => {});
+      .catch(failed);
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [optionsTry]);
+  const retryOptions = useCallback(() => {
+    setOptionsFailed(false);
+    setOptionsTry((n) => n + 3 - (n % 3));
   }, []);
 
   // A link naming an agent or inbox this account does not have opens on every agent or inbox,
@@ -389,6 +418,8 @@ export function DashboardPage() {
         openedAt={openedAt}
         retentionDays={retentionDays}
         firstDay={firstDay}
+        retentionFailed={optionsFailed}
+        retryRetention={retryOptions}
       >
         <DashboardBlocks
           filters={filters}

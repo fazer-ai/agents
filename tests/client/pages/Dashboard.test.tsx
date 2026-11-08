@@ -135,6 +135,8 @@ let healthFailField: string | undefined;
 let costsHang = false;
 // How many more times a previous-period request of these routes fails.
 let prevFails: Record<string, number> = {};
+// Previous-period requests of these routes never answer.
+let prevHangs: string[] = [];
 // The flow log's retention the filter options carry: past it, a flow-log day has no data.
 let retentionDays = 30;
 // A whole view whose flow-log days are all past retention: no handoffs, no silences and no problems,
@@ -194,6 +196,12 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
       prevFails[route] = (prevFails[route] ?? 0) - 1;
       return json({ error: "x" }, 500);
     }
+    if (
+      until &&
+      new Date(until).getTime() < Date.now() - 3_600_000 &&
+      prevHangs.includes(route)
+    )
+      return new Promise<Response>(() => {});
   }
   if (p.endsWith("/metrics/kpis") && kpisFail) return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/kpis")) return json({ instance: "i", kpis });
@@ -402,6 +410,7 @@ beforeEach(() => {
   inboxOptions = ONE_INBOX;
   costsHang = false;
   prevFails = {};
+  prevHangs = [];
   retentionDays = 30;
   tenantGone = null;
   kpisFail = false;
@@ -772,6 +781,20 @@ describe("the cost is the ledger's", () => {
       expect(has("Could not read the cost.")).toBe(false);
     });
     expect(asks("/metrics/costs")).toHaveLength(3);
+  });
+
+  test("a previous period still loading holds the block on its skeleton, with no CSV", async () => {
+    prevHangs = ["costs"];
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Cached input by agent")).toBe(true);
+    });
+    expect(has("LLM cost")).toBe(false);
+    expect(
+      screen
+        .queryAllByRole("button", { name: /CSV/ })
+        .filter((b) => /cost/i.test(b.getAttribute("aria-label") ?? "")),
+    ).toHaveLength(0);
   });
 
   test("the KPIs and the funnel trend hold their figures the same way", async () => {

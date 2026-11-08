@@ -9,6 +9,7 @@ import {
   resetStatementTimeouts,
 } from "@/lib/pool-stats";
 import {
+  budgetClassOf,
   noteStatementPool,
   resetStatementBudgetsForTest,
 } from "@/lib/statement-budgets";
@@ -249,6 +250,7 @@ describe("deltasOf: what a snapshot run writes", () => {
     dbid: 1n,
     queryid,
     query: "SELECT 1",
+    budgetClass: null,
     calls,
     totalExecMs: calls * 2,
     rows: calls,
@@ -531,12 +533,19 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     // which neither this suite's server nor CI's has.
     resetStatementBudgetsForTest();
     const marker = "SELECT x FROM class_probe WHERE id = $1";
-    const entry = { userid: 10n, dbid: 1n, queryid: 9_101n, query: marker };
+    const entryOf = () => ({
+      userid: 10n,
+      dbid: 1n,
+      queryid: 9_101n,
+      query: marker,
+      budgetClass: budgetClassOf(marker),
+    });
     const other = {
       userid: 10n,
       dbid: 1n,
       queryid: 9_102n,
       query: "SELECT 1 FROM unseen",
+      budgetClass: budgetClassOf("SELECT 1 FROM unseen"),
     };
     const classOf = async (q: bigint) =>
       (
@@ -544,20 +553,20 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
           SELECT budget_class FROM db_statement_texts WHERE queryid = ${q}`
       ).map((r) => r.budget_class);
     noteStatementPool("metrics", "SELECT x FROM class_probe WHERE id = 7");
-    await writeStatementTexts(suDb, [entry, other], Date.now());
+    await writeStatementTexts(suDb, [entryOf(), other], Date.now());
     expect(await classOf(9_101n)).toEqual(["metrics"]);
     // A text no pool of this process sent is stored without a class.
     expect(await classOf(9_102n)).toEqual([null]);
     noteStatementPool("main", marker);
-    await writeStatementTexts(suDb, [entry], Date.now());
+    await writeStatementTexts(suDb, [entryOf()], Date.now());
     expect(await classOf(9_101n)).toEqual(["default"]);
     // A restarted process that knows nothing of the text keeps what was stored...
     resetStatementBudgetsForTest();
-    await writeStatementTexts(suDb, [entry], Date.now());
+    await writeStatementTexts(suDb, [entryOf()], Date.now());
     expect(await classOf(9_101n)).toEqual(["default"]);
     // ...and one that saw it only on the metrics pool does not undo 'default'.
     noteStatementPool("metrics", marker);
-    await writeStatementTexts(suDb, [entry], Date.now());
+    await writeStatementTexts(suDb, [entryOf()], Date.now());
     expect(await classOf(9_101n)).toEqual(["default"]);
     resetStatementBudgetsForTest();
   });
@@ -1024,6 +1033,43 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       expect(
         seen && "entries" in seen ? seen.entries.map((e) => e.query) : null,
       ).toEqual(["SELECT 1"]);
+    },
+  );
+
+  test.skipIf(!dbUp)(
+    "a console read longer than the stored text keeps its class: it is resolved before the text is clipped",
+    async () => {
+      resetStatementBudgetsForTest();
+      const ids = Array.from({ length: 2_000 }, (_, i) => `$${i + 2}`);
+      const sent = `SELECT id, name FROM inboxes WHERE tenant_id = $1 AND id IN (${ids.join(", ")})`;
+      expect(sent.length).toBeGreaterThan(8_000);
+      noteStatementPool("metrics", sent);
+      const out = await suDb
+        .$transaction(async (tx) => {
+          await tx.$executeRawUnsafe("CREATE SCHEMA pss_probe");
+          await tx.$executeRawUnsafe(
+            `CREATE VIEW pss_probe.pg_stat_statements AS
+             SELECT * FROM (VALUES
+               (10::oid, (SELECT oid FROM pg_database WHERE datname = current_database()),
+                1::bigint, $q$${sent}$q$::text, 5::bigint, 1.0::float8, 5::bigint, true)
+             ) AS v(userid, dbid, queryid, query, calls, total_exec_time, rows, toplevel)`,
+          );
+          await tx.$executeRawUnsafe("SET LOCAL search_path = pss_probe");
+          const read = await readStatementsIn(
+            tx as unknown as PrismaClient,
+            "NULL::timestamptz",
+            "AND toplevel",
+          );
+          throw Object.assign(new Error("rollback"), { read });
+        })
+        .catch(
+          (e: { read?: Awaited<ReturnType<typeof readStatementsIn>> }) =>
+            e.read,
+        );
+      resetStatementBudgetsForTest();
+      const [entry] = out && "entries" in out ? out.entries : [];
+      expect(entry?.query.length).toBeLessThan(sent.length);
+      expect(entry?.budgetClass).toBe("metrics");
     },
   );
 

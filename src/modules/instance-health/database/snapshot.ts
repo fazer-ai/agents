@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import config from "@/config";
-import { budgetClassOf } from "@/lib/statement-budgets";
+import { type BudgetClass, budgetClassOf } from "@/lib/statement-budgets";
 import type { TxBudget } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { budgetUntil, fleetWithin, plainWithin } from "./budget";
@@ -28,6 +28,8 @@ export interface StatementEntry {
   dbid: bigint;
   queryid: bigint;
   query: string;
+  // The budget class of the complete text, resolved before `query` is clipped.
+  budgetClass: BudgetClass | null;
   calls: number;
   totalExecMs: number;
   rows: number;
@@ -260,6 +262,7 @@ export async function readStatementsIn(
       dbid: r.dbid,
       queryid: r.queryid,
       query: clipText(r.query ?? "", TEXT_MAX),
+      budgetClass: budgetClassOf(r.query ?? ""),
       calls: Number(r.calls),
       totalExecMs: Number(r.total_exec_time),
       rows: Number(r.rows),
@@ -284,8 +287,8 @@ export function availabilityOfError(
 // One snapshot when the interval has passed since the last, then the retention prune. Returns
 // whether one was taken. Every statement runs under `budget` (one deadline for the whole run).
 // One statement for every text, not one upsert each. The class is the one this process learned from
-// the pool that sent each text; a text it never saw keeps the stored class, and a text seen as both is
-// 'default' from then on, so a later process that saw it only on the metrics pool does not undo that.
+// the pool that sent each text (null when it never saw it, which keeps the stored class), and a text
+// stored as 'default' stays so: a later process that saw it only on the metrics pool does not undo it.
 export async function writeStatementTexts(
   db: Pick<PrismaClient, "$executeRaw">,
   list: {
@@ -293,6 +296,7 @@ export async function writeStatementTexts(
     dbid: bigint | number;
     queryid: bigint | number;
     query: string;
+    budgetClass: BudgetClass | null;
   }[],
   takenAt: number,
 ): Promise<void> {
@@ -304,7 +308,7 @@ export async function writeStatementTexts(
                   ${list.map((e) => String(e.dbid))}::bigint[],
                   ${list.map((e) => String(e.queryid))}::bigint[],
                   ${list.map((e) => e.query)}::text[],
-                  ${list.map((e) => budgetClassOf(e.query))}::text[]) AS x(u, d, q, t, b)
+                  ${list.map((e) => e.budgetClass)}::text[]) AS x(u, d, q, t, b)
     ON CONFLICT (userid, dbid, queryid)
     DO UPDATE SET query = excluded.query, last_seen_at = excluded.last_seen_at,
                   budget_class = CASE

@@ -29,9 +29,19 @@ describe("the budget class of a statement text", () => {
     expect(budgetClassOf("SELECT 1 FROM agents WHERE id = $1")).toBe("default");
   });
 
-  test("a text the metrics pool never sent is unknown", () => {
+  test("a text another pool sent before the metrics pool ever did stays 'default'", () => {
+    noteStatementPool("main", "SELECT id FROM conversations WHERE id = $1");
+    expect(budgetClassOf("SELECT id FROM conversations WHERE id = $1")).toBe(
+      "default",
+    );
+    noteStatementPool("metrics", "SELECT id FROM conversations WHERE id = $1");
+    expect(budgetClassOf("SELECT id FROM conversations WHERE id = $1")).toBe(
+      "default",
+    );
+  });
+
+  test("a text no pool of this process sent is unknown", () => {
     noteStatementPool("metrics", "SELECT 1 FROM llm_usage");
-    noteStatementPool("main", "SELECT 1 FROM scheduler_jobs");
     expect(budgetClassOf("SELECT 1 FROM scheduler_jobs")).toBeNull();
   });
 
@@ -43,6 +53,17 @@ describe("the budget class of a statement text", () => {
     expect(
       budgetClassOf(
         "SELECT day FROM llm_usage u WHERE u.source = $2 AND u.tenant_id = $1 LIMIT $3",
+      ),
+    ).toBe("metrics");
+    // The server stores booleans, NULL, typed literals and signed numbers as one placeholder each:
+    // the dashboard's `COUNT(*) FILTER (WHERE false)` is stored as `FILTER (WHERE $3)`.
+    noteStatementPool(
+      "metrics",
+      "SELECT count(*) FILTER (WHERE false) AS n, NULL::bigint AS t FROM firsts WHERE d > now() - interval '7 days' AND s = -1",
+    );
+    expect(
+      budgetClassOf(
+        "SELECT count(*) FILTER (WHERE $1) AS n, $2::bigint AS t FROM firsts WHERE d > now() - $3 AND s = $4",
       ),
     ).toBe("metrics");
     expect(

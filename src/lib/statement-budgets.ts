@@ -16,7 +16,7 @@ const MAX_TEXTS = 5000;
 const KEY = Symbol.for("fazerai.statementBudgets");
 
 interface Registry {
-  // Canonical text -> whether every time this process saw it, it came from the metrics pool.
+  // Canonical text -> 'metrics' when every time this process saw it, it came from the metrics pool.
   texts: Map<string, BudgetClass>;
   // Raw text -> canonical text, so the hot path does not normalize the same string twice.
   canonical: Map<string, string>;
@@ -28,14 +28,19 @@ function registry(): Registry {
   return g[KEY];
 }
 
-// The text as pg_stat_statements stores it, reduced to what both sides agree on: literals and
-// placeholders become `?` (the server replaces constants with `$N` and renumbers them), and runs of
-// whitespace become one space.
+// The text as pg_stat_statements stores it, reduced to what both sides agree on: every constant and
+// placeholder becomes `?` (the server replaces constants, booleans and NULL included, with `$N` and
+// renumbers them; a typed literal such as `interval '1 day'` or a signed number is one constant), and
+// runs of whitespace become one space. Both sides go through this, so reducing more than the server
+// does only merges texts that differ in constants, which share a class anyway.
 export function canonicalStatement(text: string): string {
   return text
     .replace(/'(?:[^']|'')*'/g, "?")
     .replace(/\$\d+/g, "?")
     .replace(/\b\d+(?:\.\d+)?\b/g, "?")
+    .replace(/\b(?:true|false|null)\b/gi, "?")
+    .replace(/\b(?:interval|date|time|timestamp|timestamptz)\s+\?/gi, "?")
+    .replace(/-\s*\?/g, "?")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -51,26 +56,21 @@ function canonicalOf(text: string): string {
   return c;
 }
 
-// Called by the instrumented pool for every statement it sends.
+// Called by the instrumented pool for every statement it sends. Every pool is recorded, in either
+// order: a text first sent by another pool and later by the metrics pool stays 'default'.
 export function noteStatementPool(pool: string, text: string): void {
   const r = registry();
-  if (pool !== METRICS_POOL && r.texts.size === 0) return;
   const c = canonicalOf(text);
   const seen = r.texts.get(c);
-  if (pool === METRICS_POOL) {
-    if (seen !== undefined) {
-      r.texts.delete(c);
-      r.texts.set(c, seen);
-      return;
-    }
-    if (r.texts.size >= MAX_TEXTS) {
-      const oldest = r.texts.keys().next().value;
-      if (oldest !== undefined) r.texts.delete(oldest);
-    }
-    r.texts.set(c, "metrics");
-  } else if (seen === "metrics") {
-    r.texts.set(c, "default");
+  const cls: BudgetClass =
+    pool === METRICS_POOL && seen !== "default" ? "metrics" : "default";
+  if (seen !== undefined) {
+    r.texts.delete(c);
+  } else if (r.texts.size >= MAX_TEXTS) {
+    const oldest = r.texts.keys().next().value;
+    if (oldest !== undefined) r.texts.delete(oldest);
   }
+  r.texts.set(c, cls);
 }
 
 // The class this process knows for a stored text; null when it never saw it sent.

@@ -18,6 +18,10 @@ import { checkSessionZoneAtBoot } from "@/lib/db-session-zone";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { runWithWorkLabel } from "@/lib/work-label";
+import {
+  ensureAllLogFactsBackfills,
+  registerLogFactsBackfillHandler,
+} from "@/modules/analytics/log-facts";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
 import { drainStoredChatwootDeliveries } from "@/modules/chatwoot/delivery-queue";
@@ -196,6 +200,7 @@ if (config.schedulerWorker.enabled) {
   registerRagIngestHandler();
   registerHeartbeatHandler();
   registerFlowlogRetentionHandler();
+  registerLogFactsBackfillHandler();
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
@@ -219,6 +224,10 @@ if (config.schedulerWorker.enabled) {
   // boot-time DB outage just means the sweep arms on the next restart).
   void runWithWorkLabel("boot", ensureAllFlowlogSweeps).catch((error) =>
     logger.warn({ error }, "Failed to arm flowlog retention sweeps"),
+  );
+  // Fill the dashboard's log facts of every tenant still reading its figures from the flow log.
+  void runWithWorkLabel("boot", ensureAllLogFactsBackfills).catch((error) =>
+    logger.warn({ error }, "Failed to arm dashboard log facts backfills"),
   );
   // Arm the per-tenant follow-up sweep for every existing tenant so follow-ups self-heal after the
   // sweep's row is lost (DB reset, external truncate). Same best-effort discipline as above.

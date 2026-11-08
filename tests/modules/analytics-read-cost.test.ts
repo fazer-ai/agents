@@ -92,13 +92,15 @@ class Rollback extends Error {
   }
 }
 
-// The plan of `query` as the tenant runs it, with every other index of the flow log dropped inside a
-// transaction that is rolled back, and sequential scans priced out. Which index the planner picks
-// among several depends on the statistics of whatever the suite wrote; this asks only whether the
-// statement's own predicate lets Postgres reach its lines through the dashboard index.
+// The plan of `query` as the tenant runs it, with every other index of `table` (the flow log unless
+// named) dropped inside a transaction that is rolled back, and sequential scans priced out. Which
+// index the planner picks among several depends on the statistics of whatever the suite wrote; this
+// asks only whether the statement's own predicate lets Postgres reach its lines through `keep`.
 async function planWithOnlyDashboardIndex(
   query: string,
   params: unknown[],
+  table = "execution_logs",
+  keep = "execution_logs_dashboard_lines_idx",
 ): Promise<PlanNode> {
   const role = new URL(appUrl as string).username;
   try {
@@ -106,8 +108,8 @@ async function planWithOnlyDashboardIndex(
       const others = await tx.$queryRaw<{ name: string }[]>`
         SELECT c.relname AS name FROM pg_index i
           JOIN pg_class c ON c.oid = i.indexrelid
-         WHERE i.indrelid = 'execution_logs'::regclass AND NOT i.indisprimary
-           AND c.relname <> 'execution_logs_dashboard_lines_idx'`;
+         WHERE i.indrelid = ${table}::regclass AND NOT i.indisprimary
+           AND c.relname <> ${keep}`;
       for (const o of others)
         await tx.$executeRawUnsafe(`DROP INDEX "${o.name}"`);
       await tx.$executeRawUnsafe(`SET LOCAL ROLE "${role}"`);
@@ -142,6 +144,43 @@ async function flowLogScans(read: () => Promise<unknown>) {
   return { statements: sent.length, scans };
 }
 
+// The readers read the flow log itself while the tenant's backfill of the log facts has not finished
+// (src/modules/analytics/log-facts.ts).
+async function whileBackfilling<T>(read: () => Promise<T>): Promise<T> {
+  await suDb.$executeRaw`INSERT INTO dashboard_log_facts_state (tenant_id) VALUES (${tenantId})`;
+  try {
+    return await read();
+  } finally {
+    await suDb.$executeRaw`DELETE FROM dashboard_log_facts_state WHERE tenant_id = ${tenantId}`;
+  }
+}
+
+// Every statement `read` sends that scans the log facts as its subject (alias `l`), with the plan
+// of each, and how many statements read the flow log at all.
+async function factScans(read: () => Promise<unknown>) {
+  statements.length = 0;
+  await read();
+  const sent = statements.filter((s) =>
+    /\bdashboard_log_facts l\b/.test(s.query),
+  );
+  const logStatements = statements.filter((s) =>
+    /\bexecution_logs\b/.test(s.query),
+  ).length;
+  const scans: PlanNode[] = [];
+  for (const s of sent) {
+    const plan = await planWithOnlyDashboardIndex(
+      s.query,
+      s.params,
+      "dashboard_log_facts",
+      "dashboard_log_facts_tenant_id_kind_created_at_idx",
+    );
+    for (const n of nodes(plan))
+      if (n["Relation Name"] === "dashboard_log_facts" && n.Alias === "l")
+        scans.push(n);
+  }
+  return { statements: sent.length, logStatements, scans };
+}
+
 beforeAll(async () => {
   if (!dbUp) return;
   const t = await suDb.tenant.create({
@@ -157,9 +196,39 @@ afterAll(async () => {
 });
 
 describe.skipIf(!dbUp)("the dashboard's reads, by what they cost", () => {
-  test("handoff reasons reach their lines through the dashboard index, in two statements", async () => {
+  test("handoff reasons read the log facts through their kind index, and never the log", async () => {
+    const {
+      statements: n,
+      logStatements,
+      scans,
+    } = await factScans(() => getHandoffReasons(ctx(), MONTH, db));
+    expect(n).toBe(2);
+    expect(logStatements).toBe(0);
+    expect(scans.length).toBeGreaterThan(0);
+    for (const s of scans)
+      expect(s["Index Name"]).toBe(
+        "dashboard_log_facts_tenant_id_kind_created_at_idx",
+      );
+  });
+
+  test("follow-up activity reads the log facts through their kind index, and never the log", async () => {
+    const {
+      statements: n,
+      logStatements,
+      scans,
+    } = await factScans(() => getFollowUpActivity(ctx(), MONTH, db));
+    expect(n).toBe(1);
+    expect(logStatements).toBe(0);
+    expect(scans.length).toBeGreaterThan(0);
+    for (const s of scans)
+      expect(s["Index Name"]).toBe(
+        "dashboard_log_facts_tenant_id_kind_created_at_idx",
+      );
+  });
+
+  test("while the backfill runs, handoff reasons reach their lines through the dashboard index, in two statements", async () => {
     const { statements: n, scans } = await flowLogScans(() =>
-      getHandoffReasons(ctx(), MONTH, db),
+      whileBackfilling(() => getHandoffReasons(ctx(), MONTH, db)),
     );
     expect(n).toBe(2);
     expect(scans.length).toBeGreaterThan(0);
@@ -167,9 +236,9 @@ describe.skipIf(!dbUp)("the dashboard's reads, by what they cost", () => {
       expect(s["Index Name"]).toBe("execution_logs_dashboard_lines_idx");
   });
 
-  test("follow-up activity reaches its lines through the dashboard index", async () => {
+  test("while the backfill runs, follow-up activity reaches its lines through the dashboard index", async () => {
     const { statements: n, scans } = await flowLogScans(() =>
-      getFollowUpActivity(ctx(), MONTH, db),
+      whileBackfilling(() => getFollowUpActivity(ctx(), MONTH, db)),
     );
     expect(n).toBe(1);
     expect(scans.length).toBeGreaterThan(0);

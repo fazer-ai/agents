@@ -544,16 +544,18 @@ describe.skipIf(!dbUp)("the dashboard's log facts", () => {
     await a.connect();
     await b.connect();
     try {
+      // The instants go as UTC text: a raw driver writes a Date in the process's zone, which another
+      // test file may have changed, and the column holds UTC wall-clock.
       await a.query("BEGIN");
       await a.query(
         `INSERT INTO execution_logs (tenant_id, turn_id, conversation_id, stage, level, status, source, detail, created_at)
-         VALUES ($1, $2, $3, 'tool', 'info', 'ok', 'inbox', '{"tool":"handoff_to_human","handedOff":true}', $4)`,
-        [fx.tenantId, crypto.randomUUID(), conv, t(4)],
+         VALUES ($1, $2, $3, 'tool', 'info', 'ok', 'inbox', '{"tool":"handoff_to_human","handedOff":true}', $4::timestamptz AT TIME ZONE 'UTC')`,
+        [fx.tenantId, crypto.randomUUID(), conv, t(4).toISOString()],
       );
       await b.query(
         `INSERT INTO execution_logs (tenant_id, turn_id, conversation_id, stage, level, status, source, detail, created_at)
-         VALUES ($1, $2, $3, 'handoff', 'info', 'ok', 'inbox', '{"outcome":"taken_over"}', $4)`,
-        [fx.tenantId, crypto.randomUUID(), conv, t(5)],
+         VALUES ($1, $2, $3, 'handoff', 'info', 'ok', 'inbox', '{"outcome":"taken_over"}', $4::timestamptz AT TIME ZONE 'UTC')`,
+        [fx.tenantId, crypto.randomUUID(), conv, t(5).toISOString()],
       );
       await a.query("COMMIT");
     } finally {

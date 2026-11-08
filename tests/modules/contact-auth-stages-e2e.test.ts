@@ -590,7 +590,8 @@ describe.skipIf(!dbUp)("the contact gate in two stages (webhook e2e)", () => {
 
   // A test-mode agent is silent in a conversation nobody activated, and the rule now asks ahead of
   // that gate: a refusal there must stay as quiet as the test-mode gate would have been, or a test
-  // agent would speak (the copy) and act (the handoff) on a real lead's conversation.
+  // agent would speak (the copy) on a real lead's conversation. The one move is the test-mode
+  // silence's own: the conversation opens for the team, as the gate below would have opened it.
   test("test mode, conversation not activated: the rule's refusal is silent, with no test notice", async () => {
     const convId = 9861;
     await seedConversation(convId, INBOX_TEST_MODE);
@@ -606,7 +607,7 @@ describe.skipIf(!dbUp)("the contact gate in two stages (webhook e2e)", () => {
     });
     expect(cw.publicOn(convId)).toEqual([]);
     expect(cw.notesOn(convId)).toEqual([]);
-    expect(cw.statusToggles).toEqual([]);
+    expect(cw.statusToggles).toEqual([[convId, "open"]]);
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { testNoticeSentAt: true },

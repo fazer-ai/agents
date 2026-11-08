@@ -241,6 +241,32 @@ the agent's rule and the external allowed/denied check, each at its own position
 delivery still advances the handled watermark, and the message is folded into the memory thread
 like any other unanswered one.
 
+**A conversation the test-mode silence keeps quiet is opened for the team.** On an inbox with an
+active bot Chatwoot starts every conversation `pending` (`set_active_bot_conversation`, not
+configurable), and `pending` is a tab the team does not watch; a test-mode agent answers nothing
+there before `/teste`, so, left there, a test agent bound to an inbox real customers write to would leave every
+new conversation with nobody. The test-mode gate (and the contact rule's refusal it silences, which
+would otherwise leave first) toggles the conversation to `open` with the persona's token and
+`expected_status: pending`, behind the same `stillOurs` fence as every other gate's open. The bot's
+`open` is Chatwoot's handoff: the inbox's members get the `conversation_creation` notification (none
+was sent at creation, since `conversation_created` skips a `pending` conversation) and the inbox's
+auto-assignment runs in the same save. The park is recorded on the row (`testParkedOpenAt`, and
+`testParkedAssigneeId`, the person Chatwoot's assignment picked in that write, read back live).
+`/teste` on a parked conversation returns it to the agent through `returnConversationToAgent`, the
+hand-back `/reset` uses, while it is still `open` and held by nobody or by that person; the mirror
+ends the park when it writes any other person as the assignee (`endsTestPark`), so somebody who took
+the conversation keeps it, and `/teste` answers with the ownership message that names `/reset`, even
+after they let it go. On a redirect episode the parked sibling on the other inbox goes back under
+the same rule. The hand-back is automatic (`automatic: { status: "open", stillValid }`): a
+conversation resolved, snoozed or claimed by another person after `/teste` looked is refused on the
+hand-back's last live read, a park the mirror ended meanwhile is refused by `stillValid`, which
+re-reads it right before the first write, and the status call carries `expected_status`. A `/teste`
+that lands while an earlier message is on its way to the park finds nothing to return, so the park
+asks for the activation again once its mark is written and hands the conversation straight back; the fork's bot assignment has no conditional form, so a resolve landing
+between that read and the assignment is still undone. Switching the agent to production, or unbinding it, touches no parked conversation:
+by then it belongs to whoever is answering it. An inbox on Chatwoot's assignment V2 assigns in a job
+after the save, so the person it picks is recorded as somebody who took the conversation.
+
 **`/reset` leaves an audit row, and it is the only durable trace the command has** (#398,
 [`api-and-fleet.md`](api-and-fleet.md)). The acknowledgement it posts is a chat message in a
 conversation that can be deleted, and the flow log only ever gets a line when the command does NOT

@@ -274,8 +274,10 @@ export function useMetricsBlock<T>(
         n: (r.view === opening ? r.n : 0) + 1,
       }));
   }, [waiting, retryRetention, opening]);
+  // Nothing of a flow-log block shows before the retention is known: an empty answer could be days
+  // retention emptied, and its skeleton holds until then.
   const data =
-    block.data === null
+    waiting || block.data === null
       ? null
       : ((pickRef.current as (b: unknown) => T | undefined)(block.data) ??
         null);

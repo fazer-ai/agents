@@ -142,6 +142,8 @@ let logExpired = false;
 let tenantGone: string | null = null;
 // The KPIs' route fails; every other route answers.
 let kpisFail = false;
+// Holds the filter options' answer until released, to answer the metrics routes first.
+let optionsGate: Promise<void> | null = null;
 // The tenant's first record, which an all-time view starts from; null for none.
 let firstRecordAt: string | null = null;
 let optionsFail = false;
@@ -303,6 +305,7 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
         }),
       ],
     });
+  if (p.endsWith("/metrics/filter-options") && optionsGate) await optionsGate;
   if (p.endsWith("/metrics/filter-options") && optionsFail)
     return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/filter-options"))
@@ -382,6 +385,7 @@ beforeEach(() => {
   retentionDays = 30;
   tenantGone = null;
   kpisFail = false;
+  optionsGate = null;
   firstRecordAt = null;
   logExpired = false;
 });
@@ -804,6 +808,31 @@ describe("a view replaced while its requests run", () => {
     await waitFor(() => {
       expect(location).toBe("/?range=90d");
       expect(pending.every((s) => s.signal?.aborted)).toBe(true);
+    });
+  });
+});
+
+describe("filter options that answer after the metrics", () => {
+  test("hold the flow-log blocks on their skeleton, with no claim and no CSV, until the retention is known", async () => {
+    let release = () => {};
+    optionsGate = new Promise<void>((r) => {
+      release = r;
+    });
+    retentionDays = 30;
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(asks("/metrics/health").length).toBeGreaterThan(0);
+      // A block that does not read the flow log shows at once.
+      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+    });
+    expect(has("No warnings or errors in this period.")).toBe(false);
+    expect(
+      screen.queryAllByRole("button", { name: /Export Warnings and errors/ })
+        .length,
+    ).toBe(0);
+    release();
+    await waitFor(() => {
+      expect(has("No warnings or errors in this period.")).toBe(true);
     });
   });
 });

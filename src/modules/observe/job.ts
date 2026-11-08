@@ -771,13 +771,20 @@ export function labelHistoryFromRows(
 // The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —
 // this watcher on an earlier tick, another watcher, the responder, a colleague — because the
 // question the block answers is "what does this conversation already say", and it is the same
-// question whoever wrote the answer.
+// question whoever wrote the answer. The engine's own activity notes are the exception: they say
+// what an agent ran, not what the conversation is about.
 export function notesFromRows(
   rows: ChatwootMessageRow[],
   limit: number,
 ): string[] {
   const all = rows
-    .filter((m) => m.private && !m.isReaction && m.content.trim().length > 0)
+    .filter(
+      (m) =>
+        m.private &&
+        !m.isReaction &&
+        m.activityNote === undefined &&
+        m.content.trim().length > 0,
+    )
     .sort((a, b) => a.id - b.id)
     .slice(-limit)
     .map((m) =>

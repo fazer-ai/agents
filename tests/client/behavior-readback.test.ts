@@ -146,6 +146,7 @@ const DEFAULTS: Record<string, unknown> = {
   attributeContext: { conversation: [], contact: [], task: [] },
   contactFields: { context: [], writable: [] },
   takeover: { onHumanReply: true },
+  conversationNotes: { toolsUsed: false },
   otherInboxes: {
     enabled: false,
     inboxes: [],

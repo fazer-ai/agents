@@ -143,6 +143,8 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     string,
     { failed: number; succeeded: number; cause: string; warned: boolean }
   >();
+  // Every tool the turn started, in the order of its first call, with how many calls it made.
+  private readonly called = new Map<string, number>();
   // Set by the first `settle`. A call still running when the turn ended (a deadline rejects before
   // LangChain delivers the tool's own end or error) reports after it, and is judged when it lands.
   private settled = false;
@@ -180,6 +182,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   ): void {
     const tool = runName && runName.length > 0 ? runName : "tool";
     this.onToolStart?.();
+    this.called.set(tool, (this.called.get(tool) ?? 0) + 1);
     this.starts.set(runId, {
       tool,
       at: Date.now(),
@@ -230,6 +233,11 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       },
       ...(failed ? { errorMessage: cause } : {}),
     });
+  }
+
+  // The tools this turn started so far, first call first. A call still running counts: it started.
+  calledTools(): { name: string; calls: number }[] {
+    return [...this.called].map(([name, calls]) => ({ name, calls }));
   }
 
   private tally(tool: string, failure: string | null): void {

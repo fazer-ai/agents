@@ -141,6 +141,7 @@ export const STORED: Record<string, unknown> = {
   attributeContext: { conversation: ["plano"], contact: [], task: [] },
   contactFields: { context: ["email"], writable: [] },
   takeover: { onHumanReply: false },
+  conversationNotes: { toolsUsed: true },
   otherInboxes: {
     enabled: true,
     inboxes: [{ instanceId: 3, inboxId: 12 }],

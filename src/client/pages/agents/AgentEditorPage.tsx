@@ -131,6 +131,7 @@ import { DEFAULT_CALL_VOICE } from "@/modules/voice-call/settings";
 import {
   BehaviorTab,
   type ContactAuthState,
+  type ConversationNotesState,
   type MemoryState,
   MONITORING_SECTIONS,
   type ModelFallbackState,
@@ -707,6 +708,12 @@ function readBehaviorState(a: Agent) {
       onHumanReply:
         ((s.takeover ?? {}) as Record<string, unknown>).onHumanReply !== false,
     },
+    // NOTE: Off unless the stored bag says `true`, mirroring readConversationNotesConfig.
+    conversationNotes: {
+      toolsUsed:
+        ((s.conversationNotes ?? {}) as Record<string, unknown>).toolsUsed ===
+        true,
+    },
     // NOTE: through the SAME reader the runtime uses, not a hand-rolled check: a bag that came from
     // REST or an import can carry the string "true", which the runtime honors — reading it stricter
     // here would show the switch off while values were being logged, and would then persist that lie
@@ -1173,6 +1180,8 @@ function AgentEditor() {
   const [takeover, setTakeover] = useState<TakeoverState>({
     onHumanReply: true,
   });
+  const [conversationNotes, setConversationNotes] =
+    useState<ConversationNotesState>({ toolsUsed: false });
   const [otherInboxes, setOtherInboxes] = useState<OtherInboxesState>(() =>
     readOtherInboxesState({}),
   );
@@ -1749,6 +1758,7 @@ function AgentEditor() {
     setObservation(b.observation);
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
+    setConversationNotes(b.conversationNotes);
     setOtherInboxes(b.otherInboxes);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
@@ -1802,6 +1812,7 @@ function AgentEditor() {
     setObservation((prev) => withDecisionsOf(b.observation, prev));
     if (chat) setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
+    setConversationNotes(b.conversationNotes);
     setOtherInboxes(b.otherInboxes);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
@@ -2066,6 +2077,7 @@ function AgentEditor() {
       attributeContext: f.attributeContext,
       contactFields: f.contactFields,
       takeover: f.takeover,
+      conversationNotes: f.conversationNotes,
       otherInboxes: f.otherInboxes,
     };
   }
@@ -2099,6 +2111,7 @@ function AgentEditor() {
       attributeContext,
       contactFields,
       takeover,
+      conversationNotes,
       otherInboxes,
     } = f;
     return {
@@ -2209,6 +2222,7 @@ function AgentEditor() {
         writable: contactFields.writable,
       },
       takeover: { onHumanReply: takeover.onHumanReply },
+      conversationNotes: { toolsUsed: conversationNotes.toolsUsed },
       ...otherInboxesPatch(otherInboxes, agentMode === "monitoring"),
     };
   }
@@ -2302,6 +2316,7 @@ function AgentEditor() {
     attributeContext: typeof attributeContext;
     contactFields: typeof contactFields;
     takeover: typeof takeover;
+    conversationNotes: typeof conversationNotes;
     otherInboxes: typeof otherInboxes;
     observability: typeof observability;
     memory: MemoryState;
@@ -2346,6 +2361,7 @@ function AgentEditor() {
     attributeContext,
     contactFields,
     takeover,
+    conversationNotes,
     otherInboxes,
     observability,
     memory,
@@ -2408,6 +2424,7 @@ function AgentEditor() {
       attributeContext: b.attributeContext,
       contactFields: b.contactFields,
       takeover: b.takeover,
+      conversationNotes: b.conversationNotes,
       otherInboxes: b.otherInboxes,
       observability: b.observability,
       memory: b.memory,
@@ -3455,6 +3472,7 @@ function AgentEditor() {
     setObservation((prev) => withDecisionsOf(b.observation, prev));
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
+    setConversationNotes(b.conversationNotes);
     setOtherInboxes(b.otherInboxes);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
@@ -5455,6 +5473,8 @@ function AgentEditor() {
                 setObservability={setObservability}
                 takeover={takeover}
                 setTakeover={setTakeover}
+                conversationNotes={conversationNotes}
+                setConversationNotes={setConversationNotes}
                 otherInboxes={otherInboxes}
                 setOtherInboxes={setOtherInboxes}
                 attributeContext={attributeContext}

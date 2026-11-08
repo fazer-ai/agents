@@ -61,3 +61,11 @@ export const CHATWOOT_REPLY_BY_OPERATOR_KEY = "fazer_ai_reply_by_operator";
 export function resetAckSendId(commandMessageId: number): string {
   return `reset-ack:${commandMessageId}`;
 }
+
+// Set on the private notes the engine writes to tell the team what a turn did, with the kind of note
+// as its value (`ACTIVITY_NOTE_KINDS`). A note is read back into a model's context by the monitoring
+// agent (`notesFromRows`), and these must not be: they describe the agent to the team, not the
+// conversation to the agent. A string and nothing else, for the reason `CHATWOOT_SEND_ID_KEY` is.
+export const CHATWOOT_ACTIVITY_NOTE_KEY = "fazer_ai_activity";
+export const ACTIVITY_NOTE_KINDS = ["tools"] as const;
+export type ActivityNoteKind = (typeof ACTIVITY_NOTE_KINDS)[number];

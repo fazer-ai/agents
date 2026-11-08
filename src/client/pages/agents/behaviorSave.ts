@@ -46,6 +46,7 @@ export const BEHAVIOR_BLOCKS = [
   "attributeContext",
   "contactFields",
   "takeover",
+  "conversationNotes",
   "otherInboxes",
 ] as const;
 

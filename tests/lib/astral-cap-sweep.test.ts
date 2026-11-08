@@ -476,6 +476,7 @@ const BARE_SLICES: Record<
   // The transcript window and the page walk, moved here from the monitoring job: both slice ARRAYS of
   // message rows.
   "src/modules/chatwoot/transcript.ts": [2, "array"],
+  "src/modules/conversation-notes/tools-used.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
   // The newest turns' lines kept off an ARRAY of turns, never a string.
   "src/modules/conversations/usage.ts": [1, "array"],

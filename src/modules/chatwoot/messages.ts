@@ -1,6 +1,9 @@
 import type { VisualAttachment } from "@/modules/vision/extract-message";
 import type { UnreadFile } from "@/modules/vision/unread";
 import {
+  ACTIVITY_NOTE_KINDS,
+  type ActivityNoteKind,
+  CHATWOOT_ACTIVITY_NOTE_KEY,
   CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
   CHATWOOT_SEND_ID_KEY,
@@ -126,6 +129,16 @@ export interface ChatwootMessageRow {
   // `CHATWOOT_REPLY_TEXT_KEY`: the reply a voice note was rendered from, which a resend sends as
   // text. Optional because a hand-built row carries none.
   replyText?: string;
+  // `CHATWOOT_ACTIVITY_NOTE_KEY`: the engine's own note about a turn, and which kind. Optional
+  // because a hand-built row carries none.
+  activityNote?: ActivityNoteKind;
+}
+
+function isActivityNoteKind(v: unknown): v is ActivityNoteKind {
+  return (
+    typeof v === "string" &&
+    (ACTIVITY_NOTE_KINDS as readonly string[]).includes(v)
+  );
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -376,6 +389,10 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
           ? (ca[CHATWOOT_SEND_ID_KEY] as string)
           : null,
       platformSent: ca?.[CHATWOOT_PLATFORM_SENT_KEY] === true,
+      ...(item.private === true &&
+      isActivityNoteKind(ca?.[CHATWOOT_ACTIVITY_NOTE_KEY])
+        ? { activityNote: ca?.[CHATWOOT_ACTIVITY_NOTE_KEY] as ActivityNoteKind }
+        : {}),
     });
   }
   out.sort((a, b) => a.id - b.id);

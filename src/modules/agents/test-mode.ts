@@ -24,3 +24,44 @@ export function shouldRunReset(
 ): boolean {
   return mode === "test" && testActivatedAt !== null;
 }
+
+// A conversation the test-mode silence opened for the team ("parked"): Chatwoot starts it `pending` on
+// a bot inbox, a tab the team does not watch, and the silenced agent would never answer it, so the
+// gate moves it to `open` and records the holder Chatwoot assigned in that same write (its own
+// auto-assignment, or nobody). Any other person assigned afterwards took it from there, and the
+// mirror ends the park when it writes one (`endsTestPark`).
+export interface TestPark {
+  parkedAt: Date | null;
+  parkedAssigneeId: number | null;
+}
+
+// Whether a mirrored assignee write ends the park: a person other than the one the park itself got.
+// A bot, or nobody, is not someone taking the conversation.
+export function endsTestPark(
+  park: TestPark,
+  next: { assigneeType: string | null; assigneeId: number | null },
+): boolean {
+  return (
+    park.parkedAt !== null &&
+    next.assigneeType === "User" &&
+    next.assigneeId !== park.parkedAssigneeId
+  );
+}
+
+// Whether /teste may give the conversation back to the agent: still parked, still `open`, and held by
+// nobody or by the person the park itself got. Anything else is somebody's conversation, and /teste
+// keeps saying so and naming /reset.
+export function testParkHolds(
+  park: TestPark,
+  live: {
+    status: string;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  },
+): boolean {
+  if (park.parkedAt === null || live.status !== "open") return false;
+  if (live.assigneeType === null) return true;
+  return (
+    live.assigneeType === "User" && live.assigneeId === park.parkedAssigneeId
+  );
+}

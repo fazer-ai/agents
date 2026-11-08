@@ -87,6 +87,7 @@ import {
   type ContactAuthConfig,
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
+import { readConversationNotesConfig } from "@/modules/conversation-notes/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
 import type {
   CaseInbox,
@@ -443,6 +444,9 @@ export interface AgentConfig {
   // expires on its own — see src/modules/flowlog/settings.ts). Read HERE, with the rest of the
   // agent's settings, so the emit path never pays a settings read per log line.
   fullDetail: boolean;
+  // Whether a turn that called a tool leaves a private note naming them in the Chatwoot conversation
+  // (agent.settings.conversationNotes.toolsUsed; off by default — src/modules/conversation-notes).
+  toolsUsedNote: boolean;
 }
 
 export interface LoadAgentArgs {
@@ -1157,6 +1161,7 @@ export async function loadAgentConfig(
     choiceCheckCredentialBaseUrl,
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
+    toolsUsedNote: readConversationNotesConfig(effSettings).toolsUsed,
   };
 }
 

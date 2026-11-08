@@ -20,6 +20,7 @@ import {
   ScrollText,
   ShieldCheck,
   Square,
+  StickyNote,
   Trash2,
   UserRoundCheck,
   Volume2,
@@ -390,6 +391,11 @@ export interface TakeoverState {
   onHumanReply: boolean;
 }
 
+// Mirrors agent.settings.conversationNotes / readConversationNotesConfig.
+export interface ConversationNotesState {
+  toolsUsed: boolean;
+}
+
 // Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
 // scope). Mirrors agent.settings.attributeContext / readAttributeContextConfig.
 interface AttributeContextState {
@@ -496,6 +502,10 @@ interface BehaviorTabProps {
   setLimits: React.Dispatch<React.SetStateAction<LimitsState>>;
   takeover: TakeoverState;
   setTakeover: React.Dispatch<React.SetStateAction<TakeoverState>>;
+  conversationNotes: ConversationNotesState;
+  setConversationNotes: React.Dispatch<
+    React.SetStateAction<ConversationNotesState>
+  >;
   attributeContext: AttributeContextState;
   setAttributeContext: React.Dispatch<
     React.SetStateAction<AttributeContextState>
@@ -1679,6 +1689,8 @@ export function BehaviorTab({
   setLimits,
   takeover,
   setTakeover,
+  conversationNotes,
+  setConversationNotes,
   attributeContext,
   setAttributeContext,
   otherInboxes,
@@ -2092,6 +2104,11 @@ export function BehaviorTab({
       id: "takeover",
       icon: UserRoundCheck,
       label: t("editor.takeover", "When a person answers"),
+    },
+    {
+      id: "conversationNotes",
+      icon: StickyNote,
+      label: t("editor.conversationNotes", "Notes in the conversation"),
     },
     {
       id: "limits",
@@ -4112,6 +4129,30 @@ export function BehaviorTab({
               label={t(
                 "editor.takeoverOnHumanReply",
                 "Stop answering when a person replies to the customer",
+              )}
+            />
+          </Section>
+
+          <Section
+            id="conversationNotes"
+            hidden={watcher}
+            icon={StickyNote}
+            title={t("editor.conversationNotes", "Notes in the conversation")}
+            help={t(
+              "editor.conversationNotesHelp",
+              "Private notes the agent leaves in the Chatwoot conversation for your team. The customer never sees them, and the agent does not read them back on later turns.",
+            )}
+          >
+            <SwitchField
+              checked={conversationNotes.toolsUsed}
+              onCheckedChange={(v) => setConversationNotes({ toolsUsed: v })}
+              label={t(
+                "editor.conversationNotesToolsUsed",
+                "Leave a note with the tools used in each turn",
+              )}
+              help={t(
+                "editor.conversationNotesToolsUsedHelp",
+                "One note per turn that used a tool, with the tool names only. What each tool was given and returned stays out, since it can carry the customer's data; the Logs page shows it.",
               )}
             />
           </Section>

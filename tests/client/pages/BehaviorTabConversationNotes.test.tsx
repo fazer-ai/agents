@@ -81,4 +81,21 @@ describe("the Behavior tab's conversation notes", () => {
     const el = document.getElementById("conversationNotes");
     expect(el?.className.split(/\s+/).includes("hidden")).toBe(true);
   });
+
+  test("the help about the formats names the Chatwoot version, never the fork", async () => {
+    const en = (await Bun.file("src/client/locales/en.json").json()).editor;
+    const pt = (await Bun.file("src/client/locales/pt-BR.json").json()).editor;
+    expect(en.conversationNoteFormatActivityContact).toBe(
+      "In the current Chatwoot version, an activity message shows as sent by the contact, and in a follow-up it also updates the contact's last activity.",
+    );
+    expect(pt.conversationNoteFormatActivityContact).toBe(
+      "Na versão atual do Chatwoot, a mensagem de atividade aparece como enviada pelo contato e, num follow-up, também atualiza a última atividade dele.",
+    );
+    for (const key of Object.keys(en).filter((k) =>
+      k.startsWith("conversationNote"),
+    )) {
+      expect(en[key]).not.toMatch(/\bfork\b/i);
+      expect(pt[key]).not.toMatch(/\bfork\b/i);
+    }
+  });
 });

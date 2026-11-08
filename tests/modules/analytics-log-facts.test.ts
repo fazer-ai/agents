@@ -20,6 +20,7 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog } from "@/tests/utils/flowlog";
+import { until } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
@@ -682,7 +683,8 @@ describe.skipIf(!dbUp)("the dashboard's log facts", () => {
       };
       // Halfway: some hours filled, the rest not. A figure read now is the log's whole figure, never
       // the part the facts hold so far.
-      for (let i = 0; i < 48; i++) await backfillLogFactsSlice(appDb, t.tenantId);
+      for (let i = 0; i < 48; i++)
+        await backfillLogFactsSlice(appDb, t.tenantId);
       const partial = await suDb.dashboardLogFact.count({
         where: { tenantId: t.tenantId },
       });
@@ -786,15 +788,15 @@ describe.skipIf(!dbUp)("the dashboard's log facts", () => {
       await suDb.$executeRaw`INSERT INTO dashboard_log_facts_state (tenant_id, cursor_at) VALUES (${t.tenantId}, ${new Date(START.getTime() - 60_000)})`;
       // A retention delete of the line, not yet committed when the slice reaches it.
       await a.query("BEGIN");
+      // biome-ignore lint/plugin/no-raw-flowlog-clear: one line, held uncommitted against the slice; not a clear
       await a.query("DELETE FROM execution_logs WHERE id = $1", [id]);
       const slice = backfillLogFactsSlice(appDb, t.tenantId);
       // The slice is waiting on the line's lock before the delete commits.
-      for (let i = 0; i < 100; i++) {
+      await until("the slice waiting on the line's lock", async () => {
         const [w] = await suDb.$queryRaw<{ n: number }[]>`
           SELECT COUNT(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`;
-        if ((w?.n ?? 0) > 0) break;
-        await Bun.sleep(50);
-      }
+        return (w?.n ?? 0) > 0;
+      });
       await a.query("COMMIT");
       await slice;
       expect(await suDb.dashboardLogFact.count({ where: { lineId: id } })).toBe(
@@ -830,12 +832,11 @@ describe.skipIf(!dbUp)("the dashboard's log facts", () => {
         [id],
       );
       const slice = backfillLogFactsSlice(appDb, t.tenantId);
-      for (let i = 0; i < 40; i++) {
+      await until("the slice waiting on the line's lock", async () => {
         const [w] = await suDb.$queryRaw<{ n: number }[]>`
           SELECT COUNT(*)::int AS n FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`;
-        if ((w?.n ?? 0) > 0) break;
-        await Bun.sleep(50);
-      }
+        return (w?.n ?? 0) > 0;
+      });
       await a.query("COMMIT");
       await slice;
       expect(await suDb.dashboardLogFact.count({ where: { lineId: id } })).toBe(

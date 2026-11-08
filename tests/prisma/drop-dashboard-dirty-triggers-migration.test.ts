@@ -45,21 +45,19 @@ async function engineLeft(): Promise<number> {
 }
 
 describe.skipIf(!dbUp)(
-  "migration: the kept days and the warm-up pass's table",
+  "migration: the kept days' triggers and the warm-up pass's table",
   () => {
-    test("a migrated database has none of their tables, triggers or functions", async () => {
+    test("a migrated database has no dashboard_dirty trigger or function, and keeps the kept days' tables for one release", async () => {
       expect(await exists("dashboard_views")).toBe(false);
-      expect(await exists("dashboard_days")).toBe(false);
-      expect(await exists("dashboard_dirty")).toBe(false);
       expect(await engineLeft()).toBe(0);
+      expect(await exists("dashboard_days")).toBe(true);
+      expect(await exists("dashboard_dirty")).toBe(true);
     });
 
-    test("the kept-days drop runs on a database the views drop already reached, and again on nothing", async () => {
-      const DROP = read("20261108010000_drop_dashboard_kept_days");
+    test("the triggers' drop takes every one a database carries, and runs again on nothing", async () => {
+      const DROP = read("20261108010000_drop_dashboard_dirty_triggers");
       await suDb.query("BEGIN");
       try {
-        await suDb.query("CREATE TABLE dashboard_days (id int)");
-        await suDb.query("CREATE TABLE dashboard_dirty (id int)");
         await suDb.query(
           "CREATE FUNCTION dashboard_dirty_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$",
         );
@@ -71,11 +69,10 @@ describe.skipIf(!dbUp)(
           /^\s*COMMIT;\s*$/m,
           "",
         );
+        expect(await engineLeft()).toBe(2);
         await suDb.query(body);
-        expect(await exists("dashboard_days")).toBe(false);
-        expect(await exists("dashboard_dirty")).toBe(false);
-        expect(await exists("dashboard_views")).toBe(false);
         expect(await engineLeft()).toBe(0);
+        expect(await exists("dashboard_days")).toBe(true);
         await suDb.query(body);
         expect(await engineLeft()).toBe(0);
       } finally {

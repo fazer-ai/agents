@@ -797,6 +797,13 @@ describe("the funnel's own controls", () => {
         (screen.getByRole("radio", { name: "By agent" }) as HTMLInputElement)
           .checked,
       ).toBe(true);
+      // The split is the route's own: the trend asks for the agents' series, and shows them.
+      expect(
+        asks("/metrics/outcomes").some(
+          (u) => u.searchParams.get("breakdown") === "agent",
+        ),
+      ).toBe(true);
+      expect(has("Ana")).toBe(true);
     });
     fireEvent.click(screen.getByRole("radio", { name: "90d" }));
     await waitFor(() => {

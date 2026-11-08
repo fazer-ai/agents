@@ -71,6 +71,21 @@ describe("the budget class of a statement text", () => {
     ).toBe("SELECT t1.a FROM t1 WHERE x = ? AND y = ?");
   });
 
+  test("an apostrophe in a comment opens no string: the server keeps the comment and replaces only the constants", () => {
+    noteStatementPool(
+      "metrics",
+      "SELECT count(*) FROM threads t\n  -- the thread's owner, not an actor\n  WHERE t.kind = 'knowledge' AND t.state <> 'done'",
+    );
+    expect(
+      budgetClassOf(
+        "SELECT count(*) FROM threads t\n  -- the thread's owner, not an actor\n  WHERE t.kind = $1 AND t.state <> $2",
+      ),
+    ).toBe("metrics");
+    expect(
+      canonicalStatement("SELECT '--x' AS a /* it's */ FROM t WHERE b = 'y'"),
+    ).toBe("SELECT ? AS a FROM t WHERE b = ?");
+  });
+
   test("an unknown class is the transaction budget, 'metrics' the metrics one", () => {
     const budgets = { tx: 5000, metrics: 15000 };
     expect(budgetOfClass("metrics", budgets)).toBe(15000);

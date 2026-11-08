@@ -37,6 +37,7 @@ import {
   snapshotIfDue,
   statementColumns,
   takeStatsRole,
+  writeStatementClasses,
   writeStatementTexts,
 } from "@/modules/instance-health/database/snapshot";
 import {
@@ -1035,6 +1036,50 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       ).toEqual(["SELECT 1"]);
     },
   );
+
+  test("a class learned for a stored text is written even when the text did not run since the last snapshot, and 'default' is never undone", async () => {
+    resetStatementBudgetsForTest();
+    const row = (queryid: bigint, query: string) => ({
+      userid: 10n,
+      dbid: 1n,
+      queryid,
+      query,
+      budgetClass: null,
+    });
+    await writeStatementTexts(
+      suDb,
+      [
+        row(9_201n, "SELECT a FROM idle_read"),
+        row(9_202n, "SELECT b FROM mixed"),
+      ],
+      Date.now(),
+    );
+    await suDb.$executeRaw`
+      UPDATE db_statement_texts SET budget_class = 'default' WHERE queryid = 9202`;
+    const cls = (
+      queryid: bigint,
+      budgetClass: "metrics" | "default" | null,
+    ) => ({
+      userid: 10n,
+      dbid: 1n,
+      queryid,
+      budgetClass,
+    });
+    await writeStatementClasses(suDb, [
+      cls(9_201n, "metrics"),
+      cls(9_202n, "metrics"),
+      cls(9_203n, "metrics"),
+    ]);
+    const rows = await suDb.$queryRaw<
+      { queryid: bigint; budget_class: string | null }[]
+    >`
+      SELECT queryid, budget_class FROM db_statement_texts
+       WHERE queryid IN (9201, 9202, 9203) ORDER BY queryid`;
+    expect(rows.map((r) => [String(r.queryid), r.budget_class])).toEqual([
+      ["9201", "metrics"],
+      ["9202", "default"],
+    ]);
+  });
 
   test.skipIf(!dbUp)(
     "a console read longer than the stored text keeps its class: it is resolved before the text is clipped",

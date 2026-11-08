@@ -317,6 +317,31 @@ export async function writeStatementTexts(
                     ELSE excluded.budget_class END`;
 }
 
+// The classes learned for texts already stored, whether or not they ran since the last snapshot: a
+// console read that ran once before the first snapshot after a restart and then went idle still gets
+// its class beside its history. Only a known class is written, and 'default' is never undone.
+export async function writeStatementClasses(
+  db: Pick<PrismaClient, "$executeRaw">,
+  entries: {
+    userid: bigint | number;
+    dbid: bigint | number;
+    queryid: bigint | number;
+    budgetClass: BudgetClass | null;
+  }[],
+): Promise<void> {
+  const known = entries.filter((e) => e.budgetClass !== null);
+  if (known.length === 0) return;
+  await db.$executeRaw`
+    UPDATE db_statement_texts t SET budget_class = x.b
+      FROM unnest(${known.map((e) => String(e.userid))}::bigint[],
+                  ${known.map((e) => String(e.dbid))}::bigint[],
+                  ${known.map((e) => String(e.queryid))}::bigint[],
+                  ${known.map((e) => e.budgetClass)}::text[]) AS x(u, d, q, b)
+     WHERE t.userid = x.u AND t.dbid = x.d AND t.queryid = x.q
+       AND t.budget_class IS DISTINCT FROM x.b
+       AND t.budget_class IS DISTINCT FROM 'default'`;
+}
+
 export async function snapshotIfDue(
   base: PrismaClient = instanceHealthPrisma,
   now: number = Date.now(),
@@ -396,6 +421,7 @@ export async function snapshotIfDue(
         takenAt,
       );
     }
+    if (entries) await writeStatementClasses(db, entries);
     if (tables.length > 0) {
       await db.dbTableSnapshot.createMany({
         data: tables.map((t) => ({

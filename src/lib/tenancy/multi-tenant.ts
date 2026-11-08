@@ -89,6 +89,8 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ClientApp",
   "ClientAppSecret",
   "DashboardDay",
+  "DashboardLogFact",
+  "DashboardLogFactsState",
   "DashboardDirty",
   "OccurrenceMonitor",
   "ConversationReading",

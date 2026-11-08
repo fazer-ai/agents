@@ -11,6 +11,7 @@ import {
   logWhereSql,
   outcomeSql,
 } from "./filter";
+import { logFactsReady } from "./log-facts";
 import { normalizeTimeZone } from "./service";
 
 // WHAT THE AGENT DOES BESIDES ANSWERING, read from the flow log, the conversation mirror and the
@@ -110,6 +111,29 @@ export const CAUSE_SQL = Prisma.sql`(CASE
 export const HANDOFF_LINE_SQL = Prisma.sql`(l.stage = 'handoff'
   OR (l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human'))`;
 
+// CAUSE_SQL over the log facts, where every cause but a person's was fixed when the line was written
+// (docs/dashboard.md, "Log facts"). A `taken_over` fact is a person by the same rule, asked here
+// because it depends on lines written or swept after it: no earlier transfer of the conversation
+// without an agent turn since. Every transfer is a fact, so the earlier ones are looked up among the
+// facts and not in the log.
+export const FACT_CAUSE_SQL = Prisma.sql`(CASE
+  WHEN l.cause <> 'taken_over' THEN l.cause
+  WHEN NOT EXISTS (
+    SELECT 1 FROM dashboard_log_facts p
+     WHERE p.tenant_id = l.tenant_id
+       AND p.conversation_id = l.conversation_id
+       AND p.kind = 'handoff'
+       AND p.created_at < l.created_at
+       AND NOT EXISTS (
+         SELECT 1 FROM llm_usage u
+          WHERE u.tenant_id = l.tenant_id
+            AND u.conversation_id = l.conversation_id
+            AND u.source = 'inbox' AND ${agentTurnSql("u")}
+            AND u.turn_id IS DISTINCT FROM p.turn_id
+            AND u.created_at > p.created_at AND u.created_at < l.created_at))
+    THEN 'person'
+  END)`;
+
 export async function getHandoffReasons(
   ctx: TenantContext,
   filter: DashboardFilter,
@@ -120,7 +144,26 @@ export async function getHandoffReasons(
     // One pass over the window's transfer lines, the cause worked out once per line, grouped three
     // ways: per day (set 1), for the period (set 3) and per where it went (set 2). Only a hand-over
     // line records where it went, so the target is NULL on every other line, and that group is not a
-    // target.
+    // target. Read from the log facts (./log-facts.ts), or from the log itself while the backfill of a
+    // tenant this scope sees has not finished: the same figures either way.
+    const facts = await logFactsReady(db);
+    const lines = facts
+      ? Prisma.sql`
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+               ${FACT_CAUSE_SQL} AS cause,
+               l.target,
+               l.conversation_id
+          FROM dashboard_log_facts l
+         WHERE l.kind = 'handoff' AND ${logWhereSql("l", filter)}`
+      : Prisma.sql`
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+               ${CAUSE_SQL} AS cause,
+               CASE WHEN l.stage = 'handoff' THEN ${TARGET_SQL} END AS target,
+               l.conversation_id
+          FROM execution_logs l
+         WHERE ${logWhereSql("l", filter)}
+           AND l.conversation_id IS NOT NULL
+           AND ${HANDOFF_LINE_SQL}`;
     const causes = await db.$queryRaw<
       {
         set: number;
@@ -130,16 +173,7 @@ export async function getHandoffReasons(
         conversations: number;
       }[]
     >(Prisma.sql`
-      WITH x AS MATERIALIZED (
-        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
-               ${CAUSE_SQL} AS cause,
-               CASE WHEN l.stage = 'handoff' THEN ${TARGET_SQL} END AS target,
-               l.conversation_id
-          FROM execution_logs l
-         WHERE ${logWhereSql("l", filter)}
-           AND l.conversation_id IS NOT NULL
-           AND ${HANDOFF_LINE_SQL}
-      )
+      WITH x AS MATERIALIZED (${lines})
       SELECT GROUPING(x.date, x.target)::int AS set,
              x.date, x.cause, x.target,
              COUNT(DISTINCT x.conversation_id)::int AS conversations
@@ -149,17 +183,24 @@ export async function getHandoffReasons(
        ORDER BY 1, 2, 3, 4`);
     // Silences per reason for the period and per day, in one pass. Only a call that ran: a refused
     // one (arguments that failed the schema, a precondition that did not hold) silenced nothing.
+    const silenceLines = facts
+      ? Prisma.sql`
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date, l.reason
+          FROM dashboard_log_facts l
+         WHERE l.kind = 'silence' AND ${logWhereSql("l", filter)}`
+      : Prisma.sql`
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+               COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason
+          FROM execution_logs l
+         WHERE ${logWhereSql("l", filter)}
+           AND l.stage = 'tool'
+           AND l.detail->>'tool' = 'skip_reply'
+           AND ${callRanSql("l")}`;
     const silenceRows = await db.$queryRaw<
       { date: string | null; reason: string; turns: number }[]
     >(Prisma.sql`
       SELECT s.date, s.reason, COUNT(*)::int AS turns
-        FROM (SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
-                     COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason
-                FROM execution_logs l
-               WHERE ${logWhereSql("l", filter)}
-                 AND l.stage = 'tool'
-                 AND l.detail->>'tool' = 'skip_reply'
-                 AND ${callRanSql("l")}) s
+        FROM (${silenceLines}) s
        GROUP BY GROUPING SETS ((s.reason), (s.date, s.reason))
        ORDER BY 1, 2`);
     const rows = causes.filter((r) => r.set === 1);
@@ -295,6 +336,19 @@ export async function getFollowUpActivity(
   base: PrismaClient = metricsPrisma,
 ): Promise<FollowUpActivity> {
   return runMetricsScoped(base, ctx, async (db) => {
+    const steps = (await logFactsReady(db))
+      ? Prisma.sql`
+        SELECT l.conversation_id, l.created_at
+          FROM dashboard_log_facts l
+         WHERE l.kind = 'followup' AND ${logWhereSql("l", filter)}`
+      : Prisma.sql`
+        SELECT l.conversation_id, l.created_at
+          FROM execution_logs l
+         WHERE ${logWhereSql("l", filter)}
+           AND l.stage = 'generate'
+           AND l.detail->>'trigger' = 'followup'
+           AND l.detail->>'outcome' IN ('messaged', 'templated')
+           AND l.conversation_id IS NOT NULL`;
     const [row] = await db.$queryRaw<
       {
         steps: number;
@@ -303,15 +357,7 @@ export async function getFollowUpActivity(
         closed: number;
       }[]
     >(Prisma.sql`
-      WITH steps AS (
-        SELECT l.conversation_id, l.created_at
-          FROM execution_logs l
-         WHERE ${logWhereSql("l", filter)}
-           AND l.stage = 'generate'
-           AND l.detail->>'trigger' = 'followup'
-           AND l.detail->>'outcome' IN ('messaged', 'templated')
-           AND l.conversation_id IS NOT NULL
-      ), firsts AS (
+      WITH steps AS (${steps}), firsts AS (
         SELECT conversation_id, MIN(created_at) AS first_at FROM steps GROUP BY 1
       )
       SELECT (SELECT COUNT(*) FROM steps)::int AS steps,

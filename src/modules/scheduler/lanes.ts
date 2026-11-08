@@ -51,6 +51,7 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // The monitor's listing of the inboxes no agent receives (occurrences/sweep.ts): a few Chatwoot
   // reads per monitor per cadence, and no model call.
   OCCURRENCE_SWEEP: "shared",
+  DASHBOARD_LOG_FACTS_BACKFILL: "shared",
   // Shared, and neither reason applies. Cadence: the message it answers has been unanswered for at
   // least the sweep's staleness window, so a wait of one shared tick is not what the customer feels.
   // Budget: it does spend the model, but the cap that needs is the shared lane's own provider
@@ -149,6 +150,7 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   SPEND_CEILING_POLL: "background",
   OCCURRENCE_ROUND: "background",
   OCCURRENCE_SWEEP: "background",
+  DASHBOARD_LOG_FACTS_BACKFILL: "background",
   // Background: it repairs a conversation's status; no reply is sent.
   TAKEOVER_RECOVERY: "background",
   // Background: it reads a page of messages and arms an ingest job; no reply is sent.
@@ -193,6 +195,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // Its model calls (canonical names, grouping) queue for the same provider as a customer's turn.
   OCCURRENCE_ROUND: true,
   OCCURRENCE_SWEEP: false,
+  DASHBOARD_LOG_FACTS_BACKFILL: false,
   // It runs the delivery path, which runs a real agent turn: a model call, and whatever tools the
   // turn decides to use. The whole reason it is a kind of its own rather than work the sweep does
   // inline.
@@ -277,6 +280,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: false,
   OCCURRENCE_SWEEP: false,
+  DASHBOARD_LOG_FACTS_BACKFILL: false,
   // Same reason as INGEST_MESSAGE, and the same shape: the key names ONE ledger row — it has to, or
   // a second stranded delivery would overwrite the first — so nothing ever reuses the row and the
   // count is bounded by how many deliveries have ever been stranded. What the record of the work is
@@ -349,6 +353,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: false,
   OCCURRENCE_SWEEP: false,
+  DASHBOARD_LOG_FACTS_BACKFILL: false,
   // One row per DELIVERY the sweep declared lost, and one pass can declare a whole batch (a deploy
   // strands every delivery in flight), armed for `now`: the shape that starves a reminder. The cost:
   // the claim is FIFO on `run_at`, so a recovery waits behind ingestion rows armed before it, but
@@ -431,6 +436,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   SPEND_CEILING_POLL: 1,
   OCCURRENCE_ROUND: 1,
   OCCURRENCE_SWEEP: 1,
+  DASHBOARD_LOG_FACTS_BACKFILL: 1,
   OBSERVE: 1,
   KNOWLEDGE_SOURCE_SYNC: 1,
   INBOUND_SWEEP: 1,
@@ -486,6 +492,8 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   SPEND_CEILING_POLL: "error",
   OCCURRENCE_ROUND: "warn",
   OCCURRENCE_SWEEP: "warn",
+  // `warn`: the figures stay right, read from the flow log as before the facts; only slower.
+  DASHBOARD_LOG_FACTS_BACKFILL: "warn",
   // `warn`: what died is the automatic second attempt. The customer's message going unanswered is the
   // delivery's own `error` line, which the recovery writes when it ends with the row still DEAD and its
   // dead-letter hook writes when it dies (../chatwoot/recover-delivery.ts, `announceDeadRecovery`).
@@ -562,6 +570,8 @@ export const JOB_DEATH_CONSEQUENCE: Record<SchedulerJobKind, string> = {
     "the spend ceiling keeps deciding on the last figure it polled",
   OCCURRENCE_ROUND: "an occurrence monitor round did not run",
   OCCURRENCE_SWEEP: "occurrence monitors stop being swept",
+  DASHBOARD_LOG_FACTS_BACKFILL:
+    "the dashboard keeps reading this tenant's handoff, silence and follow-up figures from the flow log, slower, until a restart arms the backfill again",
   OBSERVE: "a conversation's labels were not refreshed",
   MEDIA_TEXT_FALLBACK:
     "the text standing in for a lost customer reply was lost too",
@@ -606,6 +616,7 @@ export const JOB_NEVER_DEAD: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: true,
   OCCURRENCE_ROUND: false,
   OCCURRENCE_SWEEP: true,
+  DASHBOARD_LOG_FACTS_BACKFILL: true,
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
@@ -650,6 +661,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   SPEND_CEILING_POLL: 2_000,
   OCCURRENCE_ROUND: 2_000,
   OCCURRENCE_SWEEP: 2_000,
+  DASHBOARD_LOG_FACTS_BACKFILL: 2_000,
   DELIVERY_RECOVERY: 60_000,
   TAKEOVER_RECOVERY: 60_000,
   HUMAN_REPLY_RECOVERY: 60_000,

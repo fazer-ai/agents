@@ -87,6 +87,7 @@ enum SchedulerJobKind {
   OTHER_INBOX_SUMMARY
   OCCURRENCE_ROUND
   OCCURRENCE_SWEEP
+  DASHBOARD_LOG_FACTS_BACKFILL
 }
 
 enum SchedulerJobStatus {
@@ -196,6 +197,8 @@ model Tenant {
   clientAllowanceUsage          ClientAllowanceUsage[]
   clientAppSecrets              ClientAppSecret[]
   dashboardDays                 DashboardDay[]
+  dashboardLogFacts             DashboardLogFact[]
+  dashboardLogFactsState        DashboardLogFactsState?
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
   dashboardDataSources          DashboardDataSource[]
@@ -445,28 +448,28 @@ model ChatwootDeployment {
 // identity (accountId/name) and the soft-disconnect flag. The 5 FK tables below still reference this
 // row's id, so reparenting it under a deployment leaves their keys untouched.
 model ChatwootInstance {
-  id              BigInt    @id @default(autoincrement())
-  tenantId        BigInt    @map("tenant_id")
-  deploymentId    BigInt    @map("deployment_id")
-  accountId       Int       @map("account_id")
+  id               BigInt    @id @default(autoincrement())
+  tenantId         BigInt    @map("tenant_id")
+  deploymentId     BigInt    @map("deployment_id")
+  accountId        Int       @map("account_id")
   // Normalized base URL of the parent deployment, denormalized so a Chatwoot ACCOUNT (server +
   // accountId) is globally unique to ONE tenant — a shared server can back many tenants, but the
   // same account can't. See normalizeChatwootBaseUrl + @@unique([serverKey, accountId]) below.
-  serverKey       String    @map("server_key")
+  serverKey        String    @map("server_key")
   // When Chatwoot created the account (`GET /api/v1/accounts/:id`, milliseconds): with accountId, the
   // account's identity across tenants whatever address reaches it. Null until the reconcile sweep
   // reads it for a row connected before it existed.
   accountCreatedAt DateTime? @map("account_created_at")
-  accountName     String?   @map("account_name") // display name, refreshed on sync (Chatwoot can rename)
+  accountName      String?   @map("account_name") // display name, refreshed on sync (Chatwoot can rename)
   // Soft-disconnect: "remove account" keeps the rows (conversations/inboxes/contacts) for history +
   // analytics but unbinds agents and makes the webhook/runtime ignore the account. Null = active.
-  disconnectedAt  DateTime? @map("disconnected_at")
+  disconnectedAt   DateTime? @map("disconnected_at")
   // How far the Chatwoot reconciliation sweep has read this account: the start of its last pass that
   // finished. The next pass reads from here (minus a margin), so an outage of any length is read on
   // the way back. Null until the first pass, which then reads one recovery ceiling back.
-  reconciledUntil DateTime? @map("reconciled_until")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  reconciledUntil  DateTime? @map("reconciled_until")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   tenant              Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   deployment          ChatwootDeployment        @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
@@ -3573,6 +3576,49 @@ model DashboardDay {
   @@unique([tenantId, version, filterKey, tz, section, day])
   @@index([tenantId, tz, day])
   @@map("dashboard_days")
+}
+
+// A flow-log line the dashboard counts, decided once when the line is written (docs/dashboard.md,
+// "Log facts"): a transfer with its cause and where it went, a silence with its reason, a follow-up
+// step that reached the customer. Written and deleted by triggers on `execution_logs` only, never by
+// the app; `lineId` is the line's id, with no foreign key, since the delete trigger removes it.
+model DashboardLogFact {
+  lineId         BigInt   @id @map("line_id")
+  tenantId       BigInt   @map("tenant_id")
+  createdAt      DateTime @map("created_at")
+  turnId         String   @map("turn_id")
+  conversationId BigInt?  @map("conversation_id")
+  agentId        BigInt?  @map("agent_id")
+  inboxId        BigInt?  @map("inbox_id")
+  source         String
+  anonymous      Boolean
+  // handoff | silence | followup
+  kind           String
+  // A transfer's cause, `taken_over` included as itself: the readers decide whether it is a person.
+  cause          String?
+  target         String?
+  // A silence's reason.
+  reason         String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, kind, createdAt])
+  @@index([tenantId, conversationId, createdAt])
+  @@map("dashboard_log_facts")
+}
+
+// Where a tenant's backfill of the log facts stands. A row with no `backfilledAt` is a tenant whose
+// lines from before the facts are still being filled in, and its readers read the flow log meanwhile;
+// a tenant with no row was created after the facts and reads them from the start.
+model DashboardLogFactsState {
+  tenantId     BigInt    @id @map("tenant_id")
+  // The next hour of lines to fill in; null before the first batch.
+  cursorAt     DateTime? @map("cursor_at")
+  backfilledAt DateTime? @map("backfilled_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("dashboard_log_facts_state")
 }
 
 // What changed under a kept day, written by triggers on the tables the figures read

@@ -99,6 +99,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   SPEND_CEILING_POLL: "shared",
   OCCURRENCE_ROUND: "shared",
   OCCURRENCE_SWEEP: "shared",
+  DASHBOARD_LOG_FACTS_BACKFILL: "shared",
   // A lane of its own, drained by the scheduler's fast tick: on the traffic share it would wait
   // behind every ingestion row armed before it, five rows a tick for the whole install.
   OBSERVE: "observe",
@@ -149,6 +150,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: true,
   OCCURRENCE_SWEEP: false,
+  DASHBOARD_LOG_FACTS_BACKFILL: false,
   OBSERVE: true,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
@@ -198,6 +200,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: false,
   OCCURRENCE_SWEEP: false,
+  DASHBOARD_LOG_FACTS_BACKFILL: false,
   // One row per observed CONVERSATION, the same shape as DEBOUNCE's and the same answer: with a lane
   // of its own, no claim that holds a fixed-rate kind ever holds it.
   OBSERVE: false,
@@ -243,6 +246,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OCCURRENCE_ROUND: false,
   OCCURRENCE_SWEEP: false,
+  DASHBOARD_LOG_FACTS_BACKFILL: false,
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
@@ -292,6 +296,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   SPEND_CEILING_POLL: "error",
   OCCURRENCE_ROUND: "warn",
   OCCURRENCE_SWEEP: "warn",
+  DASHBOARD_LOG_FACTS_BACKFILL: "warn",
   OBSERVE: "warn",
   MEDIA_TEXT_FALLBACK: "error",
   KNOWLEDGE_SOURCE_SYNC: "warn",

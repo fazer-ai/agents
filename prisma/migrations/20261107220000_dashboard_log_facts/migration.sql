@@ -21,6 +21,12 @@
 -- tenant-scoped table that does not bind its owner (.claude/rules/prisma.md).
 BEGIN;
 
+-- The log first, then the tenants. During a rolling deploy the old container keeps writing lines, and
+-- a line's insert holds `execution_logs` while its tenant foreign key reads `tenants`; taking
+-- `tenants` here before the triggers' lock on `execution_logs` would be the opposite order, and one
+-- of the two would be aborted as a deadlock. Held to COMMIT, so writers wait for the migration.
+LOCK TABLE "execution_logs" IN SHARE ROW EXCLUSIVE MODE;
+
 CREATE TABLE "dashboard_log_facts" (
     "line_id" BIGINT NOT NULL,
     "tenant_id" BIGINT NOT NULL,

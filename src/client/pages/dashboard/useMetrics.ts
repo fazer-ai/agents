@@ -91,6 +91,18 @@ export function dayState(
   return inGap(coverage, day) ? "noData" : "ready";
 }
 
+// Where a flow-log chart's axis starts in an all-time view: its first day with lines, or the first
+// day with none for good, whichever is earlier, so the days retention emptied keep their band.
+export function axisStart(
+  coverage: BlockCoverage | null,
+  firstWithData: string | null | undefined,
+): string | null {
+  const gone = coverage?.none[0]?.[0] ?? null;
+  if (!gone) return firstWithData ?? null;
+  if (!firstWithData) return gone;
+  return gone < firstWithData ? gone : firstWithData;
+}
+
 export function hasNoData(coverage: BlockCoverage | null | undefined): boolean {
   return (coverage?.noData ?? 0) > 0;
 }

@@ -125,7 +125,7 @@ export const dashboardController = new Elysia({
       requireAuth: true,
       detail: doc(
         "Dashboard filter options",
-        "Every agent and inbox of the tenant, by id and name, for the dashboard's agent and inbox filters; an inbox whose name another inbox also has carries its Chatwoot account (`account: {id, name}`). Whole, not paged. `flowLogRetentionDays` is how many days the flow log keeps (`FLOWLOG_RETENTION_DAYS`): a day of a flow-log block before the cutoff has no data, never zero. `firstConversationAt` is the tenant's first conversation, where an all-time view starts.",
+        "Every agent and inbox of the tenant, by id and name, for the dashboard's agent and inbox filters; an inbox whose name another inbox also has carries its Chatwoot account (`account: {id, name}`). Whole, not paged. `flowLogRetentionDays` is how many days the flow log keeps (`FLOWLOG_RETENTION_DAYS`): a day of a flow-log block before the cutoff has no data, never zero. `firstRecordAt` is the tenant's first conversation or ledger row, where an all-time view starts.",
       ),
       response: errors(401, 403, 404),
     },

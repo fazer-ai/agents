@@ -10,7 +10,13 @@ import type {
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import { daysOf, type Window } from "./filters";
-import { dayState, hasNoData, inGap, useMetricsBlock } from "./useMetrics";
+import {
+  axisStart,
+  dayState,
+  hasNoData,
+  inGap,
+  useMetricsBlock,
+} from "./useMetrics";
 
 const StackedBars = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
@@ -69,7 +75,7 @@ export function ReasonsSection({ win }: { win: Window }) {
     raw: c,
     label: causeLabel[c] ?? c,
   }));
-  const days = daysOf(win, h?.days[0]?.date ?? null);
+  const days = daysOf(win, axisStart(handoffs.coverage, h?.days[0]?.date));
   const rows: ChartRow[] = days.map((day) => {
     const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
     for (const s of series)
@@ -109,7 +115,10 @@ export function ReasonsSection({ win }: { win: Window }) {
   }));
   // Its own range: under "all time" the window starts at the first event, and a silence can come
   // before the first handoff.
-  const silenceDays = daysOf(win, h?.silenceDays[0]?.date ?? null);
+  const silenceDays = daysOf(
+    win,
+    axisStart(handoffs.coverage, h?.silenceDays[0]?.date),
+  );
   const silenceRows: ChartRow[] = silenceDays.map((day) => {
     const row: ChartRow = { day, state: dayState(handoffs.coverage, day) };
     for (const s of silenceSeries)

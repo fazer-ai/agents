@@ -288,8 +288,8 @@ export function DashboardPage() {
         setInboxes(r.data.inboxes);
         setRetentionDays(r.data.flowLogRetentionDays);
         setFirstDay(
-          r.data.firstConversationAt
-            ? localDayKey(new Date(r.data.firstConversationAt))
+          r.data.firstRecordAt
+            ? localDayKey(new Date(r.data.firstRecordAt))
             : null,
         );
       })

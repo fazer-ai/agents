@@ -983,10 +983,6 @@
       "clickForAll": "Click to see every series",
       "closeDetail": "Close the day's detail",
       "days": "Days of the chart",
-      "loading": "loading",
-      "loadingDays_one": "loading · {{count}} day",
-      "loadingDays_other": "loading · {{count}} days",
-      "loadingTip": "computing…",
       "moreMembers_one": "and {{count}} more",
       "moreMembers_other": "and {{count}} more",
       "noData": "no data",
@@ -1042,10 +1038,8 @@
     },
     "costsError": "Could not read the cost.",
     "coverage": {
-      "bar": "{{ready}} of {{total}} days in",
       "noData_one": "no data for {{count}} day",
-      "noData_other": "no data for {{count}} days",
-      "partial": "partial · {{ready}} of {{total}} days"
+      "noData_other": "no data for {{count}} days"
     },
     "error": "Could not load metrics.",
     "exportCsv": "CSV",
@@ -1152,10 +1146,6 @@
     "percent": "%",
     "previous": "previous: {{value}}",
     "previousPeriod": "previous period",
-    "progress": {
-      "computing": "{{ready}} of {{total}} days ready · computing {{from}} to {{to}}",
-      "ready": "{{ready}} of {{total}} days ready"
-    },
     "range": {
       "12m": "12mo",
       "30d": "30d",

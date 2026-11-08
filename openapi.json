@@ -8745,7 +8745,7 @@
     "/v1/metrics/kpis": {
       "get": {
         "summary": "Dashboard KPIs",
-        "description": "Returns the headline dashboard KPIs since an optional start time. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Returns the headline dashboard KPIs since an optional start time. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "tags": [
           "Dashboard"
         ],
@@ -9143,7 +9143,7 @@
     "/v1/metrics/costs": {
       "get": {
         "summary": "Cost metrics",
-        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "tags": [
           "Dashboard"
         ],
@@ -38636,7 +38636,7 @@
           "Dashboard"
         ],
         "summary": "Dashboard filter options",
-        "description": "Every agent and inbox of the tenant, by id and name, for the dashboard's agent and inbox filters; an inbox whose name another inbox also has carries its Chatwoot account (`account: {id, name}`). Whole, not paged.",
+        "description": "Every agent and inbox of the tenant, by id and name, for the dashboard's agent and inbox filters; an inbox whose name another inbox also has carries its Chatwoot account (`account: {id, name}`). Whole, not paged. `flowLogRetentionDays` is how many days the flow log keeps (`FLOWLOG_RETENTION_DAYS`): a day of a flow-log block before the cutoff has no data, never zero. `firstRecordAt` is the tenant's first conversation or ledger row, where an all-time view starts.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -38739,7 +38739,7 @@
           "Dashboard"
         ],
         "summary": "Outcome trend",
-        "description": "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -38973,7 +38973,7 @@
           "Dashboard"
         ],
         "summary": "Usage breakdown",
-        "description": "The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -39207,7 +39207,7 @@
           "Dashboard"
         ],
         "summary": "Handoff reasons",
-        "description": "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -39432,7 +39432,7 @@
           "Dashboard"
         ],
         "summary": "Outcome by label",
-        "description": "Volume and outcome of the view's conversations per Chatwoot label, and how many carry none. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Volume and outcome of the view's conversations per Chatwoot label, and how many carry none. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -39657,7 +39657,7 @@
           "Dashboard"
         ],
         "summary": "Health",
-        "description": "Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -39882,7 +39882,7 @@
           "Dashboard"
         ],
         "summary": "Follow-up activity",
-        "description": "Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -40101,247 +40101,13 @@
         "operationId": "getV1MetricsFollow-ups"
       }
     },
-    "/v1/metrics/stream": {
-      "get": {
-        "tags": [
-          "Dashboard"
-        ],
-        "summary": "Dashboard, as it fills",
-        "description": "Server-sent events with the figures of every requested block for the window. A `snapshot` comes first with what is already kept, then after each part of at most 30 days is computed (today and yesterday first, then the most recent days), each carrying the coverage per family; `computing` names the days about to be computed; the last snapshot has `done: true`. A refusal after the first event arrives as a `refused` event with the status and the sentence. The figures are the ones the per-block routes return.",
-        "parameters": [
-          {
-            "name": "since",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
-              "type": "string"
-            }
-          },
-          {
-            "name": "until",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
-              "type": "string"
-            }
-          },
-          {
-            "name": "source",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "inbox",
-                "playground",
-                "client"
-              ]
-            }
-          },
-          {
-            "name": "audience",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "identified",
-                "anonymous"
-              ]
-            }
-          },
-          {
-            "name": "agentId",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
-              "type": "string"
-            }
-          },
-          {
-            "name": "inboxId",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "Only this inbox (its database id).",
-              "type": "string"
-            }
-          },
-          {
-            "name": "tz",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
-              "type": "string"
-            }
-          },
-          {
-            "name": "blocks",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "Comma-separated blocks to compute (kpis, outcomes, costs, breakdown, handoffs, labels, health, followUps, knowledge); omit for all of them.",
-              "type": "string"
-            }
-          },
-          {
-            "name": "x-tenant-id",
-            "in": "header",
-            "required": true,
-            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
-            "schema": {
-              "type": "string",
-              "default": "1"
-            },
-            "example": "1"
-          }
-        ],
-        "responses": {
-          "400": {
-            "description": "Bad request — validation failed or the input was malformed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Bad request — validation failed or the input was malformed.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    },
-                    "turnId": {
-                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized — missing or invalid credentials.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unauthorized — missing or invalid credentials.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    },
-                    "turnId": {
-                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    },
-                    "turnId": {
-                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    },
-                    "turnId": {
-                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    },
-                    "turnId": {
-                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "operationId": "getV1MetricsStream"
-      }
-    },
     "/v1/metrics/knowledge": {
       "get": {
         "tags": [
           "Dashboard"
         ],
         "summary": "Knowledge suggestions",
-        "description": "Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected. Answers once every day of the window is computed. A window with days not computed before that does not fit one METRICS_TIMEOUT_MS is refused with a 503 naming `since`; the days computed before the refusal are kept, so the same request again goes on from them. The console reads the same figures from `GET /v1/metrics/stream`, which sends them as they are computed.",
+        "description": "Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",

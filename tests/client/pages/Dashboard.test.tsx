@@ -138,8 +138,8 @@ let logExpired = false;
 let tenantGone: string | null = null;
 // The KPIs' route fails; every other route answers.
 let kpisFail = false;
-// The tenant's first conversation, which an all-time view starts from; null for none.
-let firstConversationAt: string | null = null;
+// The tenant's first record, which an all-time view starts from; null for none.
+let firstRecordAt: string | null = null;
 let optionsFail = false;
 const ONE_INBOX = [{ id: "3", name: "WhatsApp" }];
 let inboxOptions: {
@@ -300,7 +300,7 @@ const stubFetch = (async (input: unknown) => {
       ],
       inboxes: inboxOptions,
       flowLogRetentionDays: retentionDays,
-      firstConversationAt,
+      firstRecordAt,
     });
   return json({ error: "nope" }, 500);
 }) as unknown as typeof globalThis.fetch;
@@ -368,7 +368,7 @@ beforeEach(() => {
   retentionDays = 30;
   tenantGone = null;
   kpisFail = false;
-  firstConversationAt = null;
+  firstRecordAt = null;
   logExpired = false;
 });
 afterEach(cleanup);
@@ -893,13 +893,15 @@ describe("silences and where the transfers went", () => {
 });
 
 describe("all time", () => {
-  test("starts at the tenant's first conversation, so flow-log days past retention read as no data", async () => {
+  test("starts at the tenant's first record, so flow-log days past retention read as no data", async () => {
     retentionDays = 30;
     logExpired = true;
-    firstConversationAt = new Date(Date.now() - 60 * 86_400_000).toISOString();
+    firstRecordAt = new Date(Date.now() - 60 * 86_400_000).toISOString();
     await renderDash("/?range=all");
     await waitFor(() => {
       expect(has("no data for")).toBe(true);
+      // Both flow-log charts keep the emptied days on their axis, under the band.
+      expect(screen.queryAllByText(/no data · \d+ days/).length).toBe(2);
     });
     expect(has("No handoffs in this period.")).toBe(false);
     expect(has("No warnings or errors in this period.")).toBe(false);

@@ -3057,8 +3057,9 @@ model DbStatementText {
   userid     BigInt
   dbid       BigInt
   queryid    BigInt
-  query      String
-  lastSeenAt DateTime @map("last_seen_at")
+  query       String
+  lastSeenAt  DateTime @map("last_seen_at")
+  budgetClass String?  @map("budget_class")
 
   @@id([userid, dbid, queryid])
   @@index([lastSeenAt])

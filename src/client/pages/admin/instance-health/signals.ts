@@ -22,7 +22,7 @@ import { throughputOfSignal } from "@/modules/instance-health/signals";
 // t('instanceHealth.signal.pool_waiters_metrics', 'Metrics pool: waiting for a connection')
 // t('instanceHealth.signal.lock_timeouts_per_min', 'Lock timeouts')
 // t('instanceHealth.signal.statement_timeouts_per_min', 'Statement timeouts')
-// t('instanceHealth.signal.statement_mean_budget_pct', 'Slowest query (share of the budget)')
+// t('instanceHealth.signal.statement_mean_budget_pct', 'Query closest to its budget')
 // t('instanceHealth.signal.debounce_waiters', 'Message bursts waiting for a debounce slot')
 
 // t('instanceHealth.help.event_loop_p99_ms', 'How late a timer fires in this process. High values slow every request and every turn at once.')
@@ -43,7 +43,7 @@ import { throughputOfSignal } from "@/modules/instance-health/signals";
 // t('instanceHealth.help.pool_waiters_metrics', 'Requests queued for a connection of the metrics pool (dashboards, this screen). See METRICS_POOL_MAX.')
 // t('instanceHealth.help.lock_timeouts_per_min', 'Statements that gave up waiting for a row lock (SQLSTATE 55P03, DB_LOCK_TIMEOUT_MS) in the last minute.')
 // t('instanceHealth.help.statement_timeouts_per_min', 'Statements cancelled by their time budget (SQLSTATE 57014) in the last minute. The work they belonged to stopped: open Database to see which statement it was and its plan.')
-// t('instanceHealth.help.statement_mean_budget_pct', 'The mean time of the slowest query over the last hour, as a share of the transaction budget (DB_TX_TIMEOUT_MS). It climbs while a query degrades, before the first timeout. Needs pg_stat_statements.')
+// t('instanceHealth.help.statement_mean_budget_pct', 'The mean time over the last hour of the query closest to its budget, as a share of the budget it ran under (METRICS_TIMEOUT_MS for console reads such as the dashboard, DB_TX_TIMEOUT_MS for the rest). It climbs while a query degrades, before the first timeout. Needs pg_stat_statements.')
 // t('instanceHealth.help.debounce_waiters', 'Message bursts due to be answered with no debounce slot free yet.')
 
 export function signalI18nKey(signal: string): string {

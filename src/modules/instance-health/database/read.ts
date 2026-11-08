@@ -1,6 +1,10 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
-import config from "@/config";
+import {
+  budgetOfClass,
+  type StatementBudgets,
+  statementBudgets,
+} from "@/lib/statement-budgets";
 import type { TxBudget } from "@/lib/tenancy";
 import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
 import { budgetUntil, fleetWithin, plainWithin } from "./budget";
@@ -63,7 +67,10 @@ export interface StatementRowDto {
   rows: number;
   totalMs: number;
   meanMs: number;
-  // The mean as a share of DB_TX_TIMEOUT_MS, in percent and not capped at 100; null with no budget.
+  // The budget the statement ran under: METRICS_TIMEOUT_MS for what the metrics pool sent (the
+  // console's reads), DB_TX_TIMEOUT_MS for the rest.
+  budgetMs: number;
+  // The mean as a share of `budgetMs`, in percent and not capped at 100; null with no budget.
   meanBudgetPct: number | null;
   // Mean time per bucket of the window, oldest first; null where the statement did not run.
   spark: (number | null)[];
@@ -115,8 +122,9 @@ export interface DatabaseScreenDto {
         available: true;
         snapshots: number;
         lastSnapshotAt: string | null;
-        // DB_TX_TIMEOUT_MS, which each row's meanBudgetPct is a share of.
+        // DB_TX_TIMEOUT_MS and METRICS_TIMEOUT_MS: each row's `budgetMs` is one of the two.
         budgetMs: number;
+        metricsBudgetMs: number;
         byTotal: StatementRowDto[];
         byMean: StatementRowDto[];
       }
@@ -220,21 +228,28 @@ async function sparks(
   return out;
 }
 
-// The slowest statement's mean over the last hour, as a share of DB_TX_TIMEOUT_MS, and its text.
-// Statements the screen itself runs (EXPLAIN, the snapshot reads) are left out.
+// The statement whose mean over the last hour takes the largest share of the budget it ran under, as
+// that share, with its text, mean and budget. Statements the screen itself runs (EXPLAIN, the
+// snapshot reads) are left out.
 export async function slowestMeanShare(
   base: PrismaClient,
   now: number = Date.now(),
-  budgetMs: number = config.dbTx.timeoutMs,
+  budgets: StatementBudgets = statementBudgets(),
   txBudget: TxBudget = budgetUntil(Date.now() + DRIFT_BUDGET_MS),
-): Promise<{ pct: number; query: string | null; meanMs: number }> {
+): Promise<{
+  pct: number;
+  query: string | null;
+  meanMs: number;
+  budgetMs: number;
+}> {
   return fleetWithin(base, txBudget, async (db) => {
     const totals = await statementTotals(
       db,
       new Date(now - WINDOWS["1h"]),
       new Date(now),
     );
-    if (totals.length === 0) return { pct: 0, query: null, meanMs: 0 };
+    const none = { pct: 0, query: null, meanMs: 0, budgetMs: budgets.tx };
+    if (totals.length === 0) return none;
     // Only what this application runs is measured against its budget: the runtime role and the
     // roles it can act as (the fleet role). A statement an operator runs in psql as another user
     // never had DB_TX_TIMEOUT_MS as its limit. An install that connects as a superuser matches every
@@ -243,19 +258,29 @@ export async function slowestMeanShare(
       SELECT oid::bigint AS oid FROM pg_roles WHERE pg_has_role(session_user, oid, 'MEMBER')`;
     const roles = new Set(ours.map((r) => String(r.oid)));
     const texts = await textsOf(db, totals);
-    let best: { mean: number; query: string } | null = null;
+    let best: {
+      pct: number;
+      mean: number;
+      query: string;
+      budgetMs: number;
+    } | null = null;
     for (const t of totals) {
       if (!roles.has(String(t.userid))) continue;
-      const query = texts.get(`${t.userid}:${t.dbid}:${t.queryid}`) ?? "";
+      const text = texts.get(`${t.userid}:${t.dbid}:${t.queryid}`);
+      const query = text?.query ?? "";
       if (isOwnStatement(query)) continue;
+      const budgetMs = budgetOfClass(text?.budgetClass ?? null, budgets);
+      if (budgetMs <= 0) continue;
       const mean = t.total_ms / t.calls;
-      if (!best || mean > best.mean) best = { mean, query };
+      const pct = (mean / budgetMs) * 100;
+      if (!best || pct > best.pct) best = { pct, mean, query, budgetMs };
     }
-    if (!best || budgetMs <= 0) return { pct: 0, query: null, meanMs: 0 };
+    if (!best) return none;
     return {
-      pct: (best.mean / budgetMs) * 100,
+      pct: best.pct,
       query: best.query,
       meanMs: best.mean,
+      budgetMs: best.budgetMs,
     };
   });
 }
@@ -276,34 +301,46 @@ export function isOwnStatement(query: string): boolean {
 async function textsOf(
   db: Pick<PrismaClient, "$queryRaw">,
   keys: { userid: bigint; dbid: bigint; queryid: bigint }[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, { query: string; budgetClass: string | null }>> {
   if (keys.length === 0) return new Map();
   const rows = await db.$queryRaw<
-    { userid: bigint; dbid: bigint; queryid: bigint; query: string }[]
-  >`SELECT userid, dbid, queryid, query FROM db_statement_texts
+    {
+      userid: bigint;
+      dbid: bigint;
+      queryid: bigint;
+      query: string;
+      budget_class: string | null;
+    }[]
+  >`SELECT userid, dbid, queryid, query, budget_class FROM db_statement_texts
      WHERE (userid::text || ':' || dbid::text || ':' || queryid::text)
            = ANY(${keys.map((k) => `${k.userid}:${k.dbid}:${k.queryid}`)}::text[])`;
   return new Map(
-    rows.map((r) => [`${r.userid}:${r.dbid}:${r.queryid}`, r.query]),
+    rows.map((r) => [
+      `${r.userid}:${r.dbid}:${r.queryid}`,
+      { query: r.query, budgetClass: r.budget_class },
+    ]),
   );
 }
 
 function toRow(
   t: KeyTotals,
-  texts: Map<string, string>,
+  texts: Map<string, { query: string; budgetClass: string | null }>,
   spark: Map<string, (number | null)[]>,
-  budgetMs: number,
+  budgets: StatementBudgets,
 ): StatementRowDto {
   const k = `${t.userid}:${t.dbid}:${t.queryid}`;
   const meanMs = t.calls > 0 ? t.total_ms / t.calls : 0;
+  const text = texts.get(k);
+  const budgetMs = budgetOfClass(text?.budgetClass ?? null, budgets);
   return {
     queryid: String(t.queryid),
     userid: String(t.userid),
-    query: texts.get(k) ?? "",
+    query: text?.query ?? "",
     calls: t.calls,
     rows: t.rows,
     totalMs: t.total_ms,
     meanMs,
+    budgetMs,
     meanBudgetPct: budgetMs > 0 ? (meanMs / budgetMs) * 100 : null,
     spark: spark.get(k) ?? [],
   };
@@ -358,7 +395,7 @@ export async function readDatabaseScreen(
   window: WindowKey,
   base: PrismaClient = metricsPrisma,
   now: number = Date.now(),
-  budgetMs: number = config.dbTx.timeoutMs,
+  budgets: StatementBudgets = statementBudgets(),
 ): Promise<DatabaseScreenDto> {
   const from = new Date(now - WINDOWS[window]);
   const to = new Date(now);
@@ -401,9 +438,10 @@ export async function readDatabaseScreen(
         available: true,
         snapshots: runs.length,
         lastSnapshotAt: runs[0]?.takenAt.toISOString() ?? null,
-        budgetMs,
-        byTotal: byTotal.map((t) => toRow(t, texts, spark, budgetMs)),
-        byMean: byMean.map((t) => toRow(t, texts, spark, budgetMs)),
+        budgetMs: budgets.tx,
+        metricsBudgetMs: budgets.metrics,
+        byTotal: byTotal.map((t) => toRow(t, texts, spark, budgets)),
+        byMean: byMean.map((t) => toRow(t, texts, spark, budgets)),
       };
     } else {
       statements = {

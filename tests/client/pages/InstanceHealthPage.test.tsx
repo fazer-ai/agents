@@ -85,10 +85,11 @@ const EXTRA = {
       history: [{ at: Date.now(), value: 61 }],
       // The English line the alert carries, and the fields the screen writes its own line from.
       detail:
-        "Slowest over the last hour: 1.3 s mean, on business_hours. Statement: SELECT * FROM business_hours",
+        "Closest to its budget over the last hour: 1.3 s mean, 2.0 s budget, on business_hours. Statement: SELECT * FROM business_hours",
       facts: {
         kind: "drift",
         meanMs: 1_300,
+        budgetMs: 2_000,
         table: "business_hours",
         statement: "SELECT * FROM business_hours",
       },
@@ -858,11 +859,11 @@ describe("instance health screen", () => {
         </MemoryRouter>,
       );
       await screen.findByText(
-        "Mais lenta na última hora: média de 1,3 s, em business_hours · SELECT * FROM business_hours",
+        "Mais perto do orçamento na última hora: média de 1,3 s, orçamento 2,0 s, em business_hours · SELECT * FROM business_hours",
       );
-      expect(Boolean(screen.queryByText(/Slowest over the last hour/))).toBe(
-        false,
-      );
+      expect(
+        Boolean(screen.queryByText(/Closest to its budget over the last hour/)),
+      ).toBe(false);
     } finally {
       await i18n.changeLanguage(startingLanguage);
     }

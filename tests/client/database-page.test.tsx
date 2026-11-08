@@ -31,7 +31,12 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-const row = (query: string, calls: number, totalMs: number) => ({
+const row = (
+  query: string,
+  calls: number,
+  totalMs: number,
+  budgetMs = 1000,
+) => ({
   queryid: query,
   userid: "10",
   query,
@@ -39,7 +44,8 @@ const row = (query: string, calls: number, totalMs: number) => ({
   rows: calls,
   totalMs,
   meanMs: totalMs / calls,
-  meanBudgetPct: (totalMs / calls / 1000) * 100,
+  budgetMs,
+  meanBudgetPct: (totalMs / calls / budgetMs) * 100,
   spark: [1, null, 2, 3],
 });
 
@@ -160,6 +166,7 @@ test("sorting by total and by mean reorders the statements, each with its own se
       snapshots: 12,
       lastSnapshotAt: null,
       budgetMs: 1000,
+      metricsBudgetMs: 15000,
       byTotal: [MANY_CHEAP, FEW_SLOW],
       byMean: [FEW_SLOW, MANY_CHEAP],
     },
@@ -184,6 +191,7 @@ test("changing the window asks the server for that window", async () => {
         snapshots: 1,
         lastSnapshotAt: null,
         budgetMs: 1000,
+        metricsBudgetMs: 15000,
         byTotal: [],
         byMean: [],
       },
@@ -373,6 +381,7 @@ const available = (rows = [MANY_CHEAP, FEW_SLOW]) => ({
   snapshots: 3,
   lastSnapshotAt: null,
   budgetMs: 1000,
+  metricsBudgetMs: 15000,
   byTotal: rows,
   byMean: [...rows].reverse(),
 });
@@ -475,11 +484,38 @@ test("each statement's share of the budget is the server's figure, and past 100 
   renderPage();
   await waitFor(() => expect(queries().length).toBe(2));
   const pct = screen.queryAllByTestId("budget-pct").map((e) => e.textContent);
-  expect(pct[0]).toBe("340%");
+  expect(pct[0]).toBe("340% of 1.0 s");
   const meters = [...document.querySelectorAll("[data-tone][data-pct]")].map(
     (m) => `${m.getAttribute("data-tone")}:${m.getAttribute("data-pct")}`,
   );
   expect(meters[0]).toBe("error:340");
+});
+
+test("a console read's bar is drawn against the metrics budget it ran under, and the note names both budgets", async () => {
+  const dashboard = row(
+    "SELECT day FROM llm_usage WHERE t = $1",
+    2,
+    8600,
+    15000,
+  );
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available([dashboard, FEW_SLOW]),
+  }));
+  renderPage();
+  await waitFor(() => expect(queries().length).toBe(2));
+  const pct = screen.queryAllByTestId("budget-pct").map((e) => e.textContent);
+  expect(pct).toContain("29% of 15.0 s");
+  const meters = [...document.querySelectorAll("[data-tone][data-pct]")].map(
+    (m) => m.getAttribute("data-pct"),
+  );
+  expect(meters.map(Number).some((p) => Math.round(p) === 29)).toBe(true);
+  expect(
+    Boolean(
+      screen.queryByText(/15\.0 s for console reads, 1\.0 s for the rest/),
+    ),
+  ).toBe(true);
 });
 
 test("a timeout's plan opens on demand, with the sequential scans and the tenant predicate marked", async () => {
@@ -608,10 +644,11 @@ test("in Portuguese, the signal lines, the budget and a failed plan are written 
         {
           ...signal("statement_mean_budget_pct", "percent", 61.4, "firing"),
           detail:
-            "Slowest over the last hour: 1.3 s mean, on business_hours. Statement: SELECT * FROM business_hours WHERE tenant_id = $1",
+            "Closest to its budget over the last hour: 1.3 s mean, 2.0 s budget, on business_hours. Statement: SELECT * FROM business_hours WHERE tenant_id = $1",
           facts: {
             kind: "drift",
             meanMs: 1300,
+            budgetMs: 2000,
             table: "business_hours",
             statement: "SELECT * FROM business_hours WHERE tenant_id = $1",
           },
@@ -644,7 +681,7 @@ test("in Portuguese, the signal lines, the budget and a failed plan are written 
     const text = (id: string) => screen.getByTestId(id).textContent ?? "";
     const drift = text("summary-signal-statement_mean_budget_pct");
     expect(drift).toContain(
-      "Mais lenta na última hora: média de 1,3 s, em business_hours",
+      "Mais perto do orçamento na última hora: média de 1,3 s, orçamento 2,0 s, em business_hours",
     );
     expect(drift).not.toContain("Slowest");
     const last = text("summary-signal-statement_timeouts_per_min");

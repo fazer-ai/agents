@@ -1279,7 +1279,8 @@
   "database": {
     "backToHealth": "Saúde da instância",
     "budget": "orçamento {{budget}}",
-    "budgetNote": "Barras: tempo médio contra o orçamento de {{budget}} por transação",
+    "budgetNote": "Barras: tempo médio contra o orçamento em que a consulta rodou ({{metrics}} para leituras do console, {{tx}} para o resto)",
+    "budgetShare": "{{pct}} de {{budget}}",
     "calls": "Chamadas",
     "clearFilter": "Limpar o filtro",
     "collapseSql": "Mostrar menos",
@@ -1292,7 +1293,7 @@
       "allTenants": "todos os tenants",
       "lastTimeout": "Último timeout: {{parts}}",
       "onTable": "em {{table}}",
-      "slowest": "Mais lenta na última hora: média de {{mean}}",
+      "slowest": "Mais perto do orçamento na última hora: média de {{mean}}",
       "tenant": "no tenant {{id}}"
     },
     "emptyDescription": "O primeiro snapshot sai em até 5 minutos depois de o processo subir.",
@@ -3290,7 +3291,7 @@
       "scheduler_queue_age_ms_debounce": "Atraso da rajada de mensagens mais antiga esperando resposta.",
       "scheduler_queue_age_ms_observe": "Atraso do veredito de observador mais antigo.",
       "scheduler_queue_age_ms_shared": "Atraso do job mais antigo da fila compartilhada (follow-ups, varreduras, recuperações).",
-      "statement_mean_budget_pct": "O tempo médio da consulta mais lenta na última hora, como parte do orçamento da transação (DB_TX_TIMEOUT_MS). Sobe enquanto uma consulta piora, antes do primeiro timeout. Precisa do pg_stat_statements.",
+      "statement_mean_budget_pct": "O tempo médio na última hora da consulta mais perto do seu orçamento, como parte do orçamento em que ela rodou (METRICS_TIMEOUT_MS para leituras do console, como o painel, e DB_TX_TIMEOUT_MS para o resto). Sobe enquanto uma consulta piora, antes do primeiro timeout. Precisa do pg_stat_statements.",
       "statement_timeouts_per_min": "Comandos cancelados pelo orçamento de tempo (SQLSTATE 57014) no último minuto. O trabalho a que pertenciam parou: abra Banco de dados para ver qual comando foi e o plano dele."
     },
     "kindDone": "{{kind}}: concluídos por minuto",
@@ -3338,7 +3339,7 @@
       "scheduler_queue_age_ms_debounce": "Atraso da fila de debounce",
       "scheduler_queue_age_ms_observe": "Atraso da fila de observadores",
       "scheduler_queue_age_ms_shared": "Atraso da fila compartilhada",
-      "statement_mean_budget_pct": "Consulta mais lenta (parte do orçamento)",
+      "statement_mean_budget_pct": "Consulta mais perto do orçamento",
       "statement_timeouts_per_min": "Timeouts de comando"
     },
     "signalsHint": "Todos os sinais quando todas as caixas estão marcadas, inclusive os que forem adicionados depois.",

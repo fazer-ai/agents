@@ -8,6 +8,10 @@ import {
   drainStatementTimeouts,
   resetStatementTimeouts,
 } from "@/lib/pool-stats";
+import {
+  noteStatementPool,
+  resetStatementBudgetsForTest,
+} from "@/lib/statement-budgets";
 import { asSuperAdminOn, DeadlinePassedError } from "@/lib/tenancy";
 import { registerFollowUpHandlers } from "@/modules/followups/handlers";
 import { fleetWithin } from "@/modules/instance-health/database/budget";
@@ -32,6 +36,7 @@ import {
   snapshotIfDue,
   statementColumns,
   takeStatsRole,
+  writeStatementTexts,
 } from "@/modules/instance-health/database/snapshot";
 import {
   DRIFT_SIGNAL,
@@ -115,6 +120,7 @@ async function seed(
   }[],
   query = `SELECT $1 /* q${queryid} */`,
   userid = 10n,
+  budgetClass: string | null = null,
 ): Promise<void> {
   for (const p of points) {
     await suDb.dbStatementDelta.create({
@@ -137,8 +143,9 @@ async function seed(
       queryid,
       query,
       lastSeenAt: new Date(points[points.length - 1]?.at ?? T0),
+      budgetClass,
     },
-    update: { query },
+    update: { query, budgetClass },
   });
 }
 
@@ -217,7 +224,7 @@ describe("the two signals and what their alert says", () => {
   test("the drift share reads as a percent", () => {
     setSignalDetail(
       "statement_mean_budget_pct",
-      driftFacts("SELECT 1 FROM agents", 1_300),
+      driftFacts("SELECT 1 FROM agents", 1_300, 2_000),
     );
     expect(
       firingSummary("statement_mean_budget_pct", 61.4, {
@@ -226,7 +233,7 @@ describe("the two signals and what their alert says", () => {
         enabled: true,
       }),
     ).toBe(
-      "statement_mean_budget_pct is 61%, above 50%. Slowest over the last hour: 1.3 s mean, on agents. Statement: SELECT 1 FROM agents",
+      "statement_mean_budget_pct is 61%, above 50%. Closest to its budget over the last hour: 1.3 s mean, 2.0 s budget, on agents. Statement: SELECT 1 FROM agents",
     );
     setSignalDetail("statement_mean_budget_pct", null);
   });
@@ -458,11 +465,101 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       "SELECT pg_sleep($1)",
       appRole + 999_999n,
     );
-    const { pct, query, meanMs } = await slowestMeanShare(appDb, now, 500);
+    const { pct, query, meanMs } = await slowestMeanShare(appDb, now, {
+      tx: 500,
+      metrics: 15_000,
+    });
     // (1200 + 1800) / (4 + 6) = 300 ms, 60% of a 500 ms budget.
     expect(pct).toBeCloseTo(60, 5);
     expect(meanMs).toBeCloseTo(300, 5);
     expect(query).toContain("SELECT c.thread_id FROM conversations");
+  });
+
+  test("a console read is measured against the metrics budget, and the signal is the largest share, not the slowest mean", async () => {
+    const now = Date.now();
+    const [app] = await appDb.$queryRaw<{ oid: bigint }[]>`
+      SELECT oid::bigint AS oid FROM pg_roles WHERE rolname = session_user`;
+    const appRole = app?.oid ?? 0n;
+    const budgets = { tx: 5_000, metrics: 15_000 };
+    await seed(
+      21n,
+      [{ at: now - 5 * MIN, calls: 2, total: 8_600 }],
+      "WITH occ AS (SELECT u.conversation_id FROM llm_usage u WHERE u.tenant_id = $1)",
+      appRole,
+      "metrics",
+    );
+    // Alone, the console read is 4.3 s of 15 s: 28.7%, not 86%.
+    const alone = await slowestMeanShare(appDb, now, budgets);
+    expect(alone.pct).toBeCloseTo((4_300 / 15_000) * 100, 5);
+    expect(alone.budgetMs).toBe(15_000);
+    await seed(
+      22n,
+      [{ at: now - 5 * MIN, calls: 2, total: 6_000 }],
+      "SELECT id FROM scheduler_jobs WHERE status = $1",
+      appRole,
+      "default",
+    );
+    // A 3 s mean against 5 s is the larger share, though the console read's mean is longer.
+    const both = await slowestMeanShare(appDb, now, budgets);
+    expect(both.pct).toBeCloseTo(60, 5);
+    expect(both.meanMs).toBeCloseTo(3_000, 5);
+    expect(both.budgetMs).toBe(5_000);
+    expect(both.query).toContain("FROM scheduler_jobs");
+  });
+
+  test("a text with no known class is measured against the transaction budget", async () => {
+    const now = Date.now();
+    const [app] = await appDb.$queryRaw<{ oid: bigint }[]>`
+      SELECT oid::bigint AS oid FROM pg_roles WHERE rolname = session_user`;
+    await seed(
+      23n,
+      [{ at: now - 5 * MIN, calls: 1, total: 3_000 }],
+      "SELECT id FROM conversations WHERE status = $1",
+      app?.oid ?? 0n,
+      null,
+    );
+    const { pct, budgetMs } = await slowestMeanShare(appDb, now, {
+      tx: 5_000,
+      metrics: 15_000,
+    });
+    expect(pct).toBeCloseTo(60, 5);
+    expect(budgetMs).toBe(5_000);
+  });
+
+  test("the texts a snapshot writes carry the class the pools noted, and a text once seen as both stays 'default'", async () => {
+    // Exercised directly: the snapshot's read of pg_stat_statements needs the library preloaded,
+    // which neither this suite's server nor CI's has.
+    resetStatementBudgetsForTest();
+    const marker = "SELECT x FROM class_probe WHERE id = $1";
+    const entry = { userid: 10n, dbid: 1n, queryid: 9_101n, query: marker };
+    const other = {
+      userid: 10n,
+      dbid: 1n,
+      queryid: 9_102n,
+      query: "SELECT 1 FROM unseen",
+    };
+    const classOf = async (q: bigint) =>
+      (
+        await suDb.$queryRaw<{ budget_class: string | null }[]>`
+          SELECT budget_class FROM db_statement_texts WHERE queryid = ${q}`
+      ).map((r) => r.budget_class);
+    noteStatementPool("metrics", "SELECT x FROM class_probe WHERE id = 7");
+    await writeStatementTexts(suDb, [entry, other], Date.now());
+    expect(await classOf(9_101n)).toEqual(["metrics"]);
+    // A text no pool of this process sent is stored without a class.
+    expect(await classOf(9_102n)).toEqual([null]);
+    noteStatementPool("main", marker);
+    await writeStatementTexts(suDb, [entry], Date.now());
+    expect(await classOf(9_101n)).toEqual(["default"]);
+    // A restarted process that knows nothing of the text keeps what was stored...
+    resetStatementBudgetsForTest();
+    await writeStatementTexts(suDb, [entry], Date.now());
+    expect(await classOf(9_101n)).toEqual(["default"]);
+    // ...and one that saw it only on the metrics pool does not undo 'default'.
+    noteStatementPool("metrics", marker);
+    await writeStatementTexts(suDb, [entry], Date.now());
+    expect(await classOf(9_101n)).toEqual(["default"]);
+    resetStatementBudgetsForTest();
   });
 
   test("after a restart the drift comes from the stored deltas, before this process takes its first snapshot", async () => {
@@ -1470,14 +1567,30 @@ describe.skipIf(!dbUp)("the screen's summary figures", () => {
     setLastAvailabilityForTest({ available: true });
     await seed(71n, [{ at: now - 5 * MIN, calls: 4, total: 6000 }]);
     await seed(72n, [{ at: now - 5 * MIN, calls: 10, total: 100 }]);
-    const screen = await readDatabaseScreen("1h", appDb, now, 1000);
+    await seed(
+      73n,
+      [{ at: now - 5 * MIN, calls: 2, total: 6000 }],
+      "SELECT day FROM llm_usage WHERE tenant_id = $1",
+      10n,
+      "metrics",
+    );
+    const screen = await readDatabaseScreen("1h", appDb, now, {
+      tx: 1000,
+      metrics: 4000,
+    });
     if (!screen.statements.available) throw new Error("statements off");
     expect(screen.statements.budgetMs).toBe(1000);
-    const pct = Object.fromEntries(
-      screen.statements.byTotal.map((r) => [r.queryid, r.meanBudgetPct]),
+    expect(screen.statements.metricsBudgetMs).toBe(4000);
+    const row = Object.fromEntries(
+      screen.statements.byTotal.map((r) => [
+        r.queryid,
+        [r.meanBudgetPct, r.budgetMs],
+      ]),
     );
-    expect(pct["71"]).toBe(150);
-    expect(pct["72"]).toBe(1);
+    expect(row["71"]).toEqual([150, 1000]);
+    expect(row["72"]).toEqual([1, 1000]);
+    // A console read's row is a share of the metrics budget: 3 s of 4 s.
+    expect(row["73"]).toEqual([75, 4000]);
   });
 
   test("the window's timeout count and the tables' size are totals, not the listed groups", async () => {

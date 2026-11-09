@@ -138,17 +138,35 @@ describe("runSandboxedCode", () => {
 
   // The CVE-2026-0863 shape: reading the thrown value runs the snippet's own code. Both reads
   // below would spin forever; they come back as an error at the snippet's OWN deadline (the read
-  // is not given a fresh one), not as a dead thread.
+  // is not given a fresh one), not as a dead thread. On the tick clock a budget is a count of polls,
+  // so a spin that logs as it goes measures what was left: the body spends more than half of the
+  // budget before it throws, and a read that logs more than the same spin in the body could was
+  // handed time past the deadline.
   test("a hostile thrown value is read under the snippet's deadline and cannot hang the sandbox", async () => {
+    const SPIN = `let n = 0; for (;;) { if (++n % 1000 === 0) console.log("t") }`;
+    const SPEND = "for (let k = 0; k < 50000; k++) {}";
+    const ticked = async (code: string) =>
+      runSandboxedCode(
+        code,
+        { timeoutMs: 300, maxChars: 100_000 },
+        { workerUrl: fixture("worker-tick-clock.ts") },
+      );
+    const logged = (out: SandboxOutcome) =>
+      "logs" in out ? out.logs.length : 0;
+    const whole = await ticked(SPIN);
+    const left = await ticked(`${SPEND} ${SPIN}`);
+    expect(whole).toMatchObject({ kind: "limit", limit: "time" });
+    expect(left).toMatchObject({ kind: "limit", limit: "time" });
+    expect(logged(left)).toBeGreaterThan(0);
+    expect(logged(left)).toBeLessThan(logged(whole) / 2);
     for (const code of [
-      `throw { get message() { while (true) {} } }`,
-      `throw { toString() { while (true) {} } }`,
+      `${SPEND} throw { get message() { ${SPIN} } }`,
+      `${SPEND} throw { toJSON() { ${SPIN} } }`,
     ]) {
-      const started = performance.now();
-      const out = await runSandboxedCode(code, { timeoutMs: 300 });
-      const elapsed = performance.now() - started;
+      const out = await ticked(code);
       expect(out.kind, code).toBe("error");
-      expect(elapsed, code).toBeLessThan(600);
+      expect(logged(out), code).toBeGreaterThan(0);
+      expect(logged(out), code).toBeLessThanOrEqual(logged(left));
     }
     const plain = await runSandboxedCode(
       `throw { name: "Custom", message: "plain" }`,
@@ -161,159 +179,43 @@ describe("runSandboxedCode", () => {
   });
 
   // The value path gets a FRESH deadline: rendering runs interpreter code, and a value built with the
-  // deadline nearly spent would otherwise have its render interrupted and come back as "[object Object]".
-  // The body builds with the budget wide open, then spins on `Date.now()` to an absolute instant, so
-  // what it spends is pinned to the clock and not to the work: a fixed budget, or a margin relative to
-  // a first run, asserts this machine's speed and fails on shared CI runners. The setup (deadline start
-  // to first statement) is read off the reply, `setupMs = leftMs - (budgetMs - ms)`, never estimated
-  // host-side from `wall - ms`, which also carries worker startup, dispatch, transfer and disposal.
-  // A leftover below the setup interrupts the BODY; one above `setup + render` lets it fit unrenewed.
+  // deadline nearly spent would otherwise have its render interrupted and come back as an error. The
+  // thread runs on a clock that moves one tick per read (the fixture), so a budget is spent in the
+  // engine's own interrupt polls and the tightest budget the body finishes in is the same number on
+  // any machine at any load. At that budget nothing is left when the body returns: a render on the
+  // original deadline is interrupted at its first poll, and only the renewal lets it through.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    // N is squeezed from both sides. The renewal installs a FIXED `RENDER_BUDGET_MS`, so a value
-    // too big fails even under a 30 s timeout; and the leftover granted to the render is about one
-    // setup, which does not shrink with N, so a smaller fixture narrows the gap the test lives in.
-    // 40k renders about 5x under the ceiling (240k does not render at all) and takes about 3.6x the
-    // leftover that would let an unrenewed render through (a 20k fixture hides the defect from 30 ms).
-    const N = 40_000;
-    const CHARS = 20_000_000;
-    // The render is timed from inside, on the interpreter's own clock: a getter on the first
-    // element and one on the last bracket the walk (getters run when the renderer reaches them, fenced
-    // by the next test), and their `console.log` comes back in the reply. No host-side span (spawn,
-    // dispatch, transfer, disposal) enters it, which is why `wall - ms` is not used.
-    const BUILD = `(() => {
-      const v = Array.from({ length: ${N} }, (_, i) => ({ i }));
-      v[0] = { get i() { console.log("A" + Date.now()); return 0 } };
-      v[${N - 1}] = { get i() { console.log("B" + Date.now()); return ${N - 1} } };
-      return v;
-    })()`;
-    const renderMsOf = (out: SandboxOutcome) => {
-      const logs = "logs" in out ? (out.logs as string[]) : [];
-      const a = logs.find((l) => l.startsWith("A"));
-      const b = logs.find((l) => l.startsWith("B"));
-      return a && b ? Number(b.slice(1)) - Number(a.slice(1)) : null;
-    };
+    const N = 1000;
+    const SPIN = 1_000_000;
+    const code = `const v = Array.from({ length: ${N} }, (_, i) => ({ i })); for (let k = 0; k < ${SPIN}; k++) {} v`;
+    const workerUrl = fixture("worker-tick-clock.ts");
+    const attempt = (timeoutMs: number) =>
+      runSandboxedCode(code, { timeoutMs, maxChars: 1_000_000 }, { workerUrl });
+    const finishes = async (timeoutMs: number) =>
+      (await attempt(timeoutMs)).kind !== "limit";
 
-    // The ceiling is a production constant and the render is machine work, so a slow enough
-    // machine cannot render this fixture at all -- and it would fail as `InternalError`, which is
-    // exactly what the defect looks like. Ask first, with the budget wide open so only the ceiling
-    // can bite, and let a machine that cannot host the fixture say so in those words.
-    // Up to three asks, because one render on a contended CPU can cross the ceiling and the next one
-    // not: a machine that cannot host the fixture fails all three.
-    let roomy = await runSandboxedCode(BUILD, {
-      timeoutMs: 30_000,
-      maxChars: CHARS,
+    let lo = 0;
+    let hi = 1000;
+    while (!(await finishes(hi))) {
+      lo = hi;
+      hi *= 2;
+    }
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (await finishes(mid)) hi = mid;
+      else lo = mid;
+    }
+
+    expect(await attempt(hi - 1)).toMatchObject({
+      kind: "limit",
+      limit: "time",
     });
-    for (let i = 1; i < 3 && roomy.kind !== "value"; i++) {
-      roomy = await runSandboxedCode(BUILD, {
-        timeoutMs: 30_000,
-        maxChars: CHARS,
-      });
-    }
-    expect(
-      roomy.kind,
-      `${N} objects must render inside the fixed RENDER_BUDGET_MS on this machine`,
-    ).toBe("value");
-
-    const attempt = async (leftMs: number) => {
-      const budgetMs = leftMs + 500;
-      const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
-      const out = await runSandboxedCode(spun, {
-        timeoutMs: budgetMs,
-        maxChars: CHARS,
-      });
-      // What the run itself says was left of the budget when the body returned, read off the run
-      // that matters, never carried over from another one. A `limit` reply carries no `ms` at all
-      // (the host drops it), so nothing here can read a number off an interrupted run by accident.
-      const leftoverMs =
-        "ms" in out ? budgetMs - (out as { ms: number }).ms : null;
-      return { out, leftoverMs };
-    };
-
-    // 64 ms only has to be survivable, several times a typical setup: whatever the leftover
-    // turns out to be, the subtraction gives the setup. A slower machine doubles to 128, then 256; the
-    // ceiling is a runaway guard, not a budget, and hitting it fails on the null rather than inventing
-    // a number.
-    let calMs = 64;
-    const calibrate = async () => {
-      let probe = await attempt(calMs);
-      while (probe.out.kind === "limit" && calMs < 1024) {
-        calMs *= 2;
-        probe = await attempt(calMs);
-      }
-      expect(probe.leftoverMs).not.toBeNull();
-      return calMs - (probe.leftoverMs as number);
-    };
-    // Twice, keeping the smaller, because the errors are not symmetric. A setup read too small
-    // makes the asserted run ask for too little, which comes back `limit` and the loop below corrects;
-    // one read too large hands the render a leftover it should not have, and a render that fits cannot
-    // be told from a renewed one (green over the defect). The first call also warms the interpreter,
-    // which a test run alone would otherwise pay inside its only measurement.
-    const setupOf = async () => {
-      calMs = 64;
-      const firstSetupMs = await calibrate();
-      return Math.min(firstSetupMs, await calibrate());
-    };
-
-    // A controller rather than a ladder: an overshoot reports its own leftover and is corrected
-    // by exactly that much, an undershoot reports nothing and takes a step. Each worker sets itself up
-    // at its own pace, so the assertion reads the asserted run's own clock, never the calibration's.
-    // The endings differ: an interrupted BODY is kind "limit" with no `ms`, an interrupted RENDER is
-    // kind "error" `InternalError` with `ms`. Only `limit` is retried: a loop blind to the difference
-    // would grow the leftover until the render fits and report green.
-    const TOL_MS = 5;
-    const control = async () => {
-      let leftMs = (await setupOf()) + 2;
-      let r = await attempt(leftMs);
-      for (let i = 0; i < 8; i++) {
-        if (r.out.kind === "limit") {
-          leftMs += 4;
-        } else if (
-          r.out.kind === "value" &&
-          (r.leftoverMs as number) > TOL_MS
-        ) {
-          leftMs = Math.max(1, leftMs - ((r.leftoverMs as number) - TOL_MS));
-        } else {
-          break;
-        }
-        r = await attempt(leftMs);
-      }
-      return { ...r, leftMs };
-    };
-    // Whole rounds, calibration included, up to three. On one contended CPU the asserted worker's
-    // setup can drift past TOL_MS from the calibrated one, and the controller then hands the render a
-    // leftover it does not fit in: an `error` that looks exactly like the defect. The defect itself
-    // fails EVERY round, since no leftover near one setup fits the render without the renewal; a
-    // drift does not repeat on demand. A round that settles is the one asserted.
-    let round = await control();
-    for (let i = 1; i < 3; i++) {
-      const settled =
-        round.out.kind === "value" && (round.leftoverMs as number) <= TOL_MS;
-      if (settled) break;
-      round = await control();
-    }
-    const { out, leftoverMs, leftMs } = round;
-
-    expect(out.kind).toBe("value");
-    // NOTE: Every term of this bound comes off the run being asserted: `leftoverMs` is
-    // `leftMs - (ms - 500)`, and `ms - 500` is that worker's own setup, so no calibrating worker can
-    // move it. Real leftover = prefix + leftoverMs <= setup + TOL, since the prefix (`ms` starting in
-    // `run()` before the deadline starts in `open()`) is part of the setup. So the render gets about one
-    // setup of this worker, which scales with the machine the same way rendering 40k objects does.
-    expect(leftoverMs as number).toBeLessThanOrEqual(TOL_MS);
-    // The proof, both halves off the same run: `leftMs` bounds what the render could have had on
-    // the ORIGINAL deadline (prefix + leftoverMs <= setup + leftoverMs = leftMs), and `renderMs` is what
-    // it took on the interpreter's clock. A render longer than that bound means the value coming back
-    // is the renewal's work; no timing is carried between workers and no host clock enters it.
-    const renderMs = renderMsOf(out);
-    expect(renderMs).not.toBeNull();
-    expect(renderMs as number).toBeGreaterThan(leftMs);
-    const v = (out as { value: string }).value;
-    expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
-    expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
-    // NOTE: 60 s covers the round trips this can take (three preconditions, then up to three rounds
-    // of two calibrations and nine controlled attempts), so nothing here is bounded by a default
-    // nobody chose.
-  }, 60_000);
+    const out = await attempt(hi);
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify(Array.from({ length: N }, (_, i) => ({ i }))),
+    });
+  }, 120_000);
 
   // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. A throw
   // there is a failure of the body, one step later; answering "[object Object]" as a value would hand
@@ -1025,7 +927,7 @@ describe("runSandboxedCode", () => {
   test("the interpreter failing to set up after the thread is ready is the sandbox's failure, not the snippet's", async () => {
     const worker = new Worker(
       // biome-ignore lint/plugin/no-test-reads-source: the worker module is run, not read
-      new URL("../../src/graph/tools/code-sandbox.worker.ts", import.meta.url)
+      new URL("../../src/graph/tools/code-sandbox.thread.ts", import.meta.url)
         .href,
     );
     const reply = await new Promise<unknown>((resolve, reject) => {

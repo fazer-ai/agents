@@ -150,7 +150,7 @@ export function localIsoNow(timezone: string, now: Date = new Date()): string {
   return `${wall}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
-const WORKER_URL = new URL("./code-sandbox.worker.ts", import.meta.url).href;
+const WORKER_URL = new URL("./code-sandbox.thread.ts", import.meta.url).href;
 
 export async function runSandboxedCode(
   code: string,

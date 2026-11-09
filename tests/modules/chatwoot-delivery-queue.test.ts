@@ -259,28 +259,42 @@ describe("admission", () => {
       { code: "P2028" },
     );
 
-  test("a delivery that found no free connection runs again in its lane within the backoff, still held", async () => {
-    resetChatwootAdmissionForTest(1, { baseMs: 40, random: () => 1 });
+  // The backoff's timer, fired by the test: each entry is one scheduled re-admission and its wait.
+  function backoffs(attempts?: number) {
+    const due: { fn: () => void; ms: number }[] = [];
+    resetChatwootAdmissionForTest(1, {
+      attempts,
+      baseMs: 1_000,
+      random: () => 1,
+      schedule: (fn, ms) => {
+        due.push({ fn, ms });
+      },
+    });
+    return {
+      due,
+      fire: () => (due.shift() as { fn: () => void }).fn(),
+    };
+  }
+
+  test("a delivery that found no free connection runs again in its lane after the backoff, still held", async () => {
+    const t = backoffs();
     let runs = 0;
-    const startedAt = Date.now();
-    let ranAt = 0;
     admitChatwootDelivery(1n, async () => {
       runs++;
       if (runs === 1) throw neverStarted();
-      ranAt = Date.now() - startedAt;
     });
-    await until("the first run to fail", async () => runs === 1);
-    await Bun.sleep(5);
+    await until("the retry to be scheduled", async () => t.due.length === 1);
+    expect(t.due[0]?.ms).toBe(1_000);
+    expect(runs).toBe(1);
     expect(admissionHolds(1n)).toBe(true);
     expect(admitChatwootDelivery(1n, async () => {})).toBe(false);
-    await until("the retry to run", async () => runs === 2);
-    expect(ranAt).toBeGreaterThanOrEqual(35);
-    await Bun.sleep(5);
-    expect(admissionHolds(1n)).toBe(false);
+    t.fire();
+    await until("the retry to run and let go", async () => !admissionHolds(1n));
+    expect(runs).toBe(2);
   });
 
   test("any other failure is not run again here", async () => {
-    resetChatwootAdmissionForTest(1, { baseMs: 1, random: () => 0 });
+    const t = backoffs();
     let runs = 0;
     admitChatwootDelivery(1n, async () => {
       runs++;
@@ -289,29 +303,32 @@ describe("admission", () => {
         { code: "P2028" },
       );
     });
-    await Bun.sleep(30);
+    await until("the row to be let go", async () => !admissionHolds(1n));
     expect(runs).toBe(1);
-    expect(admissionHolds(1n)).toBe(false);
+    expect(t.due).toEqual([]);
   });
 
-  test("the retries are bounded, and the last failure is left to the drain", async () => {
-    resetChatwootAdmissionForTest(1, {
-      attempts: 3,
-      baseMs: 1,
-      random: () => 0,
-    });
+  test("the retries are bounded, back off doubling, and the last failure is left to the drain", async () => {
+    const t = backoffs(3);
     let runs = 0;
     admitChatwootDelivery(1n, async () => {
       runs++;
       throw neverStarted();
     });
-    await Bun.sleep(50);
+    const waits: number[] = [];
+    for (let n = 1; n < 3; n++) {
+      await until("a retry to be scheduled", async () => t.due.length === 1);
+      waits.push(t.due[0]?.ms as number);
+      t.fire();
+    }
+    await until("the row to be let go", async () => !admissionHolds(1n));
     expect(runs).toBe(3);
-    expect(admissionHolds(1n)).toBe(false);
+    expect(waits).toEqual([1_000, 2_000]);
+    expect(t.due).toEqual([]);
   });
 
   test("a retry waits for a slot like any delivery, so the lane's bound holds", async () => {
-    resetChatwootAdmissionForTest(1, { baseMs: 1, random: () => 0 });
+    const t = backoffs();
     const g = held();
     let running = 0;
     let peak = 0;
@@ -333,7 +350,13 @@ describe("admission", () => {
       await g.gate;
       running--;
     });
-    await Bun.sleep(20);
+    await until("the retry to be scheduled", async () => t.due.length === 1);
+    await until(
+      "the second delivery to hold the slot",
+      async () => running === 1,
+    );
+    t.fire();
+    await Bun.sleep(5);
     expect(retried).toBe(false);
     g.release();
     await until("the retry to run", async () => retried);
@@ -341,22 +364,21 @@ describe("admission", () => {
   });
 
   test("a lane that filled during the backoff hands the retry to the drain instead of passing its bound", async () => {
-    resetChatwootAdmissionForTest(1, { baseMs: 300, random: () => 1 });
+    const t = backoffs();
     const g = held();
     let runs = 0;
     admitChatwootDelivery(1n, async () => {
       runs++;
       throw neverStarted();
     });
-    await Bun.sleep(5);
-    expect(runs).toBe(1);
+    await until("the retry to be scheduled", async () => t.due.length === 1);
     admitChatwootDelivery(2n, async () => {
       await g.gate;
     });
     for (let i = 0; i < ADMISSION_MAX_WAITING; i++)
       admitChatwootDelivery(BigInt(1000 + i), async () => {});
     expect(admissionHolds(1n)).toBe(true);
-    await Bun.sleep(400);
+    t.fire();
     expect(chatwootAdmissionState().waiting).toBe(ADMISSION_MAX_WAITING);
     expect(runs).toBe(1);
     expect(admissionHolds(1n)).toBe(false);
@@ -364,15 +386,16 @@ describe("admission", () => {
   });
 
   test("a draining process does not retry, and the row is let go", async () => {
-    resetChatwootAdmissionForTest(1, { baseMs: 20, random: () => 1 });
+    const t = backoffs();
     let runs = 0;
     admitChatwootDelivery(1n, async () => {
       runs++;
       throw neverStarted();
     });
-    await until("the first run to fail", async () => runs === 1);
+    await until("the retry to be scheduled", async () => t.due.length === 1);
     await drainInFlight({ boundMs: 500 });
-    await Bun.sleep(60);
+    t.fire();
+    await Bun.sleep(5);
     expect(runs).toBe(1);
     expect(admissionHolds(1n)).toBe(false);
   });
@@ -881,17 +904,18 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
   // The pool stall itself: a client whose only connection is taken, so the delivery's transaction
   // gives up after `maxWait` with Prisma's real P2028, and the connection comes back a moment later.
   test("a delivery that failed for a full pool is processed within seconds, without the drain", async () => {
-    resetChatwootAdmissionForTest(undefined, { baseMs: 300 });
+    resetChatwootAdmissionForTest(undefined, { baseMs: 20 });
     const id = await ackOnly("queue-pool-stall", 615);
     const row = await rowById(id);
     const pool = new pg.Pool({ connectionString: appUrl, max: 1 });
     const tiny = new PrismaClient({ adapter: new PrismaPg(pool) });
     const taken = await pool.connect();
-    let releasedAt = 0;
-    const stall = setTimeout(() => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
       taken.release();
-      releasedAt = Date.now();
-    }, 2_500);
+    };
     try {
       const startedAt = Date.now();
       const errors: unknown[] = [];
@@ -915,6 +939,8 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
             });
           } catch (err) {
             errors.push(err);
+            // The stall ends once it has cost the delivery its first run.
+            release();
             throw err;
           }
         },
@@ -924,10 +950,9 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       expect(done.status).toBe("PROCESSED");
       expect(isTransactionNeverStarted(errors[0])).toBe(true);
       expect(runs).toBeGreaterThanOrEqual(2);
-      expect(releasedAt).toBeGreaterThan(0);
       expect(Date.now() - startedAt).toBeLessThan(10_000);
     } finally {
-      clearTimeout(stall);
+      release();
       await tiny.$disconnect();
       await pool.end().catch(() => {});
     }

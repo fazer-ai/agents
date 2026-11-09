@@ -52,6 +52,7 @@ interface RetryTiming {
   attempts: number;
   baseMs: number;
   random: () => number;
+  schedule: (fn: () => void, ms: number) => void;
 }
 
 interface Pending {
@@ -91,6 +92,11 @@ function fresh(limit: number, retry?: Partial<RetryTiming>): Admission {
       attempts: retry?.attempts ?? DELIVERY_RETRY_ATTEMPTS,
       baseMs: retry?.baseMs ?? DELIVERY_RETRY_BASE_MS,
       random: retry?.random ?? Math.random,
+      schedule:
+        retry?.schedule ??
+        ((fn, ms) => {
+          setTimeout(fn, ms);
+        }),
     },
     limit,
     lanes: {
@@ -172,7 +178,7 @@ function readmitLater(a: Admission, laneName: AdmissionLane, p: Pending): void {
     a.retry.attempts,
     wait,
   );
-  setTimeout(() => {
+  a.retry.schedule(() => {
     if (isDraining()) {
       a.held.delete(p.rowId);
       return;

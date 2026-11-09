@@ -92,39 +92,26 @@ async function countWindow(
   });
 }
 
-// From when the delivery rows hold every proactive send of the tenant, or null when it has none: its
-// first row, or the last removal of a Chatwoot account or deployment inside the lookback when later,
-// since the removal deletes the account's conversations and their rows by cascade while the flow log
-// keeps their lines.
-async function rowsCoverFrom(
-  db: ScopedDb,
-  tenantId: bigint,
-  since: Date,
-): Promise<Date | null> {
-  const first = await db.agentTurnDelivery.findFirst({
-    where: { tenantId },
-    orderBy: { deliveredAt: "asc" },
-    select: { deliveredAt: true },
-  });
-  if (!first) return null;
-  const removal = await db.auditLog.findFirst({
-    where: {
-      tenantId,
-      createdAt: { gt: since },
-      OR: [
-        { action: { in: ["instance.remove", "deployment.disconnect"] } },
-        {
-          action: "instance.disconnect",
-          before: { path: ["removal"], equals: true },
-        },
-      ],
-    },
-    orderBy: { createdAt: "desc" },
-    select: { createdAt: true },
-  });
-  return removal && removal.createdAt > first.deliveredAt
-    ? removal.createdAt
-    : first.deliveredAt;
+// The flow-log half of `computeAutoPeak`. Its predicate is the one of
+// `execution_logs_proactive_sends_idx`, which holds only these lines, so the read walks that small
+// index instead of every `generate` line of the month and the `detail` of each.
+export function autoPeakFromLogSql(tenantId: bigint, since: Date): Prisma.Sql {
+  return Prisma.sql`
+    SELECT n, at FROM (
+        SELECT created_at AS at,
+               count(*) OVER (
+                 ORDER BY created_at
+                 RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
+               ) AS n
+          FROM execution_logs
+         WHERE tenant_id = ${tenantId}
+           AND stage = 'generate'
+           AND source = 'inbox'
+           AND created_at > ${since}
+           AND detail->>'outcome' IN ('messaged', 'templated')
+      ) w
+      ORDER BY n DESC, at ASC
+      LIMIT 1`;
 }
 
 // The largest number of proactive messages the account delivered in any 24h window of the last 30
@@ -132,9 +119,7 @@ async function rowsCoverFrom(
 // send, the redirect ladder's fixed ones included, kept a month; a reservation that never became a
 // delivery is not volume), and the flow log's line for a nudge
 // that reached the customer (`generate` with outcome `messaged` or `templated`), written since before
-// the rows were, so no account starts below its own peak. The larger of the two wins. The log is read
-// only up to a day past `rowsCoverFrom` (so a window starting before it counts the lines after it),
-// and not at all once that is past the lookback: a month of it is 16.9 s on a busy instance.
+// the rows were, so no account starts below its own peak. The larger of the two wins.
 export async function computeAutoPeak(
   db: ScopedDb,
   tenantId: bigint,
@@ -158,30 +143,9 @@ export async function computeAutoPeak(
       ) w
       ORDER BY n DESC, at ASC
       LIMIT 1`);
-  const coveredFrom = await rowsCoverFrom(db, tenantId, since);
-  const logUntil = coveredFrom
-    ? new Date(coveredFrom.getTime() + WINDOW_MS)
-    : null;
-  const fromLog =
-    coveredFrom && coveredFrom <= since
-      ? []
-      : await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
-      SELECT n, at FROM (
-        SELECT created_at AS at,
-               count(*) OVER (
-                 ORDER BY created_at
-                 RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
-               ) AS n
-          FROM execution_logs
-         WHERE tenant_id = ${tenantId}
-           AND stage = 'generate'
-           AND source = 'inbox'
-           AND created_at > ${since}
-           ${logUntil ? Prisma.sql`AND created_at < ${logUntil}` : Prisma.empty}
-           AND detail->>'outcome' IN ('messaged', 'templated')
-      ) w
-      ORDER BY n DESC, at ASC
-      LIMIT 1`);
+  const fromLog = await db.$queryRaw<Array<{ n: bigint; at: Date }>>(
+    autoPeakFromLogSql(tenantId, since),
+  );
   const a = fromDeliveries[0];
   const b = fromLog[0];
   const top = a && (!b || Number(a.n) >= Number(b.n)) ? a : b;
@@ -194,8 +158,9 @@ const refreshing = new Map<string, Promise<void>>();
 const failedAt = new Map<string, number>();
 
 // Refreshes the automatic limit's inputs when they are missing or a day old. Outside the send's
-// lock, since it can read the flow log; concurrent sends of one tenant share one read. A failure
-// keeps the last figure (or the floor), never blocks a send, and is not retried for AUTO_RETRY_MS.
+// lock, since it reads a month of the flow log; concurrent sends of one tenant share one read. A
+// failure keeps the last figure (or the floor), never blocks a send, and is not retried for
+// AUTO_RETRY_MS.
 export async function refreshAutoPeak(
   tenantId: bigint,
   base: PrismaClient = basePrisma,

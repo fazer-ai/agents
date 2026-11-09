@@ -23,6 +23,7 @@ import {
   proactiveBreakerSet,
 } from "@/modules/mcp/write-settings";
 import {
+  autoPeakFromLogSql,
   computeAutoPeak,
   getProactiveBreakerStatus,
   refreshAutoPeak,
@@ -241,9 +242,6 @@ async function setBreaker(mode: "auto" | "fixed" | "off", limit?: number) {
 
 async function resetBreaker() {
   await suDb.agentTurnDelivery.deleteMany({ where: { tenantId } });
-  await suDb.auditLog.deleteMany({
-    where: { tenantId, action: { startsWith: "instance." } },
-  });
   await suDb.proactiveBreaker.deleteMany({ where: { tenantId } });
   await clearFlowLog(suDb, { tenantId });
 }
@@ -679,130 +677,51 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(peak.at?.getTime()).toBe(peakAt.getTime());
   });
 
-  // The delivery rows from the tenant's first one on cover every proactive send, so the flow log only
-  // fills in the lookback before it. Each case seeds the log ABOVE the rows inside the covered part,
-  // which the peak must not see, so reading the whole log again shows up as the wrong figure.
-  const audit = (action: string, at: number, before?: object) =>
-    suDb.auditLog.create({
-      data: { tenantId, action, before, createdAt: new Date(at) },
-    });
-
-  async function peakWith(
-    convId: number,
-    firstRowAgoMs: number,
-    seed: () => Promise<void>,
-  ) {
-    await resetBreaker();
-    const conv = await seedConv(convId);
-    await suDb.agentTurnDelivery.create({
-      data: {
-        tenantId,
-        conversationId: conv,
-        proactive: true,
-        deliveredAt: new Date(Date.now() - firstRowAgoMs),
-      },
-    });
-    await seed();
-    const rows = (n: number, at: Date) =>
-      suDb.agentTurnDelivery.createMany({
-        data: Array.from({ length: n }, (_, i) => ({
-          tenantId,
-          conversationId: conv,
-          proactive: true,
-          deliveredAt: new Date(at.getTime() + i * 1000),
-        })),
+  test("the flow-log half of the peak reaches its lines through the proactive sends index, without the heap", async () => {
+    const role = new URL(appUrl as string).username;
+    const q = autoPeakFromLogSql(
+      tenantId,
+      new Date(Date.now() - 30 * 86_400_000),
+    );
+    type PlanNode = {
+      "Node Type": string;
+      "Index Name"?: string;
+      "Relation Name"?: string;
+      Plans?: PlanNode[];
+    };
+    const all = (n: PlanNode): PlanNode[] => [
+      n,
+      ...(n.Plans ?? []).flatMap(all),
+    ];
+    let plan: PlanNode | undefined;
+    // Every other index of the log dropped in a transaction that rolls back, and sequential scans
+    // priced out: what is left asks only whether the statement's own predicate reaches the index.
+    await suDb
+      .$transaction(async (tx) => {
+        const others = await tx.$queryRaw<{ name: string }[]>`
+          SELECT c.relname AS name FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+           WHERE i.indrelid = 'execution_logs'::regclass AND NOT i.indisprimary
+             AND c.relname <> 'execution_logs_proactive_sends_idx'`;
+        for (const o of others)
+          await tx.$executeRawUnsafe(`DROP INDEX "${o.name}"`);
+        await tx.$executeRawUnsafe(`SET LOCAL ROLE "${role}"`);
+        await tx.$queryRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true)`;
+        await tx.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+        const [row] = await tx.$queryRawUnsafe<
+          { "QUERY PLAN": [{ Plan: PlanNode }] }[]
+        >(`EXPLAIN (FORMAT JSON) ${q.text}`, ...q.values);
+        plan = row?.["QUERY PLAN"][0].Plan;
+        throw new Error("rollback");
+      })
+      .catch((e: Error) => {
+        if (e.message !== "rollback") throw e;
       });
-    return { rows };
-  }
-
-  test("when the delivery rows cover the 30 days the flow log is not read", async () => {
-    const day = 86_400_000;
-    const now = new Date();
-    const peakAt = new Date(now.getTime() - 5 * day);
-    const { rows } = await peakWith(6970, 30.5 * day, async () => {
-      // Within a day of the first row and inside the lookback: only a read of the log would see it.
-      await seedGenerate("messaged", new Date(now.getTime() - 29.8 * day), 900);
-      // A disconnect that is not a removal deletes nothing.
-      await audit("instance.disconnect", now.getTime() - 2 * day, {
-        removal: false,
-      });
-      await seedGenerate("messaged", new Date(now.getTime() - 20 * day), 900);
-      await seedGenerate("messaged", peakAt, 900);
-    });
-    await rows(300, peakAt);
-    const peak = await runScopedOn(appDb, ctx(), (db) =>
-      computeAutoPeak(db, tenantId, now),
+    const scans = all(plan as PlanNode).filter(
+      (n) => n["Relation Name"] === "execution_logs",
     );
-    expect(peak).toEqual({ peak: 300, at: peakAt });
-  });
-
-  test("before the first delivery row the flow log still counts, and after it only the rows do", async () => {
-    const day = 86_400_000;
-    const now = new Date();
-    const logPeakAt = new Date(now.getTime() - 20 * day);
-    const { rows } = await peakWith(6971, 10 * day, async () => {
-      await seedGenerate("messaged", logPeakAt, 500);
-      await seedGenerate("messaged", new Date(now.getTime() - 3 * day), 900);
-    });
-    await rows(300, new Date(now.getTime() - 3 * day));
-    const peak = await runScopedOn(appDb, ctx(), (db) =>
-      computeAutoPeak(db, tenantId, now),
-    );
-    expect(peak).toEqual({ peak: 500, at: logPeakAt });
-  });
-
-  test("a peak window that straddles the first delivery row counts the flow log on both sides of it", async () => {
-    const day = 86_400_000;
-    const hour = 3_600_000;
-    const now = new Date();
-    const first = new Date(now.getTime() - 10 * day);
-    const peakAt = new Date(first.getTime() - 12 * hour);
-    const { rows } = await peakWith(6972, 10 * day, async () => {
-      await seedGenerate("messaged", peakAt, 200);
-      await seedGenerate("messaged", new Date(first.getTime() + 6 * hour), 150);
-      // Past the window that starts before the first row: covered, and above the rows.
-      await seedGenerate(
-        "messaged",
-        new Date(first.getTime() + 30 * hour),
-        600,
-      );
-    });
-    await rows(150, new Date(first.getTime() + 6 * hour));
-    await rows(100, new Date(first.getTime() + 30 * hour));
-    const peak = await runScopedOn(appDb, ctx(), (db) =>
-      computeAutoPeak(db, tenantId, now),
-    );
-    expect(peak).toEqual({ peak: 350, at: peakAt });
-  });
-
-  test("the flow log still counts the sends of a removed Chatwoot account, whose delivery rows went with it, until the removal leaves the lookback", async () => {
-    await resetBreaker();
-    const day = 86_400_000;
-    const now = new Date();
-    const kept = await seedConv(6973);
-    const removed = await seedConv(6974);
-    await seedDeliveries(kept, true, 25 * day);
-    const peakAt = new Date(now.getTime() - 5 * day);
-    await suDb.agentTurnDelivery.createMany({
-      data: Array.from({ length: 400 }, (_, i) => ({
-        tenantId,
-        conversationId: removed,
-        proactive: true,
-        deliveredAt: new Date(peakAt.getTime() + i * 1000),
-      })),
-    });
-    await seedGenerate("messaged", peakAt, 400);
-    const status = async (at: Date) =>
-      (await getProactiveBreakerStatus(ctx(), appDb, at)).auto;
-    expect((await status(now)).peak).toBe(400);
-    await suDb.conversation.delete({ where: { id: removed } });
-    await audit("instance.remove", now.getTime() - 4 * day);
-    const nextDay = new Date(now.getTime() + 2 * day);
-    expect(await status(nextDay)).toMatchObject({
-      peak: 400,
-      peakAt: peakAt.toISOString(),
-    });
-    expect((await status(new Date(now.getTime() + 26 * day))).peak).toBe(0);
+    expect(scans.map((n) => [n["Node Type"], n["Index Name"]])).toEqual([
+      ["Index Only Scan", "execution_logs_proactive_sends_idx"],
+    ]);
   });
 
   test("a failed refresh waits before the next attempt instead of retrying on every send", async () => {

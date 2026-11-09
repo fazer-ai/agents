@@ -6,6 +6,7 @@ import config from "@/config";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { withKeyedQueue } from "@/lib/locks";
 import { runInPoolClass } from "@/lib/pool-class";
+import { isTransactionNeverStarted } from "@/lib/pool-retry";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn } from "@/lib/tenancy";
 import { normalizeChatwootEvent } from "./normalize";
@@ -40,12 +41,37 @@ export const ADMISSION_MAX_WAITING = 5_000;
 // the conversation and so must not wait behind them.
 export type AdmissionLane = "turn" | "meta";
 
+// A delivery whose processing found no free connection ran nothing (`isTransactionNeverStarted`), so
+// it is admitted to its lane again after a full-jitter backoff instead of waiting minutes for the
+// drain: the pending-delivery signal fires at a minute, and a pool stall of a few seconds is over by
+// then. The ceilings double from the base up to the cap (1 s, 2 s, 4 s, 4 s...). Retries go on until
+// the window since the first failure is spent, the run count only a backstop: a failure that comes
+// back at once spent a count-only budget inside a 2 s stall in 2 runs of 8 (measured, full jitter
+// has no floor).
+export const DELIVERY_RETRY_ATTEMPTS = 8;
+export const DELIVERY_RETRY_BASE_MS = 1_000;
+export const DELIVERY_RETRY_CAP_MS = 4_000;
+export const DELIVERY_RETRY_WINDOW_MS = 10_000;
+
+interface RetryTiming {
+  attempts: number;
+  baseMs: number;
+  windowMs: number;
+  random: () => number;
+  schedule: (fn: () => void, ms: number) => void;
+  now: () => number;
+}
+
 interface Pending {
   rowId: string;
   id: bigint;
   run: () => Promise<unknown>;
   // When the delivery was received (epoch ms), so a slot that opens past the age ceiling skips it.
   receivedAt?: number;
+  // Runs so far, this one included once it starts.
+  attempt: number;
+  // When its first run found no free connection (epoch ms).
+  firstFailedAt?: number;
 }
 
 interface Lane {
@@ -63,13 +89,26 @@ interface Admission {
   // body, and if the drain read it first the same oldest rows could fill every pass and starve the
   // ones behind them, so the drain reads these last, with whatever room the batch has left.
   failed: Map<string, bigint>;
+  retry: RetryTiming;
 }
 
 // On globalThis, like the shutdown registry, so `bun --hot` does not split the count.
 const KEY = Symbol.for("fazerai.chatwoot.admission");
 
-function fresh(limit: number): Admission {
+function fresh(limit: number, retry?: Partial<RetryTiming>): Admission {
   return {
+    retry: {
+      attempts: retry?.attempts ?? DELIVERY_RETRY_ATTEMPTS,
+      baseMs: retry?.baseMs ?? DELIVERY_RETRY_BASE_MS,
+      windowMs: retry?.windowMs ?? DELIVERY_RETRY_WINDOW_MS,
+      now: retry?.now ?? Date.now,
+      random: retry?.random ?? Math.random,
+      schedule:
+        retry?.schedule ??
+        ((fn, ms) => {
+          setTimeout(fn, ms);
+        }),
+    },
     limit,
     lanes: {
       turn: { running: 0, waiting: [] },
@@ -87,6 +126,7 @@ function admission(): Admission {
     !held ||
     !(held.held instanceof Map) ||
     !(held.failed instanceof Map) ||
+    !held.retry ||
     !Array.isArray(held.lanes?.turn?.waiting) ||
     !Array.isArray(held.lanes?.meta?.waiting)
   ) {
@@ -114,10 +154,63 @@ export function chatwootAdmissionState(): {
   };
 }
 
-// Tests only: an empty queue, optionally with another limit.
-export function resetChatwootAdmissionForTest(limit?: number): void {
+// Tests only: an empty queue, optionally with another limit and retry timing.
+export function resetChatwootAdmissionForTest(
+  limit?: number,
+  retry?: Partial<RetryTiming>,
+): void {
   const g = globalThis as unknown as Record<symbol, Admission | undefined>;
-  g[KEY] = fresh(limit ?? config.chatwoot.deliveryConcurrency);
+  g[KEY] = fresh(limit ?? config.chatwoot.deliveryConcurrency, retry);
+}
+
+// The drain reads the rows that failed here last (`Admission.failed`).
+function markFailed(a: Admission, p: Pending): void {
+  a.failed.delete(p.rowId);
+  a.failed.set(p.rowId, p.id);
+  // Bounded like the waiting list, dropping the oldest failure first.
+  if (a.failed.size > failedBound) {
+    const oldest = a.failed.keys().next().value;
+    if (oldest !== undefined) a.failed.delete(oldest);
+  }
+}
+
+// Back in the lane once the backoff is over, still held, so neither the drain nor a redelivery
+// admits the row twice meanwhile. A process that started draining by then lets the row go: it stays
+// PENDING with its body for the next boot. A lane that filled during the backoff hands the row to the
+// drain like any failure, since the waiting bound holds for retries too.
+function readmitLater(a: Admission, laneName: AdmissionLane, p: Pending): void {
+  const wait = Math.floor(
+    a.retry.random() *
+      Math.min(a.retry.baseMs * 2 ** (p.attempt - 1), DELIVERY_RETRY_CAP_MS),
+  );
+  logger.warn(
+    "chatwoot: delivery row %s found no free database connection (attempt %d of %d); retrying in %dms",
+    p.rowId,
+    p.attempt,
+    a.retry.attempts,
+    wait,
+  );
+  a.retry.schedule(() => {
+    if (isDraining()) {
+      a.held.delete(p.rowId);
+      return;
+    }
+    if (a.lanes[laneName].waiting.length >= ADMISSION_MAX_WAITING) {
+      logger.warn(
+        "chatwoot: the %s lane filled while delivery row %s waited to retry; it stays in the ledger for the drain",
+        laneName,
+        p.rowId,
+      );
+      a.held.delete(p.rowId);
+      markFailed(a, p);
+      return;
+    }
+    a.lanes[laneName].waiting.push({
+      ...p,
+      attempt: p.attempt + 1,
+    });
+    pump(a, laneName);
+  }, wait);
 }
 
 function pump(a: Admission, laneName: AdmissionLane): void {
@@ -127,6 +220,7 @@ function pump(a: Admission, laneName: AdmissionLane): void {
   while (lane.running < a.limit && lane.waiting.length > 0 && !isDraining()) {
     const next = lane.waiting.shift() as Pending;
     lane.running++;
+    let retrying = false;
     const receivedAt = next.receivedAt;
     const work =
       receivedAt !== undefined &&
@@ -148,23 +242,27 @@ function pump(a: Admission, laneName: AdmissionLane): void {
           a.failed.delete(next.rowId);
         },
         (err) => {
+          const firstFailedAt = next.firstFailedAt ?? a.retry.now();
+          if (
+            isTransactionNeverStarted(err) &&
+            next.attempt < a.retry.attempts &&
+            a.retry.now() - firstFailedAt < a.retry.windowMs
+          ) {
+            retrying = true;
+            readmitLater(a, laneName, { ...next, firstFailedAt });
+            return;
+          }
           logger.error(
             "chatwoot: delivery row %s failed: %s",
             next.rowId,
             err instanceof Error ? err.message : String(err),
           );
-          a.failed.delete(next.rowId);
-          a.failed.set(next.rowId, next.id);
-          // Bounded like the waiting list, dropping the oldest failure first.
-          if (a.failed.size > failedBound) {
-            const oldest = a.failed.keys().next().value;
-            if (oldest !== undefined) a.failed.delete(oldest);
-          }
+          markFailed(a, next);
         },
       )
       .finally(() => {
         lane.running--;
-        a.held.delete(next.rowId);
+        if (!retrying) a.held.delete(next.rowId);
         pump(a, laneName);
       });
   }
@@ -206,7 +304,13 @@ export function admitChatwootDelivery(
     return false;
   }
   a.held.set(key, rowId);
-  a.lanes[lane].waiting.push({ rowId: key, id: rowId, run, receivedAt });
+  a.lanes[lane].waiting.push({
+    rowId: key,
+    id: rowId,
+    run,
+    receivedAt,
+    attempt: 1,
+  });
   pump(a, lane);
   return true;
 }

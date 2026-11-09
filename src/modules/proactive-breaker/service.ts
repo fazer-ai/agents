@@ -22,6 +22,7 @@ import {
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000;
+const AUTO_RETRY_MS = AUTO_REFRESH_MS / 4;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -96,7 +97,9 @@ async function countWindow(
 // send, the redirect ladder's fixed ones included, kept a month; a reservation that never became a
 // delivery is not volume), and the flow log's line for a nudge
 // that reached the customer (`generate` with outcome `messaged` or `templated`), written since before
-// the rows were, so no account starts below its own peak. The larger of the two wins.
+// the rows were, so no account starts below its own peak. The larger of the two wins. The log is read
+// only up to a day past the tenant's first row (a window that starts before it counts the lines after
+// it), and not at all once that row is past the lookback: a month of it is 16.9 s on a busy instance.
 export async function computeAutoPeak(
   db: ScopedDb,
   tenantId: bigint,
@@ -120,7 +123,18 @@ export async function computeAutoPeak(
       ) w
       ORDER BY n DESC, at ASC
       LIMIT 1`);
-  const fromLog = await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
+  const first = await db.agentTurnDelivery.findFirst({
+    where: { tenantId },
+    orderBy: { deliveredAt: "asc" },
+    select: { deliveredAt: true },
+  });
+  const logUntil = first
+    ? new Date(first.deliveredAt.getTime() + WINDOW_MS)
+    : null;
+  const fromLog =
+    first && first.deliveredAt <= since
+      ? []
+      : await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
       SELECT n, at FROM (
         SELECT created_at AS at,
                count(*) OVER (
@@ -132,6 +146,7 @@ export async function computeAutoPeak(
            AND stage = 'generate'
            AND source = 'inbox'
            AND created_at > ${since}
+           ${logUntil ? Prisma.sql`AND created_at < ${logUntil}` : Prisma.empty}
            AND detail->>'outcome' IN ('messaged', 'templated')
       ) w
       ORDER BY n DESC, at ASC
@@ -143,10 +158,13 @@ export async function computeAutoPeak(
 }
 
 const refreshing = new Map<string, Promise<void>>();
+// When each tenant's last refresh failed. A failure leaves `autoComputedAt` stale, so without this
+// every send retried the same slow read, and each attempt was one more statement timeout alert.
+const failedAt = new Map<string, number>();
 
 // Refreshes the automatic limit's inputs when they are missing or a day old. Outside the send's
-// lock, since it reads a month of the flow log; concurrent sends of one tenant share one read. A
-// failure keeps the last figure (or the floor) and never blocks a send.
+// lock, since it can read the flow log; concurrent sends of one tenant share one read. A failure
+// keeps the last figure (or the floor), never blocks a send, and is not retried for AUTO_RETRY_MS.
 export async function refreshAutoPeak(
   tenantId: bigint,
   base: PrismaClient = basePrisma,
@@ -155,6 +173,8 @@ export async function refreshAutoPeak(
   const key = String(tenantId);
   const inFlight = refreshing.get(key);
   if (inFlight) return inFlight;
+  const failed = failedAt.get(key);
+  if (failed !== undefined && now.getTime() - failed < AUTO_RETRY_MS) return;
   const run = (async () => {
     try {
       await runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -180,6 +200,7 @@ export async function refreshAutoPeak(
         });
       });
     } catch (err) {
+      failedAt.set(key, now.getTime());
       logger.warn(
         { err, tenantId: String(tenantId) },
         "proactive breaker: could not refresh the automatic limit",

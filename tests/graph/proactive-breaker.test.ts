@@ -25,6 +25,7 @@ import {
 import {
   computeAutoPeak,
   getProactiveBreakerStatus,
+  refreshAutoPeak,
   resumeProactiveBreaker,
 } from "@/modules/proactive-breaker/service";
 import {
@@ -673,6 +674,131 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     );
     expect(peak.peak).toBe(700);
     expect(peak.at?.getTime()).toBe(peakAt.getTime());
+  });
+
+  // The delivery rows from the tenant's first one on cover every proactive send, so the flow log only
+  // fills in the lookback before it. Each case seeds the log ABOVE the rows inside the covered part,
+  // which the peak must not see, so reading the whole log again shows up as the wrong figure.
+  async function peakWith(
+    convId: number,
+    firstRowAgoMs: number,
+    seed: () => Promise<void>,
+  ) {
+    await resetBreaker();
+    const conv = await seedConv(convId);
+    await suDb.agentTurnDelivery.create({
+      data: {
+        tenantId,
+        conversationId: conv,
+        proactive: true,
+        deliveredAt: new Date(Date.now() - firstRowAgoMs),
+      },
+    });
+    await seed();
+    const rows = (n: number, at: Date) =>
+      suDb.agentTurnDelivery.createMany({
+        data: Array.from({ length: n }, (_, i) => ({
+          tenantId,
+          conversationId: conv,
+          proactive: true,
+          deliveredAt: new Date(at.getTime() + i * 1000),
+        })),
+      });
+    return { rows };
+  }
+
+  test("when the delivery rows cover the 30 days the flow log is not read", async () => {
+    const day = 86_400_000;
+    const now = new Date();
+    const peakAt = new Date(now.getTime() - 5 * day);
+    const { rows } = await peakWith(6970, 30.5 * day, async () => {
+      // Within a day of the first row and inside the lookback: only a read of the log would see it.
+      await seedGenerate("messaged", new Date(now.getTime() - 29.8 * day), 900);
+      await seedGenerate("messaged", new Date(now.getTime() - 20 * day), 900);
+      await seedGenerate("messaged", peakAt, 900);
+    });
+    await rows(300, peakAt);
+    const peak = await runScopedOn(appDb, ctx(), (db) =>
+      computeAutoPeak(db, tenantId, now),
+    );
+    expect(peak).toEqual({ peak: 300, at: peakAt });
+  });
+
+  test("before the first delivery row the flow log still counts, and after it only the rows do", async () => {
+    const day = 86_400_000;
+    const now = new Date();
+    const logPeakAt = new Date(now.getTime() - 20 * day);
+    const { rows } = await peakWith(6971, 10 * day, async () => {
+      await seedGenerate("messaged", logPeakAt, 500);
+      await seedGenerate("messaged", new Date(now.getTime() - 3 * day), 900);
+    });
+    await rows(300, new Date(now.getTime() - 3 * day));
+    const peak = await runScopedOn(appDb, ctx(), (db) =>
+      computeAutoPeak(db, tenantId, now),
+    );
+    expect(peak).toEqual({ peak: 500, at: logPeakAt });
+  });
+
+  test("a peak window that straddles the first delivery row counts the flow log on both sides of it", async () => {
+    const day = 86_400_000;
+    const hour = 3_600_000;
+    const now = new Date();
+    const first = new Date(now.getTime() - 10 * day);
+    const peakAt = new Date(first.getTime() - 12 * hour);
+    const { rows } = await peakWith(6972, 10 * day, async () => {
+      await seedGenerate("messaged", peakAt, 200);
+      await seedGenerate("messaged", new Date(first.getTime() + 6 * hour), 150);
+      // Past the window that starts before the first row: covered, and above the rows.
+      await seedGenerate(
+        "messaged",
+        new Date(first.getTime() + 30 * hour),
+        600,
+      );
+    });
+    await rows(150, new Date(first.getTime() + 6 * hour));
+    await rows(100, new Date(first.getTime() + 30 * hour));
+    const peak = await runScopedOn(appDb, ctx(), (db) =>
+      computeAutoPeak(db, tenantId, now),
+    );
+    expect(peak).toEqual({ peak: 350, at: peakAt });
+  });
+
+  test("a failed refresh waits before the next attempt instead of retrying on every send", async () => {
+    const other = await suDb.tenant.create({
+      data: { name: "PB backoff", slug: `pb-backoff-${process.pid}` },
+    });
+    try {
+      let attempts = 0;
+      const timingOut = {
+        $extends: () => ({
+          $transaction: async () => {
+            attempts++;
+            throw new Error("canceling statement due to statement timeout");
+          },
+        }),
+      } as unknown as PrismaClient;
+      const t0 = Date.now();
+      await refreshAutoPeak(other.id, timingOut, new Date(t0));
+      expect(attempts).toBe(1);
+      await refreshAutoPeak(other.id, timingOut, new Date(t0 + 60_000));
+      await refreshAutoPeak(other.id, appDb, new Date(t0 + 5 * 3_600_000));
+      expect(attempts).toBe(1);
+      expect(
+        await suDb.proactiveBreaker.count({ where: { tenantId: other.id } }),
+      ).toBe(0);
+      await refreshAutoPeak(other.id, timingOut, new Date(t0 + 7 * 3_600_000));
+      expect(attempts).toBe(2);
+      const later = new Date(t0 + 14 * 3_600_000);
+      await refreshAutoPeak(other.id, appDb, later);
+      const row = await suDb.proactiveBreaker.findUnique({
+        where: { tenantId: other.id },
+        select: { autoPeak: true, autoComputedAt: true },
+      });
+      expect(row).toEqual({ autoPeak: 0, autoComputedAt: later });
+    } finally {
+      await suDb.proactiveBreaker.deleteMany({ where: { tenantId: other.id } });
+      await suDb.tenant.delete({ where: { id: other.id } });
+    }
   });
 
   test("the retention sweep keeps a proactive delivery for the automatic peak's month", async () => {

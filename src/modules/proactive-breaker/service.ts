@@ -92,14 +92,49 @@ async function countWindow(
   });
 }
 
+// From when the delivery rows hold every proactive send of the tenant, or null when it has none: its
+// first row, or the last removal of a Chatwoot account or deployment inside the lookback when later,
+// since the removal deletes the account's conversations and their rows by cascade while the flow log
+// keeps their lines.
+async function rowsCoverFrom(
+  db: ScopedDb,
+  tenantId: bigint,
+  since: Date,
+): Promise<Date | null> {
+  const first = await db.agentTurnDelivery.findFirst({
+    where: { tenantId },
+    orderBy: { deliveredAt: "asc" },
+    select: { deliveredAt: true },
+  });
+  if (!first) return null;
+  const removal = await db.auditLog.findFirst({
+    where: {
+      tenantId,
+      createdAt: { gt: since },
+      OR: [
+        { action: { in: ["instance.remove", "deployment.disconnect"] } },
+        {
+          action: "instance.disconnect",
+          before: { path: ["removal"], equals: true },
+        },
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  return removal && removal.createdAt > first.deliveredAt
+    ? removal.createdAt
+    : first.deliveredAt;
+}
+
 // The largest number of proactive messages the account delivered in any 24h window of the last 30
 // days, from two records of the same sends: the delivery rows the breaker counts (every proactive
 // send, the redirect ladder's fixed ones included, kept a month; a reservation that never became a
 // delivery is not volume), and the flow log's line for a nudge
 // that reached the customer (`generate` with outcome `messaged` or `templated`), written since before
 // the rows were, so no account starts below its own peak. The larger of the two wins. The log is read
-// only up to a day past the tenant's first row (a window that starts before it counts the lines after
-// it), and not at all once that row is past the lookback: a month of it is 16.9 s on a busy instance.
+// only up to a day past `rowsCoverFrom` (so a window starting before it counts the lines after it),
+// and not at all once that is past the lookback: a month of it is 16.9 s on a busy instance.
 export async function computeAutoPeak(
   db: ScopedDb,
   tenantId: bigint,
@@ -123,16 +158,12 @@ export async function computeAutoPeak(
       ) w
       ORDER BY n DESC, at ASC
       LIMIT 1`);
-  const first = await db.agentTurnDelivery.findFirst({
-    where: { tenantId },
-    orderBy: { deliveredAt: "asc" },
-    select: { deliveredAt: true },
-  });
-  const logUntil = first
-    ? new Date(first.deliveredAt.getTime() + WINDOW_MS)
+  const coveredFrom = await rowsCoverFrom(db, tenantId, since);
+  const logUntil = coveredFrom
+    ? new Date(coveredFrom.getTime() + WINDOW_MS)
     : null;
   const fromLog =
-    first && first.deliveredAt <= since
+    coveredFrom && coveredFrom <= since
       ? []
       : await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
       SELECT n, at FROM (

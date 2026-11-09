@@ -241,6 +241,9 @@ async function setBreaker(mode: "auto" | "fixed" | "off", limit?: number) {
 
 async function resetBreaker() {
   await suDb.agentTurnDelivery.deleteMany({ where: { tenantId } });
+  await suDb.auditLog.deleteMany({
+    where: { tenantId, action: { startsWith: "instance." } },
+  });
   await suDb.proactiveBreaker.deleteMany({ where: { tenantId } });
   await clearFlowLog(suDb, { tenantId });
 }
@@ -679,6 +682,11 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
   // The delivery rows from the tenant's first one on cover every proactive send, so the flow log only
   // fills in the lookback before it. Each case seeds the log ABOVE the rows inside the covered part,
   // which the peak must not see, so reading the whole log again shows up as the wrong figure.
+  const audit = (action: string, at: number, before?: object) =>
+    suDb.auditLog.create({
+      data: { tenantId, action, before, createdAt: new Date(at) },
+    });
+
   async function peakWith(
     convId: number,
     firstRowAgoMs: number,
@@ -714,6 +722,10 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     const { rows } = await peakWith(6970, 30.5 * day, async () => {
       // Within a day of the first row and inside the lookback: only a read of the log would see it.
       await seedGenerate("messaged", new Date(now.getTime() - 29.8 * day), 900);
+      // A disconnect that is not a removal deletes nothing.
+      await audit("instance.disconnect", now.getTime() - 2 * day, {
+        removal: false,
+      });
       await seedGenerate("messaged", new Date(now.getTime() - 20 * day), 900);
       await seedGenerate("messaged", peakAt, 900);
     });
@@ -763,7 +775,7 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(peak).toEqual({ peak: 350, at: peakAt });
   });
 
-  test("a deleted conversation keeps its delivery rows, so its peak still counts until the window leaves the lookback", async () => {
+  test("the flow log still counts the sends of a removed Chatwoot account, whose delivery rows went with it, until the removal leaves the lookback", async () => {
     await resetBreaker();
     const day = 86_400_000;
     const now = new Date();
@@ -784,11 +796,7 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
       (await getProactiveBreakerStatus(ctx(), appDb, at)).auto;
     expect((await status(now)).peak).toBe(400);
     await suDb.conversation.delete({ where: { id: removed } });
-    expect(
-      await suDb.agentTurnDelivery.count({
-        where: { tenantId, conversationId: null },
-      }),
-    ).toBe(400);
+    await audit("instance.remove", now.getTime() - 4 * day);
     const nextDay = new Date(now.getTime() + 2 * day);
     expect(await status(nextDay)).toMatchObject({
       peak: 400,

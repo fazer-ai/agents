@@ -146,9 +146,21 @@ export function resetChatwootAdmissionForTest(
   g[KEY] = fresh(limit ?? config.chatwoot.deliveryConcurrency, retry);
 }
 
+// The drain reads the rows that failed here last (`Admission.failed`).
+function markFailed(a: Admission, p: Pending): void {
+  a.failed.delete(p.rowId);
+  a.failed.set(p.rowId, p.id);
+  // Bounded like the waiting list, dropping the oldest failure first.
+  if (a.failed.size > failedBound) {
+    const oldest = a.failed.keys().next().value;
+    if (oldest !== undefined) a.failed.delete(oldest);
+  }
+}
+
 // Back in the lane once the backoff is over, still held, so neither the drain nor a redelivery
 // admits the row twice meanwhile. A process that started draining by then lets the row go: it stays
-// PENDING with its body for the next boot.
+// PENDING with its body for the next boot. A lane that filled during the backoff hands the row to the
+// drain like any failure, since the waiting bound holds for retries too.
 function readmitLater(a: Admission, laneName: AdmissionLane, p: Pending): void {
   const wait = Math.floor(
     a.retry.random() * a.retry.baseMs * 2 ** (p.attempt - 1),
@@ -163,6 +175,16 @@ function readmitLater(a: Admission, laneName: AdmissionLane, p: Pending): void {
   setTimeout(() => {
     if (isDraining()) {
       a.held.delete(p.rowId);
+      return;
+    }
+    if (a.lanes[laneName].waiting.length >= ADMISSION_MAX_WAITING) {
+      logger.warn(
+        "chatwoot: the %s lane filled while delivery row %s waited to retry; it stays in the ledger for the drain",
+        laneName,
+        p.rowId,
+      );
+      a.held.delete(p.rowId);
+      markFailed(a, p);
       return;
     }
     a.lanes[laneName].waiting.push({ ...p, attempt: p.attempt + 1 });
@@ -212,13 +234,7 @@ function pump(a: Admission, laneName: AdmissionLane): void {
             next.rowId,
             err instanceof Error ? err.message : String(err),
           );
-          a.failed.delete(next.rowId);
-          a.failed.set(next.rowId, next.id);
-          // Bounded like the waiting list, dropping the oldest failure first.
-          if (a.failed.size > failedBound) {
-            const oldest = a.failed.keys().next().value;
-            if (oldest !== undefined) a.failed.delete(oldest);
-          }
+          markFailed(a, next);
         },
       )
       .finally(() => {

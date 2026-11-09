@@ -340,6 +340,29 @@ describe("admission", () => {
     expect(peak).toBe(1);
   });
 
+  test("a lane that filled during the backoff hands the retry to the drain instead of passing its bound", async () => {
+    resetChatwootAdmissionForTest(1, { baseMs: 300, random: () => 1 });
+    const g = held();
+    let runs = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      throw neverStarted();
+    });
+    await Bun.sleep(5);
+    expect(runs).toBe(1);
+    admitChatwootDelivery(2n, async () => {
+      await g.gate;
+    });
+    for (let i = 0; i < ADMISSION_MAX_WAITING; i++)
+      admitChatwootDelivery(BigInt(1000 + i), async () => {});
+    expect(admissionHolds(1n)).toBe(true);
+    await Bun.sleep(400);
+    expect(chatwootAdmissionState().waiting).toBe(ADMISSION_MAX_WAITING);
+    expect(runs).toBe(1);
+    expect(admissionHolds(1n)).toBe(false);
+    g.release();
+  });
+
   test("a draining process does not retry, and the row is let go", async () => {
     resetChatwootAdmissionForTest(1, { baseMs: 20, random: () => 1 });
     let runs = 0;

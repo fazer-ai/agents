@@ -103,6 +103,13 @@ export async function buildApp({
     // before Elysia's fetch handler runs; the bare /api entry covers requests without a trailing
     // slash. Root cause and the smoke test to re-run on an Elysia upgrade: docs/routing.md.
     serve: {
+      // Bun closes a connection idle for 10 s by default. A metrics read sends nothing until it
+      // answers, inside METRICS_TIMEOUT_MS, so the idle limit sits past that budget: the read's own
+      // answer, or its 503, always reaches the caller. Bun caps it at 255 s.
+      idleTimeout: Math.min(
+        255,
+        Math.ceil(config.metrics.timeoutMs / 1000) + 10,
+      ),
       routes: {
         "/api": false,
         "/api/*": false,

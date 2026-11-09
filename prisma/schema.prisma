@@ -2742,15 +2742,17 @@ model PromptVariantAssignment {
 model AgentTurnDelivery {
   id             BigInt   @id @default(autoincrement())
   tenantId       BigInt   @map("tenant_id")
-  conversationId BigInt   @map("conversation_id")
+  // Null once the conversation is deleted (its Chatwoot instance removed): the row is still a send of
+  // the account, which the proactive breaker counts and reads its automatic peak from.
+  conversationId BigInt?  @map("conversation_id")
   proactive      Boolean  @default(false)
   // The proactive limit's reservation, taken before the nudge runs and cleared when its send reaches
   // the customer: counted by the proactive limit, never by the turn limit.
   pending        Boolean  @default(false)
   deliveredAt    DateTime @default(now()) @map("delivered_at")
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
 
   @@index([conversationId, deliveredAt])
   @@index([tenantId, deliveredAt])

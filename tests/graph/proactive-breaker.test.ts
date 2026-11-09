@@ -763,7 +763,7 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(peak).toEqual({ peak: 350, at: peakAt });
   });
 
-  test("a peak whose delivery rows went with a removed conversation stays until its window leaves the lookback", async () => {
+  test("a deleted conversation keeps its delivery rows, so its peak still counts until the window leaves the lookback", async () => {
     await resetBreaker();
     const day = 86_400_000;
     const now = new Date();
@@ -784,6 +784,11 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
       (await getProactiveBreakerStatus(ctx(), appDb, at)).auto;
     expect((await status(now)).peak).toBe(400);
     await suDb.conversation.delete({ where: { id: removed } });
+    expect(
+      await suDb.agentTurnDelivery.count({
+        where: { tenantId, conversationId: null },
+      }),
+    ).toBe(400);
     const nextDay = new Date(now.getTime() + 2 * day);
     expect(await status(nextDay)).toMatchObject({
       peak: 400,

@@ -180,25 +180,14 @@ export async function refreshAutoPeak(
       await runScopedOn(base, sysCtx(tenantId), async (db) => {
         const row = await db.proactiveBreaker.findUnique({
           where: { tenantId },
-          select: { autoComputedAt: true, autoPeak: true, autoPeakAt: true },
+          select: { autoComputedAt: true },
         });
         if (
           row?.autoComputedAt &&
           now.getTime() - row.autoComputedAt.getTime() < AUTO_REFRESH_MS
         )
           return;
-        const fresh = await computeAutoPeak(db, tenantId, now);
-        // A stored peak whose window is still inside the lookback stays when it is higher:
-        // removing a Chatwoot instance cascades its delivery rows away, and the flow log that would
-        // still hold them is no longer read past the tenant's first row.
-        const since = now.getTime() - AUTO_LOOKBACK_DAYS * WINDOW_MS;
-        const { peak, at } =
-          row?.autoPeak != null &&
-          row.autoPeakAt &&
-          row.autoPeakAt.getTime() > since &&
-          row.autoPeak > fresh.peak
-            ? { peak: row.autoPeak, at: row.autoPeakAt }
-            : fresh;
+        const { peak, at } = await computeAutoPeak(db, tenantId, now);
         await db.proactiveBreaker.upsert({
           where: { tenantId },
           create: {

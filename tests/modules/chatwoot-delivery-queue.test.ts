@@ -262,17 +262,25 @@ describe("admission", () => {
   // The backoff's timer, fired by the test: each entry is one scheduled re-admission and its wait.
   function backoffs(attempts?: number) {
     const due: { fn: () => void; ms: number }[] = [];
+    const clock = { now: 0 };
     resetChatwootAdmissionForTest(1, {
       attempts,
       baseMs: 1_000,
       random: () => 1,
+      now: () => clock.now,
       schedule: (fn, ms) => {
         due.push({ fn, ms });
       },
     });
     return {
       due,
-      fire: () => (due.shift() as { fn: () => void }).fn(),
+      clock,
+      // The scheduled wait passes on the injected clock, then the timer fires.
+      fire: () => {
+        const next = due.shift() as { fn: () => void; ms: number };
+        clock.now += next.ms;
+        next.fn();
+      },
     };
   }
 
@@ -308,7 +316,62 @@ describe("admission", () => {
     expect(t.due).toEqual([]);
   });
 
-  test("the retries are bounded, back off doubling, and the last failure is left to the drain", async () => {
+  test("the retries stop once the window since the first failure is spent, with the ceilings doubling up to the cap", async () => {
+    const t = backoffs();
+    let runs = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      throw neverStarted();
+    });
+    const waits: number[] = [];
+    while (true) {
+      await until(
+        "the row to be scheduled or let go",
+        async () => t.due.length === 1 || !admissionHolds(1n),
+      );
+      if (t.due.length === 0) break;
+      waits.push(t.due[0]?.ms as number);
+      t.fire();
+    }
+    // 1 + 2 + 4 + 4 = 11 s: the run after the fourth wait starts past the 10 s window and is the last.
+    expect(waits).toEqual([1_000, 2_000, 4_000, 4_000]);
+    expect(runs).toBe(5);
+  });
+
+  test("a failure that comes back at once still has retries left through a short stall", async () => {
+    const due: { fn: () => void; ms: number }[] = [];
+    let now = 0;
+    resetChatwootAdmissionForTest(1, {
+      random: () => 0,
+      now: () => now,
+      schedule: (fn, ms) => {
+        due.push({ fn, ms });
+      },
+    });
+    let runs = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      // The pool gives connections again 2 s after the first failure.
+      if (now < 2_000) {
+        now += 1;
+        throw neverStarted();
+      }
+    });
+    while (admissionHolds(1n)) {
+      await until(
+        "the row to be scheduled or let go",
+        async () => due.length === 1 || !admissionHolds(1n),
+      );
+      const next = due.shift();
+      if (!next) break;
+      now += Math.max(next.ms, 300);
+      next.fn();
+    }
+    expect(runs).toBeGreaterThan(4);
+    expect(now).toBeGreaterThanOrEqual(2_000);
+  });
+
+  test("the retries are bounded by count too, and the last failure is left to the drain", async () => {
     const t = backoffs(3);
     let runs = 0;
     admitChatwootDelivery(1n, async () => {

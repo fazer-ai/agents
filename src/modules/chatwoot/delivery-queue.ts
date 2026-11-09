@@ -44,15 +44,22 @@ export type AdmissionLane = "turn" | "meta";
 // A delivery whose processing found no free connection ran nothing (`isTransactionNeverStarted`), so
 // it is admitted to its lane again after a full-jitter backoff instead of waiting minutes for the
 // drain: the pending-delivery signal fires at a minute, and a pool stall of a few seconds is over by
-// then. Runs counted with the first; the ceilings double from the base (1 s, 2 s, 4 s).
-export const DELIVERY_RETRY_ATTEMPTS = 4;
+// then. The ceilings double from the base up to the cap (1 s, 2 s, 4 s, 4 s...). Retries go on until
+// the window since the first failure is spent, the run count only a backstop: a failure that comes
+// back at once spent a count-only budget inside a 2 s stall in 2 runs of 8 (measured, full jitter
+// has no floor).
+export const DELIVERY_RETRY_ATTEMPTS = 8;
 export const DELIVERY_RETRY_BASE_MS = 1_000;
+export const DELIVERY_RETRY_CAP_MS = 4_000;
+export const DELIVERY_RETRY_WINDOW_MS = 10_000;
 
 interface RetryTiming {
   attempts: number;
   baseMs: number;
+  windowMs: number;
   random: () => number;
   schedule: (fn: () => void, ms: number) => void;
+  now: () => number;
 }
 
 interface Pending {
@@ -63,6 +70,8 @@ interface Pending {
   receivedAt?: number;
   // Runs so far, this one included once it starts.
   attempt: number;
+  // When its first run found no free connection (epoch ms).
+  firstFailedAt?: number;
 }
 
 interface Lane {
@@ -91,6 +100,8 @@ function fresh(limit: number, retry?: Partial<RetryTiming>): Admission {
     retry: {
       attempts: retry?.attempts ?? DELIVERY_RETRY_ATTEMPTS,
       baseMs: retry?.baseMs ?? DELIVERY_RETRY_BASE_MS,
+      windowMs: retry?.windowMs ?? DELIVERY_RETRY_WINDOW_MS,
+      now: retry?.now ?? Date.now,
       random: retry?.random ?? Math.random,
       schedule:
         retry?.schedule ??
@@ -169,7 +180,8 @@ function markFailed(a: Admission, p: Pending): void {
 // drain like any failure, since the waiting bound holds for retries too.
 function readmitLater(a: Admission, laneName: AdmissionLane, p: Pending): void {
   const wait = Math.floor(
-    a.retry.random() * a.retry.baseMs * 2 ** (p.attempt - 1),
+    a.retry.random() *
+      Math.min(a.retry.baseMs * 2 ** (p.attempt - 1), DELIVERY_RETRY_CAP_MS),
   );
   logger.warn(
     "chatwoot: delivery row %s found no free database connection (attempt %d of %d); retrying in %dms",
@@ -193,7 +205,10 @@ function readmitLater(a: Admission, laneName: AdmissionLane, p: Pending): void {
       markFailed(a, p);
       return;
     }
-    a.lanes[laneName].waiting.push({ ...p, attempt: p.attempt + 1 });
+    a.lanes[laneName].waiting.push({
+      ...p,
+      attempt: p.attempt + 1,
+    });
     pump(a, laneName);
   }, wait);
 }
@@ -227,12 +242,14 @@ function pump(a: Admission, laneName: AdmissionLane): void {
           a.failed.delete(next.rowId);
         },
         (err) => {
+          const firstFailedAt = next.firstFailedAt ?? a.retry.now();
           if (
             isTransactionNeverStarted(err) &&
-            next.attempt < a.retry.attempts
+            next.attempt < a.retry.attempts &&
+            a.retry.now() - firstFailedAt < a.retry.windowMs
           ) {
             retrying = true;
-            readmitLater(a, laneName, next);
+            readmitLater(a, laneName, { ...next, firstFailedAt });
             return;
           }
           logger.error(

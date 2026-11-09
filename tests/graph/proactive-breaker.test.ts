@@ -23,8 +23,10 @@ import {
   proactiveBreakerSet,
 } from "@/modules/mcp/write-settings";
 import {
+  autoPeakFromLogSql,
   computeAutoPeak,
   getProactiveBreakerStatus,
+  refreshAutoPeak,
   resumeProactiveBreaker,
 } from "@/modules/proactive-breaker/service";
 import {
@@ -673,6 +675,91 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     );
     expect(peak.peak).toBe(700);
     expect(peak.at?.getTime()).toBe(peakAt.getTime());
+  });
+
+  test("the flow-log half of the peak reaches its lines through the proactive sends index, without the heap", async () => {
+    const role = new URL(appUrl as string).username;
+    const q = autoPeakFromLogSql(
+      tenantId,
+      new Date(Date.now() - 30 * 86_400_000),
+    );
+    type PlanNode = {
+      "Node Type": string;
+      "Index Name"?: string;
+      "Relation Name"?: string;
+      Plans?: PlanNode[];
+    };
+    const all = (n: PlanNode): PlanNode[] => [
+      n,
+      ...(n.Plans ?? []).flatMap(all),
+    ];
+    let plan: PlanNode | undefined;
+    // Every other index of the log dropped in a transaction that rolls back, and sequential scans
+    // priced out: what is left asks only whether the statement's own predicate reaches the index.
+    await suDb
+      .$transaction(async (tx) => {
+        const others = await tx.$queryRaw<{ name: string }[]>`
+          SELECT c.relname AS name FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+           WHERE i.indrelid = 'execution_logs'::regclass AND NOT i.indisprimary
+             AND c.relname <> 'execution_logs_proactive_sends_idx'`;
+        for (const o of others)
+          await tx.$executeRawUnsafe(`DROP INDEX "${o.name}"`);
+        await tx.$executeRawUnsafe(`SET LOCAL ROLE "${role}"`);
+        await tx.$queryRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true)`;
+        await tx.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+        const [row] = await tx.$queryRawUnsafe<
+          { "QUERY PLAN": [{ Plan: PlanNode }] }[]
+        >(`EXPLAIN (FORMAT JSON) ${q.text}`, ...q.values);
+        plan = row?.["QUERY PLAN"][0].Plan;
+        throw new Error("rollback");
+      })
+      .catch((e: Error) => {
+        if (e.message !== "rollback") throw e;
+      });
+    const scans = all(plan as PlanNode).filter(
+      (n) => n["Relation Name"] === "execution_logs",
+    );
+    expect(scans.map((n) => [n["Node Type"], n["Index Name"]])).toEqual([
+      ["Index Only Scan", "execution_logs_proactive_sends_idx"],
+    ]);
+  });
+
+  test("a failed refresh waits before the next attempt instead of retrying on every send", async () => {
+    const other = await suDb.tenant.create({
+      data: { name: "PB backoff", slug: `pb-backoff-${process.pid}` },
+    });
+    try {
+      let attempts = 0;
+      const timingOut = {
+        $extends: () => ({
+          $transaction: async () => {
+            attempts++;
+            throw new Error("canceling statement due to statement timeout");
+          },
+        }),
+      } as unknown as PrismaClient;
+      const t0 = Date.now();
+      await refreshAutoPeak(other.id, timingOut, new Date(t0));
+      expect(attempts).toBe(1);
+      await refreshAutoPeak(other.id, timingOut, new Date(t0 + 60_000));
+      await refreshAutoPeak(other.id, appDb, new Date(t0 + 5 * 3_600_000));
+      expect(attempts).toBe(1);
+      expect(
+        await suDb.proactiveBreaker.count({ where: { tenantId: other.id } }),
+      ).toBe(0);
+      await refreshAutoPeak(other.id, timingOut, new Date(t0 + 7 * 3_600_000));
+      expect(attempts).toBe(2);
+      const later = new Date(t0 + 14 * 3_600_000);
+      await refreshAutoPeak(other.id, appDb, later);
+      const row = await suDb.proactiveBreaker.findUnique({
+        where: { tenantId: other.id },
+        select: { autoPeak: true, autoComputedAt: true },
+      });
+      expect(row).toEqual({ autoPeak: 0, autoComputedAt: later });
+    } finally {
+      await suDb.proactiveBreaker.deleteMany({ where: { tenantId: other.id } });
+      await suDb.tenant.delete({ where: { id: other.id } });
+    }
   });
 
   test("the retention sweep keeps a proactive delivery for the automatic peak's month", async () => {

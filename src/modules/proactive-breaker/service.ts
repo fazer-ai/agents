@@ -22,6 +22,7 @@ import {
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const AUTO_REFRESH_MS = 24 * 60 * 60 * 1000;
+const AUTO_RETRY_MS = AUTO_REFRESH_MS / 4;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -91,6 +92,28 @@ async function countWindow(
   });
 }
 
+// The flow-log half of `computeAutoPeak`. Its predicate is the one of
+// `execution_logs_proactive_sends_idx`, which holds only these lines, so the read walks that small
+// index instead of every `generate` line of the month and the `detail` of each.
+export function autoPeakFromLogSql(tenantId: bigint, since: Date): Prisma.Sql {
+  return Prisma.sql`
+    SELECT n, at FROM (
+        SELECT created_at AS at,
+               count(*) OVER (
+                 ORDER BY created_at
+                 RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
+               ) AS n
+          FROM execution_logs
+         WHERE tenant_id = ${tenantId}
+           AND stage = 'generate'
+           AND source = 'inbox'
+           AND created_at > ${since}
+           AND detail->>'outcome' IN ('messaged', 'templated')
+      ) w
+      ORDER BY n DESC, at ASC
+      LIMIT 1`;
+}
+
 // The largest number of proactive messages the account delivered in any 24h window of the last 30
 // days, from two records of the same sends: the delivery rows the breaker counts (every proactive
 // send, the redirect ladder's fixed ones included, kept a month; a reservation that never became a
@@ -120,22 +143,9 @@ export async function computeAutoPeak(
       ) w
       ORDER BY n DESC, at ASC
       LIMIT 1`);
-  const fromLog = await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
-      SELECT n, at FROM (
-        SELECT created_at AS at,
-               count(*) OVER (
-                 ORDER BY created_at
-                 RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
-               ) AS n
-          FROM execution_logs
-         WHERE tenant_id = ${tenantId}
-           AND stage = 'generate'
-           AND source = 'inbox'
-           AND created_at > ${since}
-           AND detail->>'outcome' IN ('messaged', 'templated')
-      ) w
-      ORDER BY n DESC, at ASC
-      LIMIT 1`);
+  const fromLog = await db.$queryRaw<Array<{ n: bigint; at: Date }>>(
+    autoPeakFromLogSql(tenantId, since),
+  );
   const a = fromDeliveries[0];
   const b = fromLog[0];
   const top = a && (!b || Number(a.n) >= Number(b.n)) ? a : b;
@@ -143,10 +153,14 @@ export async function computeAutoPeak(
 }
 
 const refreshing = new Map<string, Promise<void>>();
+// When each tenant's last refresh failed. A failure leaves `autoComputedAt` stale, so without this
+// every send retried the same slow read, and each attempt was one more statement timeout alert.
+const failedAt = new Map<string, number>();
 
 // Refreshes the automatic limit's inputs when they are missing or a day old. Outside the send's
 // lock, since it reads a month of the flow log; concurrent sends of one tenant share one read. A
-// failure keeps the last figure (or the floor) and never blocks a send.
+// failure keeps the last figure (or the floor), never blocks a send, and is not retried for
+// AUTO_RETRY_MS.
 export async function refreshAutoPeak(
   tenantId: bigint,
   base: PrismaClient = basePrisma,
@@ -155,6 +169,8 @@ export async function refreshAutoPeak(
   const key = String(tenantId);
   const inFlight = refreshing.get(key);
   if (inFlight) return inFlight;
+  const failed = failedAt.get(key);
+  if (failed !== undefined && now.getTime() - failed < AUTO_RETRY_MS) return;
   const run = (async () => {
     try {
       await runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -180,6 +196,7 @@ export async function refreshAutoPeak(
         });
       });
     } catch (err) {
+      failedAt.set(key, now.getTime());
       logger.warn(
         { err, tenantId: String(tenantId) },
         "proactive breaker: could not refresh the automatic limit",

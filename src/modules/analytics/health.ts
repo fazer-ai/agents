@@ -72,19 +72,43 @@ export async function getHealth(
        GROUP BY 1, 2, 3
        ORDER BY 4 DESC`);
     return {
-      latency: latency.map((r) => ({
-        model: r.model,
-        calls: Number(r.calls),
-        p50Ms: r.p50 == null ? null : Number(r.p50),
-        p90Ms: r.p90 == null ? null : Number(r.p90),
-      })),
-      problems: problems.map((r) => ({
-        stage: r.stage,
-        tool: r.tool,
-        level: r.level === "error" ? "error" : "warn",
-        lines: Number(r.lines),
-        conversations: Number(r.conversations),
-      })),
+      latency: latency
+        .map((r) => ({
+          model: r.model,
+          calls: Number(r.calls),
+          p50Ms: r.p50 == null ? null : Number(r.p50),
+          p90Ms: r.p90 == null ? null : Number(r.p90),
+        }))
+        .sort(latencyOrder),
+      problems: problems
+        .map(
+          (r): ProblemRow => ({
+            stage: r.stage,
+            tool: r.tool,
+            level: r.level === "error" ? "error" : "warn",
+            lines: Number(r.lines),
+            conversations: Number(r.conversations),
+          }),
+        )
+        .sort(problemOrder),
     };
   });
+}
+
+// Rows that tie keep one fixed order, the one the console always showed: Postgres hands tied groups
+// back in whatever order its plan produced them, which changes with the volume.
+export function problemOrder(a: ProblemRow, b: ProblemRow): number {
+  return (
+    b.lines - a.lines ||
+    a.stage.localeCompare(b.stage) ||
+    String(a.tool).localeCompare(String(b.tool)) ||
+    a.level.localeCompare(b.level)
+  );
+}
+
+export function latencyOrder(
+  a: { calls: number; model: string },
+  b: { calls: number; model: string },
+): number {
+  return b.calls - a.calls || a.model.localeCompare(b.model);
 }

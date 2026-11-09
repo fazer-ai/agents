@@ -20,7 +20,15 @@ import {
 import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { lazyWithReload } from "@/client/lib/staleBuild";
-import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
+import type { BreakdownRow } from "@/modules/analytics/breakdown";
+import type { DashboardCosts } from "@/modules/analytics/costs";
+import {
+  Block,
+  type BlockTable,
+  Delta,
+  metricsErrorMessage,
+  SectionHeading,
+} from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -29,9 +37,10 @@ import {
   type Source,
   type Window,
 } from "./filters";
-import { CoverageBar, isProvisional, ProvisionalFigure } from "./Provisional";
 import { useBlock } from "./useBlock";
-import { dayState, inGap, useStreamBlock } from "./useStream";
+import { dayState, inGap, useMetricsBlock, withComparison } from "./useMetrics";
+
+const COST_TILES = ["cost", "perConversation", "cache", "tokens"] as const;
 
 const LineTrend = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -135,9 +144,20 @@ export function CostSection({
     }).format(v);
 
   const query = apiQuery(filters, win);
-  const costs = useStreamBlock((f) => f.costs, ["ledger"]);
-  const prevCosts = useStreamBlock((f) => f.costs, ["ledger"], "previous");
-  const cache = useStreamBlock((f) => f.breakdown?.agent, ["ledger"]);
+  const prevCosts = useMetricsBlock(
+    "costs",
+    (b: { costs: DashboardCosts }) => b.costs,
+    { which: "previous" },
+  );
+  const costs = withComparison(
+    useMetricsBlock("costs", (b: { costs: DashboardCosts }) => b.costs),
+    prevCosts,
+  );
+  const cache = useMetricsBlock(
+    "breakdown",
+    (b: { rows: BreakdownRow[] }) => b.rows,
+    { params: { dimension: "agent" } },
+  );
   const ceiling = useBlock<Ceiling>(
     JSON.stringify(["ceiling", query.until]),
     async () => {
@@ -149,7 +169,7 @@ export function CostSection({
 
   const c = costs.data;
   const p = prevCosts.data;
-  const days = daysOf(win, costs.coverage?.first ?? c?.days[0]?.date ?? null);
+  const days = daysOf(win, c?.days[0]?.date ?? null);
   const prevDays = prev ? daysOf(prev) : [];
   const costByDay = new Map(c?.days.map((d) => [d.date, d]) ?? []);
   const prevByDay = new Map(p?.days.map((d) => [d.date, d]) ?? []);
@@ -331,118 +351,129 @@ export function CostSection({
         )}
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="flex flex-col gap-2">
-          <div className="text-text-muted flex items-center gap-2 text-xs">
-            <Coins className="text-accent h-4 w-4" aria-hidden="true" />
-            {t("dashboard.totalCost", "LLM cost")}
-          </div>
-          {costs.loading && !c ? (
-            <Skeleton className="h-8 w-28" />
-          ) : c ? (
-            <>
-              <ProvisionalFigure coverage={costs.coverage}>
-                <p className="text-text-primary text-2xl font-semibold tabular-nums">
-                  {cf.format(c.totalCostUsd)}
-                </p>
-              </ProvisionalFigure>
-              <Delta
-                kind="amount"
-                current={c.totalCostUsd}
-                previous={p?.totalCostUsd}
-                format={(v) => cf.format(v)}
-                lowerIsBetter
-              />
-            </>
-          ) : (
-            <p className="text-text-muted flex items-start gap-1.5 text-sm">
-              <TriangleAlert
-                className="mt-0.5 h-4 w-4 shrink-0"
-                aria-hidden="true"
-              />
-              {t("dashboard.costsError", "Could not read the cost.")}
-            </p>
-          )}
-          <CoverageBar coverage={costs.coverage} />
+      {costs.loading && !c ? (
+        <div role="status" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <span className="sr-only">
+            {t("dashboard.loading", "Loading metrics…")}
+          </span>
+          {COST_TILES.map((k) => (
+            <Skeleton key={k} className="h-28 w-full" />
+          ))}
+        </div>
+      ) : !c ? (
+        // One failure for the four tiles: they read one answer, and a tile with no answer has no
+        // number to show, not a 0.
+        <Card
+          className="flex items-start gap-1.5 text-sm"
+          data-testid="cost-tiles-error"
+        >
+          <TriangleAlert
+            className="text-text-muted mt-0.5 h-4 w-4 shrink-0"
+            aria-hidden="true"
+          />
+          <span className="text-text-muted">
+            {costs.status === 503 && costs.field === "since"
+              ? metricsErrorMessage(t, costs.status, costs.field)
+              : t("dashboard.costsError", "Could not read the cost.")}{" "}
+            {costs.error && (
+              <button
+                type="button"
+                onClick={costs.reload}
+                className="text-accent hover:underline"
+              >
+                {t("dashboard.retry", "Try again")}
+              </button>
+            )}
+          </span>
         </Card>
-        <Card className="flex flex-col gap-2">
-          <div className="text-text-muted flex items-center gap-2 text-xs">
-            <Coins className="text-accent h-4 w-4" aria-hidden="true" />
-            {t("dashboard.cost.perConversation", "Cost / conversation")}
-          </div>
-          <ProvisionalFigure coverage={costs.coverage}>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Card className="flex flex-col gap-2">
+            <div className="text-text-muted flex items-center gap-2 text-xs">
+              <Coins className="text-accent h-4 w-4" aria-hidden="true" />
+              {t("dashboard.totalCost", "LLM cost")}
+            </div>
+            <p className="text-text-primary text-2xl font-semibold tabular-nums">
+              {cf.format(c.totalCostUsd)}
+            </p>
+            <Delta
+              kind="amount"
+              current={c.totalCostUsd}
+              previous={p?.totalCostUsd}
+              format={(v) => cf.format(v)}
+              lowerIsBetter
+            />
+          </Card>
+          <Card className="flex flex-col gap-2">
+            <div className="text-text-muted flex items-center gap-2 text-xs">
+              <Coins className="text-accent h-4 w-4" aria-hidden="true" />
+              {t("dashboard.cost.perConversation", "Cost / conversation")}
+            </div>
             <p className="text-text-primary text-2xl font-semibold tabular-nums">
               {money(c?.costPerConversation)}
             </p>
-          </ProvisionalFigure>
-          <p className="text-text-muted text-xs">
-            {t(
-              "dashboard.cost.acrossConversations",
-              "across {{n}} conversations",
-              {
-                count: c?.conversations ?? 0,
-                n: nf.format(c?.conversations ?? 0),
-              },
-            )}
-          </p>
-          <Delta
-            kind="amount"
-            current={c?.costPerConversation ?? null}
-            previous={p?.costPerConversation}
-            format={(v) => cf.format(v)}
-            lowerIsBetter
-          />
-          <CoverageBar coverage={costs.coverage} />
-        </Card>
-        <Card className="flex flex-col gap-2">
-          <div className="text-text-muted flex items-center gap-2 text-xs">
-            <Coins className="text-accent h-4 w-4" aria-hidden="true" />
-            {t(
-              "dashboard.cost.perResolved",
-              "Cost / conversation resolved by the agent",
-            )}
-          </div>
-          <ProvisionalFigure coverage={costs.coverage}>
+            <p className="text-text-muted text-xs">
+              {t(
+                "dashboard.cost.acrossConversations",
+                "across {{n}} conversations",
+                {
+                  count: c.conversations,
+                  n: nf.format(c.conversations),
+                },
+              )}
+            </p>
+            <Delta
+              kind="amount"
+              current={c?.costPerConversation ?? null}
+              previous={p?.costPerConversation}
+              format={(v) => cf.format(v)}
+              lowerIsBetter
+            />
+          </Card>
+          <Card className="flex flex-col gap-2">
+            <div className="text-text-muted flex items-center gap-2 text-xs">
+              <Coins className="text-accent h-4 w-4" aria-hidden="true" />
+              {t(
+                "dashboard.cost.perResolved",
+                "Cost / conversation resolved by the agent",
+              )}
+            </div>
             <p className="text-text-primary text-2xl font-semibold tabular-nums">
               {money(c?.costPerResolvedConversation)}
             </p>
-          </ProvisionalFigure>
-          <p className="text-text-muted text-xs">
-            {t("dashboard.cost.acrossResolved", "across {{n}} resolved", {
-              count: c?.resolvedConversations ?? 0,
-              n: nf.format(c?.resolvedConversations ?? 0),
-            })}
-          </p>
-          <Delta
-            kind="amount"
-            current={c?.costPerResolvedConversation ?? null}
-            previous={p?.costPerResolvedConversation}
-            format={(v) => cf.format(v)}
-            lowerIsBetter
-          />
-          <CoverageBar coverage={costs.coverage} />
-        </Card>
-        <Card className="flex flex-col gap-2">
-          <div className="text-text-muted flex items-center gap-2 text-xs">
-            <Layers className="text-accent h-4 w-4" aria-hidden="true" />
-            {t("dashboard.tokens", "Tokens (in / out)")}
-          </div>
-          <ProvisionalFigure coverage={costs.coverage}>
+            <p className="text-text-muted text-xs">
+              {t("dashboard.cost.acrossResolved", "across {{n}} resolved", {
+                count: c.resolvedConversations,
+                n: nf.format(c.resolvedConversations),
+              })}
+            </p>
+            <Delta
+              kind="amount"
+              current={c?.costPerResolvedConversation ?? null}
+              previous={p?.costPerResolvedConversation}
+              format={(v) => cf.format(v)}
+              lowerIsBetter
+            />
+          </Card>
+          <Card className="flex flex-col gap-2">
+            <div className="text-text-muted flex items-center gap-2 text-xs">
+              <Layers className="text-accent h-4 w-4" aria-hidden="true" />
+              {t("dashboard.tokens", "Tokens (in / out)")}
+            </div>
             <p className="text-text-primary text-xl font-semibold tabular-nums">
               {c
                 ? `${nf.format(c.tokens.prompt)} / ${nf.format(c.tokens.completion)}`
                 : "\u2014"}
             </p>
-          </ProvisionalFigure>
-          <p className="text-text-muted text-xs">
-            {t("dashboard.calls", "{{n}} requests", {
-              count: c?.requests ?? 0,
-              n: nf.format(c?.requests ?? 0),
-            })}
-          </p>
-          <CoverageBar coverage={costs.coverage} />
-        </Card>
-      </div>
+            <p className="text-text-muted text-xs">
+              {t("dashboard.calls", "{{n}} requests", {
+                count: c.requests,
+                n: nf.format(c.requests),
+              })}
+            </p>
+          </Card>
+        </div>
+      )}
 
       {c && c.unpriced.calls > 0 && (
         <p
@@ -501,9 +532,9 @@ export function CostSection({
           />
         }
       >
-        {costs.loading && !c && !isProvisional(costs.coverage) ? (
+        {costs.loading && !c ? (
           <Skeleton className="h-64 w-full" />
-        ) : segments.length === 0 && !isProvisional(costs.coverage) ? (
+        ) : segments.length === 0 ? (
           <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>
@@ -538,10 +569,9 @@ export function CostSection({
         chart
         table={perConvTable}
       >
-        {costs.loading && !c && !isProvisional(costs.coverage) ? (
+        {costs.loading && !c ? (
           <Skeleton className="h-56 w-full" />
-        ) : perConv.every((r) => r.perConversation === null) &&
-          !isProvisional(costs.coverage) ? (
+        ) : perConv.every((r) => r.perConversation === null) ? (
           <p className="text-text-muted py-8 text-center text-sm">
             {t("dashboard.noData", "No data yet.")}
           </p>

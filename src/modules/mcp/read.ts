@@ -1,3 +1,4 @@
+import { withAbortSignal } from "@/api/lib/i18n";
 import basePrisma from "@/api/lib/prisma";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import {
@@ -19,7 +20,6 @@ import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { getAgent, getAgentToolSelections } from "@/modules/agents/service";
-import { fromKeptDays } from "@/modules/analytics/rollup/answer";
 import type { MetricsFilter } from "@/modules/analytics/service";
 import {
   getInstanceMetrics,
@@ -1236,18 +1236,13 @@ export async function metricsGet(
   if ("ok" in ctx) return ctx;
   const filter = metricsFilter(args);
   try {
-    const [kpis, usage] = await Promise.all([
-      fromKeptDays(
-        ctx,
-        filter,
-        "kpis",
-        (f) => f.kpis as NonNullable<typeof f.kpis>,
-        () => getKpis(ctx, filter, base),
-        base,
-        deps.signal,
-      ),
-      getInstanceMetrics(ctx, filter, base),
-    ]);
+    // A cancelled call starts no read that has not started yet.
+    const [kpis, usage] = await withAbortSignal(deps.signal, () =>
+      Promise.all([
+        getKpis(ctx, filter, base),
+        getInstanceMetrics(ctx, filter, base),
+      ]),
+    );
     return ok({ kpis, usage });
   } catch (e) {
     return failOf(e);

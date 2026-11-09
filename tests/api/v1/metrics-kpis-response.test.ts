@@ -1,6 +1,8 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
+import config from "@/config";
+import { flowLogFloor } from "@/modules/analytics/filter";
 import type { DashboardKpis } from "@/modules/analytics/service";
 import {
   type MockUserEntity,
@@ -30,25 +32,88 @@ const kpis: DashboardKpis = {
   firstResponseSampled: 6,
 };
 
+const options = await import("@/modules/analytics/options");
+const getFilterOptions = spyOn(options, "getFilterOptions").mockImplementation(
+  (async () => ({
+    agents: [],
+    inboxes: [],
+  })) as unknown as typeof options.getFilterOptions,
+);
+const activity = await import("@/modules/analytics/activity");
+const getFollowUpActivity = spyOn(
+  activity,
+  "getFollowUpActivity",
+).mockImplementation((async (
+  _ctx: unknown,
+  filter: { flowLogNow?: number },
+) => {
+  seenFlowLogNow = filter.flowLogNow;
+  return { stepsSent: 0, conversations: 0, cameBack: 0, closedByLastStep: 0 };
+}) as unknown as typeof activity.getFollowUpActivity);
+let seenFlowLogNow: number | undefined;
 const analytics = await import("@/modules/analytics/service");
 const getKpis = spyOn(analytics, "getKpis").mockImplementation(
   (async () => kpis) as unknown as typeof analytics.getKpis,
 );
-// The kept days answer an aligned window with the same type; the live reader is the stubbed one.
-const answer = await import("@/modules/analytics/rollup/answer");
-const fromKeptDays = spyOn(answer, "fromKeptDays").mockImplementation(((
-  ..._args: unknown[]
-) =>
-  (
-    _args[4] as () => Promise<unknown>
-  )()) as unknown as typeof answer.fromKeptDays);
 const app = (await import("@/app")).default;
 afterAll(() => {
   getKpis.mockRestore();
-  fromKeptDays.mockRestore();
+  getFollowUpActivity.mockRestore();
+  getFilterOptions.mockRestore();
 });
 
 const admin: MockUserEntity = { ...mockUser, role: "TENANT_ADMIN" };
+
+async function adminCookie(): Promise<string> {
+  mockFindUnique.mockImplementation(() => Promise.resolve(admin));
+  const { token } = (await (
+    await new Elysia()
+      .use(authPlugin)
+      .post("/mint", async ({ setAuthCookie }) => ({
+        token: await setAuthCookie(admin, admin.passwordHash),
+      }))
+      .handle(new Request("http://localhost/mint", { method: "POST" }))
+  ).json()) as { token: string };
+  return `fazerai_auth_token=${token}`;
+}
+
+describe("GET /v1/metrics/filter-options response contract", () => {
+  // The console marks a flow-log day past retention as no data from this number: dropped by the
+  // response schema, every such day would read as zero.
+  test("carries the flow log's retention in days", async () => {
+    const BunReq = (globalThis as unknown as { BunRequest: typeof Request })
+      .BunRequest;
+    const res = await app.handle(
+      new BunReq("http://localhost/api/v1/metrics/filter-options", {
+        headers: { cookie: await adminCookie() },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { flowLogRetentionDays: unknown };
+    expect(body.flowLogRetentionDays).toBe(config.flowlog.retentionDays);
+  });
+});
+
+describe("a flow-log route's answer", () => {
+  // The console marks the days before this floor as no data: the read and the mark take the same
+  // instant, so a view opened before midnight and read after it marks the day the read left out.
+  test("carries the floor its read started at, taken at the instant the read used", async () => {
+    const BunReq = (globalThis as unknown as { BunRequest: typeof Request })
+      .BunRequest;
+    const res = await app.handle(
+      new BunReq(
+        "http://localhost/api/v1/metrics/follow-ups?tz=America%2FSao_Paulo",
+        { headers: { cookie: await adminCookie() } },
+      ),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { flowLogFrom: unknown };
+    expect(typeof seenFlowLogNow).toBe("number");
+    expect(body.flowLogFrom).toBe(
+      flowLogFloor("America/Sao_Paulo", seenFlowLogNow as number).toISOString(),
+    );
+  });
+});
 
 describe("GET /v1/metrics/kpis response contract", () => {
   test("every KPI the service computes reaches the client", async () => {
@@ -72,39 +137,5 @@ describe("GET /v1/metrics/kpis response contract", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { kpis: unknown };
     expect(body.kpis).toEqual(kpis);
-  });
-
-  // A route answers once, after every part is in: a client that goes away stops the computation,
-  // which the kept days only see through the request's own signal.
-  test("the route hands the kept days the request's signal, aborted when the client goes away", async () => {
-    mockFindUnique.mockImplementation(() => Promise.resolve(admin));
-    const { token } = (await (
-      await new Elysia()
-        .use(authPlugin)
-        .post("/mint", async ({ setAuthCookie }) => ({
-          token: await setAuthCookie(admin, admin.passwordHash),
-        }))
-        .handle(new Request("http://localhost/mint", { method: "POST" }))
-    ).json()) as { token: string };
-    const native = globalThis as unknown as {
-      BunRequest: typeof Request;
-      BunAbortController: typeof AbortController;
-      BunAbortSignal: typeof AbortSignal;
-    };
-    const BunReq = native.BunRequest;
-    fromKeptDays.mockClear();
-    const client = new native.BunAbortController();
-    const res = await app.handle(
-      new BunReq("http://localhost/api/v1/metrics/kpis", {
-        headers: { cookie: `fazerai_auth_token=${token}` },
-        signal: client.signal,
-      }),
-    );
-    expect(res.status).toBe(200);
-    const signal = fromKeptDays.mock.calls[0]?.[6];
-    expect(signal).toBeInstanceOf(native.BunAbortSignal);
-    expect(signal?.aborted).toBe(false);
-    client.abort();
-    expect(signal?.aborted).toBe(true);
   });
 });

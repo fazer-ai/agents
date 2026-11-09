@@ -9,7 +9,6 @@ import {
   test,
 } from "bun:test";
 import {
-  act,
   cleanup,
   fireEvent,
   render,
@@ -24,8 +23,11 @@ import {
   getActiveTenantId,
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
-import { DashboardPage, useOpenedAt } from "@/client/pages/DashboardPage";
-import { streamGrace } from "@/client/pages/dashboard/useStream";
+import {
+  DashboardPage,
+  OPTIONS_RETRY_MS,
+  useOpenedAt,
+} from "@/client/pages/DashboardPage";
 import { withI18n } from "@/tests/utils/i18n";
 
 // THE DASHBOARD AS THE OPERATOR READS IT. Every block asks the API with the page's one filter, which
@@ -123,7 +125,7 @@ const entry = (patch: Record<string, unknown> & { source: string }) => ({
   ...patch,
 });
 
-let costs: Record<string, unknown> | "error" = COSTS;
+let costs: Record<string, unknown> | "error" | "slow" = COSTS;
 let kpis = KPIS;
 let ceilingPollMs = 300_000;
 let healthFails = false;
@@ -131,31 +133,25 @@ let healthFails = false;
 let healthFailStatus = 500;
 let healthFailField: string | undefined;
 let costsHang = false;
-let partialFlag = false;
-let refuseFlag = false;
-// The previous period's stream refused after its first days, while the view's own completes.
-let prevRefused = false;
-// A stream that closes after a partial snapshot, with no last snapshot and no refusal.
-let endsEarly = false;
-// The view's own stream still filling while the previous period's is complete.
-let currentPartial = false;
-// The tenant a SUPER_ADMIN selected, deleted while the view fills.
-let tenantGone: string | null = null;
-// A filling view whose server goes on to say every day is in while the next snapshot merges.
-let computedAhead = false;
-// A filling view whose last snapshot, complete, arrives this long after its first.
-let completesAfterMs: number | null = null;
-// The flow-log days of a filling view that have no figures yet.
-let logGaps: [string, string][] = [];
-// Of those, the days with no figures for good (retention).
-let logNone: [string, string][] = [];
-// The conversation days of a filling view that have no figures yet.
-let convGaps: [string, string][] = [];
-// The ledger stopped on a day past the time budget; every other family is in.
-let ledgerRefused = false;
-// A whole view whose flow-log days are all past retention and were never kept: no handoffs, no
-// silences and no problems, because there is no data, not because there were none.
+// How many more times a previous-period request of these routes fails.
+let prevFails: Record<string, number> = {};
+// Previous-period requests of these routes never answer.
+let prevHangs: string[] = [];
+// The flow log's retention the filter options carry: past it, a flow-log day has no data.
+let retentionDays = 30;
+// A whole view whose flow-log days are all past retention: no handoffs, no silences and no problems,
+// because there is no data, not because there were none.
 let logExpired = false;
+// The tenant a SUPER_ADMIN selected, deleted while the page loads: every metrics route refuses it.
+let tenantGone: string | null = null;
+// The KPIs' route fails; every other route answers.
+let kpisFail = false;
+// The day the fixture's handoffs fall on.
+let handoffOn = "2026-10-01";
+// Holds the filter options' answer until released, to answer the metrics routes first.
+let optionsGate: Promise<void> | null = null;
+// The tenant's first record, which an all-time view starts from; null for none.
+let firstRecordAt: string | null = null;
 let optionsFail = false;
 const ONE_INBOX = [{ id: "3", name: "WhatsApp" }];
 let inboxOptions: {
@@ -164,168 +160,50 @@ let inboxOptions: {
   account?: { id: number; name: string | null };
 }[] = ONE_INBOX;
 
-// What the per-block routes would answer, as the page's stream carries it: one snapshot with every
-// requested block, `done`, or a refusal after the blocks that did arrive.
-async function streamOf(url: URL): Promise<Response> {
-  if (url.searchParams.get("agentId") === "8")
-    return new Response(new ReadableStream({ start() {} }), {
-      headers: { "content-type": "text/event-stream" },
-    });
-  const blocks = (url.searchParams.get("blocks") ?? "").split(",");
-  const isPrev = url.searchParams.get("blocks") === "kpis,outcomes,costs";
-  const partial =
-    partialFlag || (isPrev && prevRefused) || (!isPrev && currentPartial);
-  const refuseMidway = refuseFlag || (isPrev && prevRefused);
-  const body = async (path: string, key: string) => {
-    const u = new URL(url);
-    u.pathname = path;
-    const res = await stubFetch(u.toString());
-    if (!res.ok) return undefined;
-    return ((await res.json()) as Record<string, unknown>)[key];
-  };
-  const figures: Record<string, unknown> = {};
-  if (blocks.includes("kpis"))
-    figures.kpis = await body("/api/v1/metrics/kpis", "kpis");
-  if (blocks.includes("outcomes")) {
-    figures.trend = await body("/api/v1/metrics/outcomes", "trend");
-    figures.series = {
-      agent: [
-        {
-          key: "1",
-          label: "Ana",
-          totals: { total: 4, involved: 3, resolvedByBot: 2, handoff: 1 },
-          days: [],
-        },
-      ],
-      inbox: [],
-    };
-  }
-  if (blocks.includes("costs") && !costsHang)
-    figures.costs = await body("/api/v1/metrics/costs", "costs");
-  if (blocks.includes("breakdown"))
-    figures.breakdown = {
-      agent: await body("/api/v1/metrics/breakdown", "rows"),
-      inbox: await body("/api/v1/metrics/breakdown", "rows"),
-      model: await body("/api/v1/metrics/breakdown", "rows"),
-      node: await body("/api/v1/metrics/breakdown", "rows"),
-    };
-  if (blocks.includes("handoffs"))
-    figures.handoffs = await body("/api/v1/metrics/handoffs", "handoffs");
-  if (blocks.includes("labels"))
-    figures.labels = await body("/api/v1/metrics/labels", "labels");
-  if (blocks.includes("health") && !healthFails)
-    figures.health = await body("/api/v1/metrics/health", "health");
-  if (blocks.includes("followUps"))
-    figures.followUps = await body("/api/v1/metrics/follow-ups", "followUps");
-  if (blocks.includes("knowledge"))
-    figures.knowledge = await body("/api/v1/metrics/knowledge", "knowledge");
-  const c = { total: 7, ready: 7, noData: 0, gaps: [] };
-  const progress = partial
-    ? {
-        total: 7,
-        ready: 3,
-        computing: ["2026-10-01", "2026-10-04"],
-        pending: [["2026-10-01", "2026-10-04"]],
-        families: {
-          conv: { total: 7, ready: 3, noData: 0, gaps: convGaps },
-          ledger: c,
-          log: { total: 7, ready: 5, noData: 2, gaps: logGaps, none: logNone },
-          know: c,
-        },
-      }
-    : {
-        total: 7,
-        ready: ledgerRefused ? 3 : 7,
-        computing: null,
-        pending: [],
-        families: {
-          conv: c,
-          ledger: ledgerRefused
-            ? {
-                total: 7,
-                ready: 3,
-                noData: 0,
-                gaps: [["2000-01-01", "2100-12-31"]],
-                refused: { status: 503, field: "since" },
-              }
-            : c,
-          log: logExpired
-            ? {
-                total: 7,
-                ready: 0,
-                noData: 7,
-                gaps: [["2000-01-01", "2100-12-31"]],
-                none: [["2000-01-01", "2100-12-31"]],
-              }
-            : c,
-          know: c,
-        },
-      };
-  const done = !healthFails && !costsHang && !partial;
-  const events = [
-    // What the server says while the queue settles, before the window's days are known.
-    `event: waiting\ndata: ${JSON.stringify({ kind: "waiting" })}\n\n`,
-    `event: snapshot\ndata: ${JSON.stringify({ kind: "snapshot", progress, figures, done })}\n\n`,
-    ...(computedAhead
-      ? [
-          `event: computing\ndata: ${JSON.stringify({ kind: "computing", progress: { total: 7, ready: 7, computing: null, pending: [], families: { conv: c, ledger: c, log: c, know: c } } })}\n\n`,
-        ]
-      : []),
-    ...(tenantGone
-      ? [
-          `event: refused\ndata: ${JSON.stringify({ status: 404, error: "x", rejectedTenantId: tenantGone })}\n\n`,
-        ]
-      : (healthFails && blocks.includes("health")) || refuseMidway
-        ? [
-            `event: refused\ndata: ${JSON.stringify({ status: healthFailStatus, error: "x", ...(healthFailField ? { field: healthFailField } : {}) })}\n\n`,
-          ]
-        : []),
-  ];
-  const text = new TextEncoder().encode(events.join(""));
-  const whole = {
-    total: 7,
-    ready: 7,
-    computing: null,
-    pending: [],
-    families: { conv: c, ledger: c, log: c, know: c },
-  };
-  // A block still loading: the snapshot without it, on a stream that stays open.
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(text);
-      if (completesAfterMs !== null) {
-        setTimeout(() => {
-          controller.enqueue(
-            new TextEncoder().encode(
-              `event: snapshot\ndata: ${JSON.stringify({ kind: "snapshot", progress: whole, figures, done: true })}\n\n`,
-            ),
-          );
-          controller.close();
-        }, completesAfterMs);
-        return;
-      }
-      // A view still filling keeps its stream open, unless it was refused or the test cuts it.
-      if (!costsHang && (!partial || refuseMidway || endsEarly))
-        controller.close();
-    },
-  });
-  return new Response(stream, {
-    headers: { "content-type": "text/event-stream" },
-  });
-}
+// The signal of every metrics request, by path and query, to see which ones a new view aborted.
+const signals: { url: URL; signal: AbortSignal | null }[] = [];
 
-const stubFetch = (async (input: unknown) => {
+const stubFetch = (async (input: unknown, init?: RequestInit) => {
   const url = new URL(
     String(typeof input === "string" ? input : (input as Request).url),
     "http://localhost",
   );
   const p = url.pathname;
-  if (p.endsWith("/metrics/stream")) {
-    asked.push(url);
-    return streamOf(url);
+  asked.push(url);
+  signals.push({
+    url,
+    signal:
+      init?.signal ??
+      (typeof input === "string" ? null : ((input as Request).signal ?? null)),
+  });
+  if (tenantGone && p.includes("/metrics/") && !p.endsWith("/filter-options"))
+    return new Response(JSON.stringify({ error: "x" }), {
+      status: 404,
+      headers: {
+        "content-type": "application/json",
+        "X-Tenant-Id-Invalid": tenantGone,
+      },
+    });
+  {
+    // The previous period ends a period before the view's opening; the view's own ends at it.
+    const until = url.searchParams.get("until");
+    const route = p.split("/metrics/")[1] ?? "";
+    if (
+      until &&
+      new Date(until).getTime() < Date.now() - 3_600_000 &&
+      (prevFails[route] ?? 0) > 0
+    ) {
+      prevFails[route] = (prevFails[route] ?? 0) - 1;
+      return json({ error: "x" }, 500);
+    }
+    if (
+      until &&
+      new Date(until).getTime() < Date.now() - 3_600_000 &&
+      prevHangs.includes(route)
+    )
+      return new Promise<Response>(() => {});
   }
-  if (!p.includes("/metrics/") || p.endsWith("/metrics/filter-options"))
-    asked.push(url);
+  if (p.endsWith("/metrics/kpis") && kpisFail) return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/kpis")) return json({ instance: "i", kpis });
   if (p.endsWith("/metrics/outcomes"))
     return json({
@@ -339,6 +217,24 @@ const stubFetch = (async (input: unknown) => {
           resolvedBeforeTracking: 0,
         },
         days: [],
+        series:
+          url.searchParams.get("breakdown") === "agent"
+            ? [
+                {
+                  key: "1",
+                  label: "Ana",
+                  totals: {
+                    total: 4,
+                    involved: 3,
+                    resolvedByBot: 2,
+                    handoff: 1,
+                  },
+                  days: [],
+                },
+              ]
+            : url.searchParams.get("breakdown") === "inbox"
+              ? []
+              : undefined,
       },
     });
   if (p.endsWith("/metrics/costs") && costsHang)
@@ -346,7 +242,9 @@ const stubFetch = (async (input: unknown) => {
   if (p.endsWith("/metrics/costs"))
     return costs === "error"
       ? json({ error: "x" }, 500)
-      : json({ instance: "i", costs });
+      : costs === "slow"
+        ? json({ error: "too slow", field: "since" }, 503)
+        : json({ instance: "i", costs });
   // Agent 8's breakdown never answers: what is on screen while it loads is the test.
   if (
     p.endsWith("/metrics/breakdown") &&
@@ -370,7 +268,7 @@ const stubFetch = (async (input: unknown) => {
     return json({
       instance: "i",
       handoffs: {
-        days: [{ date: "2026-10-01", cause: "person", conversations: 2 }],
+        days: [{ date: handoffOn, cause: "person", conversations: 2 }],
         totals: [{ cause: "person", conversations: 2 }],
         silences: [{ reason: "needs_human", turns: 3 }],
         // Earlier than the first handoff: under "all time" the silences keep their own range.
@@ -434,6 +332,7 @@ const stubFetch = (async (input: unknown) => {
         }),
       ],
     });
+  if (p.endsWith("/metrics/filter-options") && optionsGate) await optionsGate;
   if (p.endsWith("/metrics/filter-options") && optionsFail)
     return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/filter-options"))
@@ -443,6 +342,8 @@ const stubFetch = (async (input: unknown) => {
         { id: "8", name: "Beto" },
       ],
       inboxes: inboxOptions,
+      flowLogRetentionDays: retentionDays,
+      firstRecordAt,
     });
   return json({ error: "nope" }, 500);
 }) as unknown as typeof globalThis.fetch;
@@ -456,6 +357,7 @@ function Where() {
 
 async function renderDash(path = "/", settled = true, clientChannel?: boolean) {
   asked.length = 0;
+  signals.length = 0;
   const page = (
     <ThemeProvider>
       <MemoryRouter initialEntries={[path]}>
@@ -498,9 +400,6 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 beforeEach(() => {
-  // Most cases read a partial view at once; the grace has its own cases.
-  streamGrace.ms = 0;
-  completesAfterMs = null;
   costs = COSTS;
   kpis = KPIS;
   ceilingPollMs = 300_000;
@@ -510,18 +409,15 @@ beforeEach(() => {
   optionsFail = false;
   inboxOptions = ONE_INBOX;
   costsHang = false;
-  partialFlag = false;
-  refuseFlag = false;
-  prevRefused = false;
-  endsEarly = false;
-  currentPartial = false;
+  prevFails = {};
+  prevHangs = [];
+  retentionDays = 30;
   tenantGone = null;
-  logGaps = [];
-  logNone = [];
-  convGaps = [];
-  ledgerRefused = false;
+  kpisFail = false;
+  handoffOn = "2026-10-01";
+  optionsGate = null;
+  firstRecordAt = null;
   logExpired = false;
-  computedAhead = false;
 });
 afterEach(cleanup);
 
@@ -531,29 +427,25 @@ describe("one filter, in the URL, for every block", () => {
   test("a client link reads as the real segment with the channel off, and as itself with it on", async () => {
     await renderDash("/?range=7d&source=client");
     await waitFor(() =>
-      expect(asks("/metrics/stream").length).toBeGreaterThan(0),
+      expect(asks("/metrics/kpis").length).toBeGreaterThan(0),
     );
-    expect(asks("/metrics/stream")[0]?.searchParams.get("source")).toBe(
-      "inbox",
-    );
+    expect(asks("/metrics/kpis")[0]?.searchParams.get("source")).toBe("inbox");
     cleanup();
     await renderDash("/?range=7d&source=client", true, true);
     await waitFor(() =>
-      expect(asks("/metrics/stream").length).toBeGreaterThan(0),
+      expect(asks("/metrics/kpis").length).toBeGreaterThan(0),
     );
-    expect(asks("/metrics/stream")[0]?.searchParams.get("source")).toBe(
-      "client",
-    );
+    expect(asks("/metrics/kpis")[0]?.searchParams.get("source")).toBe("client");
   });
 
   test("an audience refines the client segment, and only that segment", async () => {
     await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
     await waitFor(() => {
-      expect(asks("/metrics/stream").length).toBeGreaterThan(0);
+      expect(asks("/metrics/kpis").length).toBeGreaterThan(0);
     });
     const audienceOf = (path: string) =>
       asks(path)[0]?.searchParams.get("audience") ?? null;
-    expect(audienceOf("/metrics/stream")).toBe("anonymous");
+    expect(audienceOf("/metrics/kpis")).toBe("anonymous");
     cleanup();
     await renderDash(
       "/?range=7d&source=playground&audience=anonymous",
@@ -561,40 +453,47 @@ describe("one filter, in the URL, for every block", () => {
       true,
     );
     await waitFor(() =>
-      expect(asks("/metrics/stream").length).toBeGreaterThan(0),
+      expect(asks("/metrics/kpis").length).toBeGreaterThan(0),
     );
-    expect(audienceOf("/metrics/stream")).toBeNull();
+    expect(audienceOf("/metrics/kpis")).toBeNull();
   });
 
   test("every block asks with the agent, inbox and segment the link names", async () => {
     await renderDash("/?range=7d&agent=7&inbox=3&source=playground");
     await waitFor(() => {
-      expect(asks("/metrics/stream").length).toBe(2);
+      expect(asks("/metrics/health").length).toBeGreaterThan(0);
+      expect(asks("/metrics/knowledge").length).toBeGreaterThan(0);
     });
-    for (const u of asks("/metrics/stream")) {
-      expect(u.searchParams.get("agentId")).toBe("7");
-      expect(u.searchParams.get("inboxId")).toBe("3");
-      expect(u.searchParams.get("source")).toBe("playground");
-      expect(Boolean(u.searchParams.get("until"))).toBe(true);
+    for (const path of [
+      "/metrics/kpis",
+      "/metrics/outcomes",
+      "/metrics/costs",
+      "/metrics/breakdown",
+      "/metrics/handoffs",
+      "/metrics/labels",
+      "/metrics/health",
+      "/metrics/follow-ups",
+      "/metrics/knowledge",
+    ]) {
+      const u = asks(path)[0];
+      expect([path, u?.searchParams.get("agentId")]).toEqual([path, "7"]);
+      expect([path, u?.searchParams.get("inboxId")]).toEqual([path, "3"]);
+      expect([path, u?.searchParams.get("source")]).toEqual([
+        path,
+        "playground",
+      ]);
+      expect([path, Boolean(u?.searchParams.get("until"))]).toEqual([
+        path,
+        true,
+      ]);
     }
-    // One stream carries every block of the view; the previous period's, the same days a week
-    // earlier and cut at the time of day the view was opened, carries what the comparisons need.
-    const [current, prev] = [...asks("/metrics/stream")].sort((a, b) =>
+    // The previous period, the same days a week earlier and cut at the time of day the view was
+    // opened, is asked for what the comparisons need: the KPIs, the funnel trend and the costs.
+    const [current, prev] = [...asks("/metrics/kpis")].sort((a, b) =>
       String(b.searchParams.get("until")).localeCompare(
         String(a.searchParams.get("until")),
       ),
     );
-    expect(current?.searchParams.get("blocks")?.split(",").sort()).toEqual([
-      "breakdown",
-      "costs",
-      "followUps",
-      "handoffs",
-      "health",
-      "knowledge",
-      "kpis",
-      "labels",
-      "outcomes",
-    ]);
     const since = new Date(String(current?.searchParams.get("since")));
     const prevSince = new Date(String(prev?.searchParams.get("since")));
     const cut = new Date(String(prev?.searchParams.get("until")));
@@ -619,13 +518,19 @@ describe("one filter, in the URL, for every block", () => {
     expect(new Date(String(current?.searchParams.get("until"))).getTime()).toBe(
       weekLater.getTime(),
     );
-    expect(prev?.searchParams.get("blocks")).toBe("kpis,outcomes,costs");
+    const prevUntil = prev?.searchParams.get("until");
+    const prevRoutes = asked
+      .filter((u) => u.searchParams.get("until") === prevUntil)
+      .map((u) => u.pathname.split("/metrics/")[1])
+      .sort();
+    expect([...new Set(prevRoutes)]).toEqual(["costs", "kpis", "outcomes"]);
   });
 
   test("one opening of the screen sends each distinct request once", async () => {
     await renderDash("/?range=30d");
     await waitFor(() => {
-      expect(asks("/metrics/stream").length).toBe(2);
+      expect(asks("/metrics/knowledge").length).toBeGreaterThan(0);
+      expect(asks("/metrics/breakdown").length).toBeGreaterThan(0);
     });
     const sent = asked
       .filter((u) => u.pathname.includes("/metrics/"))
@@ -646,7 +551,7 @@ describe("one filter, in the URL, for every block", () => {
     await renderDash("/?agent=7&inbox=3");
     await waitFor(() => {
       expect(asks("/metrics/filter-options").length).toBe(1);
-      expect(asks("/metrics/stream").length).toBeGreaterThan(0);
+      expect(asks("/metrics/kpis").length).toBeGreaterThan(0);
     });
     expect(location).toBe("/?agent=7&inbox=3");
   });
@@ -850,12 +755,87 @@ describe("the cost is the ledger's", () => {
     expect(has("llama-local-70b")).toBe(true);
   });
 
-  test("a cost that cannot be read says so in its slot", async () => {
+  test("a cost that cannot be read says so in its slot, with a retry", async () => {
     costs = "error";
     await renderDash("/");
     await waitFor(() => {
       expect(has("Could not read the cost.")).toBe(true);
     });
+    expect(has("This period took too long to compute.")).toBe(false);
+    // The other tiles read the same answer: no figure of theirs is shown, least of all a 0.
+    expect(has("across 0 conversations")).toBe(false);
+    expect(has("across 0 resolved")).toBe(false);
+    expect(has("0 requests")).toBe(false);
+    expect(screen.queryByText("Tokens (in / out)")).toBeNull();
+    expect(screen.getByTestId("cost-tiles-error")).toBeTruthy();
+    // The tiles' retry and the two cost charts' retries.
+    expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(
+      3,
+    );
+  });
+
+  test("a failed previous period holds the figures it compares, and the retry asks only it again", async () => {
+    prevFails = { costs: 1 };
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Could not read the cost.")).toBe(true);
+    });
+    expect(asks("/metrics/costs")).toHaveLength(2);
+    const [tilesRetry] = screen.getAllByRole("button", { name: "Try again" });
+    fireEvent.click(tilesRetry as HTMLElement);
+    await waitFor(() => {
+      expect(has("Could not read the cost.")).toBe(false);
+    });
+    expect(asks("/metrics/costs")).toHaveLength(3);
+  });
+
+  test("a previous period still loading holds the block on its skeleton, with no CSV", async () => {
+    prevHangs = ["costs"];
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Cached input by agent")).toBe(true);
+    });
+    expect(has("LLM cost")).toBe(false);
+    expect(
+      screen
+        .queryAllByRole("button", { name: /CSV/ })
+        .filter((b) => /cost/i.test(b.getAttribute("aria-label") ?? "")),
+    ).toHaveLength(0);
+  });
+
+  test("the KPIs and the funnel trend hold their figures the same way", async () => {
+    prevFails = { kpis: 1, outcomes: 1 };
+    await renderDash("/");
+    const retries = () => [
+      ...screen.queryAllByRole("button", { name: "Retry" }),
+      ...screen.queryAllByRole("button", { name: "Try again" }),
+    ];
+    // The KPI tiles' failure (Retry) and the trend's (Try again), each in its own slot.
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "Retry" })).toHaveLength(
+        1,
+      );
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }),
+      ).toHaveLength(1);
+    });
+    for (const b of retries()) fireEvent.click(b);
+    await waitFor(() => {
+      expect(retries()).toHaveLength(0);
+    });
+  });
+
+  test("a cost refused as too slow says the period took too long, in the tiles too", async () => {
+    costs = "slow";
+    await renderDash("/");
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/This period took too long to compute/),
+      ).toHaveLength(3);
+    });
+    expect(has("Could not read the cost.")).toBe(false);
+    expect(has("0 requests")).toBe(false);
+    expect(has("across 0 conversations")).toBe(false);
   });
 });
 
@@ -865,27 +845,131 @@ describe("a block whose request fails", () => {
     await renderDash("/");
     await waitFor(() => {
       expect(has("Warnings and errors")).toBe(true);
-      // Both health blocks, and the page's line: the stream stopped before it was done.
+      // Both health blocks read the one route that failed; every other block shows its figures.
       expect(
         screen.queryAllByRole("button", { name: "Try again" }).length,
-      ).toBe(3);
+      ).toBe(2);
+      expect(has("Steps delivered")).toBe(true);
     });
     expect(has("No warnings or errors in this period.")).toBe(false);
-    const before = asks("/metrics/stream").length;
+    const health = asks("/metrics/health").length;
+    const kpisAsked = asks("/metrics/kpis").length;
     healthFails = false;
+    // The problems block's retry: the latency block keeps its own failure until it is retried.
     fireEvent.click(
-      screen.getAllByRole("button", { name: "Try again" })[0] as HTMLElement,
+      screen.getAllByRole("button", { name: "Try again" })[1] as HTMLElement,
     );
     await waitFor(() => {
-      expect(asks("/metrics/stream").length).toBeGreaterThan(before);
+      expect(asks("/metrics/health").length).toBeGreaterThan(health);
       expect(has("No warnings or errors in this period.")).toBe(true);
     });
-    // The retry reaches a later instant than the opening, and so does the previous period's end.
-    const cuts = asks("/metrics/stream")
-      .filter((u) => u.searchParams.get("blocks") === "kpis,outcomes,costs")
-      .map((u) => Date.parse(String(u.searchParams.get("until"))));
-    expect(cuts.length).toBeGreaterThan(1);
-    expect(cuts[cuts.length - 1]).toBeGreaterThan(cuts[0] as number);
+    expect(screen.queryAllByRole("button", { name: "Try again" }).length).toBe(
+      1,
+    );
+    // The retry asks the failed block again, and only it.
+    expect(asks("/metrics/kpis").length).toBe(kpisAsked);
+  });
+});
+
+describe("a retry", () => {
+  test("belongs to its view: the next view asks a route two blocks share once again", async () => {
+    healthFails = true;
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }).length,
+      ).toBe(2);
+    });
+    healthFails = false;
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Try again" })[1] as HTMLElement,
+    );
+    await waitFor(() => {
+      expect(has("No warnings or errors in this period.")).toBe(true);
+    });
+    const before = asks("/metrics/health").length;
+    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    await waitFor(() => {
+      expect(location).toBe("/?range=90d");
+      expect(asks("/metrics/health").length).toBeGreaterThan(before);
+    });
+    // Latency and problems read one request in the new view, whatever was retried in the old one.
+    const fresh = asks("/metrics/health").slice(before);
+    expect(new Set(fresh.map((u) => u.search)).size).toBe(fresh.length);
+    expect(fresh.length).toBe(1);
+  });
+});
+
+describe("a view replaced while its requests run", () => {
+  test("aborts them, so they stop holding the metrics pool", async () => {
+    costsHang = true;
+    await renderDash("/?range=7d");
+    const pending = signals.filter((s) =>
+      s.url.pathname.endsWith("/metrics/costs"),
+    );
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.every((s) => s.signal && !s.signal.aborted)).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    await waitFor(() => {
+      expect(location).toBe("/?range=90d");
+      expect(pending.every((s) => s.signal?.aborted)).toBe(true);
+    });
+  });
+});
+
+describe("filter options that answer after the metrics", () => {
+  test("hold the flow-log blocks on their skeleton, with no claim and no CSV, until the retention is known", async () => {
+    let release = () => {};
+    optionsGate = new Promise<void>((r) => {
+      release = r;
+    });
+    retentionDays = 30;
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(asks("/metrics/health").length).toBeGreaterThan(0);
+      // A block that does not read the flow log shows at once.
+      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+    });
+    expect(has("No warnings or errors in this period.")).toBe(false);
+    expect(
+      screen.queryAllByRole("button", { name: /Export Warnings and errors/ })
+        .length,
+    ).toBe(0);
+    release();
+    await waitFor(() => {
+      expect(has("No warnings or errors in this period.")).toBe(true);
+    });
+  });
+});
+
+describe("filter options that cannot be read", () => {
+  test("leave the flow-log blocks saying they could not load, never that there was none", async () => {
+    const real = [...OPTIONS_RETRY_MS];
+    OPTIONS_RETRY_MS.splice(0, 2, 0, 0);
+    optionsFail = true;
+    retentionDays = 30;
+    logExpired = true;
+    try {
+      await renderDash("/?range=7d");
+      await waitFor(() => {
+        // Asked three times, then the blocks give up with their retry.
+        expect(asks("/metrics/filter-options").length).toBe(3);
+        expect(has("Could not load metrics.")).toBe(true);
+      });
+      expect(has("No handoffs in this period.")).toBe(false);
+      expect(has("No warnings or errors in this period.")).toBe(false);
+      // Their retry reads the options again, and once they answer the blocks show.
+      optionsFail = false;
+      fireEvent.click(
+        screen.getAllByRole("button", { name: "Try again" })[0] as HTMLElement,
+      );
+      await waitFor(() => {
+        expect(asks("/metrics/filter-options").length).toBe(4);
+        expect(has("Handoffs by cause")).toBe(true);
+      });
+    } finally {
+      OPTIONS_RETRY_MS.splice(0, 2, ...real);
+    }
   });
 });
 
@@ -899,7 +983,7 @@ describe("a block the server refused as too slow", () => {
       expect(has("This period took too long to compute.")).toBe(true);
       expect(
         screen.queryAllByRole("button", { name: "Try again" }).length,
-      ).toBe(3);
+      ).toBe(2);
     });
     expect(has("Could not load metrics.")).toBe(false);
     // Another 503 (the database down, a session that could not be read) and a 500 are not about the
@@ -946,6 +1030,13 @@ describe("the funnel's own controls", () => {
         (screen.getByRole("radio", { name: "By agent" }) as HTMLInputElement)
           .checked,
       ).toBe(true);
+      // The split is the route's own: the trend asks for the agents' series, and shows them.
+      expect(
+        asks("/metrics/outcomes").some(
+          (u) => u.searchParams.get("breakdown") === "agent",
+        ),
+      ).toBe(true);
+      expect(has("Ana")).toBe(true);
     });
     fireEvent.click(screen.getByRole("radio", { name: "90d" }));
     await waitFor(() => {
@@ -958,6 +1049,22 @@ describe("the funnel's own controls", () => {
   });
 });
 
+describe("the funnel trend", () => {
+  test("loads on its own: a failed KPI request leaves the trend and its controls in place", async () => {
+    kpisFail = true;
+    await renderDash("/?range=7d", false);
+    await waitFor(() => {
+      expect(has("Funnel over time")).toBe(true);
+      expect(asks("/metrics/outcomes").length).toBeGreaterThan(0);
+      // The KPIs' failure, with its retry, in their own slot.
+      expect(has("Could not load metrics.")).toBe(true);
+    });
+    // The funnel and the tiles read that answer: none of their figures shows, not even as 0.
+    expect(has("handled by AI")).toBe(false);
+    expect(screen.queryAllByRole("radio", { name: "By agent" }).length).toBe(1);
+  });
+});
+
 describe("a block still loading", () => {
   test("offers no CSV until its figures arrive", async () => {
     const exportDaily = () =>
@@ -966,7 +1073,7 @@ describe("a block still loading", () => {
     await renderDash("/");
     await waitFor(() => {
       expect(has("Daily cost")).toBe(true);
-      expect(asks("/metrics/stream").length).toBeGreaterThan(0);
+      expect(asks("/metrics/kpis").length).toBeGreaterThan(0);
     });
     expect(exportDaily().length).toBe(0);
     cleanup();
@@ -975,6 +1082,25 @@ describe("a block still loading", () => {
     await waitFor(() => {
       expect(exportDaily().length).toBe(1);
     });
+  });
+
+  test("holds only itself: its skeleton sits in a status region while every other block shows its figures", async () => {
+    // The costs route never answers; every other route does.
+    costsHang = true;
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Steps delivered")).toBe(true);
+      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
+    });
+    const loading = screen
+      .queryAllByRole("status")
+      .filter((r) => r.textContent?.includes("Loading metrics"));
+    // The four cost tiles and the cost charts that read the costs route, each in its own region.
+    expect(loading.length).toBeGreaterThan(1);
+    // Nothing on the page says the figures are partial or still being computed.
+    expect(has("partial ·")).toBe(false);
+    expect(has("days ready")).toBe(false);
+    expect(document.querySelectorAll("[data-provisional]").length).toBe(0);
   });
 });
 
@@ -994,6 +1120,20 @@ describe("silences and where the transfers went", () => {
 });
 
 describe("all time", () => {
+  test("starts at the tenant's first record, so flow-log days past retention read as no data", async () => {
+    retentionDays = 30;
+    logExpired = true;
+    firstRecordAt = new Date(Date.now() - 60 * 86_400_000).toISOString();
+    await renderDash("/?range=all");
+    await waitFor(() => {
+      expect(has("no data for")).toBe(true);
+      // Both flow-log charts keep the emptied days on their axis, under the band.
+      expect(screen.queryAllByText(/no data · \d+ days/).length).toBe(2);
+    });
+    expect(has("No handoffs in this period.")).toBe(false);
+    expect(has("No warnings or errors in this period.")).toBe(false);
+  });
+
   test("silences before the first handoff keep their days", async () => {
     await renderDash("/?range=all");
     const rowsOf = (caption: string) =>
@@ -1135,34 +1275,14 @@ describe("cards that grow apart each take their own row", () => {
   });
 });
 
-describe("a view still filling", () => {
-  test("each block says how many of its days are in, and flow-log days nothing can fill read as no data", async () => {
-    partialFlag = true;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("partial · 3 of 7 days")).toBe(true);
-      expect(has("3 of 7 days ready · computing")).toBe(true);
-      expect(has("no data for 2 days")).toBe(true);
-    });
-    cleanup();
-    partialFlag = false;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
-    });
-    // A whole block shows nothing in the place of the partial badge.
-    expect(screen.queryAllByText("complete", { exact: true })).toEqual([]);
-    expect(has("partial ·")).toBe(false);
-    expect(has("days ready")).toBe(false);
-  });
-});
-
-describe("a whole view whose flow-log days are past retention and were never kept", () => {
+describe("a view whose flow-log days are past retention", () => {
   test("handoffs, silences and problems read as no data, never as none in the period", async () => {
+    // No retention left: every day before today's has no lines.
+    retentionDays = 0;
     logExpired = true;
     await renderDash("/?range=7d");
     await waitFor(() => {
-      expect(screen.queryAllByText(/no data · 7 days/).length).toBe(2);
+      expect(screen.queryAllByText(/no data · 6 days/).length).toBe(2);
     });
     expect(has("No handoffs in this period.")).toBe(false);
     expect(has("No silences in this period.")).toBe(false);
@@ -1170,85 +1290,17 @@ describe("a whole view whose flow-log days are past retention and were never kep
   });
 });
 
-describe("the funnel split by agent while the view fills", () => {
-  test("reads each agent's figure in the period as provisional, as the funnel does", async () => {
-    partialFlag = true;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("radio", { name: "By agent" }).length).toBe(
-        1,
-      );
-    });
-    fireEvent.click(screen.getByRole("radio", { name: "By agent" }));
-    const card = await waitFor(() => {
-      const heading = screen
-        .getAllByRole("heading", { level: 3 })
-        .find((h) => /in the period/.test(h.textContent ?? ""));
-      // The card: the nearest box around the heading that holds the agents' rows.
-      let box: HTMLElement | null = heading ?? null;
-      while (box && !box.textContent?.includes("Ana")) box = box.parentElement;
-      if (!box) throw new Error("no per-agent card yet");
-      return box;
-    });
-    expect(card.querySelector("[data-provisional]")).not.toBeNull();
-    expect(card.textContent).toContain("partial · 3 of 7 days");
-  });
-});
-
-describe("a previous period that did not fill", () => {
-  test("compares nothing against the families whose days were not all in", async () => {
-    const compared = () =>
-      screen.queryAllByText("previous:", { exact: false }).length;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("Steps delivered")).toBe(true);
-      expect(compared()).toBeGreaterThan(0);
-    });
-    const whole = compared();
-    cleanup();
-    // The previous period's conversations stopped at 3 of 7 days; its ledger was all in.
-    prevRefused = true;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("Steps delivered")).toBe(true);
-      expect(compared()).toBeGreaterThan(0);
-    });
-    expect(compared()).toBeLessThan(whole);
-  });
-});
-
-describe("a view still filling beside a complete previous period", () => {
-  test("compares nothing while the view's own days are not all in", async () => {
-    const compared = () =>
-      screen.queryAllByText("previous:", { exact: false }).length;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("Steps delivered")).toBe(true);
-      expect(compared()).toBeGreaterThan(0);
-    });
-    const whole = compared();
-    cleanup();
-    // The view's conversations are at 3 of 7 days; its ledger is all in.
-    currentPartial = true;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("partial · 3 of 7 days")).toBe(true);
-      expect(compared()).toBeGreaterThan(0);
-    });
-    expect(compared()).toBeLessThan(whole);
-  });
-});
-
 describe("the health blocks", () => {
   test("latency covers the ledger's days, and only the problems say the flow log has none", async () => {
-    partialFlag = true;
+    // Three days of retention: the window's first three days have no lines.
+    retentionDays = 3;
     await renderDash("/?range=7d");
     // The coverage chip sits in the block's heading.
     const card = (title: string) =>
       screen.getAllByText(title, { exact: false })[0]?.closest("h3");
     await waitFor(() => {
       expect(card("Warnings and errors")?.textContent).toContain(
-        "no data for 2 days",
+        "no data for 3 days",
       );
     });
     expect(card("Model call latency")?.textContent).not.toContain(
@@ -1257,7 +1309,7 @@ describe("the health blocks", () => {
   });
 });
 
-describe("a selected tenant deleted while the view fills", () => {
+describe("a selected tenant deleted while the page loads", () => {
   test("drops the selection, as a refused selector on any other request does", async () => {
     setActiveTenantId("42");
     const w = window as unknown as Record<string, boolean | undefined>;
@@ -1276,47 +1328,7 @@ describe("a selected tenant deleted while the view fills", () => {
   });
 });
 
-describe("a family stopped on a day past the time budget", () => {
-  test("refuses its own blocks, and the others show their figures", async () => {
-    ledgerRefused = true;
-    await renderDash("/?range=7d", false);
-    await waitFor(() => {
-      expect(has("This period took too long to compute")).toBe(true);
-      expect(has("Steps delivered")).toBe(true);
-    });
-  });
-});
-
-describe("a period's tiles while it fills", () => {
-  test("open no list until every day of the period is in", async () => {
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
-    });
-    cleanup();
-    partialFlag = true;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("partial · 3 of 7 days")).toBe(true);
-    });
-    // The count is of three days; the list would be of seven.
-    expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(0);
-  });
-
-  test("a block reads the coverage its figures were merged at, not the days computed since", async () => {
-    partialFlag = true;
-    computedAhead = true;
-    await renderDash("/?range=7d");
-    // The line under the filter follows the server; the blocks wait for the figures.
-    await waitFor(() => {
-      expect(has("7 of 7 days ready")).toBe(true);
-    });
-    expect(has("partial · 3 of 7 days")).toBe(true);
-    expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(0);
-  });
-});
-
-describe("days with no figures yet", () => {
+describe("days with no data", () => {
   test("are blank in a block's table, never zero", async () => {
     const cells = () =>
       [
@@ -1330,29 +1342,53 @@ describe("days with no figures yet", () => {
     await waitFor(() => {
       expect(cells()).toContain("0");
     });
+    const zeros = cells().filter((c) => c === "0").length;
     cleanup();
-    partialFlag = true;
-    logGaps = [["2000-01-01", "2100-12-31"]];
+    // No retention left: the six days before today's have no lines, and read blank.
+    retentionDays = 0;
     await renderDash("/?range=7d");
     await waitFor(() => {
-      expect(cells().length).toBeGreaterThan(0);
+      expect(cells().filter((c) => c === "").length).toBeGreaterThan(0);
     });
-    expect(cells()).not.toContain("0");
+    expect(cells().filter((c) => c === "0").length).toBeLessThan(zeros);
   });
 });
 
-describe("a figure that does not cover its window yet", () => {
-  test("a chart keeps every day on its axis, marking the days loading apart from those with no data", async () => {
-    partialFlag = true;
-    convGaps = [["2000-01-01", "2100-12-31"]];
-    logGaps = [["2000-01-01", "2100-12-31"]];
-    logNone = [["2000-01-01", "2100-12-31"]];
+describe("a day past the cutoff the sweep has not reached yet", () => {
+  test("shows its lines, as the totals count them, and only the days with none read as no data", async () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 3);
+    handoffOn = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    retentionDays = 0;
+    await renderDash("/?range=7d");
+    const rowOf = (day: string) =>
+      [
+        ...(screen
+          .getAllByText("Handoffs by cause")
+          .find((e) => e.tagName === "CAPTION")
+          ?.closest("table")
+          ?.querySelectorAll("tbody tr") ?? []),
+      ]
+        .map((tr) =>
+          [...tr.querySelectorAll("th, td")].map((c) => c.textContent),
+        )
+        .find((cells) => cells[0]?.includes(day.slice(8)) ?? false);
+    await waitFor(() => {
+      expect(has("no data · 5 days")).toBe(true);
+    });
+    expect(rowOf(handoffOn)?.slice(1)).toContain("2");
+  });
+});
+
+describe("a chart with days past retention", () => {
+  test("keeps every day on its axis, marking the days with no data", async () => {
+    retentionDays = 0;
     await renderDash("/?range=7d");
     await waitFor(() => {
-      // The funnel trend's days are all still loading; the handoffs' are no data for good.
-      expect(has("loading · 7 days")).toBe(true);
-      expect(has("no data · 7 days")).toBe(true);
+      // The handoffs' days before today's have no data; the funnel trend's are all there.
+      expect(has("no data · 6 days")).toBe(true);
     });
+    expect(has("loading ·")).toBe(false);
     const table = screen
       .getAllByRole("table")
       .find(
@@ -1361,200 +1397,53 @@ describe("a figure that does not cover its window yet", () => {
     expect(table?.querySelectorAll("tbody tr").length).toBe(7);
   });
 
-  test("reads as provisional in its own card, with the badge and a bar of the days in, until it is whole", async () => {
-    const provisional = (state: string) =>
-      document.querySelectorAll(`[data-provisional="${state}"]`).length;
-    const bars = () =>
-      [...document.querySelectorAll('[role="progressbar"]')].filter(
-        (b) =>
-          b.getAttribute("aria-valuenow") === "3" &&
-          b.getAttribute("aria-valuemax") === "7",
-      ).length;
-    partialFlag = true;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(has("partial · 3 of 7 days")).toBe(true);
-      // Five KPI tiles, each pulsing with its own badge and bar.
-      expect(provisional("arriving")).toBeGreaterThanOrEqual(5);
-      expect(bars()).toBeGreaterThanOrEqual(5);
-    });
-    expect(
-      screen.getAllByText("partial · 3 of 7 days").length,
-    ).toBeGreaterThanOrEqual(6);
-    cleanup();
-    partialFlag = false;
-    await renderDash("/?range=7d");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
-    });
-    expect(provisional("arriving")).toBe(0);
-    expect(provisional("stopped")).toBe(0);
-    expect(bars()).toBe(0);
-  });
-
-  test("stops pulsing when its stream fails, since nothing is loading any more", async () => {
-    partialFlag = true;
-    endsEarly = true;
-    await renderDash("/?range=7d", false);
-    // A stream that ends short of its figures shows its retry: nothing it left reads as loading.
-    await waitFor(() => {
-      expect(
-        screen.queryAllByRole("button", { name: "Try again" }).length,
-      ).toBeGreaterThan(0);
-    });
-    expect(
-      document.querySelectorAll('[data-provisional="arriving"]').length,
-    ).toBe(0);
-  });
-});
-
-describe("a view that completes within the stream's grace", () => {
-  // Anything that would read as partial, seen at any moment of the opening.
-  const watchPartial = () => {
-    const seen: string[] = [];
-    const look = () => {
-      const text = document.body.textContent ?? "";
-      if (/partial ·|days ready/.test(text)) seen.push("badge or line");
-      if (document.querySelector("[data-provisional]"))
-        seen.push("provisional");
-      if (document.querySelector('[role="progressbar"][aria-valuemax="7"]'))
-        seen.push("bar");
-    };
-    const observer = new MutationObserver(look);
-    observer.observe(document.body, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-      attributes: true,
-    });
-    return { seen, stop: () => observer.disconnect() };
-  };
-
-  test("shows its figures as final, with no partial badge, pulse or bar at any moment", async () => {
-    streamGrace.ms = 1500;
-    partialFlag = true;
-    completesAfterMs = 500;
-    const watch = watchPartial();
-    await renderDash("/?range=7d", false);
-    await waitFor(
-      () => {
-        expect(screen.queryAllByRole("button", { name: "40" }).length).toBe(1);
-      },
-      { timeout: 3000 },
-    );
-    watch.stop();
-    expect(watch.seen).toEqual([]);
-  });
-
-  test("still filling once the grace has passed, it shows the partial badge, pulse and bar", async () => {
-    streamGrace.ms = 1500;
-    partialFlag = true;
-    const watch = watchPartial();
-    await renderDash("/?range=7d", false);
-    await waitFor(
-      () => {
-        expect(has("partial · 3 of 7 days")).toBe(true);
-        expect(
-          document.querySelectorAll('[data-provisional="arriving"]').length,
-        ).toBeGreaterThan(0);
-      },
-      { timeout: 4000 },
-    );
-    watch.stop();
-  });
-});
-
-describe("a stream cut before its last snapshot", () => {
-  test("reads as failed, with a retry, not as still computing", async () => {
-    partialFlag = true;
-    endsEarly = true;
-    await renderDash("/?range=7d", false);
-    await waitFor(() => {
-      expect(
-        screen.queryAllByRole("button", { name: "Try again" }).length,
-      ).toBeGreaterThan(0);
-    });
-    expect(has("days ready · computing")).toBe(false);
-  });
-});
-
-describe("a view refused while it fills", () => {
-  test("says so with a retry, and no block passes its first days off as the period", async () => {
-    partialFlag = true;
-    refuseFlag = true;
-    healthFailStatus = 503;
-    healthFailField = "since";
-    await renderDash("/?range=7d", false);
-    await waitFor(() => {
-      expect(has("This period took too long to compute")).toBe(true);
-    });
-    expect(has("days ready")).toBe(false);
-    // The funnel's days were partial when the stream stopped: the refusal, never 3 days as the period.
-    expect(has("partial ·")).toBe(false);
-    expect(has("Automation funnel")).toBe(false);
-    // Blocks whose families were all in keep their figures.
-    expect(has("Steps delivered")).toBe(true);
-    expect(
-      screen.queryAllByRole("button", { name: "Try again" }).length,
-    ).toBeGreaterThan(1);
-  });
-});
-
-describe("switching to the preset a custom range matches", () => {
-  test("restarts the current period's stream too, so both reach the new opening", async () => {
-    const d = (n: number) => {
-      const x = new Date();
-      x.setDate(x.getDate() + n);
-      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
-    };
-    await renderDash(`/?range=custom&from=${d(-29)}&to=${d(0)}`);
-    const current = () =>
-      asks("/metrics/stream").filter(
-        (u) => u.searchParams.get("blocks") !== "kpis,outcomes,costs",
+  describe("switching to the preset a custom range matches", () => {
+    test("asks the current period again too, so both periods reach the new opening", async () => {
+      const d = (n: number) => {
+        const x = new Date();
+        x.setDate(x.getDate() + n);
+        return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+      };
+      await renderDash(`/?range=custom&from=${d(-29)}&to=${d(0)}`);
+      // The current period's KPIs: the later `since` of the two periods asked.
+      const sinceOf = (u: URL) => u.searchParams.get("since") ?? "";
+      const current = () => {
+        const all = asks("/metrics/kpis");
+        const latest = all.map(sinceOf).sort().at(-1);
+        return all.filter((u) => sinceOf(u) === latest);
+      };
+      await waitFor(() => expect(current().length).toBe(1));
+      const [first] = current();
+      fireEvent.click(screen.getByRole("radio", { name: "30d" }));
+      await waitFor(() => expect(current().length).toBe(2));
+      const [, second] = current();
+      expect(second?.searchParams.get("since")).toBe(
+        first?.searchParams.get("since") ?? null,
       );
-    await waitFor(() => expect(current().length).toBe(1));
-    const [first] = current();
-    fireEvent.click(screen.getByRole("radio", { name: "30d" }));
-    await waitFor(() => expect(current().length).toBe(2));
-    const [, second] = current();
-    expect(second?.searchParams.get("since")).toBe(
-      first?.searchParams.get("since") ?? null,
-    );
-  });
-});
-
-describe("the instant a view is opened at", () => {
-  afterEach(() => setSystemTime());
-
-  test("holds while the view is the same, and moves with a new view, a new local day or a retry", () => {
-    setSystemTime(new Date(2026, 9, 6, 23, 59, 0));
-    const hook = renderHook(({ view }) => useOpenedAt(view)[0], {
-      initialProps: { view: "range=7d" },
     });
-    const opened = hook.result.current;
-    setSystemTime(new Date(2026, 9, 6, 23, 59, 30));
-    hook.rerender({ view: "range=7d" });
-    expect(hook.result.current).toBe(opened);
-    hook.rerender({ view: "range=30d" });
-    expect(hook.result.current.getTime()).toBe(
-      new Date(2026, 9, 6, 23, 59, 30).getTime(),
-    );
-    setSystemTime(new Date(2026, 9, 7, 0, 0, 5));
-    hook.rerender({ view: "range=30d" });
-    expect(hook.result.current.getTime()).toBe(
-      new Date(2026, 9, 7, 0, 0, 5).getTime(),
-    );
   });
 
-  test("a retry opens the view again, at the retry's instant", () => {
-    setSystemTime(new Date(2026, 9, 6, 9, 0, 0));
-    const hook = renderHook(() => useOpenedAt("range=7d"));
-    setSystemTime(new Date(2026, 9, 6, 11, 0, 0));
-    hook.rerender();
-    expect(hook.result.current[0].getHours()).toBe(9);
-    act(() => hook.result.current[1]());
-    expect(hook.result.current[0].getTime()).toBe(
-      new Date(2026, 9, 6, 11, 0, 0).getTime(),
-    );
+  describe("the instant a view is opened at", () => {
+    afterEach(() => setSystemTime());
+
+    test("holds while the view is the same, and moves with a new view or a new local day", () => {
+      setSystemTime(new Date(2026, 9, 6, 23, 59, 0));
+      const hook = renderHook(({ view }) => useOpenedAt(view), {
+        initialProps: { view: "range=7d" },
+      });
+      const opened = hook.result.current;
+      setSystemTime(new Date(2026, 9, 6, 23, 59, 30));
+      hook.rerender({ view: "range=7d" });
+      expect(hook.result.current).toBe(opened);
+      hook.rerender({ view: "range=30d" });
+      expect(hook.result.current.getTime()).toBe(
+        new Date(2026, 9, 6, 23, 59, 30).getTime(),
+      );
+      setSystemTime(new Date(2026, 9, 7, 0, 0, 5));
+      hook.rerender({ view: "range=30d" });
+      expect(hook.result.current.getTime()).toBe(
+        new Date(2026, 9, 7, 0, 0, 5).getTime(),
+      );
+    });
   });
 });

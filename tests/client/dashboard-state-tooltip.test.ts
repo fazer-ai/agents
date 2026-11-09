@@ -17,8 +17,8 @@ import {
   StackedBars,
 } from "@/client/pages/dashboard/charts";
 
-// A DAY UNDER A BAND STILL EXPLAINS ITSELF ON HOVER. Every series is null on a day still loading and
-// on a day retention emptied, and the tooltip is where the chart says which of the two it is.
+// A DAY UNDER A BAND STILL EXPLAINS ITSELF ON HOVER. Every series is null on a day retention emptied,
+// and the tooltip is where the chart says so.
 
 const WIDTH = 600;
 const HEIGHT = 260;
@@ -42,7 +42,7 @@ afterEach(() => cleanup());
 
 const data: ChartRow[] = [
   { day: "2026-01-01", turns: 1, state: "ready" },
-  { day: "2026-01-02", turns: null, state: "loading" },
+  { day: "2026-01-02", turns: 2, state: "ready" },
   { day: "2026-01-03", turns: null, state: "noData" },
   { day: "2026-01-04", turns: 4, state: "ready" },
 ];
@@ -89,7 +89,7 @@ const charts = [
 
 describe("a day under a band", () => {
   for (const [name, Chart] of charts) {
-    test(`${name} says on hover that a day is still loading, and that one has no data`, async () => {
+    test(`${name} says on hover that a day has no data`, async () => {
       const { container } = render(
         createElement(
           ThemeProvider,
@@ -104,7 +104,7 @@ describe("a day under a band", () => {
       );
       // A day with its figure reads as the day alone.
       expect(await tooltipAt(container, 0)).toBe("Jan 1");
-      expect(await tooltipAt(container, 1)).toContain("computing");
+      expect(await tooltipAt(container, 1)).toBe("Jan 2");
       expect(await tooltipAt(container, 2)).toContain("no data");
     });
   }

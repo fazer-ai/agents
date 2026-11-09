@@ -23,7 +23,11 @@ export interface InboxOption extends FilterOption {
 export async function getFilterOptions(
   ctx: TenantContext,
   base: PrismaClient = metricsPrisma,
-): Promise<{ agents: FilterOption[]; inboxes: InboxOption[] }> {
+): Promise<{
+  agents: FilterOption[];
+  inboxes: InboxOption[];
+  firstRecordAt: Date | null;
+}> {
   return runMetricsScoped(base, ctx, async (db) => {
     const agents = await db.agent.findMany({
       select: { id: true, name: true },
@@ -37,9 +41,25 @@ export async function getFilterOptions(
       },
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
+    // Where an "all time" view starts: the tenant's first conversation or ledger row, whichever is
+    // earlier (a tenant on the client channel or the playground alone has ledger and flow-log
+    // history and no conversation). The console marks the flow-log days from there up to the
+    // retention cutoff as no data. One row each through their (tenant, created_at) index.
+    const firstConversation = await db.conversation.findFirst({
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
+    const firstUsage = await db.llmUsage.findFirst({
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
+    const starts = [firstConversation?.createdAt, firstUsage?.createdAt]
+      .filter((d): d is Date => d instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
     const seen = new Map<string, number>();
     for (const i of inboxes) seen.set(i.name, (seen.get(i.name) ?? 0) + 1);
     return {
+      firstRecordAt: starts[0] ?? null,
       agents: agents.map((a) => ({ id: String(a.id), name: a.name })),
       inboxes: inboxes.map((i) => ({
         id: String(i.id),

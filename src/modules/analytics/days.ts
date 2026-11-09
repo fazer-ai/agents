@@ -1,4 +1,4 @@
-// LOCAL DAYS IN A ZONE, the unit the kept figures are stored in. A day is `YYYY-MM-DD` in the zone the
+// LOCAL DAYS IN A ZONE. A day is `YYYY-MM-DD` in the zone the
 // dashboard asks for, and its bounds are the two local midnights around it, which are 23 or 25 hours
 // apart across a daylight-saving change.
 

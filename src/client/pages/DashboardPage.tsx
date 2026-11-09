@@ -11,19 +11,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
-  DataBoundary,
   Input,
   PageContainer,
   SegmentedControl,
   Select,
-  Skeleton,
 } from "@/client/components";
 import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { type InboxOption, inboxOptionLabel } from "@/client/lib/inboxOption";
-import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
-import { metricsErrorMessage } from "./dashboard/Block";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
 import {
@@ -43,15 +39,16 @@ import {
 import { AutomationSection, HealthSection } from "./dashboard/HealthSection";
 import {
   DEFAULT_PERFORMANCE_VIEW,
-  KPI_GRID,
-  KPI_SPANS,
   type Kpis,
   PerformanceSection,
   type PerformanceView,
 } from "./dashboard/PerformanceSection";
 import { ReasonsSection } from "./dashboard/ReasonsSection";
-import { StreamProgress } from "./dashboard/StreamProgress";
-import { DashboardStreamProvider, useStreamBlock } from "./dashboard/useStream";
+import {
+  DashboardMetricsProvider,
+  useMetricsBlock,
+  withComparison,
+} from "./dashboard/useMetrics";
 
 // THE OPERATOR'S DASHBOARD, organised by the question an operator brings: is the agent
 // doing its job, why does it hand over and what are people asking, what does it cost, is it healthy,
@@ -199,24 +196,6 @@ function FilterBar({
   );
 }
 
-const SKELETON_KEYS = ["k0", "k1", "k2", "k3", "k4"];
-
-function DashboardSkeleton() {
-  return (
-    <div className="flex flex-col gap-6" aria-hidden="true">
-      <div className="@container">
-        <div className={KPI_GRID}>
-          {SKELETON_KEYS.map((k, i) => (
-            <Skeleton key={k} className={cn("h-24 w-full", KPI_SPANS[i])} />
-          ))}
-        </div>
-      </div>
-      <Skeleton className="h-28 w-full" />
-      <Skeleton className="h-72 w-full" />
-    </div>
-  );
-}
-
 function DashboardBlocks({
   filters,
   win,
@@ -232,35 +211,26 @@ function DashboardBlocks({
   view: PerformanceView;
   onView: (patch: Partial<PerformanceView>) => void;
 }) {
-  const { t } = useTranslation();
-  const kpis = useStreamBlock<Kpis>((f) => f.kpis, ["conv"]);
-  const prevKpis = useStreamBlock<Kpis>((f) => f.kpis, ["conv"], "previous");
+  const prevKpis = useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis, {
+    which: "previous",
+  });
+  const kpis = withComparison(
+    useMetricsBlock("kpis", (b: { kpis: Kpis }) => b.kpis),
+    prevKpis,
+  );
   return (
     <div className="flex min-w-0 flex-col gap-8">
       <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
-        <DataBoundary
-          loading={kpis.loading && !kpis.data}
-          error={kpis.error}
-          errorStatus={kpis.status ?? undefined}
-          onRetry={kpis.reload}
-          loadingLabel={t("dashboard.loading", "Loading metrics…")}
-          errorLabel={metricsErrorMessage(t, kpis.status, kpis.field)}
-          skeleton={<DashboardSkeleton />}
-        >
-          {kpis.data && (
-            <PerformanceSection
-              filters={filters}
-              win={win}
-              prev={prev}
-              kpis={kpis.data}
-              kpisCoverage={kpis.coverage}
-              prevKpis={prevKpis.data}
-              onFilter={onFilter}
-              view={view}
-              onView={onView}
-            />
-          )}
-        </DataBoundary>
+        <PerformanceSection
+          filters={filters}
+          win={win}
+          prev={prev}
+          kpis={kpis}
+          prevKpis={prevKpis.data}
+          onFilter={onFilter}
+          view={view}
+          onView={onView}
+        />
       </div>
 
       <ReasonsSection win={win} />
@@ -272,17 +242,18 @@ function DashboardBlocks({
   );
 }
 
-// The instant a view was opened, which its window and the previous period's are computed at, and
-// what opens it again. Held while the view stays the same: a fresh instant on every render would
-// restart the previous period's stream, which ends at that time of day. A new view, a new local day
-// (a page left open past midnight) or a retry opens it again, so both periods end at the same time.
-export function useOpenedAt(viewKey: string): [Date, () => void] {
+// The waits before the filter options are asked again after a failure. Exported so a test need not
+// wait for them.
+export const OPTIONS_RETRY_MS = [1000, 4000];
+
+// The instant a view was opened, which its window and the previous period's are computed at. Held
+// while the view stays the same: a fresh instant on every render would ask every block again, and the
+// previous period ends at that time of day. A new view or a new local day (a page left open past
+// midnight) opens it again, so both periods end at the same time.
+export function useOpenedAt(viewKey: string): Date {
   const today = localDayKey(new Date());
-  const [retries, setRetries] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view, a new day or a retry is a new opening.
-  const at = useMemo(() => new Date(), [viewKey, today, retries]);
-  const reopen = useCallback(() => setRetries((n) => n + 1), []);
-  return [at, reopen];
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view or a new day is a new opening.
+  return useMemo(() => new Date(), [viewKey, today]);
 }
 
 export function DashboardPage() {
@@ -301,6 +272,8 @@ export function DashboardPage() {
     null,
   );
   const [inboxes, setInboxes] = useState<InboxOption[] | null>(null);
+  const [retentionDays, setRetentionDays] = useState<number | null>(null);
+  const [firstDay, setFirstDay] = useState<string | null>(null);
   const [perfView, setPerfView] = useState<PerformanceView>(
     DEFAULT_PERFORMANCE_VIEW,
   );
@@ -313,16 +286,47 @@ export function DashboardPage() {
   );
 
   // An unreadable list leaves both null: the selects show only "All", and a link's ids are kept
-  // rather than dropped against a list that never arrived.
+  // rather than dropped against a list that never arrived. The flow-log blocks wait for the
+  // retention it carries, so a failed read is asked again twice, a second and then four seconds
+  // later; past that those blocks say they could not load, and their retry asks once more.
+  const [optionsTry, setOptionsTry] = useState(0);
+  const [optionsFailed, setOptionsFailed] = useState(false);
   useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const failed = () => {
+      if (!live) return;
+      if (optionsTry % 3 < 2)
+        timer = setTimeout(
+          () => setOptionsTry((n) => n + 1),
+          OPTIONS_RETRY_MS[optionsTry % 3] ?? 0,
+        );
+      else setOptionsFailed(true);
+    };
     void api.api.v1.metrics["filter-options"]
       .get()
       .then((r) => {
-        if (!r.data) return;
+        if (!live) return;
+        if (!r.data) return failed();
+        setOptionsFailed(false);
         setAgents(r.data.agents);
         setInboxes(r.data.inboxes);
+        setRetentionDays(r.data.flowLogRetentionDays);
+        setFirstDay(
+          r.data.firstRecordAt
+            ? localDayKey(new Date(r.data.firstRecordAt))
+            : null,
+        );
       })
-      .catch(() => {});
+      .catch(failed);
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [optionsTry]);
+  const retryOptions = useCallback(() => {
+    setOptionsFailed(false);
+    setOptionsTry((n) => n + 3 - (n % 3));
   }, []);
 
   // A link naming an agent or inbox this account does not have opens on every agent or inbox,
@@ -345,7 +349,7 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
-  const [openedAt, reopen] = useOpenedAt(writeFilters(filters).toString());
+  const openedAt = useOpenedAt(writeFilters(filters).toString());
   const win = windowOf(filters, openedAt);
   const prev = previousWindow(win, openedAt);
   const query = apiQuery(filters, readUpTo(win, openedAt));
@@ -411,13 +415,16 @@ export function DashboardPage() {
         <SectionNav sections={sections} layout="bar" />
       </div>
 
-      <DashboardStreamProvider
+      <DashboardMetricsProvider
         query={query}
         prevQuery={prevQuery}
+        win={win}
         openedAt={openedAt}
-        onReload={reopen}
+        retentionDays={retentionDays}
+        firstDay={firstDay}
+        retentionFailed={optionsFailed}
+        retryRetention={retryOptions}
       >
-        <StreamProgress />
         <DashboardBlocks
           filters={filters}
           win={win}
@@ -426,7 +433,7 @@ export function DashboardPage() {
           view={perfView}
           onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
         />
-      </DashboardStreamProvider>
+      </DashboardMetricsProvider>
     </PageContainer>
   );
 }

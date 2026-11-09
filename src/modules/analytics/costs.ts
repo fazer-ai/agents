@@ -13,6 +13,13 @@ import {
 } from "./filter";
 import { normalizeTimeZone } from "./service";
 
+// The quarter hour of UTC wall-clock a `timestamp without time zone` instant falls in. Every zone's
+// offset from UTC is a whole number of quarter hours, and so is every clock change, so all the
+// instants of a quarter share one local day in any zone.
+export function quarterSql(column: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`(date_trunc('hour', ${column}) + floor(date_part('minute', ${column}) / 15) * interval '15 minutes')`;
+}
+
 // THE DASHBOARD'S MONEY, FROM THE LEDGER. Every billed call writes its `llm_usage` row
 // synchronously, priced at capture and re-priceable after (`scripts/reprice-usage.ts`), so the cost
 // is summed over the same rows and filters as the requests beside it. Langfuse is not asked for a
@@ -140,63 +147,112 @@ export async function getDashboardCosts(
   const tenantId = ctx.tenantId;
   const tz = normalizeTimeZone(filter.tz);
   const where = usageWhereSql("u", filter);
-  const day = localDaySql(Prisma.sql`u.created_at`, tz);
   const [figures, langfuse] = await Promise.all([
     runMetricsScoped(base, ctx, async (db) => {
-      const days = await db.$queryRaw<
+      // Two reads of the window's ledger rows, every figure from them. The rows are first summed per
+      // quarter hour of UTC (`quarterSql`): every zone's offset is a whole number of quarter hours,
+      // so a quarter falls in one local day, and the zone's day is worked out once per quarter instead
+      // of once per call, which is most of what grouping a month of calls by day costs. Sums are
+      // decimal, so adding them up again is exact.
+      const sums = await db.$queryRaw<
         {
-          bucket: string;
+          set: number;
+          bucket: string | null;
+          model: string | null;
+          node: string | null;
           cost: Prisma.Decimal | null;
-          conversations: number;
-          resolved: number;
-        }[]
-      >(Prisma.sql`
-        SELECT ${day} AS bucket,
-               SUM(u.cost_usd) AS cost,
-               COUNT(DISTINCT u.conversation_id)::int AS conversations,
-               COUNT(DISTINCT u.conversation_id) FILTER (WHERE ${outcomeSql("c")} = 'resolved_by_agent')::int AS resolved
-        FROM llm_usage u
-        LEFT JOIN conversations c ON c.id = u.conversation_id
-        WHERE ${where}
-        GROUP BY bucket
-        ORDER BY bucket ASC`);
-      const models = await db.$queryRaw<
-        { model: string; cost: Prisma.Decimal | null; unpriced: number }[]
-      >(Prisma.sql`
-        SELECT u.model,
-               SUM(u.cost_usd) AS cost,
-               COUNT(*) FILTER (WHERE u.cost_usd IS NULL)::int AS unpriced
-        FROM llm_usage u
-        WHERE ${where}
-        GROUP BY u.model`);
-      const split = (key: Prisma.Sql) =>
-        db.$queryRaw<
-          { bucket: string; key: string; cost: Prisma.Decimal | null }[]
-        >(Prisma.sql`
-          SELECT ${day} AS bucket, ${key} AS key, SUM(u.cost_usd) AS cost
-          FROM llm_usage u
-          WHERE ${where} AND u.cost_usd IS NOT NULL
-          GROUP BY 1, 2
-          ORDER BY 1, 2`);
-      const [period] = await db.$queryRaw<
-        {
           requests: number;
-          prompt: bigint | number;
-          completion: bigint | number;
+          unpriced: number;
+          prompt: bigint | number | null;
+          completion: bigint | number | null;
+        }[]
+      >(Prisma.sql`
+        WITH q AS MATERIALIZED (
+          SELECT ${quarterSql(Prisma.sql`u.created_at`)} AS quarter, u.model,
+                 COALESCE(u.node, 'agent') AS node,
+                 SUM(u.cost_usd) AS cost,
+                 COUNT(*) AS requests,
+                 COUNT(*) FILTER (WHERE u.cost_usd IS NULL) AS unpriced,
+                 SUM(u.prompt_tokens) AS prompt,
+                 SUM(u.completion_tokens) AS completion
+            FROM llm_usage u
+           WHERE ${where}
+           GROUP BY 1, 2, 3
+        ), d AS (
+          SELECT ${localDaySql(Prisma.sql`q.quarter`, tz)} AS bucket, q.model, q.node, q.cost,
+                 q.requests, q.unpriced, q.prompt, q.completion
+            FROM q
+        )
+        SELECT GROUPING(d.bucket, d.model, d.node)::int AS set,
+               d.bucket, d.model, d.node,
+               SUM(d.cost) AS cost,
+               SUM(d.requests)::int AS requests,
+               SUM(d.unpriced)::int AS unpriced,
+               SUM(d.prompt)::bigint AS prompt,
+               SUM(d.completion)::bigint AS completion
+          FROM d
+         GROUP BY GROUPING SETS ((d.bucket), (d.model), (d.bucket, d.model), (d.bucket, d.node), ())
+         ORDER BY 1, 2, 3, 4`);
+      // The conversations: each one once per quarter it was billed in, then once per local day.
+      const convs = await db.$queryRaw<
+        {
+          set: number;
+          bucket: string | null;
           conversations: number;
           resolved: number;
         }[]
       >(Prisma.sql`
-        SELECT COUNT(*)::int AS requests,
-               COALESCE(SUM(u.prompt_tokens), 0)::bigint AS prompt,
-               COALESCE(SUM(u.completion_tokens), 0)::bigint AS completion,
-               COUNT(DISTINCT u.conversation_id)::int AS conversations,
-               COUNT(DISTINCT u.conversation_id) FILTER (WHERE ${outcomeSql("c")} = 'resolved_by_agent')::int AS resolved
-        FROM llm_usage u
-        LEFT JOIN conversations c ON c.id = u.conversation_id
-        WHERE ${where}`);
-      const byModelDays = await split(Prisma.sql`u.model`);
-      const byNodeDays = await split(Prisma.sql`COALESCE(u.node, 'agent')`);
+        WITH q AS MATERIALIZED (
+          SELECT DISTINCT ${quarterSql(Prisma.sql`u.created_at`)} AS quarter, u.conversation_id
+            FROM llm_usage u
+           WHERE ${where} AND u.conversation_id IS NOT NULL
+        ), d AS (
+          SELECT DISTINCT ${localDaySql(Prisma.sql`q.quarter`, tz)} AS bucket, q.conversation_id
+            FROM q
+        )
+        SELECT GROUPING(d.bucket)::int AS set, d.bucket,
+               COUNT(DISTINCT d.conversation_id)::int AS conversations,
+               COUNT(DISTINCT d.conversation_id) FILTER (WHERE ${outcomeSql("c")} = 'resolved_by_agent')::int AS resolved
+          FROM d
+          LEFT JOIN conversations c ON c.id = d.conversation_id
+         GROUP BY GROUPING SETS ((d.bucket), ())
+         ORDER BY 1, 2`);
+      // GROUPING's bits are (bucket, model, node), set where the column is NOT a key of the row.
+      const of = (set: number) => sums.filter((r) => r.set === set);
+      const byDay = new Map(
+        convs.filter((r) => r.set === 0).map((r) => [r.bucket, r]),
+      );
+      const days = of(0b011).map((r) => ({
+        bucket: r.bucket as string,
+        cost: r.cost,
+        conversations: Number(byDay.get(r.bucket)?.conversations ?? 0),
+        resolved: Number(byDay.get(r.bucket)?.resolved ?? 0),
+      }));
+      const models = of(0b101).map((r) => ({
+        model: r.model as string,
+        cost: r.cost,
+        unpriced: Number(r.unpriced),
+      }));
+      // Only priced rows have a segment: a group whose every call is unpriced has no sum.
+      const split = (set: number, key: (r: (typeof sums)[number]) => string) =>
+        of(set)
+          .filter((r) => r.cost !== null)
+          .map((r) => ({
+            bucket: r.bucket as string,
+            key: key(r),
+            cost: r.cost,
+          }));
+      const byModelDays = split(0b001, (r) => r.model as string);
+      const byNodeDays = split(0b010, (r) => r.node as string);
+      const [whole] = of(0b111);
+      const [wholeConvs] = convs.filter((r) => r.set === 1);
+      const period = {
+        requests: Number(whole?.requests ?? 0),
+        prompt: whole?.prompt ?? 0,
+        completion: whole?.completion ?? 0,
+        conversations: Number(wholeConvs?.conversations ?? 0),
+        resolved: Number(wholeConvs?.resolved ?? 0),
+      };
       return { days, models, byModelDays, byNodeDays, period };
     }),
     tenantId === null

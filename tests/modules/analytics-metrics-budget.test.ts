@@ -13,6 +13,7 @@ import {
   findSessionUser,
   type JWTPayload,
 } from "@/api/lib/auth";
+import { requestContext } from "@/api/lib/i18n";
 import { metricsPoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import { postgresCodeOf } from "@/lib/pg-error";
@@ -222,6 +223,22 @@ test("a statement asked for after the deadline is refused before it is sent, and
 });
 
 describe.skipIf(!dbUp)("metrics time budget", () => {
+  // A console view replaced or left aborts its requests; one whose caller is gone runs nothing.
+  test("a read whose caller went away runs nothing", async () => {
+    const gone = new AbortController();
+    gone.abort();
+    let ran = false;
+    const before = await requestContext.run(
+      { locale: "en", startedAt: Date.now(), signal: gone.signal },
+      () =>
+        runMetricsScoped(app as PrismaClient, ctx, async () => {
+          ran = true;
+        }).catch((e) => e),
+    );
+    expect(statusOf(before)).toBe(503);
+    expect(ran).toBe(false);
+  });
+
   test("a read past METRICS_TIMEOUT_MS answers 503 while the lock still holds, and leaves no statement running", async () => {
     const usage = await lockTable("llm_usage");
     try {
@@ -272,6 +289,25 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     } finally {
       await usage.release();
     }
+  });
+
+  test("a cancelled MCP metrics call starts no read", async () => {
+    const cancelled = new AbortController();
+    cancelled.abort();
+    let reads = 0;
+    const counting = new Proxy(app as PrismaClient, {
+      get(target, prop, receiver) {
+        if (prop === "$transaction") reads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const result = await metricsGet(
+      principal,
+      {},
+      { base: counting, signal: cancelled.signal },
+    );
+    expect(JSON.stringify(result)).not.toContain('"kpis"');
+    expect(reads).toBe(0);
   });
 
   test("each statement is given what is left of the deadline, for the statement and for its lock wait", async () => {
@@ -376,7 +412,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
   });
 
   test("a write under the budget runs, and gets only the time left too", async () => {
-    // The kept days of the dashboard are written inside the read that computed them.
+    // A write inside a metrics read, which a read-only route never makes but the budget still bounds.
     const usage = await lockTable("llm_usage");
     const clock = skewedClock();
     try {
@@ -687,6 +723,42 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       await (su as PrismaClient).user.delete({ where: { id: user.id } });
       await (su as PrismaClient).tenant.delete({ where: { id: tenant.id } });
     }
+  });
+
+  // Parallel workers share rows through /dev/shm, 64 MB in a Docker container by default; three reads
+  // with parallel hash joins at once can fill it (53100). The read runs again with no workers.
+  test("a read refused for want of shared memory runs again without parallel workers", async () => {
+    const settings: string[] = [];
+    const answer = await runMetricsScoped(
+      app as PrismaClient,
+      ctx,
+      async (db) => {
+        const [row] = await db.$queryRaw<{ w: string }[]>`
+        SELECT current_setting('max_parallel_workers_per_gather') AS w`;
+        settings.push(row?.w ?? "");
+        if (settings.length === 1)
+          await db.$executeRaw`DO $$ BEGIN RAISE EXCEPTION 'could not resize shared memory segment' USING ERRCODE = '53100'; END $$`;
+        return "figures";
+      },
+    );
+    expect(answer).toBe("figures");
+    expect(settings).toHaveLength(2);
+    expect(settings[0]).not.toBe("0");
+    expect(settings[1]).toBe("0");
+  });
+
+  test("any other failure is not run again", async () => {
+    let runs = 0;
+    const error = await runMetricsScoped(
+      app as PrismaClient,
+      ctx,
+      async (db) => {
+        runs += 1;
+        await db.$executeRaw`DO $$ BEGIN RAISE EXCEPTION 'out of memory' USING ERRCODE = '53200'; END $$`;
+      },
+    ).catch((e: unknown) => e);
+    expect(postgresCodeOf(error)).toBe("53200");
+    expect(runs).toBe(1);
   });
 
   test("a read inside the budget answers with its figures", async () => {

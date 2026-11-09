@@ -38,7 +38,7 @@ import {
   stackSummary,
   type TooltipSummary,
 } from "./chart-series";
-import type { DayState } from "./useStream";
+import type { DayState } from "./useMetrics";
 
 // The dashboard's charts, in their own chunk (recharts is heavy and only this page draws). Colours
 // come from the theme's CSS variables, read again when the theme flips, so axes, grid and series
@@ -64,9 +64,7 @@ export function useChartPalette() {
       tooltipBorder: cssVar("--color-border-hover", "#333333"),
       text: cssVar("--color-text-primary", "#eeeeee"),
       textSecondary: cssVar("--color-text-secondary", "#a3a3a3"),
-      // A day still loading, and a day with no data for good: the same tokens in both themes.
-      loading: cssVar("--color-info", "#828fff"),
-      loadingSoft: cssVar("--color-info-soft", "#5e6ad233"),
+      // A day with no data for good: the same tokens in both themes.
       noData: cssVar("--color-warning", "#f2c94c"),
       noDataSoft: cssVar("--color-warning-soft", "#f2c94c24"),
       accent: cssVar("--color-accent", "#3ea6ff"),
@@ -89,7 +87,7 @@ export interface ChartRow {
   day: string;
   // The same position in the previous period, when there is one.
   prevDay?: string | null;
-  // A day without its figures: still loading, or with no data for good. It keeps its place on the
+  // A day without its figures: no data for good, past the flow log's retention. It keeps its place on the
   // axis, marked, rather than dropping out and squeezing the series.
   state?: DayState;
   [series: string]: number | string | null | undefined;
@@ -115,8 +113,7 @@ export function stateRuns(
   return out;
 }
 
-// The vertical scale only grows while a window fills, so it does not jump at every part: it is reset
-// when the window or its series change.
+// The top of the scale on a round step, reset when the window or its series change.
 function useSettledMax(resetKey: string) {
   const max = useRef({ key: resetKey, value: 0 });
   if (max.current.key !== resetKey) max.current = { key: resetKey, value: 0 };
@@ -141,8 +138,6 @@ export function niceCeil(v: number): number {
 function useDayStateText() {
   const { t } = useTranslation();
   return {
-    loading: t("dashboard.chart.loading", "loading"),
-    loadingTip: t("dashboard.chart.loadingTip", "computing…"),
     noData: t("dashboard.chart.noData", "no data"),
     noDataTip: t(
       "dashboard.chart.noDataTip",
@@ -151,11 +146,10 @@ function useDayStateText() {
   };
 }
 
-// The bands of the days without figures, and their patterns: diagonal hatching for a day loading,
-// dots for one with no data for good, each with a word on it where it fits.
+// The bands of the days without figures, dotted, each with a word on it where it fits.
 function stateBands(
   data: ChartRow[],
-  ids: { loading: string; noData: string },
+  ids: { noData: string },
   p: ReturnType<typeof useChartPalette>,
   text: ReturnType<typeof useDayStateText>,
 ) {
@@ -167,18 +161,18 @@ function stateBands(
       ifOverflow="visible"
       // Clicks pass through to the day columns underneath, which say which day it was.
       className="pointer-events-none"
-      fill={`url(#${r.state === "loading" ? ids.loading : ids.noData})`}
+      fill={`url(#${ids.noData})`}
       fillOpacity={1}
-      stroke={r.state === "loading" ? p.loading : p.noData}
+      stroke={p.noData}
       strokeOpacity={0.5}
       label={
         r.days >= 3
           ? {
-              value: r.state === "loading" ? text.loading : text.noData,
+              value: text.noData,
               position: "insideTop",
               // Drawn in a layer of its own, above the day columns, so it lets the click through too.
               className: "pointer-events-none",
-              fill: r.state === "loading" ? p.loading : p.noData,
+              fill: p.noData,
               fontSize: 11,
             }
           : undefined
@@ -191,30 +185,12 @@ function StatePatterns({
   ids,
   p,
 }: {
-  ids: { loading: string; noData: string };
+  ids: { noData: string };
   p: ReturnType<typeof useChartPalette>;
 }) {
   return (
     <svg width="0" height="0" className="absolute" aria-hidden="true">
       <defs>
-        <pattern
-          id={ids.loading}
-          patternUnits="userSpaceOnUse"
-          width="8"
-          height="8"
-          patternTransform="rotate(45)"
-        >
-          <rect width="8" height="8" fill={p.loadingSoft} />
-          <line
-            x1="0"
-            y1="0"
-            x2="0"
-            y2="8"
-            stroke={p.loading}
-            strokeWidth="2"
-            strokeOpacity="0.45"
-          />
-        </pattern>
         <pattern
           id={ids.noData}
           patternUnits="userSpaceOnUse"
@@ -237,12 +213,11 @@ function StateLegend({
 }: {
   data: ChartRow[];
   p: ReturnType<typeof useChartPalette>;
-  ids: { loading: string; noData: string };
+  ids: { noData: string };
 }) {
   const { t } = useTranslation();
-  const loading = data.filter((r) => r.state === "loading").length;
   const noData = data.filter((r) => r.state === "noData").length;
-  if (loading === 0 && noData === 0) return null;
+  if (noData === 0) return null;
   const swatch = (id: string, stroke: string) => (
     <svg width="14" height="10" aria-hidden="true">
       <rect
@@ -257,14 +232,6 @@ function StateLegend({
   );
   return (
     <ul className="text-text-muted flex flex-wrap gap-x-4 gap-y-1 text-xs">
-      {loading > 0 && (
-        <li className="inline-flex items-center gap-1.5">
-          {swatch(ids.loading, p.loading)}
-          {t("dashboard.chart.loadingDays", "loading · {{count}} days", {
-            count: loading,
-          })}
-        </li>
-      )}
       {noData > 0 && (
         <li className="inline-flex items-center gap-1.5">
           {swatch(ids.noData, p.noData)}
@@ -278,8 +245,8 @@ function StateLegend({
 }
 
 // A chart with no series in yet plots a zero on every day under a series of its own, drawn as
-// nothing: without a value to scale, the chart has no vertical axis, and the bands of the days still
-// loading or with no data have nothing to be drawn against.
+// nothing: without a value to scale, the chart has no vertical axis, and the bands of the days with no
+// data have nothing to be drawn against.
 const NONE = "__none";
 
 // The plot's horizontal room inside the chart box: the value axis on the left, the margin on the right.
@@ -292,7 +259,7 @@ function plotted(data: ChartRow[], series: SeriesDef[]): ChartRow[] {
 
 function usePatternIds() {
   const id = useId().replace(/:/g, "");
-  return { loading: `loading-${id}`, noData: `nodata-${id}` };
+  return { noData: `nodata-${id}` };
 }
 
 function dayLabel(lang: string) {
@@ -751,7 +718,6 @@ function withState(
   state: DayState | undefined,
   text: ReturnType<typeof useDayStateText>,
 ): string {
-  if (state === "loading") return `${label} · ${text.loadingTip}`;
   if (state === "noData") return `${label} · ${text.noDataTip}`;
   return label;
 }
@@ -764,7 +730,7 @@ const POINT_PAD = 8;
 const X_AXIS_HEIGHT = 30;
 
 // One transparent column per day behind the bars, so a click or a tap on a day's empty room (above
-// its stack, or the band of a day still loading) names that day by itself, whatever the hover state
+// its stack, or the band of a day with no data) names that day by itself, whatever the hover state
 // says. A segment, the "Other" layer included, names its own day from its row.
 function DayHits({
   days,

@@ -763,6 +763,35 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(peak).toEqual({ peak: 350, at: peakAt });
   });
 
+  test("a peak whose delivery rows went with a removed conversation stays until its window leaves the lookback", async () => {
+    await resetBreaker();
+    const day = 86_400_000;
+    const now = new Date();
+    const kept = await seedConv(6973);
+    const removed = await seedConv(6974);
+    await seedDeliveries(kept, true, 25 * day);
+    const peakAt = new Date(now.getTime() - 5 * day);
+    await suDb.agentTurnDelivery.createMany({
+      data: Array.from({ length: 400 }, (_, i) => ({
+        tenantId,
+        conversationId: removed,
+        proactive: true,
+        deliveredAt: new Date(peakAt.getTime() + i * 1000),
+      })),
+    });
+    await seedGenerate("messaged", peakAt, 400);
+    const status = async (at: Date) =>
+      (await getProactiveBreakerStatus(ctx(), appDb, at)).auto;
+    expect((await status(now)).peak).toBe(400);
+    await suDb.conversation.delete({ where: { id: removed } });
+    const nextDay = new Date(now.getTime() + 2 * day);
+    expect(await status(nextDay)).toMatchObject({
+      peak: 400,
+      peakAt: peakAt.toISOString(),
+    });
+    expect((await status(new Date(now.getTime() + 26 * day))).peak).toBe(0);
+  });
+
   test("a failed refresh waits before the next attempt instead of retrying on every send", async () => {
     const other = await suDb.tenant.create({
       data: { name: "PB backoff", slug: `pb-backoff-${process.pid}` },

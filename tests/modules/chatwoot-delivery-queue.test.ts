@@ -9,9 +9,11 @@ import {
 } from "bun:test";
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
+import pg from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { currentPoolClass, runInPoolClass } from "@/lib/pool-class";
+import { isTransactionNeverStarted } from "@/lib/pool-retry";
 import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
   ADMISSION_MAX_WAITING,
@@ -28,6 +30,7 @@ import {
   registerDeliverySweepHandler,
   STALE_AFTER_MS,
 } from "@/modules/chatwoot/delivery-sweep";
+import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   deliveryRecoveryDedupeKey,
   MAX_RECOVERY_AGE_MS,
@@ -35,6 +38,7 @@ import {
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import {
   handToRecovery,
+  processRecordedChatwootDelivery,
   receiveChatwootWebhook,
 } from "@/modules/chatwoot/webhook";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -244,6 +248,110 @@ describe("admission", () => {
     await Bun.sleep(10);
     expect(second).toBe(true);
     expect(chatwootAdmissionState().running).toBe(0);
+  });
+
+  // The error Prisma raises when no connection came within `maxWait`: nothing ran.
+  const neverStarted = () =>
+    Object.assign(
+      new Error(
+        "Transaction API error: Unable to start a transaction in the given time.",
+      ),
+      { code: "P2028" },
+    );
+
+  test("a delivery that found no free connection runs again in its lane within the backoff, still held", async () => {
+    resetChatwootAdmissionForTest(1, { baseMs: 40, random: () => 1 });
+    let runs = 0;
+    const startedAt = Date.now();
+    let ranAt = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      if (runs === 1) throw neverStarted();
+      ranAt = Date.now() - startedAt;
+    });
+    await until("the first run to fail", async () => runs === 1);
+    await Bun.sleep(5);
+    expect(admissionHolds(1n)).toBe(true);
+    expect(admitChatwootDelivery(1n, async () => {})).toBe(false);
+    await until("the retry to run", async () => runs === 2);
+    expect(ranAt).toBeGreaterThanOrEqual(35);
+    await Bun.sleep(5);
+    expect(admissionHolds(1n)).toBe(false);
+  });
+
+  test("any other failure is not run again here", async () => {
+    resetChatwootAdmissionForTest(1, { baseMs: 1, random: () => 0 });
+    let runs = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      throw Object.assign(
+        new Error("Transaction already closed: the timeout expired"),
+        { code: "P2028" },
+      );
+    });
+    await Bun.sleep(30);
+    expect(runs).toBe(1);
+    expect(admissionHolds(1n)).toBe(false);
+  });
+
+  test("the retries are bounded, and the last failure is left to the drain", async () => {
+    resetChatwootAdmissionForTest(1, {
+      attempts: 3,
+      baseMs: 1,
+      random: () => 0,
+    });
+    let runs = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      throw neverStarted();
+    });
+    await Bun.sleep(50);
+    expect(runs).toBe(3);
+    expect(admissionHolds(1n)).toBe(false);
+  });
+
+  test("a retry waits for a slot like any delivery, so the lane's bound holds", async () => {
+    resetChatwootAdmissionForTest(1, { baseMs: 1, random: () => 0 });
+    const g = held();
+    let running = 0;
+    let peak = 0;
+    let retried = false;
+    let firstRun = true;
+    admitChatwootDelivery(1n, async () => {
+      if (firstRun) {
+        firstRun = false;
+        throw neverStarted();
+      }
+      running++;
+      peak = Math.max(peak, running);
+      retried = true;
+      running--;
+    });
+    admitChatwootDelivery(2n, async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await g.gate;
+      running--;
+    });
+    await Bun.sleep(20);
+    expect(retried).toBe(false);
+    g.release();
+    await until("the retry to run", async () => retried);
+    expect(peak).toBe(1);
+  });
+
+  test("a draining process does not retry, and the row is let go", async () => {
+    resetChatwootAdmissionForTest(1, { baseMs: 20, random: () => 1 });
+    let runs = 0;
+    admitChatwootDelivery(1n, async () => {
+      runs++;
+      throw neverStarted();
+    });
+    await until("the first run to fail", async () => runs === 1);
+    await drainInFlight({ boundMs: 500 });
+    await Bun.sleep(60);
+    expect(runs).toBe(1);
+    expect(admissionHolds(1n)).toBe(false);
   });
 
   // The waiting rows are durable: on SIGTERM nothing new starts, they stay PENDING with their
@@ -746,6 +854,61 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(r.admitted).toBe(1);
     expect((await settled(failing)).status).toBe("PROCESSED");
   });
+
+  // The pool stall itself: a client whose only connection is taken, so the delivery's transaction
+  // gives up after `maxWait` with Prisma's real P2028, and the connection comes back a moment later.
+  test("a delivery that failed for a full pool is processed within seconds, without the drain", async () => {
+    resetChatwootAdmissionForTest(undefined, { baseMs: 300 });
+    const id = await ackOnly("queue-pool-stall", 615);
+    const row = await rowById(id);
+    const pool = new pg.Pool({ connectionString: appUrl, max: 1 });
+    const tiny = new PrismaClient({ adapter: new PrismaPg(pool) });
+    const taken = await pool.connect();
+    let releasedAt = 0;
+    const stall = setTimeout(() => {
+      taken.release();
+      releasedAt = Date.now();
+    }, 2_500);
+    try {
+      const startedAt = Date.now();
+      const errors: unknown[] = [];
+      let runs = 0;
+      const normalized = normalizeChatwootEvent(
+        JSON.parse(updateBody(615)),
+      ) as NonNullable<ReturnType<typeof normalizeChatwootEvent>>;
+      admitChatwootDelivery(
+        id,
+        async () => {
+          runs++;
+          try {
+            return await processRecordedChatwootDelivery({
+              tenantId,
+              instanceId,
+              deliveryRowId: id,
+              agentBotId: row.routeAgentBotId,
+              normalized,
+              receiptBindingGeneration: row.bindingGeneration,
+              base: tiny,
+            });
+          } catch (err) {
+            errors.push(err);
+            throw err;
+          }
+        },
+        "meta",
+      );
+      const done = await settled(id);
+      expect(done.status).toBe("PROCESSED");
+      expect(isTransactionNeverStarted(errors[0])).toBe(true);
+      expect(runs).toBeGreaterThanOrEqual(2);
+      expect(releasedAt).toBeGreaterThan(0);
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
+    } finally {
+      clearTimeout(stall);
+      await tiny.$disconnect();
+      await pool.end().catch(() => {});
+    }
+  }, 20_000);
 
   // A busy queue can hold an admitted row past the ceiling; it is asked again when its slot opens.
   test("a row that crosses the age ceiling while it waits is not processed", async () => {

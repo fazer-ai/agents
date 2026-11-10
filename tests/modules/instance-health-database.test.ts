@@ -44,6 +44,8 @@ import {
 import {
   DRIFT_SIGNAL,
   databaseScreenTick,
+  driftFloorReading,
+  resetDriftFloorForTest,
 } from "@/modules/instance-health/database/tick";
 import {
   capturePlan,
@@ -1955,27 +1957,50 @@ describe.skipIf(!dbUp)("the drift signal's call floor", () => {
     expect(drift.leftOut.map((s) => s.queryid)).toEqual(["36"]);
   });
 
-  test("the database view says which statements the signal left out, and how many calls they had", async () => {
+  test("the database view says which statements the tick behind the value left out, and how many calls they had", async () => {
     const now = Date.now();
+    const role = await ownRole();
     await seed(
       39n,
       [{ at: now - 5 * MIN, calls: 1, total: config.dbTx.timeoutMs * 0.58 }],
       LOOKUP,
-      await ownRole(),
+      role,
       "default",
     );
     await suDb.dbStatSnapshotRun.create({
-      data: { takenAt: new Date(now - 5 * MIN), statementsAvailable: true },
+      data: { takenAt: new Date(now - 2 * MIN), statementsAvailable: true },
     });
+    resetSnapshotState();
+    resetDriftFloorForTest();
     setLastAvailabilityForTest({ available: true });
     try {
+      expect((await readDatabaseView("1h", appDb, false)).driftFloor).toBe(
+        null,
+      );
+      expect(await databaseScreenTick(now, appDb)).toBe(0);
       const view = await readDatabaseView("1h", appDb, false);
       expect(view.driftFloor?.minCalls).toBe(DRIFT_MIN_CALLS);
-      expect(view.driftFloor?.leftOut.map((s) => [s.query, s.calls])).toEqual([
-        [LOOKUP, 1],
+      expect(
+        view.driftFloor?.leftOut.map((s) => [s.userid, s.query, s.calls]),
+      ).toEqual([[String(role), LOOKUP, 1]]);
+      // A statement that arrives after the tick is not in the list until the next tick reads it.
+      await seed(
+        40n,
+        [{ at: now - 1 * MIN, calls: 1, total: config.dbTx.timeoutMs * 0.9 }],
+        "SELECT id FROM conversations WHERE contact_id = $1",
+        role,
+        "default",
+      );
+      const later = await readDatabaseView("1h", appDb, false);
+      expect(later.driftFloor).toEqual(view.driftFloor);
+      await databaseScreenTick(now, appDb);
+      expect(driftFloorReading()?.leftOut.map((s) => s.queryid)).toEqual([
+        "40",
+        "39",
       ]);
     } finally {
       setLastAvailabilityForTest(null);
+      resetDriftFloorForTest();
     }
   });
 });

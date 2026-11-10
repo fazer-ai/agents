@@ -10,12 +10,14 @@ import {
 import { type InstanceSignalDto, readInstanceHealth } from "../read";
 import {
   type DatabaseScreenDto,
-  type DriftLeftOutDto,
   readDatabaseScreen,
-  slowestMeanShare,
   type WindowKey,
 } from "./read";
-import { DRIFT_SIGNAL } from "./tick";
+import {
+  DRIFT_SIGNAL,
+  type DriftFloorReading,
+  driftFloorReading,
+} from "./tick";
 
 // What the "Database" screen, its REST route and its MCP tool answer: the screen's figures plus the
 // two signals about statements, each with its verdict against its threshold, so every transport
@@ -43,13 +45,9 @@ export interface DatabaseViewDto extends DatabaseScreenDto {
   // Whether this process samples (ALERT_WORKER_ENABLED); without it the signals have no reading.
   sampling: boolean;
   signals: DatabaseSignalDto[];
-  // What statement_mean_budget_pct leaves out for too few calls over the last hour, whatever the
-  // window; null without query statistics.
-  driftFloor: {
-    minCalls: number;
-    leftOut: DriftLeftOutDto[];
-    leftOutCount: number;
-  } | null;
+  // What the reading behind statement_mean_budget_pct's value left out for too few calls over its
+  // hour, whatever the window; null before the first reading and without query statistics.
+  driftFloor: DriftFloorReading | null;
 }
 
 export function signalState(
@@ -75,7 +73,6 @@ export async function readDatabaseView(
   if (Date.now() >= deadline) throw metricsTooSlow(deadline);
   let health: Awaited<ReturnType<typeof readInstanceHealth>>;
   let screen: DatabaseScreenDto;
-  let driftFloor: DatabaseViewDto["driftFloor"] = null;
   try {
     health = await readInstanceHealth(
       sampling,
@@ -84,19 +81,6 @@ export async function readDatabaseView(
       metricsBudget(deadline),
     );
     screen = await readDatabaseScreen(window, base);
-    if (screen.statements.available) {
-      const drift = await slowestMeanShare(
-        base,
-        Date.now(),
-        undefined,
-        metricsBudget(deadline),
-      );
-      driftFloor = {
-        minCalls: drift.minCalls,
-        leftOut: drift.leftOut,
-        leftOutCount: drift.leftOutCount,
-      };
-    }
   } catch (error) {
     if (isOverMetricsBudget(error)) throw metricsTooSlow(deadline);
     throw error;
@@ -107,5 +91,5 @@ export async function readDatabaseView(
     const { history: _history, ...rest } = s;
     return [{ ...rest, state: signalState(s) }];
   });
-  return { ...screen, sampling, signals, driftFloor };
+  return { ...screen, sampling, signals, driftFloor: driftFloorReading() };
 }

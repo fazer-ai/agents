@@ -102,7 +102,7 @@ function DriftLeftOut({ screen, fmt }: { screen: Screen; fmt: Formatters }) {
       </summary>
       <ul className="mt-1 space-y-1">
         {floor.leftOut.map((s) => (
-          <li key={`${s.queryid}`} data-testid="drift-left-out-row">
+          <li key={`${s.userid}:${s.queryid}`} data-testid="drift-left-out-row">
             <span className="tabular-nums">
               {t(
                 "database.driftLeftOutRow",

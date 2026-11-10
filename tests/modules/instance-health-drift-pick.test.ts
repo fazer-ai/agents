@@ -8,7 +8,13 @@ import {
 // Which statement is the drift signal's value, and which are listed as left out for too few calls,
 // as a table: the floor is passed in, so each row reads the rule and not the default.
 
-const c = (queryid: string, calls: number, pct: number): DriftCandidate => ({
+const c = (
+  queryid: string,
+  calls: number,
+  pct: number,
+  userid = "10",
+): DriftCandidate => ({
+  userid,
   queryid,
   query: `SELECT ${queryid}`,
   calls,
@@ -83,6 +89,14 @@ for (const k of cases) {
     expect(got.leftOutCount).toBe(k.leftOut.length);
   });
 }
+
+test("the same text run by two roles is two statements, each listed", () => {
+  const got = pickDrift([c("a", 1, 70, "11"), c("a", 1, 70, "10")], 3);
+  expect(got.leftOut.map((x) => `${x.userid}:${x.queryid}`)).toEqual([
+    "10:a",
+    "11:a",
+  ]);
+});
 
 test("the list stops at its cap and the count does not", () => {
   const many = Array.from({ length: DRIFT_LEFT_OUT_TOP + 5 }, (_, i) =>

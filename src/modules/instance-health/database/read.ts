@@ -80,6 +80,7 @@ export interface StatementRowDto {
 // A statement the drift signal skipped for having fewer than `minCalls` calls in the hour, though its
 // mean takes a larger share of its budget than the statement the signal reads.
 export interface DriftLeftOutDto {
+  userid: string;
   queryid: string;
   query: string;
   calls: number;
@@ -295,6 +296,7 @@ export async function slowestMeanShare(
       if (budgetMs <= 0) continue;
       const meanMs = t.total_ms / t.calls;
       candidates.push({
+        userid: String(t.userid),
         queryid: String(t.queryid),
         query,
         calls: t.calls,

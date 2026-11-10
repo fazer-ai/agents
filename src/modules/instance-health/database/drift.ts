@@ -12,6 +12,8 @@ export const DRIFT_MIN_CALLS = 3;
 export const DRIFT_LEFT_OUT_TOP = 10;
 
 export interface DriftCandidate {
+  // A statement is its role and its queryid: the same text run by two roles is two entries.
+  userid: string;
   queryid: string;
   query: string;
   calls: number;
@@ -31,7 +33,9 @@ export interface DriftPick {
 
 function byShare(a: DriftCandidate, b: DriftCandidate): number {
   if (b.pct !== a.pct) return b.pct - a.pct;
-  return a.queryid < b.queryid ? -1 : a.queryid > b.queryid ? 1 : 0;
+  const ka = `${a.queryid}:${a.userid}`;
+  const kb = `${b.queryid}:${b.userid}`;
+  return ka < kb ? -1 : ka > kb ? 1 : 0;
 }
 
 export function pickDrift(

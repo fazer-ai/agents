@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import { driftFacts, setSignalDetail } from "../details";
 import { budgetUntil } from "./budget";
-import { slowestMeanShare } from "./read";
+import { type DriftLeftOutDto, slowestMeanShare } from "./read";
 import { lastAvailability, snapshotIfDue } from "./snapshot";
 import { flushStatementTimeouts } from "./timeouts";
 
@@ -17,6 +17,34 @@ export const DRIFT_SIGNAL = "statement_mean_budget_pct";
 export const TICK_BUDGET_MS = 10_000;
 // The part of it the timeout flush may use.
 const FLUSH_SHARE_MS = 3_000;
+
+// What the tick that produced the drift signal's current value left out for too few calls, kept
+// beside that value so the screen and the MCP read describe the same reading.
+export interface DriftFloorReading {
+  minCalls: number;
+  leftOut: DriftLeftOutDto[];
+  leftOutCount: number;
+}
+
+const FLOOR_KEY = Symbol.for("fazerai.driftFloor");
+
+function floorSlot(): { reading: DriftFloorReading | null } {
+  const g = globalThis as unknown as Record<
+    symbol,
+    { reading: DriftFloorReading | null }
+  >;
+  g[FLOOR_KEY] ??= { reading: null };
+  return g[FLOOR_KEY];
+}
+
+export function driftFloorReading(): DriftFloorReading | null {
+  return floorSlot().reading;
+}
+
+// Test-only.
+export function resetDriftFloorForTest(): void {
+  floorSlot().reading = null;
+}
 
 export async function databaseScreenTick(
   now: number,
@@ -43,17 +71,15 @@ export async function databaseScreenTick(
     }
     // Nothing to measure without the extension: the signal reads 0 and names nothing.
     setSignalDetail(DRIFT_SIGNAL, null);
+    floorSlot().reading = null;
     return 0;
   }
-  const { pct, query, meanMs, budgetMs } = await slowestMeanShare(
-    base,
-    now,
-    undefined,
-    budgetUntil(deadline),
-  );
+  const { pct, query, meanMs, budgetMs, minCalls, leftOut, leftOutCount } =
+    await slowestMeanShare(base, now, undefined, budgetUntil(deadline));
   setSignalDetail(
     DRIFT_SIGNAL,
     query ? driftFacts(query, meanMs, budgetMs) : null,
   );
+  floorSlot().reading = { minCalls, leftOut, leftOutCount };
   return pct;
 }

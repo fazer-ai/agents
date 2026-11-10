@@ -2378,7 +2378,7 @@
       "groundingActionTemplate": "Reply with the Output template message",
       "groundingContext": "Earlier messages the reviewer reads",
       "groundingContextHint": "Customer and agent messages before the turn, including what was read from images the customer sent. The source results of the turns in this window are reviewed too.",
-      "groundingDesc": "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It runs only when a source tool returned something in one of those turns.",
+      "groundingDesc": "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It reviews every reply: when no source was consulted, any fact the sources would cover counts as unsupported.",
       "groundingEnabled": "Check the reply against the tool results",
       "groundingHandoff": "Message to the customer (the same one as Output)",
       "groundingReviewer": "Reviewer model",
@@ -3745,12 +3745,15 @@
     },
     "guardrailGrounding": {
       "clean": "Factual grounding: the reply matches the sources",
+      "cleanUnsourced": "Factual grounding: no source consulted, and the reply states no fact that needs one",
       "cost": "{{input}} in / {{output}} out tokens, {{ms}} ms",
       "earlier_one": "{{count}} source from earlier turns",
       "earlier_other": "{{count}} sources from earlier turns",
       "sources": "{{chars}} characters of results",
       "violated_one": "Factual grounding: {{count}} claim the sources do not support ({{action}})",
-      "violated_other": "Factual grounding: {{count}} claims the sources do not support ({{action}})"
+      "violated_other": "Factual grounding: {{count}} claims the sources do not support ({{action}})",
+      "violatedUnsourced_one": "Factual grounding: {{count}} claim stated with no source consulted ({{action}})",
+      "violatedUnsourced_other": "Factual grounding: {{count}} claims stated with no source consulted ({{action}})"
     },
     "guardrailHeld": {
       "input": "The check failed, so the customer's message was held and a hand-over to the team was requested",

@@ -6,6 +6,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contentToText } from "@/graph/message-text";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import type { TenantContext } from "@/lib/tenancy";
 import { runPlaygroundTurn } from "@/modules/playground/service";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -53,7 +54,7 @@ let agentTemplate = 0n;
 
 // The agent calls the calculator, then answers; asked again (the revision) it answers the second
 // line. The reviewer flags the first answer and sees whatever it is sent.
-function models() {
+function models(rewrite = REVISED) {
   const reviewed: string[] = [];
   let answers = 0;
   const make = ((args: { model?: string }) => {
@@ -71,7 +72,7 @@ function models() {
     // The rewrite is asked without tools, through the raw `invoke`.
     return {
       async invoke() {
-        return new AIMessage(REVISED);
+        return new AIMessage(rewrite);
       },
       bindTools() {
         return {
@@ -213,6 +214,18 @@ describe.skipIf(!dbUp)("factual grounding in the playground", () => {
     const row = r.trace.find((e) => e.type === "guardrail");
     expect(row).toMatchObject({ outcome: "revised", action: "revise" });
     expect(m.reviewed).toHaveLength(1);
+  });
+
+  test("revise: a rewrite that is only the silence token shows the Output template, as the inbox sends", async () => {
+    const m = models(FOLLOWUP_SKIP_SENTINEL);
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentRevise,
+      message: "quanto é 1+1?",
+      base: appDb,
+      deps: { makeModel: m.make, checkpointer: new MemorySaver() },
+    });
+    expect(r.reply).toBe("TEMPLATE-PG");
   });
 
   test("template: the operator reads the Output template in place of the reply", async () => {

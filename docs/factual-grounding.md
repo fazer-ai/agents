@@ -41,7 +41,7 @@ The verdict is `{violated, claims: [{claim, type, evidence}], rationale}`, asked
 - `template`: the reply is replaced with `output.templateMessage`, and a private note is posted.
 - `handoff`: the reply is not sent, `output.handoffMessage` is, and the conversation goes to the team, through the same path as an output-moderation hand-over.
 
-`template` and `handoff` cannot act from inside the graph, so the gate keeps the decision (`pending()`) and the runtime's output step applies it in place of the moderation screening.
+`template` and `handoff` cannot act from inside the graph, so the gate keeps the decision (`pending()`) and the runtime's output step applies it in place of the moderation screening. A transfer the turn completed wins over it, with its closing line or in silence: the conversation is a person's now. The text reviewed is the customer-facing one, so an answer that is only the silence token is not reviewed.
 
 A review that fails (no key, an unusable model, an error, an unreadable answer, results past the ceiling) lets the reply through with a warn line, unless `guardrails.onFailure` is `hold` and the action is not `observe`, in which case the conversation is handed over.
 

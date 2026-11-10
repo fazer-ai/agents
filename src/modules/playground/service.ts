@@ -1201,7 +1201,9 @@ async function runPlaygroundTurnOnce(
       );
     }
   }
-  const groundingTrip = raw ? grounding?.pending() : null;
+  // A grounding decision stands even with no text: a revise that came back empty is what sets it.
+  // Hand-overs are simulated here, so there is no transfer for it to yield to.
+  const groundingTrip = grounding?.pending() ?? null;
   const outGuard: GuardrailDecision = groundingTrip
     ? groundingTrip
     : raw

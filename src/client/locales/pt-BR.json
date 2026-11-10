@@ -3867,10 +3867,12 @@
     "guardrailGrounding": {
       "clean": "Checagem factual: a resposta bate com as fontes",
       "cost": "{{input}} tokens de entrada / {{output}} de saída, {{ms}} ms",
+      "earlier_zero": "{{count}} fontes de turnos anteriores",
       "earlier_one": "{{count}} fonte de turno anterior",
       "earlier_many": "{{count}} fontes de turnos anteriores",
       "earlier_other": "{{count}} fontes de turnos anteriores",
       "sources": "{{chars}} caracteres de resultados",
+      "violated_zero": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})",
       "violated_one": "Checagem factual: {{count}} afirmação que as fontes não sustentam ({{action}})",
       "violated_many": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})",
       "violated_other": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})"

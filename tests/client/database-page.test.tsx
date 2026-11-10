@@ -762,3 +762,102 @@ test("on a narrow table box the secondary columns give way, and a table's name b
   expect(name?.querySelectorAll("wbr").length).toBe(2);
   expect(name?.textContent).toBe("langgraph.checkpoint_blobs");
 });
+
+test("the drift card says which queries it did not count for too few calls, and lists them with their calls", async () => {
+  const lookup =
+    "SELECT id, dedupe_key FROM scheduler_jobs WHERE dedupe_key LIKE $1";
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available(),
+    driftFloor: {
+      minCalls: 3,
+      leftOutCount: 1,
+      leftOut: [
+        {
+          userid: "10",
+          queryid: "31",
+          query: lookup,
+          calls: 1,
+          meanMs: 2900,
+          budgetMs: 5000,
+          meanBudgetPct: 58,
+        },
+      ],
+    },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(screen.queryByTestId("drift-left-out") !== null).toBe(true),
+  );
+  const card = screen.getByTestId("summary-signal-statement_mean_budget_pct");
+  const box = screen.getByTestId("drift-left-out");
+  expect(card.contains(box)).toBe(true);
+  expect(box.querySelector("summary")?.textContent ?? "").toBe(
+    "1 query not counted: fewer than 3 calls in the last hour",
+  );
+  const rows = screen.getAllByTestId("drift-left-out-row");
+  expect(rows.map((r) => r.querySelector("code")?.textContent ?? "")).toEqual([
+    lookup,
+  ]);
+  expect(rows[0]?.textContent ?? "").toContain("1 call, 2.9 s mean, 58%");
+});
+
+test("with nothing left out the drift card says nothing about a floor", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available(),
+    driftFloor: { minCalls: 3, leftOutCount: 0, leftOut: [] },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId("summary-signal-statement_mean_budget_pct") !== null,
+    ).toBe(true),
+  );
+  expect(screen.queryByTestId("drift-left-out") === null).toBe(true);
+});
+
+test("the same text run by two roles is listed twice, and both rows survive a reorder", async () => {
+  const text = "SELECT id FROM scheduler_jobs WHERE status = $1";
+  const entry = (userid: string, pct: number) => ({
+    userid,
+    queryid: "77",
+    query: `${text} /* ${userid} */`,
+    calls: 1,
+    meanMs: pct * 50,
+    budgetMs: 5000,
+    meanBudgetPct: pct,
+  });
+  const realError = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  };
+  let flip = false;
+  stubApi("SUPER_ADMIN", (w) => {
+    const rows = [entry("10", 80), entry("11", 70), entry("12", 60)];
+    if (flip) rows.reverse();
+    return {
+      ...BASE,
+      window: w,
+      statements: available(),
+      driftFloor: { minCalls: 3, leftOutCount: 3, leftOut: rows },
+    };
+  });
+  renderPage(50);
+  await waitFor(() =>
+    expect(screen.queryAllByTestId("drift-left-out-row").length).toBe(3),
+  );
+  flip = true;
+  await waitFor(() =>
+    expect(
+      screen
+        .queryAllByTestId("drift-left-out-row")
+        .map((r) => r.querySelector("code")?.textContent ?? ""),
+    ).toEqual([`${text} /* 12 */`, `${text} /* 11 */`, `${text} /* 10 */`]),
+  );
+  console.error = realError;
+  expect(errors.filter((e) => e.includes("same key"))).toEqual([]);
+});

@@ -13,7 +13,11 @@ import {
   readDatabaseScreen,
   type WindowKey,
 } from "./read";
-import { DRIFT_SIGNAL } from "./tick";
+import {
+  DRIFT_SIGNAL,
+  type DriftFloorReading,
+  driftFloorReading,
+} from "./tick";
 
 // What the "Database" screen, its REST route and its MCP tool answer: the screen's figures plus the
 // two signals about statements, each with its verdict against its threshold, so every transport
@@ -41,6 +45,10 @@ export interface DatabaseViewDto extends DatabaseScreenDto {
   // Whether this process samples (ALERT_WORKER_ENABLED); without it the signals have no reading.
   sampling: boolean;
   signals: DatabaseSignalDto[];
+  // What the tick behind statement_mean_budget_pct's value left out for too few calls over its hour,
+  // whatever the window; null when no kept tick produced that value (no reading yet, no query
+  // statistics).
+  driftFloor: DriftFloorReading | null;
 }
 
 export function signalState(
@@ -84,5 +92,12 @@ export async function readDatabaseView(
     const { history: _history, ...rest } = s;
     return [{ ...rest, state: signalState(s) }];
   });
-  return { ...screen, sampling, signals };
+  const drift = signals.find((s) => s.signal === DRIFT_SIGNAL);
+  const driftAt = drift?.at ? Date.parse(drift.at) : null;
+  return {
+    ...screen,
+    sampling,
+    signals,
+    driftFloor: driftFloorReading(driftAt),
+  };
 }

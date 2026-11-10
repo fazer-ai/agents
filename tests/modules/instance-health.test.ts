@@ -1812,6 +1812,7 @@ describe.skipIf(!dbUp)("the MCP tools", () => {
     );
     expect(res.ok).toBe(true);
     expect(JSON.stringify(res)).toContain('"window":"24h"');
+    expect(JSON.stringify(res)).toContain('"driftFloor":');
     const tenant = await instanceDatabaseGet(tenantToken, {}, { base: appDb });
     expect(JSON.stringify(tenant)).toContain("insufficient_scope");
     const forged = await instanceDatabaseGet(

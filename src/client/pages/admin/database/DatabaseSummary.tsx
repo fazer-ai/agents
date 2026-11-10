@@ -85,6 +85,46 @@ function Tile({
   );
 }
 
+// The statements the drift signal did not count for having too few calls in the hour, though each
+// would have outranked the one it reads, so its value is not read as covering them.
+function DriftLeftOut({ screen, fmt }: { screen: Screen; fmt: Formatters }) {
+  const { t } = useTranslation();
+  const floor = screen.driftFloor;
+  if (!floor || floor.leftOutCount === 0) return null;
+  return (
+    <details data-testid="drift-left-out" className="text-text-secondary">
+      <summary className="cursor-pointer">
+        {t(
+          "database.driftLeftOut",
+          "{{count}} queries not counted: fewer than {{min}} calls in the last hour",
+          { count: floor.leftOutCount, min: fmt.number(floor.minCalls) },
+        )}
+      </summary>
+      <ul className="mt-1 space-y-1">
+        {floor.leftOut.map((s) => (
+          <li key={`${s.userid}:${s.queryid}`} data-testid="drift-left-out-row">
+            <span className="tabular-nums">
+              {t(
+                "database.driftLeftOutRow",
+                "{{calls}} calls, {{mean}} mean, {{share}} of its budget",
+                {
+                  count: s.calls,
+                  calls: fmt.number(s.calls),
+                  mean: fmt.ms(s.meanMs),
+                  share: fmt.percent(s.meanBudgetPct),
+                },
+              )}
+            </span>
+            <code className="line-clamp-2 block font-mono break-all">
+              {s.query}
+            </code>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export function DatabaseSummary({
   screen,
   fmt,
@@ -124,6 +164,9 @@ export function DatabaseSummary({
                 {s.facts.statement}
               </p>
             </>
+          )}
+          {s.signal === "statement_mean_budget_pct" && (
+            <DriftLeftOut screen={screen} fmt={fmt} />
           )}
         </Tile>
       ))}

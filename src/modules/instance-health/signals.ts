@@ -182,8 +182,9 @@ export const SIGNALS: readonly SignalDef[] = [
     source: "process",
   },
   // The drift alarm: the slowest statement's mean time over the last hour, from the pg_stat_statements
-  // snapshots, as a share of the transaction budget (DB_TX_TIMEOUT_MS). It climbs while a query
-  // degrades and fires before the first timeout; 0 without the extension.
+  // snapshots, as a share of the transaction budget (DB_TX_TIMEOUT_MS), among the statements with
+  // enough calls to be a trend (database/drift.ts). It climbs while a query degrades and fires before
+  // the first timeout; 0 without the extension.
   {
     name: "statement_mean_budget_pct",
     unit: "percent",

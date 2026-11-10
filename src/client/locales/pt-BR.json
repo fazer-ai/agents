@@ -2465,7 +2465,7 @@
       "groundingContext": "Mensagens anteriores que o revisor lê",
       "groundingContextHint": "Mensagens do cliente e do agente antes do turno, inclusive o que foi lido das imagens que o cliente enviou. Os resultados das ferramentas de fonte dos turnos dessa janela também entram na revisão.",
       "groundingCredentialHint": "Obrigatória se o revisor usa outro fornecedor; sem uma chave própria, as respostas saem sem conferência.",
-      "groundingDesc": "Antes de a resposta sair, um modelo revisor a compara com o que as ferramentas de fonte devolveram, naquele turno e nos turnos anteriores da conversa que ele lê, e lista as afirmações que eles não sustentam. Só roda quando uma ferramenta de fonte devolveu algo num desses turnos.",
+      "groundingDesc": "Antes de a resposta sair, um modelo revisor a compara com o que as ferramentas de fonte devolveram, naquele turno e nos turnos anteriores da conversa que ele lê, e lista as afirmações que eles não sustentam. Revisa toda resposta: quando nenhuma fonte foi consultada, qualquer fato que as fontes cobririam conta como sem base.",
       "groundingEnabled": "Conferir a resposta com os resultados das ferramentas",
       "groundingHandoff": "Mensagem ao cliente (a mesma de Saída)",
       "groundingSameModel": "Igual ao dos guardrails",
@@ -3865,6 +3865,7 @@
     },
     "guardrailGrounding": {
       "clean": "Checagem factual: a resposta bate com as fontes",
+      "cleanUnsourced": "Checagem factual: nenhuma fonte consultada, e a resposta não afirma fato que precise de uma",
       "cost": "{{input}} tokens de entrada / {{output}} de saída, {{ms}} ms",
       "earlier_zero": "{{count}} fontes de turnos anteriores",
       "earlier_one": "{{count}} fonte de turno anterior",
@@ -3874,7 +3875,11 @@
       "violated_zero": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})",
       "violated_one": "Checagem factual: {{count}} afirmação que as fontes não sustentam ({{action}})",
       "violated_many": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})",
-      "violated_other": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})"
+      "violated_other": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})",
+      "violatedUnsourced_zero": "Checagem factual: {{count}} afirmações feitas sem nenhuma fonte consultada ({{action}})",
+      "violatedUnsourced_one": "Checagem factual: {{count}} afirmação feita sem nenhuma fonte consultada ({{action}})",
+      "violatedUnsourced_many": "Checagem factual: {{count}} afirmações feitas sem nenhuma fonte consultada ({{action}})",
+      "violatedUnsourced_other": "Checagem factual: {{count}} afirmações feitas sem nenhuma fonte consultada ({{action}})"
     },
     "guardrailHeld": {
       "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",

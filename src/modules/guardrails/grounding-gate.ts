@@ -29,6 +29,7 @@ import {
   GROUNDING_SOURCES_MAX,
   type GroundingClaim,
   groundingConversation,
+  groundingSourced,
   groundingToolCalls,
   reviewGrounding,
   reviseNote,
@@ -210,9 +211,10 @@ export function buildGroundingGate(
       fg.contextMessages,
     );
     const calls = [...earlier, ...groundingToolCalls(turn, fg.sourceTools)];
+    // Reviewed with or without a source: a reply that states an in-scope fact having consulted
+    // nothing is the case that costs most when it goes out unchecked. With none, the reviewer is told
+    // so and judges every in-scope fact as unsupported.
     const sources = calls.filter((c) => c.source);
-    // No source returned anything, in this turn or in the window: nothing is reviewed, logged or billed.
-    if (sources.length === 0) return null;
     const last = turn[turn.length - 1];
     const reply =
       candidate?.trim() || (last ? contentToText(last.content).trim() : "");
@@ -220,6 +222,7 @@ export function buildGroundingGate(
     const sourceNames = [...new Set(sources.map((c) => c.name))];
     const resultChars = calls.reduce((n, c) => n + c.result.length, 0);
     const sized = {
+      sourced: groundingSourced(calls),
       sources: sourceNames,
       resultChars,
       earlierSources: earlier.length,

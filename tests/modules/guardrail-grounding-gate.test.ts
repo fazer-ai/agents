@@ -9,7 +9,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
-import { GROUNDING_SOURCES_MAX } from "@/modules/guardrails/grounding";
+import {
+  GROUNDING_NO_SOURCE_PROMPT,
+  GROUNDING_SOURCES_MAX,
+} from "@/modules/guardrails/grounding";
 import { buildGroundingGate } from "@/modules/guardrails/grounding-gate";
 import {
   type GroundingAction,
@@ -176,6 +179,8 @@ const VIOLATED = JSON.stringify({
   rationale: "horário diferente",
 });
 
+const CLEAN = JSON.stringify({ violated: false, claims: [], rationale: "" });
+
 function reviewer(answer: string | Error) {
   const calls: unknown[] = [];
   const make = (() =>
@@ -239,19 +244,52 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     await appDb.$disconnect();
   });
 
-  test("a turn where no source tool ran is not reviewed, logged or billed", async () => {
+  // The bug it catches: a reply stating an in-scope fact with no source consulted went out unchecked,
+  // since only a turn a source answered was reviewed.
+  test("a turn where no source ran is reviewed, told at system level that nothing was consulted", async () => {
     const r = reviewer(VIOLATED);
     const f = flow();
     const gate = buildGroundingGate({
       langfuseCfg: null,
-      cfg: cfg("revise"),
+      cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
       makeModel: r.make,
     });
-    expect(await gate?.review(turn("clima"))).toBeNull();
-    expect(r.calls).toHaveLength(0);
-    expect(await lines(f.turnId)).toEqual([]);
+    const answered = [
+      new HumanMessage("O camarote Aurora dá acesso ao setor Leste?"),
+      new AIMessage("Sim, o camarote Aurora dá acesso ao setor Leste."),
+    ];
+    expect(await gate?.review(answered)).toBeNull();
+    const [system, user] = (r.calls[0] ?? []) as BaseMessage[];
+    const [line] = await lines(f.turnId);
+    expect([
+      r.calls.length,
+      String(system?.content).includes(GROUNDING_NO_SOURCE_PROMPT),
+      String(user?.content).includes("<tool_results>\n\n</tool_results>"),
+      line?.verdict,
+      line?.sourced,
+      line?.sources,
+    ]).toEqual([1, true, true, "violated", false, []]);
+  });
+
+  test("a turn a source answered is reviewed without the no-source instruction, and says sourced", async () => {
+    const r = reviewer(CLEAN);
+    const f = flow();
+    await buildGroundingGate({
+      langfuseCfg: null,
+      cfg: cfg("observe"),
+      reviewer: RUNS,
+      flow: f,
+      makeModel: r.make,
+    })?.review(turn());
+    const [system] = (r.calls[0] ?? []) as BaseMessage[];
+    const [line] = await lines(f.turnId);
+    expect([
+      String(system?.content).includes(GROUNDING_NO_SOURCE_PROMPT),
+      line?.verdict,
+      line?.sourced,
+    ]).toEqual([false, "clean", true]);
   });
 
   test("observe records the claims and the evidence, and leaves the reply alone", async () => {
@@ -401,9 +439,10 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(line).toMatchObject({ verdict: "violated", earlierSources: 1 });
   });
 
-  test("when the window does not reach the turn that asked the source, nothing is reviewed", async () => {
+  test("when the window does not reach the turn that asked the source, the reply is reviewed as unsourced", async () => {
     const r = reviewer(VIOLATED);
     const base = cfg("observe");
+    const f = flow();
     await buildGroundingGate({
       langfuseCfg: null,
       cfg: {
@@ -411,10 +450,15 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
         factualGrounding: { ...base.factualGrounding, contextMessages: 1 },
       },
       reviewer: RUNS,
-      flow: flow(),
+      flow: f,
       makeModel: r.make,
     })?.review(fromMemory());
-    expect(r.calls).toHaveLength(0);
+    const [line] = await lines(f.turnId);
+    expect([r.calls.length, line?.sourced, line?.earlierSources]).toEqual([
+      1,
+      false,
+      0,
+    ]);
   });
 
   test("a review that fails lets the reply through, unless onFailure holds it", async () => {

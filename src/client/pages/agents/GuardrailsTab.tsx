@@ -1037,7 +1037,7 @@ export function GuardrailsTab({
                 title={t("editor.guardrails.grounding", "Factual grounding")}
                 description={t(
                   "editor.guardrails.groundingDesc",
-                  "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It runs only when a source tool returned something in one of those turns.",
+                  "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It reviews every reply: when no source was consulted, any fact the sources would cover counts as unsupported.",
                 )}
               >
                 <SwitchField

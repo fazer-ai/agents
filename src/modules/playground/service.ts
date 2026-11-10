@@ -1201,7 +1201,7 @@ async function runPlaygroundTurnOnce(
       );
     }
   }
-  const groundingTrip = grounding?.pending() ?? null;
+  const groundingTrip = raw ? grounding?.pending() : null;
   const outGuard: GuardrailDecision = groundingTrip
     ? groundingTrip
     : raw

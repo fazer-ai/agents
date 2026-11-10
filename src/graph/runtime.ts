@@ -2534,8 +2534,11 @@ async function runTurnBody(
       );
       const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
       // A factual-grounding trip under `template` or `handoff` (or a revise that wrote nothing)
-      // decides the reply in place of the screening, unless the turn already handed over.
-      const groundingTrip = handedOff ? null : grounding?.pending();
+      // decides the reply in place of the screening, unless a transfer completed, with its own line
+      // or with none: the conversation is a person's now, and nothing of the model's goes out.
+      const groundingTrip = handoffState.completed
+        ? null
+        : grounding?.pending();
       const outGuard =
         groundingTrip ??
         (screened ? await runGuardrail("output", screened) : null);

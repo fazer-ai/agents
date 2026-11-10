@@ -53,7 +53,7 @@ import {
   droppedCallCount,
   droppedCallsStamp,
 } from "./markers";
-import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
+import { customerFacingReply, SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 import {
   type CallReport,
   fenceReporterOf,
@@ -822,7 +822,7 @@ export function buildAgentGraph({
       // no model call left to rewrite it, a revise reads as an empty rewrite.
       const recovered =
         reviewReply && !replyRevised && !noReplyChannel && !silentTurn
-          ? replyWrittenThisTurn(history)
+          ? customerFacingReply(replyWrittenThisTurn(history)).text
           : "";
       if (reviewReply && recovered) {
         const note = await reviewReply(history, recovered);
@@ -1096,8 +1096,10 @@ export function buildAgentGraph({
       !noReplyChannel &&
       !silentTurn &&
       ((response as AIMessage).tool_calls?.length ?? 0) === 0
-        ? contentToText(response.content).trim() ||
-          replyWrittenThisTurn([...history, response])
+        ? customerFacingReply(
+            contentToText(response.content).trim() ||
+              replyWrittenThisTurn([...history, response]),
+          ).text
         : "";
     if (reviewReply && candidate) {
       const note = await reviewReply([...history, response], candidate);
@@ -1112,7 +1114,9 @@ export function buildAgentGraph({
             : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
           true,
         );
-        onReplyRevised?.(contentToText(response.content).trim());
+        onReplyRevised?.(
+          customerFacingReply(contentToText(response.content)).text,
+        );
       }
     }
     return { messages: [...narration, silenced(response)] };

@@ -10143,7 +10143,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             tenantId: gTenantId,
             agentId: gAgentId,
             source: "NATIVE",
-            enabledTools: ["calculator"],
+            enabledTools: ["calculator", "handoff_to_human"],
             knowledgeBaseIds: [],
           },
         });
@@ -10174,6 +10174,63 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         const { sent, notes } = await turn(1763);
         expect(sent).toEqual([[1763, "TEMPLATE-OUT"]]);
         expect(notes[0]?.[1]).toContain("factual_grounding");
+      });
+
+      test("a silent hand-over keeps its silence even when the draft beside it was flagged", async () => {
+        await grounded("template");
+        await seedConv(1766);
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        let n = 0;
+        const handsOver = {
+          async invoke() {
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                n++;
+                if (n === 1)
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: "g1",
+                      },
+                    ],
+                  });
+                if (n === 2)
+                  return new AIMessage({
+                    content: DRAFT,
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: "" },
+                        id: "g2",
+                      },
+                    ],
+                  });
+                return new AIMessage("");
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 1766, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(flagged, handsOver),
+            makeClient: guardStub(sent, [], toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(toggles.length).toBeGreaterThan(0);
+        expect(sent).toEqual([]);
       });
 
       test("observe sends the reply as written", async () => {

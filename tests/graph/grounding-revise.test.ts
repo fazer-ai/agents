@@ -11,6 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import { contentToText } from "@/graph/message-text";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import { ScriptedSilenceModel } from "../utils/scripted-models";
 
 // The graph's side of the factual-grounding `revise`: the review is asked about the answer that would
@@ -188,5 +189,19 @@ describe("reviewReply", () => {
     expect(
       ((model.seen[0] ?? []).at(-1) as AIMessage | undefined)?.getType(),
     ).toBe("human");
+  });
+
+  test("an answer that is only the silence token is not a reply, so nothing is reviewed", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "", calls: [{ name: "catalogo", args: {} }] },
+      { text: FOLLOWUP_SKIP_SENTINEL },
+    ]);
+    let asked = 0;
+    await run(model, async () => {
+      asked++;
+      return NOTE;
+    });
+    expect(asked).toBe(0);
+    expect(model.seen).toHaveLength(2);
   });
 });

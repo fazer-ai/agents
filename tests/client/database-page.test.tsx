@@ -762,3 +762,58 @@ test("on a narrow table box the secondary columns give way, and a table's name b
   expect(name?.querySelectorAll("wbr").length).toBe(2);
   expect(name?.textContent).toBe("langgraph.checkpoint_blobs");
 });
+
+test("the drift card says which queries it did not count for too few calls, and lists them with their calls", async () => {
+  const lookup =
+    "SELECT id, dedupe_key FROM scheduler_jobs WHERE dedupe_key LIKE $1";
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available(),
+    driftFloor: {
+      minCalls: 3,
+      leftOutCount: 1,
+      leftOut: [
+        {
+          queryid: "31",
+          query: lookup,
+          calls: 1,
+          meanMs: 2900,
+          budgetMs: 5000,
+          meanBudgetPct: 58,
+        },
+      ],
+    },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(screen.queryByTestId("drift-left-out") !== null).toBe(true),
+  );
+  const card = screen.getByTestId("summary-signal-statement_mean_budget_pct");
+  const box = screen.getByTestId("drift-left-out");
+  expect(card.contains(box)).toBe(true);
+  expect(box.querySelector("summary")?.textContent ?? "").toBe(
+    "1 query not counted: fewer than 3 calls in the last hour",
+  );
+  const rows = screen.getAllByTestId("drift-left-out-row");
+  expect(rows.map((r) => r.querySelector("code")?.textContent ?? "")).toEqual([
+    lookup,
+  ]);
+  expect(rows[0]?.textContent ?? "").toContain("1 call, 2.9 s mean, 58%");
+});
+
+test("with nothing left out the drift card says nothing about a floor", async () => {
+  stubApi("SUPER_ADMIN", (w) => ({
+    ...BASE,
+    window: w,
+    statements: available(),
+    driftFloor: { minCalls: 3, leftOutCount: 0, leftOut: [] },
+  }));
+  renderPage();
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId("summary-signal-statement_mean_budget_pct") !== null,
+    ).toBe(true),
+  );
+  expect(screen.queryByTestId("drift-left-out") === null).toBe(true);
+});

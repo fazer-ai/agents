@@ -16,6 +16,7 @@ import {
 import { asSuperAdminOn, DeadlinePassedError } from "@/lib/tenancy";
 import { registerFollowUpHandlers } from "@/modules/followups/handlers";
 import { fleetWithin } from "@/modules/instance-health/database/budget";
+import { DRIFT_MIN_CALLS } from "@/modules/instance-health/database/drift";
 import {
   deadRows,
   isOwnStatement,
@@ -486,7 +487,7 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     const budgets = { tx: 5_000, metrics: 15_000 };
     await seed(
       21n,
-      [{ at: now - 5 * MIN, calls: 2, total: 8_600 }],
+      [{ at: now - 5 * MIN, calls: 3, total: 12_900 }],
       "WITH occ AS (SELECT u.conversation_id FROM llm_usage u WHERE u.tenant_id = $1)",
       appRole,
       "metrics",
@@ -497,7 +498,7 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
     expect(alone.budgetMs).toBe(15_000);
     await seed(
       22n,
-      [{ at: now - 5 * MIN, calls: 2, total: 6_000 }],
+      [{ at: now - 5 * MIN, calls: 3, total: 9_000 }],
       "SELECT id FROM scheduler_jobs WHERE status = $1",
       appRole,
       "default",
@@ -516,7 +517,7 @@ describe.skipIf(!dbUp)("database screen against a real database", () => {
       SELECT oid::bigint AS oid FROM pg_roles WHERE rolname = session_user`;
     await seed(
       23n,
-      [{ at: now - 5 * MIN, calls: 1, total: 3_000 }],
+      [{ at: now - 5 * MIN, calls: 3, total: 9_000 }],
       "SELECT id FROM conversations WHERE status = $1",
       app?.oid ?? 0n,
       null,
@@ -1820,5 +1821,161 @@ describe.skipIf(!dbUp)("the screen's summary figures", () => {
     }
     expect(view.sampling).toBe(false);
     expect(view.window).toBe("1h");
+  });
+});
+
+describe.skipIf(!dbUp)("the drift signal's call floor", () => {
+  beforeEach(async () => {
+    await wipe();
+  });
+
+  const budgets = { tx: 5_000, metrics: 15_000 };
+  const ownRole = async () => {
+    const [r] = await appDb.$queryRaw<{ oid: bigint }[]>`
+      SELECT oid::bigint AS oid FROM pg_roles WHERE rolname = session_user`;
+    return r?.oid ?? 0n;
+  };
+  const LOOKUP =
+    "SELECT id, dedupe_key FROM scheduler_jobs WHERE dedupe_key LIKE $1";
+
+  test("a statement that ran once in the hour, slow that once, is not the signal's value and is listed as left out", async () => {
+    const now = Date.now();
+    await seed(
+      31n,
+      [{ at: now - 5 * MIN, calls: 1, total: 2_900 }],
+      LOOKUP,
+      await ownRole(),
+      "default",
+    );
+    const drift = await slowestMeanShare(appDb, now, budgets);
+    expect(drift.pct).toBe(0);
+    expect(drift.query).toBeNull();
+    expect(drift.minCalls).toBe(DRIFT_MIN_CALLS);
+    expect(
+      drift.leftOut.map((s) => [s.query, s.calls, Math.round(s.meanBudgetPct)]),
+    ).toEqual([[LOOKUP, 1, 58]]);
+    expect(drift.leftOutCount).toBe(1);
+  });
+
+  test("past the floor, the same mean is the signal's value and nothing is left out", async () => {
+    const now = Date.now();
+    await seed(
+      32n,
+      [
+        {
+          at: now - 5 * MIN,
+          calls: DRIFT_MIN_CALLS,
+          total: 2_900 * DRIFT_MIN_CALLS,
+        },
+      ],
+      LOOKUP,
+      await ownRole(),
+      "default",
+    );
+    const drift = await slowestMeanShare(appDb, now, budgets);
+    expect(drift.pct).toBeCloseTo(58, 5);
+    expect(drift.query).toBe(LOOKUP);
+    expect(drift.leftOut).toEqual([]);
+  });
+
+  test("one call fewer than the floor leaves the statement out, with the same mean", async () => {
+    const now = Date.now();
+    const n = DRIFT_MIN_CALLS - 1;
+    await seed(
+      33n,
+      [{ at: now - 5 * MIN, calls: n, total: 2_900 * n }],
+      LOOKUP,
+      await ownRole(),
+      "default",
+    );
+    const drift = await slowestMeanShare(appDb, now, budgets);
+    expect(drift.pct).toBe(0);
+    expect(drift.leftOut.map((s) => s.calls)).toEqual([n]);
+  });
+
+  test("the floor counts the calls of every snapshot in the hour, and none from before it", async () => {
+    const now = Date.now();
+    const role = await ownRole();
+    await seed(
+      34n,
+      Array.from({ length: DRIFT_MIN_CALLS }, (_, i) => ({
+        at: now - (5 + 5 * i) * MIN,
+        calls: 1,
+        total: 2_900,
+      })),
+      LOOKUP,
+      role,
+      "default",
+    );
+    await seed(
+      35n,
+      [
+        { at: now - 150 * MIN, calls: 50, total: 50 },
+        { at: now - 5 * MIN, calls: 1, total: 4_000 },
+      ],
+      "SELECT id FROM conversations WHERE contact_id = $1",
+      role,
+      "default",
+    );
+    const drift = await slowestMeanShare(appDb, now, budgets);
+    expect(drift.query).toBe(LOOKUP);
+    expect(drift.pct).toBeCloseTo(58, 5);
+    expect(drift.leftOut.map((s) => [s.queryid, s.calls])).toEqual([["35", 1]]);
+  });
+
+  test("a statement below the floor does not hide the one above it, which stays the value", async () => {
+    const now = Date.now();
+    const role = await ownRole();
+    await seed(
+      36n,
+      [{ at: now - 5 * MIN, calls: 1, total: 2_900 }],
+      LOOKUP,
+      role,
+      "default",
+    );
+    const steady = "SELECT id FROM conversations WHERE status = $1";
+    await seed(
+      37n,
+      [{ at: now - 5 * MIN, calls: 40, total: 40_000 }],
+      steady,
+      role,
+      "default",
+    );
+    // A fast single call is below the floor and below the value: not listed either.
+    await seed(
+      38n,
+      [{ at: now - 5 * MIN, calls: 1, total: 2 }],
+      "SELECT 1 FROM agents WHERE id = $1",
+      role,
+      "default",
+    );
+    const drift = await slowestMeanShare(appDb, now, budgets);
+    expect(drift.query).toBe(steady);
+    expect(drift.pct).toBeCloseTo(20, 5);
+    expect(drift.leftOut.map((s) => s.queryid)).toEqual(["36"]);
+  });
+
+  test("the database view says which statements the signal left out, and how many calls they had", async () => {
+    const now = Date.now();
+    await seed(
+      39n,
+      [{ at: now - 5 * MIN, calls: 1, total: config.dbTx.timeoutMs * 0.58 }],
+      LOOKUP,
+      await ownRole(),
+      "default",
+    );
+    await suDb.dbStatSnapshotRun.create({
+      data: { takenAt: new Date(now - 5 * MIN), statementsAvailable: true },
+    });
+    setLastAvailabilityForTest({ available: true });
+    try {
+      const view = await readDatabaseView("1h", appDb, false);
+      expect(view.driftFloor?.minCalls).toBe(DRIFT_MIN_CALLS);
+      expect(view.driftFloor?.leftOut.map((s) => [s.query, s.calls])).toEqual([
+        [LOOKUP, 1],
+      ]);
+    } finally {
+      setLastAvailabilityForTest(null);
+    }
   });
 });

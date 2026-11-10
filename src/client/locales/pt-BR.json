@@ -1287,6 +1287,14 @@
       "slowest": "Mais perto do orçamento na última hora: média de {{mean}}",
       "tenant": "no tenant {{id}}"
     },
+    "driftLeftOut_zero": "{{count}} consultas não contadas: menos de {{min}} chamadas na última hora",
+    "driftLeftOut_one": "{{count}} consulta não contada: menos de {{min}} chamadas na última hora",
+    "driftLeftOut_many": "{{count}} consultas não contadas: menos de {{min}} chamadas na última hora",
+    "driftLeftOut_other": "{{count}} consultas não contadas: menos de {{min}} chamadas na última hora",
+    "driftLeftOutRow_zero": "{{calls}} chamadas, média de {{mean}}, {{share}} do orçamento",
+    "driftLeftOutRow_one": "{{calls}} chamada, média de {{mean}}, {{share}} do orçamento",
+    "driftLeftOutRow_many": "{{calls}} chamadas, média de {{mean}}, {{share}} do orçamento",
+    "driftLeftOutRow_other": "{{calls}} chamadas, média de {{mean}}, {{share}} do orçamento",
     "emptyDescription": "O primeiro snapshot sai em até 5 minutos depois de o processo subir.",
     "emptyTitle": "Ainda sem números",
     "enableAfter": "O próximo snapshot começa o histórico. Timeouts e tabelas funcionam sem ela.",
@@ -3282,7 +3290,7 @@
       "scheduler_queue_age_ms_debounce": "Atraso da rajada de mensagens mais antiga esperando resposta.",
       "scheduler_queue_age_ms_observe": "Atraso do veredito de observador mais antigo.",
       "scheduler_queue_age_ms_shared": "Atraso do job mais antigo da fila compartilhada (follow-ups, varreduras, recuperações).",
-      "statement_mean_budget_pct": "O tempo médio na última hora da consulta mais perto do seu orçamento, como parte do orçamento em que ela rodou (METRICS_TIMEOUT_MS para leituras do console, como o painel, e DB_TX_TIMEOUT_MS para o resto). Sobe enquanto uma consulta piora, antes do primeiro timeout. Precisa do pg_stat_statements.",
+      "statement_mean_budget_pct": "O tempo médio na última hora da consulta mais perto do seu orçamento, como parte do orçamento em que ela rodou (METRICS_TIMEOUT_MS para leituras do console, como o painel, e DB_TX_TIMEOUT_MS para o resto). Sobe enquanto uma consulta piora, antes do primeiro timeout. Uma consulta com poucas chamadas na hora para ser tendência não entra na conta, e o cartão a lista. Precisa do pg_stat_statements.",
       "statement_timeouts_per_min": "Comandos cancelados pelo orçamento de tempo (SQLSTATE 57014) no último minuto. O trabalho a que pertenciam parou: abra Banco de dados para ver qual comando foi e o plano dele."
     },
     "kindDone": "{{kind}}: concluídos por minuto",

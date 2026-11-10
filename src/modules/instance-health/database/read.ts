@@ -8,6 +8,7 @@ import {
 import type { TxBudget } from "@/lib/tenancy";
 import { metricsBudget, metricsDeadline } from "@/modules/analytics/budget";
 import { budgetUntil, fleetWithin, plainWithin } from "./budget";
+import { DRIFT_MIN_CALLS, type DriftCandidate, pickDrift } from "./drift";
 import {
   availabilityOfError,
   lastAvailability,
@@ -74,6 +75,28 @@ export interface StatementRowDto {
   meanBudgetPct: number | null;
   // Mean time per bucket of the window, oldest first; null where the statement did not run.
   spark: (number | null)[];
+}
+
+// A statement the drift signal skipped for having fewer than `minCalls` calls in the hour, though its
+// mean takes a larger share of its budget than the statement the signal reads.
+export interface DriftLeftOutDto {
+  queryid: string;
+  query: string;
+  calls: number;
+  meanMs: number;
+  budgetMs: number;
+  meanBudgetPct: number;
+}
+
+export interface DriftShare {
+  pct: number;
+  query: string | null;
+  meanMs: number;
+  budgetMs: number;
+  minCalls: number;
+  leftOut: DriftLeftOutDto[];
+  // Every statement left out, past the list's cap included.
+  leftOutCount: number;
 }
 
 export interface TimeoutDto {
@@ -228,27 +251,31 @@ async function sparks(
   return out;
 }
 
-// The statement whose mean over the last hour takes the largest share of the budget it ran under, as
-// that share, with its text, mean and budget. Statements the screen itself runs (EXPLAIN, the
-// snapshot reads) are left out.
+// The statement with at least DRIFT_MIN_CALLS calls over the last hour whose mean takes the largest
+// share of the budget it ran under, as that share, with its text, mean and budget, and the statements
+// with fewer calls that would have outranked it (./drift.ts). Statements the screen itself runs
+// (EXPLAIN, the snapshot reads) are left out.
 export async function slowestMeanShare(
   base: PrismaClient,
   now: number = Date.now(),
   budgets: StatementBudgets = statementBudgets(),
   txBudget: TxBudget = budgetUntil(Date.now() + DRIFT_BUDGET_MS),
-): Promise<{
-  pct: number;
-  query: string | null;
-  meanMs: number;
-  budgetMs: number;
-}> {
+): Promise<DriftShare> {
   return fleetWithin(base, txBudget, async (db) => {
     const totals = await statementTotals(
       db,
       new Date(now - WINDOWS["1h"]),
       new Date(now),
     );
-    const none = { pct: 0, query: null, meanMs: 0, budgetMs: budgets.tx };
+    const none: DriftShare = {
+      pct: 0,
+      query: null,
+      meanMs: 0,
+      budgetMs: budgets.tx,
+      minCalls: DRIFT_MIN_CALLS,
+      leftOut: [],
+      leftOutCount: 0,
+    };
     if (totals.length === 0) return none;
     // Only what this application runs is measured against its budget: the runtime role and the
     // roles it can act as (the fleet role). A statement an operator runs in psql as another user
@@ -258,12 +285,7 @@ export async function slowestMeanShare(
       SELECT oid::bigint AS oid FROM pg_roles WHERE pg_has_role(session_user, oid, 'MEMBER')`;
     const roles = new Set(ours.map((r) => String(r.oid)));
     const texts = await textsOf(db, totals);
-    let best: {
-      pct: number;
-      mean: number;
-      query: string;
-      budgetMs: number;
-    } | null = null;
+    const candidates: DriftCandidate[] = [];
     for (const t of totals) {
       if (!roles.has(String(t.userid))) continue;
       const text = texts.get(`${t.userid}:${t.dbid}:${t.queryid}`);
@@ -271,16 +293,27 @@ export async function slowestMeanShare(
       if (isOwnStatement(query)) continue;
       const budgetMs = budgetOfClass(text?.budgetClass ?? null, budgets);
       if (budgetMs <= 0) continue;
-      const mean = t.total_ms / t.calls;
-      const pct = (mean / budgetMs) * 100;
-      if (!best || pct > best.pct) best = { pct, mean, query, budgetMs };
+      const meanMs = t.total_ms / t.calls;
+      candidates.push({
+        queryid: String(t.queryid),
+        query,
+        calls: t.calls,
+        meanMs,
+        budgetMs,
+        pct: (meanMs / budgetMs) * 100,
+      });
     }
-    if (!best) return none;
+    const { best, leftOut, leftOutCount } = pickDrift(candidates);
     return {
-      pct: best.pct,
-      query: best.query,
-      meanMs: best.mean,
-      budgetMs: best.budgetMs,
+      ...none,
+      ...(best && {
+        pct: best.pct,
+        query: best.query,
+        meanMs: best.meanMs,
+        budgetMs: best.budgetMs,
+      }),
+      leftOut: leftOut.map(({ pct, ...s }) => ({ ...s, meanBudgetPct: pct })),
+      leftOutCount,
     };
   });
 }

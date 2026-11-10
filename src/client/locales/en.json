@@ -1233,6 +1233,10 @@
       "slowest": "Closest to its budget over the last hour: {{mean}} mean",
       "tenant": "tenant {{id}}"
     },
+    "driftLeftOut_one": "{{count}} query not counted: fewer than {{min}} calls in the last hour",
+    "driftLeftOut_other": "{{count}} queries not counted: fewer than {{min}} calls in the last hour",
+    "driftLeftOutRow_one": "{{calls}} call, {{mean}} mean, {{share}} of its budget",
+    "driftLeftOutRow_other": "{{calls}} calls, {{mean}} mean, {{share}} of its budget",
     "emptyDescription": "The first snapshot is taken within 5 minutes of the process starting.",
     "emptyTitle": "No figures yet",
     "enableAfter": "The next snapshot starts the history. Timeouts and tables work without it.",
@@ -3180,7 +3184,7 @@
       "scheduler_queue_age_ms_debounce": "How overdue the oldest message burst waiting to be answered is.",
       "scheduler_queue_age_ms_observe": "How overdue the oldest observer verdict is.",
       "scheduler_queue_age_ms_shared": "How overdue the oldest job of the shared lane is (follow-ups, sweeps, recoveries).",
-      "statement_mean_budget_pct": "The mean time over the last hour of the query closest to its budget, as a share of the budget it ran under (METRICS_TIMEOUT_MS for console reads such as the dashboard, DB_TX_TIMEOUT_MS for the rest). It climbs while a query degrades, before the first timeout. Needs pg_stat_statements.",
+      "statement_mean_budget_pct": "The mean time over the last hour of the query closest to its budget, as a share of the budget it ran under (METRICS_TIMEOUT_MS for console reads such as the dashboard, DB_TX_TIMEOUT_MS for the rest). It climbs while a query degrades, before the first timeout. A query with too few calls in the hour to be a trend is not counted, and the card lists it. Needs pg_stat_statements.",
       "statement_timeouts_per_min": "Statements cancelled by their time budget (SQLSTATE 57014) in the last minute. The work they belonged to stopped: open Database to see which statement it was and its plan."
     },
     "kindDone": "{{kind}}: completed per minute",

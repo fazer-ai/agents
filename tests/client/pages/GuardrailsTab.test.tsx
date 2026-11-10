@@ -21,6 +21,7 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailAction,
   type GuardrailsConfig,
+  MAX_SOURCE_TOOLS,
 } from "@/modules/guardrails/settings";
 
 // The template message is what the customer reads, and the `generated` action falls back to it
@@ -615,6 +616,27 @@ describe("GuardrailsTab factual grounding", () => {
     expect(screen.queryByRole("switch", { name: "set_labels" }) === null).toBe(
       true,
     );
+  });
+
+  test("at the limit of source tools a new one cannot be switched on, and one can still be taken out", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    const full = Array.from({ length: MAX_SOURCE_TOOLS }, (_, i) => `t${i}`);
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      sourceTools: full,
+    };
+    render(<Stateful initial={c} />);
+    const extra = await screen.findByRole("switch", {
+      name: "catalogo_ficticio",
+    });
+    fireEvent.click(extra);
+    expect(saved?.factualGrounding.sourceTools).toEqual(full);
+    fireEvent.click(screen.getByRole("switch", { name: "t0" }));
+    expect(saved?.factualGrounding.sourceTools).toEqual(full.slice(1));
   });
 
   test("template shows the Output template beside the action, and editing it edits that one", async () => {

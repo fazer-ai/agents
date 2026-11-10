@@ -209,15 +209,20 @@ export function GuardrailsTab({
   const [groundingContextDraft, setGroundingContextDraft] = useState<
     string | null
   >(null);
-  const toggleSource = (name: string, on: boolean) =>
+  // At the schema's limit a new source is refused here, so the save never fails on it; taking one out
+  // always works.
+  const sourcesFull = fg.sourceTools.length >= MAX_SOURCE_TOOLS;
+  const toggleSource = (name: string, on: boolean) => {
+    if (on && sourcesFull && !fg.sourceTools.includes(name)) return;
     setGrounding({
       sourceTools: on
         ? [...fg.sourceTools.filter((n) => n !== name), name]
         : fg.sourceTools.filter((n) => n !== name),
     });
+  };
   const addExtraSource = () => {
     const name = extraSource.trim();
-    if (!name || fg.sourceTools.length >= MAX_SOURCE_TOOLS) return;
+    if (!name || sourcesFull) return;
     toggleSource(name, true);
     setExtraSource("");
   };
@@ -1006,6 +1011,9 @@ export function GuardrailsTab({
                           <SwitchField
                             key={name}
                             checked={fg.sourceTools.includes(name)}
+                            disabled={
+                              sourcesFull && !fg.sourceTools.includes(name)
+                            }
                             onCheckedChange={(v) => toggleSource(name, v)}
                             label={name}
                           />

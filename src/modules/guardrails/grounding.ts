@@ -112,15 +112,17 @@ export function earlierSourceCalls(
   if (from < before.length && msgType(before[from] as BaseMessage) !== "human")
     while (from > 0 && msgType(before[from - 1] as BaseMessage) !== "human")
       from--;
-  const span = before.slice(from);
-  const humansAfter: number[] = new Array(span.length).fill(0);
-  let seen = 0;
-  for (let i = span.length - 1; i >= 0; i--) {
-    humansAfter[i] = seen;
-    if (msgType(span[i] as BaseMessage) === "human") seen++;
+  // Matched turn by turn: a provider may reuse a call id (`call_0`) in every turn, and one map over
+  // the whole window would hand an earlier call a later turn's result.
+  const turns: BaseMessage[][] = [];
+  for (const m of before.slice(from)) {
+    if (msgType(m) === "human" || turns.length === 0) turns.push([]);
+    (turns[turns.length - 1] as BaseMessage[]).push(m);
   }
-  return toolCallsIn(span, sourceTools, (i) => humansAfter[i] ?? 0).filter(
-    (c) => c.source,
+  return turns.flatMap((t, i) =>
+    toolCallsIn(t, sourceTools, () => turns.length - 1 - i).filter(
+      (c) => c.source,
+    ),
   );
 }
 

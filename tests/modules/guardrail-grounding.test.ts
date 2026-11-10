@@ -111,6 +111,38 @@ describe("earlierSourceCalls", () => {
     );
   });
 
+  test("a call id a provider reuses in every turn keeps each call with its own result", () => {
+    const ask = (evento: string, result: string) => [
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "catalogo", args: { evento }, id: "call_0" }],
+      }),
+      new ToolMessage({
+        content: result,
+        tool_call_id: "call_0",
+        name: "catalogo",
+      }),
+      new AIMessage("ok"),
+    ];
+    const msgs = [
+      new HumanMessage("E o Aurora?"),
+      ...ask("aurora", "Aurora: 18h."),
+      new HumanMessage("E o Boreal?"),
+      ...ask("boreal", "Boreal: 20h."),
+      new HumanMessage("Confirma os dois?"),
+    ];
+    expect(
+      earlierSourceCalls(msgs, ["catalogo"], 10).map((c) => [
+        (c.args as { evento: string }).evento,
+        c.result,
+        c.turnsBack,
+      ]),
+    ).toEqual([
+      ["aurora", "Aurora: 18h.", 2],
+      ["boreal", "Boreal: 20h.", 1],
+    ]);
+  });
+
   test("turns_back counts the customer messages since the call", () => {
     const msgs = [
       ...laterTurn().slice(0, -1),

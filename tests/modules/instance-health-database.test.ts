@@ -44,7 +44,6 @@ import {
 import {
   DRIFT_SIGNAL,
   databaseScreenTick,
-  driftFloorReading,
   resetDriftFloorForTest,
 } from "@/modules/instance-health/database/tick";
 import {
@@ -1957,7 +1956,7 @@ describe.skipIf(!dbUp)("the drift signal's call floor", () => {
     expect(drift.leftOut.map((s) => s.queryid)).toEqual(["36"]);
   });
 
-  test("the database view says which statements the tick behind the value left out, and how many calls they had", async () => {
+  test("the database view lists what the tick behind the value left out, and a tick whose point is not recorded yet does not replace it", async () => {
     const now = Date.now();
     const role = await ownRole();
     await seed(
@@ -1971,19 +1970,37 @@ describe.skipIf(!dbUp)("the drift signal's call floor", () => {
       data: { takenAt: new Date(now - 2 * MIN), statementsAvailable: true },
     });
     resetSnapshotState();
+    resetSamplerState();
     resetDriftFloorForTest();
     setLastAvailabilityForTest({ available: true });
-    try {
-      expect((await readDatabaseView("1h", appDb, false)).driftFloor).toBe(
-        null,
+    const sampleAt = (at: number) =>
+      sampleOnce(
+        {
+          now: () => at,
+          eventLoopP99Ms: () => 0,
+          modelPermitWaiters: () => 0,
+          modelPermitOldestMs: () => 0,
+          debounceLaneFullMs: () => 0,
+          ingressLagP95Ms: () => 0,
+          readDatabase: async () => ({
+            kindAges: {},
+            chatwootPendingOldestMs: 0,
+          }),
+          databaseScreen: (n) => databaseScreenTick(n, appDb),
+        },
+        { database: true },
       );
-      expect(await databaseScreenTick(now, appDb)).toBe(0);
-      const view = await readDatabaseView("1h", appDb, false);
+    try {
+      expect((await readDatabaseView("1h", appDb, true)).driftFloor).toBe(null);
+      await sampleAt(now - 30_000);
+      const view = await readDatabaseView("1h", appDb, true);
+      expect(view.signals.find((s) => s.signal === DRIFT_SIGNAL)?.value).toBe(
+        0,
+      );
       expect(view.driftFloor?.minCalls).toBe(DRIFT_MIN_CALLS);
       expect(
         view.driftFloor?.leftOut.map((s) => [s.userid, s.query, s.calls]),
       ).toEqual([[String(role), LOOKUP, 1]]);
-      // A statement that arrives after the tick is not in the list until the next tick reads it.
       await seed(
         40n,
         [{ at: now - 1 * MIN, calls: 1, total: config.dbTx.timeoutMs * 0.9 }],
@@ -1991,16 +2008,22 @@ describe.skipIf(!dbUp)("the drift signal's call floor", () => {
         role,
         "default",
       );
-      const later = await readDatabaseView("1h", appDb, false);
-      expect(later.driftFloor).toEqual(view.driftFloor);
-      await databaseScreenTick(now, appDb);
-      expect(driftFloorReading()?.leftOut.map((s) => s.queryid)).toEqual([
-        "40",
-        "39",
-      ]);
+      // The next tick finished and its point is not recorded yet: the value shown is still the
+      // first tick's, and so is the list.
+      await databaseScreenTick(now - 15_000, appDb);
+      expect((await readDatabaseView("1h", appDb, true)).driftFloor).toEqual(
+        view.driftFloor,
+      );
+      await sampleAt(now);
+      expect(
+        (await readDatabaseView("1h", appDb, true)).driftFloor?.leftOut.map(
+          (s) => s.queryid,
+        ),
+      ).toEqual(["40", "39"]);
     } finally {
       setLastAvailabilityForTest(null);
       resetDriftFloorForTest();
+      resetSamplerState();
     }
   });
 });

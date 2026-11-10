@@ -18,32 +18,45 @@ export const TICK_BUDGET_MS = 10_000;
 // The part of it the timeout flush may use.
 const FLUSH_SHARE_MS = 3_000;
 
-// What the tick that produced the drift signal's current value left out for too few calls, kept
-// beside that value so the screen and the MCP read describe the same reading.
+// What a tick left out for too few calls. It is keyed by the tick's `now`, which is the `at` of the
+// point the sampler records from that tick's value, so a reader pairs a value with its own list even
+// while the next tick is running or has finished and its point is not recorded yet.
 export interface DriftFloorReading {
   minCalls: number;
   leftOut: DriftLeftOutDto[];
   leftOutCount: number;
 }
 
+// The recent ticks kept: a reader holding a value can be at most a tick or two behind the newest.
+const FLOOR_READINGS = 3;
 const FLOOR_KEY = Symbol.for("fazerai.driftFloor");
 
-function floorSlot(): { reading: DriftFloorReading | null } {
+function floorReadings(): Map<number, DriftFloorReading> {
   const g = globalThis as unknown as Record<
     symbol,
-    { reading: DriftFloorReading | null }
+    Map<number, DriftFloorReading>
   >;
-  g[FLOOR_KEY] ??= { reading: null };
+  g[FLOOR_KEY] ??= new Map();
   return g[FLOOR_KEY];
 }
 
-export function driftFloorReading(): DriftFloorReading | null {
-  return floorSlot().reading;
+function keepFloorReading(at: number, reading: DriftFloorReading): void {
+  const m = floorReadings();
+  m.set(at, reading);
+  while (m.size > FLOOR_READINGS) {
+    const oldest = Math.min(...m.keys());
+    m.delete(oldest);
+  }
+}
+
+// The list of the tick whose value was recorded at `at`; null when no kept tick produced it.
+export function driftFloorReading(at: number | null): DriftFloorReading | null {
+  return at === null ? null : (floorReadings().get(at) ?? null);
 }
 
 // Test-only.
 export function resetDriftFloorForTest(): void {
-  floorSlot().reading = null;
+  floorReadings().clear();
 }
 
 export async function databaseScreenTick(
@@ -71,7 +84,6 @@ export async function databaseScreenTick(
     }
     // Nothing to measure without the extension: the signal reads 0 and names nothing.
     setSignalDetail(DRIFT_SIGNAL, null);
-    floorSlot().reading = null;
     return 0;
   }
   const { pct, query, meanMs, budgetMs, minCalls, leftOut, leftOutCount } =
@@ -80,6 +92,6 @@ export async function databaseScreenTick(
     DRIFT_SIGNAL,
     query ? driftFacts(query, meanMs, budgetMs) : null,
   );
-  floorSlot().reading = { minCalls, leftOut, leftOutCount };
+  keepFloorReading(now, { minCalls, leftOut, leftOutCount });
   return pct;
 }

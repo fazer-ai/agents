@@ -45,8 +45,9 @@ export interface DatabaseViewDto extends DatabaseScreenDto {
   // Whether this process samples (ALERT_WORKER_ENABLED); without it the signals have no reading.
   sampling: boolean;
   signals: DatabaseSignalDto[];
-  // What the reading behind statement_mean_budget_pct's value left out for too few calls over its
-  // hour, whatever the window; null before the first reading and without query statistics.
+  // What the tick behind statement_mean_budget_pct's value left out for too few calls over its hour,
+  // whatever the window; null when no kept tick produced that value (no reading yet, no query
+  // statistics).
   driftFloor: DriftFloorReading | null;
 }
 
@@ -91,5 +92,12 @@ export async function readDatabaseView(
     const { history: _history, ...rest } = s;
     return [{ ...rest, state: signalState(s) }];
   });
-  return { ...screen, sampling, signals, driftFloor: driftFloorReading() };
+  const drift = signals.find((s) => s.signal === DRIFT_SIGNAL);
+  const driftAt = drift?.at ? Date.parse(drift.at) : null;
+  return {
+    ...screen,
+    sampling,
+    signals,
+    driftFloor: driftFloorReading(driftAt),
+  };
 }

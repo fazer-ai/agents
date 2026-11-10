@@ -1179,6 +1179,7 @@
       "choiceCheck": "Conferência da escolha do cliente",
       "decision": "API de decisão",
       "guardrail": "Guardrail",
+      "guardrailGrounding": "Guardrail: checagem factual",
       "memoryCompact": "Compactação de memória",
       "nudge": "Follow-up",
       "observer": "Observador",
@@ -2462,8 +2463,8 @@
       "groundingActionReviseHint": "O agente escreve a resposta mais uma vez, sabendo quais afirmações as fontes não sustentam, e a nova resposta é a enviada. Uma geração a mais por turno apontado.",
       "groundingActionTemplate": "Responder com a mensagem template de Saída",
       "groundingContext": "Mensagens anteriores que o revisor lê",
-      "groundingContextHint": "Mensagens do cliente e do agente antes do turno, inclusive o que foi lido das imagens que o cliente enviou.",
-      "groundingDesc": "Antes de a resposta sair, um modelo revisor a compara com o que as ferramentas de fonte devolveram naquele turno e com a conversa recente, e lista as afirmações que eles não sustentam. Só roda num turno em que uma ferramenta de fonte devolveu algo.",
+      "groundingContextHint": "Mensagens do cliente e do agente antes do turno, inclusive o que foi lido das imagens que o cliente enviou. Os resultados das ferramentas de fonte dos turnos dessa janela também entram na revisão.",
+      "groundingDesc": "Antes de a resposta sair, um modelo revisor a compara com o que as ferramentas de fonte devolveram, naquele turno e nos turnos anteriores da conversa que ele lê, e lista as afirmações que eles não sustentam. Só roda quando uma ferramenta de fonte devolveu algo num desses turnos.",
       "groundingEnabled": "Conferir a resposta com os resultados das ferramentas",
       "groundingHandoff": "Mensagem ao cliente (a mesma de Saída)",
       "groundingReviewer": "Modelo revisor",
@@ -3863,6 +3864,17 @@
       "replace": "A verificação externa trocou a resposta pelo texto dela",
       "replaceObserved": "A verificação externa teria trocado a resposta; só registrado, a resposta saiu como foi escrita"
     },
+    "guardrailGrounding": {
+      "clean": "Checagem factual: a resposta bate com as fontes",
+      "cost": "{{input}} tokens de entrada / {{output}} de saída, {{ms}} ms",
+      "earlier_one": "{{count}} fonte de turno anterior",
+      "earlier_many": "{{count}} fontes de turnos anteriores",
+      "earlier_other": "{{count}} fontes de turnos anteriores",
+      "sources": "{{chars}} caracteres de resultados",
+      "violated_one": "Checagem factual: {{count}} afirmação que as fontes não sustentam ({{action}})",
+      "violated_many": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})",
+      "violated_other": "Checagem factual: {{count}} afirmações que as fontes não sustentam ({{action}})"
+    },
     "guardrailHeld": {
       "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",
       "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida"
@@ -5093,6 +5105,7 @@
       "choiceCheck": "conferência da escolha do cliente",
       "decision": "API de decisão",
       "guardrail": "verificação de guardrails",
+      "guardrailGrounding": "checagem factual",
       "memoryCompact": "resumo de memória",
       "nudge": "mensagem proativa",
       "observer": "observador",

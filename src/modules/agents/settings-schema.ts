@@ -1162,7 +1162,7 @@ const guardrails = z
         baseURL: baseURL(),
       })
       .optional()
-      .describe("reviews the reply against the turn's tool results"),
+      .describe("reviews the reply against recent source results"),
     onFailure: oneOf(GUARDRAIL_FAILURE_MODES)
       .optional()
       .describe(

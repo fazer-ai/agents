@@ -30,6 +30,7 @@ import {
   flowStageLabel,
   guardrailClassifierLabel,
   guardrailExternalLabel,
+  guardrailGroundingLabel,
   guardrailObservedLabel,
   guardrailUncheckedLabel,
   toolResultSizeLabel,
@@ -187,10 +188,20 @@ function StageRow({ row }: { row: LogItem }) {
   // Outside the toggle on purpose: whether the message went on unchecked is the row's headline, not
   // a detail to expand.
   const external = guardrailExternalLabel(row.stage, rowDetail, t);
+  const grounding = guardrailGroundingLabel(row.stage, rowDetail, t);
   const observed = guardrailObservedLabel(row.stage, rowDetail, t);
   const uncheckedLine = unchecked ? (
     <p className="text-warning mt-1 pl-5.5 text-xs">
       {classifier ? `${unchecked} · ${classifier}` : unchecked}
+    </p>
+  ) : grounding ? (
+    <p
+      className={cn("mt-1 pl-5.5 text-xs", {
+        "text-warning": rowDetail?.verdict === "violated",
+        "text-text-muted": rowDetail?.verdict === "clean",
+      })}
+    >
+      {grounding}
     </p>
   ) : observed ? (
     <p className="text-warning mt-1 pl-5.5 text-xs">{observed}</p>

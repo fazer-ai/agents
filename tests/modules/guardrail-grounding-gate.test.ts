@@ -95,6 +95,65 @@ function turn(toolName = "catalogo", result = "Portões: 18h."): BaseMessage[] {
   ];
 }
 
+// Turn 1 asked the catalog; turn 2 answers from memory, calling nothing.
+function fromMemory(): BaseMessage[] {
+  return [
+    new HumanMessage("Que horas abrem os portões?"),
+    new AIMessage({
+      content: "",
+      tool_calls: [{ name: "catalogo", args: {}, id: "m1" }],
+    }),
+    new ToolMessage({
+      content: "Portões: 18h.",
+      tool_call_id: "m1",
+      name: "catalogo",
+    }),
+    new AIMessage("Às 18h."),
+    new HumanMessage("Tem certeza? Não era às 16h?"),
+    new AIMessage(DRAFT),
+  ];
+}
+
+// A reviewer that reports its usage to the callbacks it is handed, as a provider adapter does.
+function billedReviewer(answer: string) {
+  return (() => {
+    const run = async (_m: unknown, opts?: { callbacks?: unknown[] }) => {
+      for (const cb of opts?.callbacks ?? [])
+        await (
+          cb as { handleLLMEnd?: (o: unknown, id: string) => Promise<void> }
+        ).handleLLMEnd?.(
+          {
+            generations: [
+              [
+                {
+                  text: answer,
+                  message: {
+                    usage_metadata: {
+                      input_tokens: 1200,
+                      output_tokens: 80,
+                      total_tokens: 1280,
+                    },
+                  },
+                },
+              ],
+            ],
+          },
+          "r1",
+        );
+      return { content: answer };
+    };
+    return {
+      invoke: run,
+      withStructuredOutput: () => ({
+        invoke: async (m: unknown, opts?: { callbacks?: unknown[] }) => {
+          const raw = await run(m, opts);
+          return { raw, parsed: JSON.parse(answer) };
+        },
+      }),
+    };
+  }) as never;
+}
+
 const VIOLATED = JSON.stringify({
   violated: true,
   claims: [
@@ -272,23 +331,76 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(h?.pending()).toEqual({ kind: "handed-off", reply: HANDOFF });
   });
 
-  test("a clean verdict changes nothing and writes no line", async () => {
+  test("a clean verdict changes nothing, and its review is still a line with its size and cost", async () => {
     const f = flow();
     const reports: GuardrailReport[] = [];
+    const rows: { node: string | null; promptTokens: number }[] = [];
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("revise"),
       apiKey: "k",
       flow: f,
-      makeModel: reviewer('{"violated": false, "claims": [], "rationale": ""}')
-        .make,
+      makeModel: billedReviewer(
+        '{"violated": false, "claims": [], "rationale": ""}',
+      ),
+      persistUsage: async (row) => {
+        rows.push({ node: row.node, promptTokens: row.promptTokens });
+      },
       announce: (rep) => {
         reports.push(rep);
       },
     });
     expect(await gate?.review(turn())).toBeNull();
+    expect(gate?.pending()).toBeNull();
     expect(reports.map((x) => x.outcome)).toEqual(["clean"]);
-    expect(await lines(f.turnId)).toEqual([]);
+    const [line] = await lines(f.turnId);
+    expect(line).toMatchObject({
+      check: "factual_grounding",
+      verdict: "clean",
+      claimCount: 0,
+      sources: ["catalogo"],
+      resultChars: "Portões: 18h.".length,
+      earlierSources: 0,
+      inputTokens: 1200,
+      outputTokens: 80,
+    });
+    expect(line?.action).toBeUndefined();
+    expect(rows).toEqual([{ node: "guardrail_grounding", promptTokens: 1200 }]);
+  });
+
+  test("a turn that calls nothing is reviewed against a source an earlier turn in the window returned", async () => {
+    const r = reviewer(VIOLATED);
+    const f = flow();
+    const gate = buildGroundingGate({
+      langfuseCfg: null,
+      cfg: cfg("observe"),
+      apiKey: "k",
+      flow: f,
+      makeModel: r.make,
+    });
+    expect(await gate?.review(fromMemory())).toBeNull();
+    expect(r.calls).toHaveLength(1);
+    const sent = JSON.stringify(r.calls[0]);
+    expect(sent).toContain('turn=\\"earlier\\" turns_back=\\"1\\"');
+    expect(sent).toContain("Portões: 18h.");
+    const [line] = await lines(f.turnId);
+    expect(line).toMatchObject({ verdict: "violated", earlierSources: 1 });
+  });
+
+  test("when the window does not reach the turn that asked the source, nothing is reviewed", async () => {
+    const r = reviewer(VIOLATED);
+    const base = cfg("observe");
+    await buildGroundingGate({
+      langfuseCfg: null,
+      cfg: {
+        ...base,
+        factualGrounding: { ...base.factualGrounding, contextMessages: 1 },
+      },
+      apiKey: "k",
+      flow: flow(),
+      makeModel: r.make,
+    })?.review(fromMemory());
+    expect(r.calls).toHaveLength(0);
   });
 
   test("a review that fails lets the reply through, unless onFailure holds it", async () => {

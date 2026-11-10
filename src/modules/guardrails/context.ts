@@ -85,7 +85,26 @@ export function unclippedContext(
   limit: number,
   opts?: { toolResultChars?: number },
 ): DatedContextMessage[] {
+  return contextWindow(messages, limit, opts).out;
+}
+
+// Where that window begins: the index of the oldest message it shows, or of the divider that opens
+// the attendance when the walk stops there; `messages.length` when it shows nothing. What lies from
+// here on is what a reader of the window has in front of it.
+export function contextWindowStart(
+  messages: readonly BaseMessage[],
+  limit: number,
+): number {
+  return contextWindow(messages, limit).start;
+}
+
+function contextWindow(
+  messages: readonly BaseMessage[],
+  limit: number,
+  opts?: { toolResultChars?: number },
+): { out: DatedContextMessage[]; start: number } {
   const out: DatedContextMessage[] = [];
+  let start = messages.length;
   for (let i = messages.length - 1; i >= 0 && out.length < limit; i--) {
     const m = messages[i];
     if (!m) break;
@@ -96,23 +115,28 @@ export function unclippedContext(
       if (text.startsWith(CONVERSATION_DIVIDER))
         text = text.slice(CONVERSATION_DIVIDER.length).trim();
       if (text) out.push({ role: "customer", text, at: stampedSentAt(m) });
+      start = i;
       break;
     }
+    const before = out.length;
     if (isHumanAgentTurn(m)) {
       if (text.startsWith(HUMAN_AGENT_NOTE))
         text = text.slice(HUMAN_AGENT_NOTE.length).trim();
       if (text) out.push({ role: "attendant", text, at: stampedSentAt(m) });
+      if (out.length > before) start = i;
       continue;
     }
     if (isSystemMarker(m) || isNudge(m) || !text) continue;
     if (type === "tool") {
-      if (opts?.toolResultChars)
+      if (opts?.toolResultChars) {
         out.push({
           role: "tool",
           text: clipText(text, opts.toolResultChars),
           at: null,
           tool: (m as ToolMessage).name ?? "",
         });
+        start = i;
+      }
       continue;
     }
     // NOTE: only a message that calls nothing is a reply. Text beside a call is the agent thinking
@@ -123,6 +147,7 @@ export function unclippedContext(
     if (type === "human")
       out.push({ role: "customer", text, at: stampedSentAt(m) });
     else if (type === "ai") out.push({ role: "assistant", text, at: null });
+    if (out.length > before) start = i;
   }
-  return out.reverse();
+  return { out: out.reverse(), start };
 }

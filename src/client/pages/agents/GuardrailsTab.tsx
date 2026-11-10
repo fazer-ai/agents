@@ -974,7 +974,7 @@ export function GuardrailsTab({
                 title={t("editor.guardrails.grounding", "Factual grounding")}
                 description={t(
                   "editor.guardrails.groundingDesc",
-                  "Before a reply is sent, a reviewer model compares it with what the source tools returned in that turn and with the recent conversation, and lists the claims they do not support. It runs only on a turn in which a source tool returned something.",
+                  "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It runs only when a source tool returned something in one of those turns.",
                 )}
               >
                 <SwitchField
@@ -1119,7 +1119,7 @@ export function GuardrailsTab({
                       )}
                       description={t(
                         "editor.guardrails.groundingContextHint",
-                        "Customer and agent messages before the turn, including what was read from images the customer sent.",
+                        "Customer and agent messages before the turn, including what was read from images the customer sent. The source results of the turns in this window are reviewed too.",
                       )}
                     >
                       <NumberInput

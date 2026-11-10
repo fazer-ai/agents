@@ -145,7 +145,37 @@ export interface GuardrailsConfig {
   output: GuardrailDirectionConfig;
   onFailure: GuardrailFailureMode;
   external: GuardrailExternalConfig;
+  factualGrounding: GuardrailGroundingConfig;
 }
+
+// What a factual-grounding trip does. `revise` gives the agent one more generation with the claims the
+// reviewer pointed out, and the revised reply is the one sent; `template` and `handoff` use the Output
+// direction's messages. `generated` and `silent` are not offered: the reviewer has no tools to write a
+// correct answer with, and silence would leave the customer unanswered on a false positive.
+export type GroundingAction = "observe" | "revise" | "template" | "handoff";
+export const GROUNDING_ACTIONS: readonly GroundingAction[] = [
+  "observe",
+  "revise",
+  "template",
+  "handoff",
+];
+
+// The factual-grounding output check (./grounding.ts, docs/factual-grounding.md). It runs only on a
+// turn in which one of `sourceTools` returned something. The reviewer is its own chat model when
+// `provider` is set, and the guardrails chat model (provider, model, key) when it is null.
+export interface GuardrailGroundingConfig {
+  enabled: boolean;
+  sourceTools: string[];
+  action: GroundingAction;
+  contextMessages: number;
+  provider: ModelConfig["provider"] | null;
+  model: string;
+  credentialRef: string | null;
+  baseURL: string | null;
+}
+
+export const MAX_SOURCE_TOOLS = 50;
+const MAX_TOOL_NAME_LEN = 128;
 
 // An endpoint the operator runs that judges a reply before it is delivered (./external.ts). Active
 // when guardrails are on and `url` is set; a block fires the output direction's action.
@@ -213,6 +243,16 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
   },
   onFailure: "pass",
   external: { url: null, credentialRef: null, sendToolValues: true },
+  factualGrounding: {
+    enabled: false,
+    sourceTools: [],
+    action: "observe",
+    contextMessages: 6,
+    provider: null,
+    model: "",
+    credentialRef: null,
+    baseURL: null,
+  },
 };
 
 // The endpoint as stored, or null when it cannot be one: unparseable, not https, or carrying
@@ -358,6 +398,70 @@ export function guardrailCredentialRef(cfg: GuardrailsConfig): string | null {
     : cfg.credentialRef;
 }
 
+// Trimmed, deduplicated tool names, bounded in count and length.
+export function readSourceTools(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const item of v) {
+    const s = str(item);
+    if (s && s.length <= MAX_TOOL_NAME_LEN && !out.includes(s)) out.push(s);
+    if (out.length >= MAX_SOURCE_TOOLS) break;
+  }
+  return out;
+}
+
+function readGrounding(v: unknown): GuardrailGroundingConfig {
+  const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  const d = GUARDRAILS_DEFAULTS.factualGrounding;
+  const rawProvider = str(b.provider);
+  const provider =
+    rawProvider && (MODEL_PROVIDERS as readonly string[]).includes(rawProvider)
+      ? (rawProvider as ModelConfig["provider"])
+      : null;
+  return {
+    enabled: bool(b.enabled, d.enabled),
+    sourceTools: readSourceTools(b.sourceTools),
+    action: GROUNDING_ACTIONS.includes(b.action as GroundingAction)
+      ? (b.action as GroundingAction)
+      : d.action,
+    contextMessages: clampToRange(
+      b.contextMessages,
+      GUARDRAIL_RANGES.contextMessages,
+      d.contextMessages,
+    ),
+    provider,
+    model: provider
+      ? (str(b.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "")
+      : "",
+    credentialRef: provider ? str(b.credentialRef) : null,
+    baseURL: provider ? str(b.baseURL) : null,
+  };
+}
+
+// The chat model that reviews a turn for grounding: the check's own, or the guardrails chat model.
+// One answer for the runtime, the credential resolution and the editor.
+export function groundingReviewer(cfg: GuardrailsConfig): {
+  provider: ModelConfig["provider"];
+  model: string;
+  credentialRef: string | null;
+  baseURL: string | null;
+} {
+  const fg = cfg.factualGrounding;
+  return fg.provider
+    ? {
+        provider: fg.provider,
+        model: fg.model,
+        credentialRef: fg.credentialRef,
+        baseURL: fg.baseURL,
+      }
+    : {
+        provider: cfg.provider,
+        model: cfg.model,
+        credentialRef: cfg.credentialRef,
+        baseURL: cfg.baseURL,
+      };
+}
+
 export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
   const s =
     settings && typeof settings === "object"
@@ -389,5 +493,6 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     output: readDirection(bag.output, GUARDRAILS_DEFAULTS.output),
     onFailure: bag.onFailure === "hold" ? "hold" : "pass",
     external: readExternal(bag.external),
+    factualGrounding: readGrounding(bag.factualGrounding),
   };
 }

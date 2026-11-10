@@ -192,11 +192,12 @@ function isRequestRefused(err: unknown): boolean {
 // model an operator may type into the guardrail's model field does. When the request comes back
 // refused, the analysis is retried in prose, so the worst case is one extra call rather than a screen
 // that quietly stops running.
-async function invokeForVerdict(
+export async function invokeStructured(
   model: BaseChatModel,
   mode: VerdictMode,
   messages: BaseMessage[],
   signal: AbortSignal,
+  schemas: { json: { title: string }; openapi: { title: string } },
   callbacks?: BaseCallbackHandler[],
 ): Promise<{ parsed: Record<string, unknown> | null; raw: string }> {
   const asProse = async () => {
@@ -209,7 +210,7 @@ async function invokeForVerdict(
   if (mode === "prose") return asProse();
   // Same verdict, in the dialect this endpoint speaks. See ./verdict and graph/model-config: asking
   // in the wrong one is not a soft failure, it is a refusal on every screen.
-  const schema = mode === "openapi" ? VERDICT_SCHEMA_OPENAPI : VERDICT_SCHEMA;
+  const schema = mode === "openapi" ? schemas.openapi : schemas.json;
   // `output-format` sends the schema as Anthropic's `output_config.format`. The adapter's
   // default there is a forced tool call, which the 5-5 generation refuses with a 400, and its
   // jsonSchema method throws when handed `strict`.
@@ -272,7 +273,15 @@ async function runAnalysis(
     // ONE deadline for the verdict, the refused-then-prose retry included: the signal alone is
     // dropped by the Google adapter, and a classifier on the customer's path must not hang.
     const { parsed, raw } = await runModelCall(
-      (signal) => invokeForVerdict(model, mode, messages, signal, callbacks),
+      (signal) =>
+        invokeStructured(
+          model,
+          mode,
+          messages,
+          signal,
+          { json: VERDICT_SCHEMA, openapi: VERDICT_SCHEMA_OPENAPI },
+          callbacks,
+        ),
       { deadlineMs: ANALYZE_TIMEOUT_MS },
     );
     return readVerdict(parsed, raw);

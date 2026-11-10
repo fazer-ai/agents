@@ -1,5 +1,6 @@
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { BaseMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -113,6 +114,7 @@ import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import type { DatedContextMessage } from "@/modules/guardrails/context";
 import {
   type GuardrailsConfig,
+  groundingReviewer,
   guardrailCredentialRef,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
@@ -294,6 +296,10 @@ export interface AgentConfig {
   // configured entry did not resolve, which `guardrailsExternalSecretMissing` says.
   guardrailsExternalSecret: string | null;
   guardrailsExternalSecretMissing: boolean;
+  // The factual-grounding reviewer's resolved key and baseURL (`groundingReviewer`): "" when the check
+  // is off or the credential did not resolve, which the review reports as `credential_not_found`.
+  groundingApiKey: string;
+  groundingCredentialBaseUrl: string | null;
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
@@ -628,6 +634,26 @@ export async function loadAgentConfig(
         guardrailsRef,
         gEntry.state === "unusable" ? gEntry.kind : "",
       );
+    }
+  }
+  let groundingApiKey = "";
+  let groundingCredentialBaseUrl: string | null = null;
+  const groundingRef = groundingReviewer(guardrails).credentialRef;
+  if (
+    guardrails.enabled &&
+    guardrails.factualGrounding.enabled &&
+    groundingRef
+  ) {
+    const fEntry =
+      groundingRef === guardrailsRef && guardrailsApiKey
+        ? null
+        : await tryResolveApiKeyEntry(db, groundingRef);
+    if (!fEntry) {
+      groundingApiKey = guardrailsApiKey;
+      groundingCredentialBaseUrl = guardrailsCredentialBaseUrl;
+    } else if (fEntry.state === "ok") {
+      groundingApiKey = fEntry.secret;
+      groundingCredentialBaseUrl = fEntry.baseUrl;
     }
   }
   let guardrailsExternalSecret: string | null = null;
@@ -1090,6 +1116,8 @@ export async function loadAgentConfig(
     guardrailsCredentialBaseUrl,
     guardrailsExternalSecret,
     guardrailsExternalSecretMissing,
+    groundingApiKey,
+    groundingCredentialBaseUrl,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,
@@ -2464,6 +2492,10 @@ export interface GraphBuildDeps {
   // the turn already delivered.
   retrySilence?: () => boolean;
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
+  // See BuildAgentGraphParams.reviewReply. The reactive turn and the playground pass it.
+  reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  onReplyRevised?: (text: string) => void;
+  recoversReply?: () => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2613,6 +2645,9 @@ export async function buildModelAndGraph(
     stillWanted: deps.stillWanted,
     retrySilence: deps.retrySilence,
     onSilenceRetry: deps.onSilenceRetry,
+    reviewReply: deps.reviewReply,
+    onReplyRevised: deps.onReplyRevised,
+    recoversReply: deps.recoversReply,
     clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)

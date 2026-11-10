@@ -21,6 +21,7 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailAction,
   type GuardrailsConfig,
+  MAX_SOURCE_TOOLS,
 } from "@/modules/guardrails/settings";
 
 // The template message is what the customer reads, and the `generated` action falls back to it
@@ -46,6 +47,7 @@ function renderWith(
   config.output = { ...config.output, enabled: true, action };
   render(
     <GuardrailsTab
+      agentId=""
       guardrails={config}
       setGuardrails={setGuardrails as never}
       refusals={NO_REFUSALS}
@@ -74,6 +76,7 @@ const NO_REFUSALS: GuardrailsRefusals = {
   outputHandoffMessage: null,
   externalUrl: null,
   externalSecret: null,
+  groundingCredential: null,
 };
 
 describe("GuardrailsTab template message", () => {
@@ -220,6 +223,7 @@ describe("a refusal handed to the guardrails tab lands at its input", () => {
     config.output = { ...config.output, enabled: true, action: "generated" };
     render(
       <GuardrailsTab
+        agentId=""
         guardrails={config}
         setGuardrails={() => {}}
         refusals={refusals}
@@ -283,6 +287,7 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     saved = g;
     return (
       <GuardrailsTab
+        agentId=""
         guardrails={g}
         setGuardrails={setG as never}
         refusals={NO_REFUSALS}
@@ -483,6 +488,7 @@ describe("GuardrailsTab conversation context", () => {
           reset-from-outside
         </button>
         <GuardrailsTab
+          agentId=""
           guardrails={g}
           setGuardrails={setG as never}
           refusals={NO_REFUSALS}
@@ -523,5 +529,201 @@ describe("GuardrailsTab conversation context", () => {
     fireEvent.change(field() as HTMLInputElement, { target: { value: "25" } });
     fireEvent.click(screen.getByText("reset-from-outside"));
     expect([field()?.value, saved?.input.contextMessages]).toEqual(["4", 4]);
+  });
+});
+
+// The factual-grounding section: the agent's own tools are offered as sources, the four actions are
+// the ones offered, and what is picked is what the form will save.
+describe("GuardrailsTab factual grounding", () => {
+  let previousFetch: typeof globalThis.fetch;
+  beforeAll(() => {
+    previousFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      new Response(
+        JSON.stringify(
+          String(input).includes("/playground/tools")
+            ? {
+                tools: [
+                  {
+                    name: "set_labels",
+                    description: "",
+                    category: "native",
+                    simulated: true,
+                  },
+                  {
+                    name: "catalogo_ficticio",
+                    description: "",
+                    category: "code",
+                    simulated: false,
+                  },
+                ],
+              }
+            : { entries: [] },
+        ),
+        { headers: { "content-type": "application/json" } },
+      )) as unknown as typeof globalThis.fetch;
+  });
+  afterEach(() => cleanup());
+  afterAll(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  let saved: GuardrailsConfig | null = null;
+  function Stateful({ initial }: { initial: GuardrailsConfig }) {
+    const [g, setG] = useState(initial);
+    saved = g;
+    return (
+      <GuardrailsTab
+        agentId="7"
+        guardrails={g}
+        setGuardrails={setG as never}
+        refusals={NO_REFUSALS}
+        dirty={false}
+        saving={false}
+        onSave={() => {}}
+        onDiscard={() => {}}
+      />
+    );
+  }
+
+  test("the agent's tools are offered as sources, and a pick reaches the form", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    const toolSwitch = await screen.findByRole("switch", {
+      name: "catalogo_ficticio",
+    });
+    fireEvent.click(toolSwitch);
+    const action = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-grounding-action"]',
+    );
+    const offered = [...(action?.options ?? [])].map((o) => o.value);
+    fireEvent.change(action as HTMLSelectElement, {
+      target: { value: "revise" },
+    });
+    expect([
+      offered,
+      saved?.factualGrounding.sourceTools,
+      saved?.factualGrounding.action,
+    ]).toEqual([
+      ["observe", "revise", "template", "handoff"],
+      ["catalogo_ficticio"],
+      "revise",
+    ]);
+    expect(screen.queryByRole("switch", { name: "set_labels" }) === null).toBe(
+      true,
+    );
+  });
+
+  test("at the limit of source tools a new one cannot be switched on, and one can still be taken out", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    const full = Array.from({ length: MAX_SOURCE_TOOLS }, (_, i) => `t${i}`);
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      sourceTools: full,
+    };
+    render(<Stateful initial={c} />);
+    const extra = await screen.findByRole("switch", {
+      name: "catalogo_ficticio",
+    });
+    fireEvent.click(extra);
+    expect(saved?.factualGrounding.sourceTools).toEqual(full);
+    fireEvent.click(screen.getByRole("switch", { name: "t0" }));
+    expect(saved?.factualGrounding.sourceTools).toEqual(full.slice(1));
+  });
+
+  // The bug it catches: an endpoint set over REST for one provider kept after a switch, so the new
+  // vendor's key and the review's contents go to the old server.
+  test("switching the reviewer's provider drops the endpoint and the key of the old one", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      provider: "openai-compatible",
+      model: "revisor",
+      credentialRef: "vault:3",
+      baseURL: "http://antigo.local/v1",
+    };
+    render(<Stateful initial={c} />);
+    const provider = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-grounding-provider"]',
+    );
+    fireEvent.change(provider as HTMLSelectElement, {
+      target: { value: "openrouter" },
+    });
+    expect([
+      saved?.factualGrounding.provider,
+      saved?.factualGrounding.baseURL,
+      saved?.factualGrounding.credentialRef,
+    ]).toEqual(["openrouter", null, null]);
+  });
+
+  // The bug it catches: a keyless compatible reviewer the console cannot finish configuring, since
+  // nothing there sets its endpoint.
+  test("a compatible reviewer takes its endpoint in the section", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    fireEvent.change(
+      document.querySelector<HTMLSelectElement>(
+        '[data-testid="gr-grounding-provider"]',
+      ) as HTMLSelectElement,
+      { target: { value: "openai-compatible" } },
+    );
+    fireEvent.change(
+      document.querySelector<HTMLInputElement>(
+        '[data-testid="gr-grounding-baseurl"]',
+      ) as HTMLInputElement,
+      { target: { value: "http://revisor.local/v1" } },
+    );
+    expect([
+      saved?.factualGrounding.provider,
+      saved?.factualGrounding.baseURL,
+    ]).toEqual(["openai-compatible", "http://revisor.local/v1"]);
+  });
+
+  test("template shows the Output template beside the action, and editing it edits that one", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.output = { ...c.output, enabled: false };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      action: "template",
+    };
+    render(<Stateful initial={c} />);
+    const box = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="gr-grounding-message"]',
+    );
+    fireEvent.change(box as HTMLTextAreaElement, {
+      target: { value: "Não tenho essa informação." },
+    });
+    expect(saved?.output.templateMessage).toBe("Não tenho essa informação.");
+  });
+
+  test("off, the section shows only its switch", () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    render(<Stateful initial={c} />);
+    expect(
+      document.querySelector('[data-testid="gr-grounding-action"]') === null,
+    ).toBe(true);
   });
 });

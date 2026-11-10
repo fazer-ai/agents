@@ -91,6 +91,17 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     outcome: r.outcome,
     ...(r.action ? { action: r.action } : {}),
     ...(r.held ? { held: true as const } : {}),
+    ...(r.check ? { check: r.check } : {}),
+    // The factual-grounding claims: model-written, quoting the reply and the tool results.
+    ...(r.claims?.length
+      ? {
+          claims: r.claims.slice(0, CATEGORIES_MAX).map((c) => ({
+            claim: scrubbedClip(c.claim, OUTPUT_MAX),
+            type: c.type,
+            evidence: scrubbedClip(c.evidence, OUTPUT_MAX),
+          })),
+        }
+      : {}),
     // The external check's own fields; the reason is the operator endpoint's text, bounded here.
     ...(r.external
       ? {

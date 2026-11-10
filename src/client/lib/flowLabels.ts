@@ -148,6 +148,57 @@ export function guardrailUncheckedLabel(
   }
 }
 
+// A review the factual-grounding check finished (detail.check = "factual_grounding" with a verdict),
+// as the row's headline: whether the reply matched the sources, what was reviewed and what it cost.
+// Null for any other line, the ones where the review could not run included (those read as unchecked).
+export function guardrailGroundingLabel(
+  stage: string,
+  detail: Record<string, unknown> | null,
+  t: TFunction,
+): string | null {
+  if (
+    stage !== "guardrail" ||
+    !detail ||
+    detail.check !== "factual_grounding" ||
+    (detail.verdict !== "clean" && detail.verdict !== "violated")
+  )
+    return null;
+  const n = (v: unknown) => (typeof v === "number" ? v : 0);
+  const head =
+    detail.verdict === "clean"
+      ? t(
+          "logs.guardrailGrounding.clean",
+          "Factual grounding: the reply matches the sources",
+        )
+      : t("logs.guardrailGrounding.violated", {
+          defaultValue:
+            "Factual grounding: {{count}} claim(s) the sources do not support ({{action}})",
+          count: n(detail.claimCount),
+          action: typeof detail.action === "string" ? detail.action : "?",
+        });
+  return [
+    head,
+    t("logs.guardrailGrounding.sources", {
+      defaultValue: "{{chars}} characters of results",
+      chars: n(detail.resultChars),
+    }),
+    n(detail.earlierSources) > 0
+      ? t("logs.guardrailGrounding.earlier", {
+          defaultValue: "{{count}} source(s) from earlier turns",
+          count: n(detail.earlierSources),
+        })
+      : null,
+    t("logs.guardrailGrounding.cost", {
+      defaultValue: "{{input}} in / {{output}} out tokens, {{ms}} ms",
+      input: n(detail.inputTokens),
+      output: n(detail.outputTokens),
+      ms: n(detail.latencyMs),
+    }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 // A line the external check wrote (detail.check = "external"), as the row's headline: what the
 // operator's endpoint decided, how long it took, and its reason; or, on a failure, why and what
 // happened to the reply. Null for any other line.

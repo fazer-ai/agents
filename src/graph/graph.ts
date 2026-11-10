@@ -53,7 +53,7 @@ import {
   droppedCallCount,
   droppedCallsStamp,
 } from "./markers";
-import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
+import { customerFacingReply, SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 import {
   type CallReport,
   fenceReporterOf,
@@ -194,6 +194,17 @@ export interface BuildAgentGraphParams {
   retrySilence?: () => boolean;
   // Fired once when that retry ran, with what the second answer did, for the turn's trail.
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
+  // The factual-grounding review (modules/guardrails/grounding-gate.ts), asked with the turn as it
+  // would end: the history plus the final answer. A note back means "revise": the model is asked once
+  // more with it, and only that second answer returns to the thread. Asked at most once per invocation.
+  reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  // Fired with the rewrite's text after a revise ("" when there is none), so the caller can stop a
+  // refused draft that would otherwise be recovered and delivered.
+  onReplyRevised?: (text: string) => void;
+  // Whether the caller would deliver the reply written beside an earlier call when the turn ends on
+  // an empty answer (the runtime's recovery). Absent means it would not, and that text is not
+  // reviewed: only what goes out is.
+  recoversReply?: () => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -568,28 +579,42 @@ function withoutText(message: BaseMessage): BaseMessage {
 function silenceNarration(history: BaseMessage[]): BaseMessage[] {
   const { caller } = lastBatch(history);
   if (!caller || typeof caller.id !== "string") return [];
-  const ai = caller as AIMessage;
-  return [
-    new AIMessage({
-      id: ai.id,
-      // NOTE: a block list without the text, never `""` and never a blanket `[]`. Not `""`: this
-      // message keeps its tool calls, so `isEmptyAssistantTurn` leaves it in the prompt, and
-      // `@langchain/anthropic` renders a string as a text block Anthropic refuses when empty. Not `[]`:
-      // Anthropic's signed `thinking`/`redacted_thinking` must be replayed unchanged before the tool
-      // result they precede, or the next round fails at the provider.
-      content: textlessContent(ai.content),
-      tool_calls: ai.tool_calls ?? [],
-      // NOTE: Carried like the valid ones: they are part of what the model asked for, and a rebuild that
-      // dropped them would erase the record of a call that failed to parse.
-      ...(ai.invalid_tool_calls?.length
-        ? { invalid_tool_calls: ai.invalid_tool_calls }
-        : {}),
-      additional_kwargs: ai.additional_kwargs,
-      response_metadata: textlessResponseMetadata(ai.response_metadata),
-      ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
-      ...(ai.name ? { name: ai.name } : {}),
-    }),
-  ];
+  return [textlessCopy(caller as AIMessage, caller.id)];
+}
+
+// An assistant message with its text taken out and everything else carried, replacing it by `id`.
+function textlessCopy(ai: AIMessage, id: string): AIMessage {
+  return new AIMessage({
+    id,
+    // NOTE: a block list without the text, never `""` and never a blanket `[]`. Not `""`: this
+    // message keeps its tool calls, so `isEmptyAssistantTurn` leaves it in the prompt, and
+    // `@langchain/anthropic` renders a string as a text block Anthropic refuses when empty. Not `[]`:
+    // Anthropic's signed `thinking`/`redacted_thinking` must be replayed unchanged before the tool
+    // result they precede, or the next round fails at the provider.
+    content: textlessContent(ai.content),
+    tool_calls: ai.tool_calls ?? [],
+    // NOTE: Carried like the valid ones: they are part of what the model asked for, and a rebuild that
+    // dropped them would erase the record of a call that failed to parse.
+    ...(ai.invalid_tool_calls?.length
+      ? { invalid_tool_calls: ai.invalid_tool_calls }
+      : {}),
+    additional_kwargs: ai.additional_kwargs,
+    response_metadata: textlessResponseMetadata(ai.response_metadata),
+    ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
+    ...(ai.name ? { name: ai.name } : {}),
+  });
+}
+
+// The reply `replyWrittenThisTurn` would recover, taken out of the thread once a factual-grounding
+// revise replaced it, so the refused draft is neither delivered nor read by the next turn as said.
+function recoveredDraftRemoved(messages: BaseMessage[]): BaseMessage[] {
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.getType() === "human") return [];
+    if (m.getType() !== "ai" || !contentToText(m.content).trim()) continue;
+    return typeof m.id === "string" ? [textlessCopy(m as AIMessage, m.id)] : [];
+  }
+  return [];
 }
 
 // Providers whose adapter re-serializes their own non-text blocks. `@langchain/openai` filters an
@@ -699,6 +724,9 @@ export function buildAgentGraph({
   signal: jobSignal,
   retrySilence,
   onSilenceRetry,
+  reviewReply,
+  onReplyRevised,
+  recoversReply,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -743,6 +771,8 @@ export function buildAgentGraph({
   // Once per turn, by the same closure argument: the silence retry runs at most once in this
   // invocation, however many rounds follow it.
   let silenceRetried = false;
+  // Same closure argument: the factual-grounding revision runs at most once per invocation.
+  let replyRevised = false;
   const reportToolLimit = (info: {
     maxToolCalls: number;
     toolCalls: number;
@@ -807,9 +837,27 @@ export function buildAgentGraph({
       (silentTurn && hardLimit)
     ) {
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
+      // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
+      // no model call left to rewrite it, a revise reads as an empty rewrite.
+      const recovered =
+        reviewReply &&
+        !replyRevised &&
+        !noReplyChannel &&
+        !silentTurn &&
+        recoversReply?.()
+          ? customerFacingReply(replyWrittenThisTurn(history)).text
+          : "";
+      if (reviewReply && recovered) {
+        const note = await reviewReply(history, recovered);
+        if (note) {
+          replyRevised = true;
+          onReplyRevised?.("");
+        }
+      }
       return {
         messages: [
           ...narration,
+          ...(replyRevised && recovered ? recoveredDraftRemoved(history) : []),
           ...(stalled ? dropRepeatedBatch(history) : []),
           new AIMessage(""),
         ],
@@ -898,7 +946,7 @@ export function buildAgentGraph({
     const messages = [new SystemMessage(prompt), ...shown, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
-    const secondFor = (msgs: BaseMessage[]) =>
+    const secondFor = (msgs: BaseMessage[], noTools = false) =>
       fallback && fallbackLlm
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
@@ -912,7 +960,11 @@ export function buildAgentGraph({
                 ? AbortSignal.any([deadline, jobSignal])
                 : deadline;
               return (
-                hardLimit ? (cappedFallback ?? fallback.model) : fallbackLlm
+                noTools
+                  ? fallback.model
+                  : hardLimit
+                    ? (cappedFallback ?? fallback.model)
+                    : fallbackLlm
               ).invoke(msgs, {
                 signal,
                 // NOTE: metadata rather than callbacks: metadata MERGES with the turn's handlers,
@@ -928,9 +980,13 @@ export function buildAgentGraph({
         : null;
 
     // One question to the model, the fallback's rules included. A function because the silence
-    // retry below asks it a second time, with different messages, under the same rules.
-    const ask = async (msgs: BaseMessage[]): Promise<BaseMessage> => {
-      const second = secondFor(msgs);
+    // retry below asks it a second time, with different messages, under the same rules. `noTools`
+    // asks the raw model, for an answer that must be text: the factual-grounding rewrite.
+    const ask = async (
+      msgs: BaseMessage[],
+      noTools = false,
+    ): Promise<BaseMessage> => {
+      const second = secondFor(msgs, noTools);
       // Already demoted this invocation: the fallback IS the model now, so it gets the
       // empty-completion retry under its own name, and a failure of its own is reported as that
       // rather than as a second failover the operator never caused.
@@ -960,7 +1016,7 @@ export function buildAgentGraph({
         }
       }
 
-      const primaryLlm = hardLimit ? capped : llm;
+      const primaryLlm = noTools ? model : hardLimit ? capped : llm;
       // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of
       // joining it. The job's deadline is joined here with the call's own, which `runModelCall` hands
       // in, so a deadline that ends the job ends this call too.
@@ -1054,7 +1110,45 @@ export function buildAgentGraph({
       response = await ask(retried);
       onSilenceRetry?.({ outcome: silenceRetryOutcome(response) });
     }
-    return { messages: [...narration, silenced(response)] };
+    // The factual-grounding review's candidate, on a turn that answers somebody and did not decide
+    // silence: the final text, or, when that is empty, the reply written beside an earlier call that
+    // the runtime recovers and delivers (`replyWrittenThisTurn`). A revise note travels like the
+    // silence retry's instruction, with the draft quoted inside it rather than sent as an assistant turn.
+    const candidate =
+      reviewReply &&
+      !replyRevised &&
+      !noReplyChannel &&
+      !silentTurn &&
+      ((response as AIMessage).tool_calls?.length ?? 0) === 0
+        ? customerFacingReply(
+            contentToText(response.content).trim() ||
+              (recoversReply?.()
+                ? replyWrittenThisTurn([...history, response])
+                : ""),
+          ).text
+        : "";
+    let draftRemoved: BaseMessage[] = [];
+    if (reviewReply && candidate) {
+      const note = await reviewReply([...history, response], candidate);
+      if (note) {
+        replyRevised = true;
+        if (!contentToText(response.content).trim())
+          draftRemoved = recoveredDraftRemoved([...history, response]);
+        // NOTE: asked without tools, so the rewrite is the turn's last answer and the note is still
+        // in front of the model when it writes it. An empty rewrite is reported, never replaced by
+        // the draft the reviewer refused.
+        response = await ask(
+          lateSystemAccepted
+            ? [...messages, new SystemMessage(note)]
+            : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
+          true,
+        );
+        onReplyRevised?.(
+          customerFacingReply(contentToText(response.content)).text,
+        );
+      }
+    }
+    return { messages: [...narration, ...draftRemoved, silenced(response)] };
   };
 
   // The node as the graph runs it. A model call ended by the job's deadline fails with whatever

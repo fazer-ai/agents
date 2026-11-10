@@ -29,6 +29,9 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     // so refusing here either posts it unscreened or drops a reply the customer is waiting for; on
     // the input direction the turn behind it was already allowed. The unit is the right granularity.
     guardrail: "covered-by-the-unit",
+    // The factual-grounding reviewer, for the same reason: it reviews a reply already written and paid
+    // for, inside the turn that was allowed.
+    guardrail_grounding: "covered-by-the-unit",
     // Speech normalization, inside a turn that was allowed.
     tts_normalize: "covered-by-the-unit",
     // The `customer_choice` judge, inside the tool call of a turn that was allowed. Gating it would

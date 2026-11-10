@@ -26,6 +26,7 @@ import {
 } from "./classify";
 import { type GuardrailContextMessage, guardrailContext } from "./context";
 import type { ExternalReport } from "./external";
+import type { FACTUAL_GROUNDING_KEY, GroundingClaim } from "./grounding";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
@@ -108,9 +109,16 @@ export interface GuardrailReport {
   direction: "input" | "output";
   // `observed` is a trip under the `observe` action: the caller was told `clean` and went on, and
   // this is the only place the verdict is said.
-  outcome: Exclude<GuardrailDecision["kind"], "not-run"> | "observed";
+  // `revised` is a factual-grounding trip under `revise`: the agent wrote the reply again.
+  outcome:
+    | Exclude<GuardrailDecision["kind"], "not-run">
+    | "observed"
+    | "revised";
   // As CARRIED OUT, and only on a trip. See the note on `effectiveAction` below.
-  action?: GuardrailAction;
+  action?: GuardrailAction | "revise";
+  // Set on a report of the factual-grounding check (./grounding-gate.ts), with the claims it found.
+  check?: typeof FACTUAL_GROUNDING_KEY;
+  claims?: GroundingClaim[];
   // Model-written, and only on a trip.
   categories?: string[];
   rationale?: string;

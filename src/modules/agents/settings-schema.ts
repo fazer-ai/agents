@@ -63,11 +63,13 @@ import {
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import {
+  GROUNDING_ACTIONS,
   GUARDRAIL_ACTIONS,
   GUARDRAIL_CLASSIFIERS,
   GUARDRAIL_FAILURE_MODES,
   GUARDRAIL_THRESHOLD_KEYS,
   isExternalCheckUrl,
+  MAX_SOURCE_TOOLS,
 } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import {
@@ -1137,6 +1139,30 @@ const guardrails = z
       .describe(
         "an endpoint that answers allow, replace or block for each reply to a customer message; a block fires output.action, a failure follows onFailure",
       ),
+    factualGrounding: z
+      .looseObject({
+        enabled: z.boolean().optional(),
+        sourceTools: z
+          .array(z.string())
+          .max(MAX_SOURCE_TOOLS)
+          .optional()
+          .describe(
+            "tools whose results are sources; runs only when one returned",
+          ),
+        action: oneOf(GROUNDING_ACTIONS)
+          .optional()
+          .describe("revise = one more generation told the claims"),
+        contextMessages: ranged(GUARDRAIL_RANGES.contextMessages).optional(),
+        provider: oneOf(MODEL_PROVIDERS)
+          .nullable()
+          .optional()
+          .describe("null = the guardrails model"),
+        model: z.string().nullable().optional(),
+        credentialRef: credentialRef(),
+        baseURL: baseURL(),
+      })
+      .optional()
+      .describe("reviews the reply against recent source results"),
     onFailure: oneOf(GUARDRAIL_FAILURE_MODES)
       .optional()
       .describe(

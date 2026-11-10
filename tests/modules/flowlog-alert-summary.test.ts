@@ -289,6 +289,10 @@ const EXPLAINED_ELSEWHERE: Record<string, string> = {
 // would ship silent, because "names at least one printed key" is already true.
 const NOT_A_CAUSE: Record<string, string> = {
   attempt: "tts_check: which try this was; `outcome` says what was done",
+  categories:
+    "guardrail: the factual-grounding check's own key, also in `check`; `action` is the printed cause",
+  claimCount:
+    "guardrail: how many claims the factual-grounding reviewer listed; `action` is the printed cause",
   codeRead:
     "channel_error: whether `code` was present, which the body already shows by printing it or not",
   command: "command: the command name; the drop's `reason` is the cause",

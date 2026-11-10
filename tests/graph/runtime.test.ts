@@ -10059,6 +10059,357 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(attachments).toEqual([]);
     });
 
+    // Factual grounding (docs/factual-grounding.md): the graph reviews the answer that would end the
+    // turn, and the inbox delivers what the action decided. The calculator stands in for a source.
+    describe("factual grounding", () => {
+      const DRAFT = "Deu 3.";
+      const REVISED = "Deu 2.";
+      const CLEAN_GROUNDING = JSON.stringify({
+        violated: false,
+        claims: [],
+        rationale: "",
+      });
+      const flagged = JSON.stringify({
+        violated: true,
+        claims: [{ claim: "deu 3", type: "contradiction", evidence: "2" }],
+        rationale: "r",
+      });
+      // The rewrite is asked of the model without tools, so it arrives through the raw `invoke`.
+      const calcThenAnswer = (rewrite = REVISED) => {
+        let answers = 0;
+        return {
+          async invoke() {
+            return new AIMessage(rewrite);
+          },
+          bindTools() {
+            return {
+              async invoke(msgs: BaseMessage[]) {
+                const sinceHuman = msgs.slice(
+                  msgs.findLastIndex((m) => m.getType() === "human") + 1,
+                );
+                if (!sinceHuman.some((m) => m.getType() === "tool"))
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: `c${Math.random()}`,
+                      },
+                    ],
+                  });
+                answers += 1;
+                return new AIMessage(answers === 1 ? DRAFT : REVISED);
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+      };
+      const grounded = (action: string) =>
+        setGuardrails({
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          credentialRef: gVaultRef,
+          input: { enabled: false },
+          output: {
+            enabled: false,
+            templateMessage: "TEMPLATE-OUT",
+            handoffMessage: "HANDOFF-OUT",
+          },
+          factualGrounding: {
+            enabled: true,
+            sourceTools: ["calculator"],
+            action,
+          },
+        });
+      const turn = async (convId: number, rewrite = REVISED) => {
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(flagged, calcThenAnswer(rewrite)),
+            makeClient: guardStub(sent, notes),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        return { outcome, sent, notes };
+      };
+
+      beforeAll(async () => {
+        await suDb.agentToolSelection.create({
+          data: {
+            tenantId: gTenantId,
+            agentId: gAgentId,
+            source: "NATIVE",
+            enabledTools: ["calculator", "handoff_to_human"],
+            knowledgeBaseIds: [],
+          },
+        });
+      });
+      // The calculator grant would change what every later test of this agent is offered.
+      afterAll(async () => {
+        await suDb.agentToolSelection.deleteMany({
+          where: { tenantId: gTenantId, agentId: gAgentId, source: "NATIVE" },
+        });
+      });
+
+      test("revise delivers the agent's second answer and posts no note", async () => {
+        await grounded("revise");
+        const { outcome, sent, notes } = await turn(1762);
+        expect(outcome).toBe("posted");
+        expect(sent).toEqual([[1762, REVISED]]);
+        expect(notes).toEqual([]);
+      });
+
+      test("a revise whose rewrite is empty sends the Output template, never the refused draft", async () => {
+        await grounded("revise");
+        const { sent } = await turn(1765, "");
+        expect(sent).toEqual([[1765, "TEMPLATE-OUT"]]);
+      });
+
+      test("template replaces the reply with the Output template and leaves a note", async () => {
+        await grounded("template");
+        const { sent, notes } = await turn(1763);
+        expect(sent).toEqual([[1763, "TEMPLATE-OUT"]]);
+        expect(notes[0]?.[1]).toContain("factual_grounding");
+      });
+
+      test("after a completed hand-over the final text is dropped, so it is not reviewed", async () => {
+        await grounded("template");
+        await seedConv(1767);
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        let n = 0;
+        let reviews = 0;
+        const handsOver = {
+          async invoke() {
+            return new AIMessage(DRAFT);
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                n++;
+                if (n === 1)
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: "g1",
+                      },
+                    ],
+                  });
+                if (n === 2)
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: "ATENDENTE-JA-VEM" },
+                        id: "g2",
+                      },
+                    ],
+                  });
+                return new AIMessage(DRAFT);
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 1767, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    reviews++;
+                    return { content: flagged };
+                  })
+                : handsOver,
+            makeClient: guardStub(sent, [], toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(sent).toEqual([[1767, "ATENDENTE-JA-VEM"]]);
+        expect(reviews).toBe(0);
+      });
+
+      // The case that cost most in production: the second answer, under the customer's pressure,
+      // repeats a source the first turn read, without asking the tool again, and gets it wrong.
+      const fromMemory = async (convId: number, second: string) => {
+        await grounded("template");
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const asked: string[] = [];
+        const agent = {
+          async invoke() {
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke(msgs: BaseMessage[]) {
+                const human = msgs.findLast((m) => m.getType() === "human");
+                if (!contentToText(human?.content ?? "").includes("1+1"))
+                  return new AIMessage(second);
+                const sinceHuman = msgs.slice(
+                  msgs.indexOf(human as BaseMessage),
+                );
+                if (!sinceHuman.some((m) => m.getType() === "tool"))
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: `m${convId}`,
+                      },
+                    ],
+                  });
+                return new AIMessage("Deu 2.");
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const checkpointer = new MemorySaver();
+        const run = (id: number, content: string) =>
+          runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({
+              conversationId: convId,
+              inboxId: G_INBOX,
+              message: { id, content, messageType: "incoming", private: false },
+            }),
+            base: appDb,
+            deps: {
+              makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+                cfg.model === GUARD_MODEL
+                  ? guardrailModel(async (msgs) => {
+                      const text = contentToText(
+                        (msgs.at(-1)?.content ?? "") as never,
+                      );
+                      asked.push(text);
+                      const reply = text.slice(text.indexOf("<reply>"));
+                      return {
+                        content: reply.includes("3")
+                          ? flagged
+                          : CLEAN_GROUNDING,
+                      };
+                    })
+                  : agent,
+              makeClient: guardStub(sent, []),
+              checkpointer,
+            },
+          });
+        await run(convId * 10 + 1, "quanto é 1+1?");
+        await run(convId * 10 + 2, "tem certeza? achei que dava 3");
+        return { sent, asked };
+      };
+
+      test("an answer from memory that contradicts an earlier turn's source is caught", async () => {
+        const { sent, asked } = await fromMemory(1768, "Isso, deu 3.");
+        expect(sent).toEqual([
+          [1768, "Deu 2."],
+          [1768, "TEMPLATE-OUT"],
+        ]);
+        expect(asked).toHaveLength(2);
+        expect(asked[1]).toContain('turn="earlier" turns_back="1"');
+      });
+
+      test("an answer from memory that agrees with the earlier source goes out as written", async () => {
+        const { sent, asked } = await fromMemory(1769, "Confirmo, deu 2.");
+        expect(sent).toEqual([
+          [1769, "Deu 2."],
+          [1769, "Confirmo, deu 2."],
+        ]);
+        expect(asked[1]).toContain('turn="earlier" turns_back="1"');
+      });
+
+      test("a silent hand-over keeps its silence, and the draft beside it is not reviewed", async () => {
+        await grounded("template");
+        await seedConv(1766);
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        let n = 0;
+        let reviews = 0;
+        const handsOver = {
+          async invoke() {
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                n++;
+                if (n === 1)
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: "g1",
+                      },
+                    ],
+                  });
+                if (n === 2)
+                  return new AIMessage({
+                    content: DRAFT,
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: "" },
+                        id: "g2",
+                      },
+                    ],
+                  });
+                return new AIMessage("");
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 1766, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    reviews++;
+                    return { content: flagged };
+                  })
+                : handsOver,
+            makeClient: guardStub(sent, [], toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(toggles.length).toBeGreaterThan(0);
+        expect(sent).toEqual([]);
+        expect(reviews).toBe(0);
+      });
+
+      test("observe sends the reply as written", async () => {
+        await grounded("observe");
+        const { sent, notes } = await turn(1764);
+        expect(sent).toEqual([[1764, DRAFT]]);
+        expect(notes).toEqual([]);
+      });
+    });
+
     // The input check reads the conversation's thread as context: the second message is
     // judged after the first one and the agent's reply to it, and is the only text judged.
     test("the input check reads the earlier turns of the conversation as context", async () => {

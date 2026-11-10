@@ -106,6 +106,41 @@ describe("guardrails form state", () => {
 });
 
 describe("playgroundGuardrailsUsable", () => {
+  // The bug it catches: a grounding reviewer with its own key bills playground turns while the toggle
+  // that would skip it reads disabled.
+  test("is usable when only the factual-grounding reviewer has a key", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const fg = {
+      ...on.factualGrounding,
+      enabled: true,
+      sourceTools: ["catalogo"],
+      provider: "anthropic" as const,
+      credentialRef: "vault:9",
+    };
+    expect([
+      playgroundGuardrailsUsable({
+        ...on,
+        credentialRef: null,
+        factualGrounding: fg,
+      }),
+      playgroundGuardrailsUsable({
+        ...on,
+        credentialRef: null,
+        factualGrounding: { ...fg, sourceTools: [] },
+      }),
+      playgroundGuardrailsUsable({
+        ...on,
+        credentialRef: null,
+        factualGrounding: {
+          ...fg,
+          provider: "openai-compatible" as const,
+          credentialRef: null,
+          baseURL: "http://revisor.local/v1",
+        },
+      }),
+    ]).toEqual([true, false, true]);
+  });
+
   // The bug it catches: under hold with no credential every playground turn is held, while the
   // toggle that would switch moderation off reads disabled.
   test("is usable with a credential, or with none under hold, and never when off", () => {

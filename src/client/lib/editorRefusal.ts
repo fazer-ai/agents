@@ -224,6 +224,8 @@ export interface EditorControlsShown {
   // API's when that is who judges.
   guardrailsChatModelShown: boolean;
   guardrailsClassifierShown: boolean;
+  // The factual-grounding reviewer's own key, drawn once the check is on and has a provider of its own.
+  guardrailsGroundingModelShown: boolean;
   followUpEnabled: boolean;
   // How many follow-up steps the Proactive section is showing. The note of a step that does not
   // exist is a name nothing can render, so the list stops where the editor's does.
@@ -258,6 +260,7 @@ const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "guardrails.credentialRef": "guardrailsChatModelShown",
   "guardrails.decisions.credentialRef": "guardrailsClassifierShown",
   "guardrails.external.credentialRef": "guardrailsEnabled",
+  "guardrails.factualGrounding.credentialRef": "guardrailsGroundingModelShown",
 };
 
 interface OwnedField {

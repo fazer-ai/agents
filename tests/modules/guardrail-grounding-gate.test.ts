@@ -440,6 +440,28 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect((await lines(f.turnId))[0]?.outcome).toBe("sources_too_large");
   });
 
+  test("a keyless compatible endpoint is reviewed, and no key elsewhere is a missing credential", async () => {
+    const r = reviewer(VIOLATED);
+    const base = cfg("observe");
+    await buildGroundingGate({
+      langfuseCfg: null,
+      cfg: {
+        ...base,
+        factualGrounding: {
+          ...base.factualGrounding,
+          provider: "openai-compatible",
+          model: "revisor",
+          credentialRef: null,
+          baseURL: "http://revisor.local/v1",
+        },
+      },
+      apiKey: "",
+      flow: flow(),
+      makeModel: r.make,
+    })?.review(turn());
+    expect(r.calls).toHaveLength(1);
+  });
+
   test("no key is reported as a missing credential, never as clean", async () => {
     const f = flow();
     await buildGroundingGate({

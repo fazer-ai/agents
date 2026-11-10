@@ -12,7 +12,7 @@ Code: `src/modules/guardrails/grounding.ts` (what the reviewer reads, the prompt
 | `sourceTools` | `[]` | Tool names whose results count as sources. Empty means the check never runs. |
 | `action` | `observe` | `observe`, `revise`, `template` or `handoff`. |
 | `contextMessages` | `6` | Earlier messages of the conversation the reviewer reads (0 to 20). |
-| `provider`, `model`, `credentialRef`, `baseURL` | `null` | The reviewer's own chat model. With `provider` null it is the guardrails chat model, key included (`groundingReviewer`). |
+| `provider`, `model`, `credentialRef`, `baseURL` | `null` | The reviewer's own chat model. With `provider` null it is the guardrails chat model, key included (`groundingReviewer`). An `openai-compatible` reviewer may be keyless (no `credentialRef`); the console clears the key and the endpoint when the provider changes. |
 
 The console draws it in the Guardrails tab (section `gr-grounding`); REST (`PATCH /v1/agents/:id`) and MCP (`agent_settings_set`) write it through the same schema, which refuses an action outside the four.
 
@@ -53,4 +53,4 @@ One `guardrail` line per review, clean or flagged, `check: "factual_grounding"`,
 
 ## Cost
 
-One reviewer call per reviewed turn, billed on its own ledger node, `guardrail_grounding`, under the reviewer's model, so its cost reads apart from the moderation calls on `guardrail` in the cost dashboard and in each turn's usage. It counts as part of the agent's turn and is covered by the turn's spend gate, like `guardrail`. Plus one agent generation for each `revise`. Measured with the battery: about 8,000 input tokens at the median and 250 to 370 output tokens per review. The input is dominated by the tool results. A cascade of a cheap reviewer confirmed by a stronger one, and prompt caching of the sources, are tracked in #1763.
+One reviewer call per reviewed turn, billed on its own ledger node, `guardrail_grounding`, under the reviewer's model, so its cost reads apart from the moderation calls on `guardrail` in the cost dashboard and in each turn's usage. It counts as part of the agent's turn and is covered by the turn's spend gate, like `guardrail`. Plus one agent generation for each `revise`. Measured with the battery: about 8,100 input tokens at the median (about 11,400 at most) and 290 to 350 output tokens per review. The input is dominated by the tool results. A cascade of a cheap reviewer confirmed by a stronger one, and prompt caching of the sources, are tracked in #1763.

@@ -639,6 +639,35 @@ describe("GuardrailsTab factual grounding", () => {
     expect(saved?.factualGrounding.sourceTools).toEqual(full.slice(1));
   });
 
+  // The bug it catches: an endpoint set over REST for one provider kept after a switch, so the new
+  // vendor's key and the review's contents go to the old server.
+  test("switching the reviewer's provider drops the endpoint and the key of the old one", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      provider: "openai-compatible",
+      model: "revisor",
+      credentialRef: "vault:3",
+      baseURL: "http://antigo.local/v1",
+    };
+    render(<Stateful initial={c} />);
+    const provider = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-grounding-provider"]',
+    );
+    fireEvent.change(provider as HTMLSelectElement, {
+      target: { value: "openrouter" },
+    });
+    expect([
+      saved?.factualGrounding.provider,
+      saved?.factualGrounding.baseURL,
+      saved?.factualGrounding.credentialRef,
+    ]).toEqual(["openrouter", null, null]);
+  });
+
   test("template shows the Output template beside the action, and editing it edits that one", async () => {
     const c: GuardrailsConfig = {
       ...structuredClone(GUARDRAILS_DEFAULTS),

@@ -1165,12 +1165,17 @@ export function GuardrailsTab({
                         value={fg.provider ?? ""}
                         onChange={(e) => {
                           const provider = e.target.value;
+                          // The key and the endpoint belong to the provider they were set for: kept
+                          // across a switch, the new vendor's requests (and the review's contents)
+                          // would go to the old server, or carry the old vendor's key.
                           setGrounding(
                             provider
                               ? {
                                   provider:
                                     provider as GuardrailsConfig["provider"],
                                   model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
+                                  credentialRef: null,
+                                  baseURL: null,
                                 }
                               : {
                                   provider: null,

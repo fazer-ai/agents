@@ -128,7 +128,17 @@ describe("playgroundGuardrailsUsable", () => {
         credentialRef: null,
         factualGrounding: { ...fg, sourceTools: [] },
       }),
-    ]).toEqual([true, false]);
+      playgroundGuardrailsUsable({
+        ...on,
+        credentialRef: null,
+        factualGrounding: {
+          ...fg,
+          provider: "openai-compatible" as const,
+          credentialRef: null,
+          baseURL: "http://revisor.local/v1",
+        },
+      }),
+    ]).toEqual([true, false, true]);
   });
 
   // The bug it catches: under hold with no credential every playground turn is held, while the

@@ -100,12 +100,16 @@ export function buildGroundingGate(
   const fg = gr.factualGrounding;
   if (!gr.enabled || !fg.enabled || fg.sourceTools.length === 0) return null;
   const reviewer = groundingReviewer(gr);
+  // An `openai-compatible` endpoint may need no key: with no credential configured the model factory
+  // sends a placeholder. A missing key is a failure only where one was configured, or is required.
+  const keyless =
+    reviewer.provider === "openai-compatible" && !reviewer.credentialRef;
   let decision: GuardrailDecision | null = null;
   let model: BaseChatModel | null | undefined;
   let buildError: string | undefined;
   const resolveModel = (): BaseChatModel | null => {
     if (model !== undefined) return model;
-    if (!p.apiKey) {
+    if (!p.apiKey && !keyless) {
       model = null;
       return model;
     }
@@ -223,7 +227,7 @@ export function buildGroundingGate(
     const m = resolveModel();
     if (!m)
       return couldNotReview(
-        p.apiKey ? "model_unavailable" : "credential_not_found",
+        p.apiKey || keyless ? "model_unavailable" : "credential_not_found",
         sized,
         buildError,
       );

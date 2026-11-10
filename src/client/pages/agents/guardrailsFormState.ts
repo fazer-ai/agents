@@ -25,7 +25,16 @@ export function playgroundGuardrailsUsable(g: GuardrailsConfig): boolean {
       !!g.external.url ||
       (g.factualGrounding.enabled &&
         g.factualGrounding.sourceTools.length > 0 &&
-        !!groundingReviewer(g).credentialRef))
+        groundingReviewerCalls(g)))
+  );
+}
+
+// Whether the reviewer can call out: it has a key, or it is an `openai-compatible` endpoint that the
+// operator left keyless on purpose (the runtime sends a placeholder key there).
+function groundingReviewerCalls(g: GuardrailsConfig): boolean {
+  const r = groundingReviewer(g);
+  return (
+    !!r.credentialRef || (r.provider === "openai-compatible" && !!r.baseURL)
   );
 }
 

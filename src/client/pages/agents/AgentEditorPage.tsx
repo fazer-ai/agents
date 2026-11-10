@@ -1378,9 +1378,7 @@ function AgentEditor() {
     guardrailsClassifierShown:
       guardrails.enabled && guardrails.classifier === "decisions",
     guardrailsGroundingModelShown:
-      guardrails.enabled &&
-      guardrails.factualGrounding.enabled &&
-      guardrails.factualGrounding.provider !== null,
+      guardrails.enabled && guardrails.factualGrounding.enabled,
     followUpEnabled: followUp.enabled,
     followUpSteps: followUp.steps.length,
     snoozedFollowUpEnabled:
@@ -5578,6 +5576,12 @@ function AgentEditor() {
                 agentId={id}
                 guardrails={guardrails}
                 setGuardrails={setGuardrails}
+                guardrailsCredBaseUrl={vaultBaseUrl(
+                  guardrails.credentialRef ?? "",
+                )}
+                groundingCredBaseUrl={vaultBaseUrl(
+                  guardrails.factualGrounding.credentialRef ?? "",
+                )}
                 refusals={{
                   credential: refusal.at(
                     "settings.guardrails.credentialRef",

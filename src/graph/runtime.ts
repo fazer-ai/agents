@@ -1192,8 +1192,7 @@ async function runTurnBody(
   // `template` or `handoff` trip waits in `pending()` for the output gate below.
   const grounding = buildGroundingGate({
     cfg: loaded.guardrails,
-    apiKey: loaded.groundingApiKey,
-    credentialBaseUrl: loaded.groundingCredentialBaseUrl,
+    reviewer: loaded.groundingReviewer,
     flow,
     logValues: loaded.logToolValues,
     announce: async (r) => {

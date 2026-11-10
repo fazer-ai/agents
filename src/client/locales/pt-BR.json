@@ -2464,6 +2464,7 @@
       "groundingActionTemplate": "Responder com a mensagem template de Saída",
       "groundingContext": "Mensagens anteriores que o revisor lê",
       "groundingContextHint": "Mensagens do cliente e do agente antes do turno, inclusive o que foi lido das imagens que o cliente enviou. Os resultados das ferramentas de fonte dos turnos dessa janela também entram na revisão.",
+      "groundingCredentialHint": "Obrigatória quando o revisor usa outro fornecedor; sem chave própria, as respostas não são conferidas.",
       "groundingDesc": "Antes de a resposta sair, um modelo revisor a compara com o que as ferramentas de fonte devolveram, naquele turno e nos turnos anteriores da conversa que ele lê, e lista as afirmações que eles não sustentam. Só roda quando uma ferramenta de fonte devolveu algo num desses turnos.",
       "groundingEnabled": "Conferir a resposta com os resultados das ferramentas",
       "groundingHandoff": "Mensagem ao cliente (a mesma de Saída)",

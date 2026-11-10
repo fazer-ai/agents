@@ -6,10 +6,10 @@ import {
 import {
   type GuardrailDirectionConfig,
   type GuardrailsConfig,
-  groundingReviewer,
   guardrailCredentialRef,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
+import { overrideResolution } from "./modelOverrideForm";
 
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime
 // has (modules/guardrails/gate), the feature switched on and its OWN credential. Under `hold` a
@@ -29,13 +29,27 @@ export function playgroundGuardrailsUsable(g: GuardrailsConfig): boolean {
   );
 }
 
-// Whether the reviewer can call out: it has a key, or it is an `openai-compatible` endpoint that the
-// operator left keyless on purpose (the runtime sends a placeholder key there).
+// Whether the reviewer can call out: its override of the guardrails chat model resolves, with a key
+// to run on (its own, the guardrails one at the same destination) or none needed (a keyless
+// OpenAI-compatible endpoint). The same resolution the runtime makes.
 function groundingReviewerCalls(g: GuardrailsConfig): boolean {
-  const r = groundingReviewer(g);
-  return (
-    !!r.credentialRef || (r.provider === "openai-compatible" && !!r.baseURL)
+  const fg = g.factualGrounding;
+  const r = overrideResolution(
+    {
+      provider: fg.provider ?? "",
+      model: fg.model,
+      credentialRef: fg.credentialRef ?? "",
+      baseURL: fg.baseURL ?? "",
+    },
+    {
+      provider: g.provider,
+      credentialRef: g.credentialRef ?? "",
+      baseURL: g.baseURL ?? "",
+    },
+    null,
   );
+  if (!r.runnable) return false;
+  return r.credential === "agent" ? !!g.credentialRef : true;
 }
 
 // The agent editor's view of the stored `guardrails` block: the runtime reader, with the capped

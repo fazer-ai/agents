@@ -137,6 +137,7 @@ import {
 import { watcherSectionUsed } from "./editorTabs";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
+import { ModelOverrideFields } from "./ModelOverrideFields";
 import {
   fallbackIsConfigured,
   fallbackModelIsMissing,
@@ -1938,17 +1939,6 @@ export function BehaviorTab({
     credentialRef: memory.credentialRef,
     baseURL: memory.baseURL,
   };
-  const memorySource = overridePickerSource(
-    memoryOverride,
-    agentModel,
-    memoryCredBaseUrl,
-  );
-  const memoryEffectiveProvider = memory.provider || agentModelProvider;
-  const memoryNeedsOwnCredential = overrideNeedsOwnCredential(
-    memoryOverride,
-    agentModel,
-    memoryCredBaseUrl,
-  );
   // The endpoint half of the same resolution, and the reason it is here rather than only on the
   // field: the summariser is the second override in this tab, and the first one already blocks the
   // save on both of these. A section that renders the picker without them saves a configuration the
@@ -4336,146 +4326,40 @@ export function BehaviorTab({
                     )}
                   </p>
                 )}
-                <FormField label={t("editor.provider", "Provider")}>
-                  <Select
-                    value={memory.provider}
-                    onChange={(e) =>
-                      setMemory((prev) => ({
-                        ...prev,
-                        ...overrideProviderChanged(
-                          {
-                            provider: prev.provider,
-                            model: prev.model,
-                            credentialRef: prev.credentialRef,
-                            baseURL: prev.baseURL,
-                          },
-                          e.target.value,
-                        ),
-                      }))
-                    }
-                  >
-                    <option value="">
-                      {t("editor.memorySameAsAgent", "Same as the agent")}
-                    </option>
-                    {MODEL_PROVIDERS.map((p) => (
-                      <option key={p} value={p}>
-                        {providerLabel(p, t)}
-                      </option>
-                    ))}
-                  </Select>
-                </FormField>
-                <FormField
-                  label={t("editor.credential", "API key")}
-                  error={refusals.memoryCredential}
-                  description={t(
+                <ModelOverrideFields
+                  value={{
+                    provider: memory.provider,
+                    model: memory.model,
+                    credentialRef: memory.credentialRef,
+                    baseURL: memory.baseURL,
+                  }}
+                  onChange={(update) =>
+                    setMemory((prev) => ({
+                      ...prev,
+                      ...update({
+                        provider: prev.provider,
+                        model: prev.model,
+                        credentialRef: prev.credentialRef,
+                        baseURL: prev.baseURL,
+                      }),
+                    }))
+                  }
+                  parent={agentModel}
+                  credBaseUrl={memoryCredBaseUrl}
+                  credentialError={refusals.memoryCredential ?? undefined}
+                  sameAsLabel={t(
+                    "editor.memorySameAsAgent",
+                    "Same as the agent",
+                  )}
+                  credentialHint={t(
                     "editor.memoryCredentialHint",
                     "Required when summaries use another provider; without its own key, the attendance is not summarized.",
                   )}
-                  group
-                >
-                  <CredentialPicker
-                    value={memory.credentialRef}
-                    onChange={(v) =>
-                      setMemory((prev) => ({
-                        ...prev,
-                        ...overridePicked(
-                          {
-                            provider: prev.provider,
-                            model: prev.model,
-                            credentialRef: prev.credentialRef,
-                            baseURL: prev.baseURL,
-                          },
-                          "credentialRef",
-                          v,
-                          agentModelProvider,
-                        ),
-                      }))
-                    }
-                    required={memoryNeedsOwnCredential}
-                    compatibleTypes={credentialCompat.model(
-                      memoryEffectiveProvider,
-                    )}
-                    defaultCreateType={
-                      credentialCompat.model(memoryEffectiveProvider)[0]
-                    }
-                    ariaLabel={t("editor.credential", "API key")}
-                  />
-                </FormField>
-                <FormField label={t("editor.model", "Model")} group>
-                  <ModelPicker
-                    value={memory.model}
-                    onChange={(v) =>
-                      setMemory((prev) => ({
-                        ...prev,
-                        ...overridePicked(
-                          {
-                            provider: prev.provider,
-                            model: prev.model,
-                            credentialRef: prev.credentialRef,
-                            baseURL: prev.baseURL,
-                          },
-                          "model",
-                          v,
-                          agentModelProvider,
-                        ),
-                      }))
-                    }
-                    provider={memoryEffectiveProvider}
-                    credentialRef={memorySource.credentialRef || undefined}
-                    baseURL={memorySource.baseURL || undefined}
-                    // NOTE: blank inherits the AGENT's model while the provider is unchanged, and
-                    // only falls back to the provider default once it differs. The placeholder has
-                    // to say the same thing, or the operator reads one model here and another runs.
-                    placeholder={
-                      memoryEffectiveProvider === agentModelProvider
-                        ? t("editor.memorySameAsAgent", "Same as the agent")
-                        : undefined
-                    }
-                  />
-                </FormField>
-                {(memoryEffectiveProvider === "openai-compatible" ||
-                  !!memoryCredBaseUrl ||
-                  !!memory.baseURL.trim()) && (
-                  <FormField
-                    label={t("editor.baseURL", "Base URL")}
-                    description={
-                      memoryCredBaseUrl
-                        ? t(
-                            "editor.baseURLFromCredential",
-                            "Defined by the selected credential.",
-                          )
-                        : t(
-                            "editor.memoryBaseURLHint",
-                            "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-                          )
-                    }
-                    error={
-                      memoryBaseUrlUnsupported
-                        ? t(
-                            "editor.baseURLNotSentByProvider",
-                            "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
-                          )
-                        : memoryBaseUrlInvalid && memory.baseURL.trim()
-                          ? t(
-                              "common.invalidUrl",
-                              "Must be a valid http(s) URL.",
-                            )
-                          : null
-                    }
-                  >
-                    <Input
-                      value={memoryCredBaseUrl ?? memory.baseURL}
-                      onChange={(e) =>
-                        setMemory((prev) => ({
-                          ...prev,
-                          baseURL: e.target.value,
-                        }))
-                      }
-                      disabled={!!memoryCredBaseUrl}
-                      placeholder="https://api.groq.com/openai/v1"
-                    />
-                  </FormField>
-                )}
+                  baseURLHint={t(
+                    "editor.memoryBaseURLHint",
+                    "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                  )}
+                />
               </div>
             )}
             <SwitchField

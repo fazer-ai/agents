@@ -52,6 +52,15 @@ import {
 } from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
+import {
+  ModelOverrideFields,
+  type ModelOverrideForm,
+} from "./ModelOverrideFields";
+import {
+  type AgentModelSource,
+  overrideBaseUrlInvalid,
+  overrideBaseUrlUnsupported,
+} from "./modelOverrideForm";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import type { GuardrailsRefusals } from "./types";
@@ -73,6 +82,10 @@ interface GuardrailsTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
+  // The endpoints the guardrails chat model's credential and the grounding reviewer's credential
+  // carry, which outrank the typed fields; null when they carry none.
+  guardrailsCredBaseUrl?: string | null;
+  groundingCredBaseUrl?: string | null;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -148,6 +161,22 @@ function useAgentToolNames(agentId: string, wanted: boolean): string[] {
   return names;
 }
 
+// The shared fields' blank strings back to the stored block's nulls.
+function groundingFromForm(
+  o: ModelOverrideForm,
+): Pick<
+  GuardrailsConfig["factualGrounding"],
+  "provider" | "model" | "credentialRef" | "baseURL"
+> {
+  return {
+    provider: (o.provider ||
+      null) as GuardrailsConfig["factualGrounding"]["provider"],
+    model: o.model,
+    credentialRef: o.credentialRef || null,
+    baseURL: o.baseURL || null,
+  };
+}
+
 export function GuardrailsTab({
   agentId,
   guardrails: g,
@@ -157,6 +186,8 @@ export function GuardrailsTab({
   saving,
   onSave,
   onDiscard,
+  guardrailsCredBaseUrl = null,
+  groundingCredBaseUrl = null,
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
 
@@ -199,6 +230,33 @@ export function GuardrailsTab({
       factualGrounding: { ...s.factualGrounding, ...patch },
     }));
   const toolNames = useAgentToolNames(agentId, g.enabled && fg.enabled);
+  // The reviewer's model, an override of the guardrails chat model drawn by the shared fields. The
+  // stored block spells "unset" as null; the fields spell it as a blank string.
+  const groundingOverride: ModelOverrideForm = {
+    provider: fg.provider ?? "",
+    model: fg.model,
+    credentialRef: fg.credentialRef ?? "",
+    baseURL: fg.baseURL ?? "",
+  };
+  const guardrailsModel: AgentModelSource = {
+    provider: g.provider,
+    credentialRef: g.credentialRef ?? "",
+    baseURL: guardrailsCredBaseUrl ?? g.baseURL ?? "",
+  };
+  const groundingShown = g.enabled && fg.enabled;
+  const groundingBlocksSave =
+    overrideBaseUrlInvalid(
+      groundingOverride,
+      guardrailsModel,
+      groundingCredBaseUrl,
+      groundingShown,
+    ) ||
+    overrideBaseUrlUnsupported(
+      groundingOverride,
+      guardrailsModel,
+      groundingCredBaseUrl,
+      groundingShown,
+    );
   // Every name the picker draws: the agent's tools, then any saved name the agent no longer offers.
   const sourceChoices = [
     ...toolNames,
@@ -1152,6 +1210,7 @@ export function GuardrailsTab({
                       />
                     </FormField>
                     <FormField
+                      group
                       label={t(
                         "editor.guardrails.groundingReviewer",
                         "Reviewer model",
@@ -1161,101 +1220,32 @@ export function GuardrailsTab({
                         "The guardrails model above, or a model of its own. A stronger model flags fewer correct replies.",
                       )}
                     >
-                      <Select
-                        value={fg.provider ?? ""}
-                        onChange={(e) => {
-                          const provider = e.target.value;
-                          // The key and the endpoint belong to the provider they were set for: kept
-                          // across a switch, the new vendor's requests (and the review's contents)
-                          // would go to the old server, or carry the old vendor's key.
+                      <ModelOverrideFields
+                        value={groundingOverride}
+                        onChange={(update) =>
                           setGrounding(
-                            provider
-                              ? {
-                                  provider:
-                                    provider as GuardrailsConfig["provider"],
-                                  model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
-                                  credentialRef: null,
-                                  baseURL: null,
-                                }
-                              : {
-                                  provider: null,
-                                  model: "",
-                                  credentialRef: null,
-                                  baseURL: null,
-                                },
-                          );
-                        }}
-                        data-testid="gr-grounding-provider"
-                      >
-                        <option value="">
-                          {t(
-                            "editor.guardrails.groundingSameModel",
-                            "Same as the guardrails model",
-                          )}
-                        </option>
-                        {MODEL_PROVIDERS.map((p) => (
-                          <option key={p} value={p}>
-                            {providerLabel(p, t)}
-                          </option>
-                        ))}
-                      </Select>
-                    </FormField>
-                    {fg.provider && (
-                      <>
-                        <FormField
-                          label={t("editor.credential", "API key")}
-                          error={refusals.groundingCredential}
-                          group
-                        >
-                          <CredentialPicker
-                            value={fg.credentialRef ?? ""}
-                            onChange={(v) =>
-                              setGrounding({ credentialRef: v || null })
-                            }
-                            required={fg.provider !== "openai-compatible"}
-                            compatibleTypes={credentialCompat.model(
-                              fg.provider,
-                            )}
-                            defaultCreateType={
-                              credentialCompat.model(fg.provider)[0]
-                            }
-                            ariaLabel={t("editor.credential", "API key")}
-                          />
-                        </FormField>
-                        <FormField label={t("editor.model", "Model")} group>
-                          <ModelPicker
-                            value={fg.model}
-                            onChange={(v) => setGrounding({ model: v })}
-                            provider={fg.provider}
-                            credentialRef={fg.credentialRef || undefined}
-                            baseURL={fg.baseURL || undefined}
-                            aria-label={t("editor.model", "Model")}
-                          />
-                        </FormField>
-                        {(fg.provider === "openai-compatible" ||
-                          !!fg.baseURL) && (
-                          <FormField
-                            label={t("editor.baseURL", "Base URL")}
-                            description={t(
-                              "editor.reviewBaseURLHint",
-                              "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-                            )}
-                            group
-                          >
-                            <Input
-                              value={fg.baseURL ?? ""}
-                              onChange={(e) =>
-                                setGrounding({
-                                  baseURL: e.target.value.trim() || null,
-                                })
-                              }
-                              placeholder="https://api.groq.com/openai/v1"
-                              data-testid="gr-grounding-baseurl"
-                            />
-                          </FormField>
+                            groundingFromForm(update(groundingOverride)),
+                          )
+                        }
+                        parent={guardrailsModel}
+                        credBaseUrl={groundingCredBaseUrl}
+                        credentialError={
+                          refusals.groundingCredential ?? undefined
+                        }
+                        sameAsLabel={t(
+                          "editor.guardrails.groundingSameModel",
+                          "Same as the guardrails model",
                         )}
-                      </>
-                    )}
+                        credentialHint={t(
+                          "editor.guardrails.groundingCredentialHint",
+                          "Required when the reviewer uses another provider; without its own key, replies are not reviewed.",
+                        )}
+                        baseURLHint={t(
+                          "editor.reviewBaseURLHint",
+                          "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                        )}
+                      />
+                    </FormField>
                   </>
                 )}
               </Section>
@@ -1331,6 +1321,8 @@ export function GuardrailsTab({
         saving={saving}
         onSave={onSave}
         onDiscard={onDiscard}
+        // The reviewer's endpoint checks, as every own-model section holds its save on them.
+        saveDisabled={groundingBlocksSave}
       />
     </div>
   );

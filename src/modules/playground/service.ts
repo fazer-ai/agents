@@ -954,8 +954,7 @@ async function runPlaygroundTurnOnce(
   const grounding = screensThisTurn(params)
     ? buildGroundingGate({
         cfg: loadedConfig.guardrails,
-        apiKey: loadedConfig.groundingApiKey,
-        credentialBaseUrl: loadedConfig.groundingCredentialBaseUrl,
+        reviewer: loadedConfig.groundingReviewer,
         flow,
         logValues: loadedConfig.logToolValues,
         announce: (r) => {

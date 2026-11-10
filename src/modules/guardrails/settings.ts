@@ -1,5 +1,6 @@
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { resolveModelOverride } from "@/graph/model-override";
 import { clampToRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
 import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
@@ -429,37 +430,91 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
       GUARDRAIL_RANGES.contextMessages,
       d.contextMessages,
     ),
+    // As stored: `resolveGroundingReviewer` decides what they mean, a model or a key without a
+    // provider included (refused there, as every other model override refuses it).
     provider,
-    model: provider
-      ? (str(b.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "")
-      : "",
-    credentialRef: provider ? str(b.credentialRef) : null,
-    baseURL: provider ? str(b.baseURL) : null,
+    model: str(b.model) ?? "",
+    credentialRef: str(b.credentialRef),
+    baseURL: str(b.baseURL),
   };
 }
 
-// The chat model that reviews a turn for grounding: the check's own, or the guardrails chat model.
-// One answer for the runtime, the credential resolution and the editor.
-export function groundingReviewer(cfg: GuardrailsConfig): {
-  provider: ModelConfig["provider"];
-  model: string;
-  credentialRef: string | null;
-  baseURL: string | null;
-} {
+// The keys the reviewer may run on: its own credential's, and the guardrails chat model's (the model
+// it inherits from). "" when a credential is not configured or did not resolve.
+export interface GroundingReviewerKeys {
+  ownKey: string;
+  ownBaseUrl: string | null;
+  parentKey: string;
+  parentBaseUrl: string | null;
+}
+
+export type GroundingReviewerModel =
+  | {
+      runnable: true;
+      provider: ModelConfig["provider"];
+      model: string;
+      baseURL: string | null;
+      apiKey: string;
+    }
+  | {
+      runnable: false;
+      // `resolveModelOverride`'s refusal, or `credential_not_found` for a key that did not resolve.
+      reason: string;
+      provider: string;
+      model: string;
+    };
+
+// The chat model that reviews a turn for grounding, as an override of the guardrails chat model
+// (`resolveModelOverride`), exactly as the suggestion reviewer and the choice judge are of the
+// agent's: nothing set inherits it whole, its own fields are inherited one by one while the
+// destination is the same, a model or key without a provider is refused, and a keyless
+// `openai-compatible` endpoint runs on no key at all, never on the guardrails one.
+export function resolveGroundingReviewer(
+  cfg: GuardrailsConfig,
+  keys: GroundingReviewerKeys,
+): GroundingReviewerModel {
   const fg = cfg.factualGrounding;
-  return fg.provider
-    ? {
-        provider: fg.provider,
-        model: fg.model,
-        credentialRef: fg.credentialRef,
-        baseURL: fg.baseURL,
-      }
-    : {
-        provider: cfg.provider,
-        model: cfg.model,
-        credentialRef: cfg.credentialRef,
-        baseURL: cfg.baseURL,
-      };
+  const r = resolveModelOverride(
+    {
+      provider: fg.provider,
+      model: fg.model,
+      credentialRef: fg.credentialRef,
+      baseURL: fg.baseURL,
+    },
+    {
+      provider: cfg.provider,
+      model: cfg.model,
+      baseURL: keys.parentBaseUrl ?? cfg.baseURL,
+    },
+    { ownCredentialBaseURL: keys.ownBaseUrl },
+  );
+  if (!r.runnable)
+    return {
+      runnable: false,
+      reason: r.reason ?? "unknown",
+      provider: r.provider,
+      model: r.model,
+    };
+  const apiKey =
+    r.credential === "own"
+      ? keys.ownKey
+      : r.credential === "agent"
+        ? keys.parentKey
+        : "";
+  if (r.credential !== "none" && !apiKey)
+    return {
+      runnable: false,
+      reason: "credential_not_found",
+      provider: r.provider,
+      model: r.model,
+    };
+  return {
+    runnable: true,
+    provider: r.provider as ModelConfig["provider"],
+    model: r.model,
+    baseURL: r.baseURL,
+    apiKey,
+  };
 }
 
 export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {

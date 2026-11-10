@@ -224,7 +224,7 @@ export interface EditorControlsShown {
   // API's when that is who judges.
   guardrailsChatModelShown: boolean;
   guardrailsClassifierShown: boolean;
-  // The factual-grounding reviewer's own key, drawn once the check is on and has a provider of its own.
+  // The factual-grounding reviewer's own key, drawn whenever the check is on (as every own-model field).
   guardrailsGroundingModelShown: boolean;
   followUpEnabled: boolean;
   // How many follow-up steps the Proactive section is showing. The note of a step that does not

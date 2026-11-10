@@ -2378,6 +2378,7 @@
       "groundingActionTemplate": "Reply with the Output template message",
       "groundingContext": "Earlier messages the reviewer reads",
       "groundingContextHint": "Customer and agent messages before the turn, including what was read from images the customer sent. The source results of the turns in this window are reviewed too.",
+      "groundingCredentialHint": "Required when the reviewer uses another provider; without its own key, replies are not reviewed.",
       "groundingDesc": "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It runs only when a source tool returned something in one of those turns.",
       "groundingEnabled": "Check the reply against the tool results",
       "groundingHandoff": "Message to the customer (the same one as Output)",

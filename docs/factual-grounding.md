@@ -20,7 +20,7 @@ The console draws it in the Guardrails tab (section `gr-grounding`); REST (`PATC
 
 ## When it runs
 
-Only on a turn in which at least one source tool returned something (a non-empty result that is not a tool error). A turn with no source costs nothing: no call, no flow line, no trace row. It runs on the answer that would end the turn (text and no tool calls), once per turn, on the reactive inbox turn and on the playground turn. Proactive follow-ups are not reviewed.
+Only on a turn in which at least one source tool returned something (a non-empty result that is not a tool error). A turn with no source costs nothing: no call, no flow line, no trace row. It runs on the text that would go out: the answer that ends the turn, or, when that is empty, the reply written beside an earlier call that the runtime recovers (on a stalled turn too, where a revise has no model call left and reads as an empty rewrite). Once per turn, on the reactive inbox turn and on the playground turn. Proactive follow-ups are not reviewed.
 
 ## What the reviewer reads
 
@@ -37,7 +37,7 @@ The verdict is `{violated, claims: [{claim, type, evidence}], rationale}`, asked
 ## Actions
 
 - `observe`: the reply goes out as written. The flow line and the trace carry the claims.
-- `revise`: the graph asks the agent's model once more, with a late system note (`reviseNote`) quoting the draft and listing the claims. Only the second answer is kept in the thread and delivered; the revised answer is not reviewed again. One extra generation per flagged turn.
+- `revise`: the graph asks the agent's model once more, without tools, with a late system note (`reviseNote`) quoting the draft and listing the claims. Only the second answer is kept in the thread and delivered; it is not reviewed again. A rewrite that comes back empty sends `output.templateMessage` instead (flow line `revision_empty`), never the refused draft. One extra generation per flagged turn.
 - `template`: the reply is replaced with `output.templateMessage`, and a private note is posted.
 - `handoff`: the reply is not sent, `output.handoffMessage` is, and the conversation goes to the team, through the same path as an output-moderation hand-over.
 

@@ -2494,6 +2494,7 @@ export interface GraphBuildDeps {
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
   // See BuildAgentGraphParams.reviewReply. The reactive turn and the playground pass it.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  onReplyRevised?: (text: string) => void;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2644,6 +2645,7 @@ export async function buildModelAndGraph(
     retrySilence: deps.retrySilence,
     onSilenceRetry: deps.onSilenceRetry,
     reviewReply: deps.reviewReply,
+    onReplyRevised: deps.onReplyRevised,
     clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)

@@ -10069,11 +10069,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         claims: [{ claim: "deu 3", type: "contradiction", evidence: "2" }],
         rationale: "r",
       });
-      const calcThenAnswer = () => {
+      // The rewrite is asked of the model without tools, so it arrives through the raw `invoke`.
+      const calcThenAnswer = (rewrite = REVISED) => {
         let answers = 0;
         return {
           async invoke() {
-            return new AIMessage(DRAFT);
+            return new AIMessage(rewrite);
           },
           bindTools() {
             return {
@@ -10117,7 +10118,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             action,
           },
         });
-      const turn = async (convId: number) => {
+      const turn = async (convId: number, rewrite = REVISED) => {
         await seedConv(convId);
         const sent: Array<[number, string]> = [];
         const notes: Array<[number, string]> = [];
@@ -10128,7 +10129,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           event: incoming({ conversationId: convId, inboxId: G_INBOX }),
           base: appDb,
           deps: {
-            makeModel: branchingWith(flagged, calcThenAnswer()),
+            makeModel: branchingWith(flagged, calcThenAnswer(rewrite)),
             makeClient: guardStub(sent, notes),
             checkpointer: new MemorySaver(),
           },
@@ -10160,6 +10161,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(outcome).toBe("posted");
         expect(sent).toEqual([[1762, REVISED]]);
         expect(notes).toEqual([]);
+      });
+
+      test("a revise whose rewrite is empty sends the Output template, never the refused draft", async () => {
+        await grounded("revise");
+        const { sent } = await turn(1765, "");
+        expect(sent).toEqual([[1765, "TEMPLATE-OUT"]]);
       });
 
       test("template replaces the reply with the Output template and leaves a note", async () => {

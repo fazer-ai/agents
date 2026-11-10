@@ -1207,6 +1207,7 @@ async function runTurnBody(
   });
   const graph = await buildModelAndGraph(loaded, tools, {
     reviewReply: grounding?.review,
+    onReplyRevised: grounding?.revised,
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
     // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end.
@@ -2532,9 +2533,9 @@ async function runTurnBody(
         ),
       );
       const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
-      // A factual-grounding trip under `template` or `handoff` decides the reply in place of the
-      // screening; it stands only while there is still a reply of the model's to replace.
-      const groundingTrip = reply && !handedOff ? grounding?.pending() : null;
+      // A factual-grounding trip under `template` or `handoff` (or a revise that wrote nothing)
+      // decides the reply in place of the screening, unless the turn already handed over.
+      const groundingTrip = handedOff ? null : grounding?.pending();
       const outGuard =
         groundingTrip ??
         (screened ? await runGuardrail("output", screened) : null);

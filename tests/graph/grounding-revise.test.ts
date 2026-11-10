@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
-  type AIMessage,
+  AIMessage,
   type BaseMessage,
   HumanMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
@@ -26,6 +27,10 @@ async function run(
   model: ScriptedSilenceModel,
   review: (turn: BaseMessage[], reply: string) => Promise<string | null>,
   provider = "openai",
+  opts: {
+    onReplyRevised?: (text: string) => void;
+    history?: BaseMessage[];
+  } = {},
 ) {
   const graph = buildAgentGraph({
     primary: { provider, model: "test-model" },
@@ -34,9 +39,14 @@ async function run(
     checkpointer: new MemorySaver(),
     tools: [catalogo],
     reviewReply: review,
+    onReplyRevised: opts.onReplyRevised,
   });
   const out = await graph.invoke(
-    { messages: [new HumanMessage("Que horas abrem os portões?")] },
+    {
+      messages: opts.history ?? [
+        new HumanMessage("Que horas abrem os portões?"),
+      ],
+    },
     { configurable: { thread_id: `g-${Math.random()}` } },
   );
   return out.messages as BaseMessage[];
@@ -112,6 +122,56 @@ describe("reviewReply", () => {
       return null;
     });
     expect(replies).toEqual(["Abre às 16h."]);
+  });
+
+  test("the rewrite is asked without tools, and its text is reported", async () => {
+    const asked: string[] = [];
+    const model = new ScriptedSilenceModel([
+      { text: "Abre às 16h." },
+      { text: "" },
+    ]);
+    const raw = model.invoke.bind(model);
+    model.invoke = async (m: BaseMessage[]) => {
+      asked.push("raw");
+      return raw(m);
+    };
+    const revised: string[] = [];
+    await run(model, async () => NOTE, "openai", {
+      onReplyRevised: (t) => revised.push(t),
+    });
+    expect([asked, revised]).toEqual([["raw"], [""]]);
+  });
+
+  test("a stalled turn still reviews the reply the runtime would recover", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "", calls: [{ name: "catalogo", args: {} }] },
+    ]);
+    const replies: string[] = [];
+    const revised: string[] = [];
+    await run(
+      model,
+      async (_turn, reply) => {
+        replies.push(reply);
+        return NOTE;
+      },
+      "openai",
+      {
+        onReplyRevised: (t) => revised.push(t),
+        history: [
+          new HumanMessage("Que horas abrem os portões?"),
+          new AIMessage({
+            content: "Abre às 16h.",
+            tool_calls: [{ name: "catalogo", args: {}, id: "call_1_0" }],
+          }),
+          new ToolMessage({
+            content: "Portões: 18h.",
+            tool_call_id: "call_1_0",
+            name: "catalogo",
+          }),
+        ],
+      },
+    );
+    expect([replies, revised]).toEqual([["Abre às 16h."], [""]]);
   });
 
   test("a round that calls tools, or says nothing, is not reviewed", async () => {

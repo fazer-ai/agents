@@ -59,6 +59,9 @@ export interface GroundingGate {
   // `reply` is the text that would go out: the final answer, or the one the runtime recovers.
   review: (turn: BaseMessage[], reply?: string) => Promise<string | null>;
   pending: () => GuardrailDecision | null;
+  // The graph's `onReplyRevised`: an empty rewrite leaves the Output template as the decision, so
+  // the refused draft is never what the customer reads.
+  revised: (text: string) => void;
 }
 
 // Per claim and per evidence on the flow line, as the observed rationale is bounded.
@@ -264,5 +267,16 @@ export function buildGroundingGate(
     return null;
   };
 
-  return { review, pending: () => decision };
+  const revised = (text: string): void => {
+    if (text.trim()) return;
+    decision = { kind: "replaced", reply: gr.output.templateMessage };
+    emitFlowEvent(p.flow, {
+      stage: "guardrail",
+      status: "ok",
+      level: "warn",
+      detail: { ...base, action: "template", outcome: "revision_empty" },
+    });
+  };
+
+  return { review, pending: () => decision, revised };
 }

@@ -446,6 +446,7 @@ async function buildPlaygroundGraph(params: {
   replyChoice?: ReplyChoice;
   // The factual-grounding review, built by the caller from the config it resolved.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  onReplyRevised?: (text: string) => void;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -513,6 +514,7 @@ async function buildPlaygroundGraph(params: {
     onModelFallbackUnavailable: params.onModelFallbackUnavailable,
     onHistoryTrim: params.onHistoryTrim,
     reviewReply: params.reviewReply,
+    onReplyRevised: params.onReplyRevised,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -975,6 +977,7 @@ async function runPlaygroundTurnOnce(
       flow,
       loaded: loadedConfig,
       reviewReply: grounding?.review,
+      onReplyRevised: grounding?.revised,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,
@@ -1198,7 +1201,7 @@ async function runPlaygroundTurnOnce(
       );
     }
   }
-  const groundingTrip = raw ? grounding?.pending() : null;
+  const groundingTrip = grounding?.pending() ?? null;
   const outGuard: GuardrailDecision = groundingTrip
     ? groundingTrip
     : raw

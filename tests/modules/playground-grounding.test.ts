@@ -68,9 +68,10 @@ function models() {
           }),
         };
       });
+    // The rewrite is asked without tools, through the raw `invoke`.
     return {
       async invoke() {
-        return new AIMessage(DRAFT);
+        return new AIMessage(REVISED);
       },
       bindTools() {
         return {

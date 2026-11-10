@@ -236,6 +236,21 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(gate?.pending()).toBeNull();
   });
 
+  test("an empty rewrite leaves the Output template as the decision", async () => {
+    const gate = buildGroundingGate({
+      langfuseCfg: null,
+      cfg: cfg("revise"),
+      apiKey: "k",
+      flow: flow(),
+      makeModel: reviewer(VIOLATED).make,
+    });
+    await gate?.review(turn());
+    gate?.revised("Abre às 18h.");
+    expect(gate?.pending()).toBeNull();
+    gate?.revised("  ");
+    expect(gate?.pending()).toEqual({ kind: "replaced", reply: TEMPLATE });
+  });
+
   test("template and handoff leave the decision for the output gate", async () => {
     const t = buildGroundingGate({
       langfuseCfg: null,

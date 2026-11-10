@@ -198,6 +198,9 @@ export interface BuildAgentGraphParams {
   // would end: the history plus the final answer. A note back means "revise": the model is asked once
   // more with it, and only that second answer returns to the thread. Asked at most once per invocation.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  // Fired with the rewrite's text after a revise ("" when there is none), so the caller can stop a
+  // refused draft that would otherwise be recovered and delivered.
+  onReplyRevised?: (text: string) => void;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -704,6 +707,7 @@ export function buildAgentGraph({
   retrySilence,
   onSilenceRetry,
   reviewReply,
+  onReplyRevised,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -814,6 +818,19 @@ export function buildAgentGraph({
       (silentTurn && hardLimit)
     ) {
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
+      // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
+      // no model call left to rewrite it, a revise reads as an empty rewrite.
+      const recovered =
+        reviewReply && !replyRevised && !noReplyChannel && !silentTurn
+          ? replyWrittenThisTurn(history)
+          : "";
+      if (reviewReply && recovered) {
+        const note = await reviewReply(history, recovered);
+        if (note) {
+          replyRevised = true;
+          onReplyRevised?.("");
+        }
+      }
       return {
         messages: [
           ...narration,
@@ -905,7 +922,7 @@ export function buildAgentGraph({
     const messages = [new SystemMessage(prompt), ...shown, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
-    const secondFor = (msgs: BaseMessage[]) =>
+    const secondFor = (msgs: BaseMessage[], noTools = false) =>
       fallback && fallbackLlm
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
@@ -919,7 +936,11 @@ export function buildAgentGraph({
                 ? AbortSignal.any([deadline, jobSignal])
                 : deadline;
               return (
-                hardLimit ? (cappedFallback ?? fallback.model) : fallbackLlm
+                noTools
+                  ? fallback.model
+                  : hardLimit
+                    ? (cappedFallback ?? fallback.model)
+                    : fallbackLlm
               ).invoke(msgs, {
                 signal,
                 // NOTE: metadata rather than callbacks: metadata MERGES with the turn's handlers,
@@ -935,9 +956,13 @@ export function buildAgentGraph({
         : null;
 
     // One question to the model, the fallback's rules included. A function because the silence
-    // retry below asks it a second time, with different messages, under the same rules.
-    const ask = async (msgs: BaseMessage[]): Promise<BaseMessage> => {
-      const second = secondFor(msgs);
+    // retry below asks it a second time, with different messages, under the same rules. `noTools`
+    // asks the raw model, for an answer that must be text: the factual-grounding rewrite.
+    const ask = async (
+      msgs: BaseMessage[],
+      noTools = false,
+    ): Promise<BaseMessage> => {
+      const second = secondFor(msgs, noTools);
       // Already demoted this invocation: the fallback IS the model now, so it gets the
       // empty-completion retry under its own name, and a failure of its own is reported as that
       // rather than as a second failover the operator never caused.
@@ -967,7 +992,7 @@ export function buildAgentGraph({
         }
       }
 
-      const primaryLlm = hardLimit ? capped : llm;
+      const primaryLlm = noTools ? model : hardLimit ? capped : llm;
       // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of
       // joining it. The job's deadline is joined here with the call's own, which `runModelCall` hands
       // in, so a deadline that ends the job ends this call too.
@@ -1078,11 +1103,16 @@ export function buildAgentGraph({
       const note = await reviewReply([...history, response], candidate);
       if (note) {
         replyRevised = true;
+        // NOTE: asked without tools, so the rewrite is the turn's last answer and the note is still
+        // in front of the model when it writes it. An empty rewrite is reported, never replaced by
+        // the draft the reviewer refused.
         response = await ask(
           lateSystemAccepted
             ? [...messages, new SystemMessage(note)]
             : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
+          true,
         );
+        onReplyRevised?.(contentToText(response.content).trim());
       }
     }
     return { messages: [...narration, silenced(response)] };

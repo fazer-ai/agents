@@ -197,7 +197,7 @@ export interface BuildAgentGraphParams {
   // The factual-grounding review (modules/guardrails/grounding-gate.ts), asked with the turn as it
   // would end: the history plus the final answer. A note back means "revise": the model is asked once
   // more with it, and only that second answer returns to the thread. Asked at most once per invocation.
-  reviewReply?: (turn: BaseMessage[]) => Promise<string | null>;
+  reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -1064,15 +1064,19 @@ export function buildAgentGraph({
     // NOTE: the factual-grounding review, on the answer that would end the turn: text, no calls, on a
     // turn that answers somebody and did not decide silence. The note travels like the silence retry's
     // instruction, and the draft is quoted inside it rather than sent as an assistant turn.
-    if (
+    // The candidate is the final text, or, when that is empty, the reply written beside an earlier
+    // call that the runtime recovers and delivers (`replyWrittenThisTurn`).
+    const candidate =
       reviewReply &&
       !replyRevised &&
       !noReplyChannel &&
       !silentTurn &&
-      ((response as AIMessage).tool_calls?.length ?? 0) === 0 &&
-      contentToText(response.content).trim() !== ""
-    ) {
-      const note = await reviewReply([...history, response]);
+      ((response as AIMessage).tool_calls?.length ?? 0) === 0
+        ? contentToText(response.content).trim() ||
+          replyWrittenThisTurn([...history, response])
+        : "";
+    if (reviewReply && candidate) {
+      const note = await reviewReply([...history, response], candidate);
       if (note) {
         replyRevised = true;
         response = await ask(

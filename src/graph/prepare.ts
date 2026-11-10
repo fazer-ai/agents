@@ -2493,7 +2493,7 @@ export interface GraphBuildDeps {
   retrySilence?: () => boolean;
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
   // See BuildAgentGraphParams.reviewReply. The reactive turn and the playground pass it.
-  reviewReply?: (turn: BaseMessage[]) => Promise<string | null>;
+  reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as

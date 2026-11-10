@@ -56,7 +56,8 @@ export interface GroundingGateParams {
 }
 
 export interface GroundingGate {
-  review: (turn: BaseMessage[]) => Promise<string | null>;
+  // `reply` is the text that would go out: the final answer, or the one the runtime recovers.
+  review: (turn: BaseMessage[], reply?: string) => Promise<string | null>;
   pending: () => GuardrailDecision | null;
 }
 
@@ -162,13 +163,17 @@ export function buildGroundingGate(
     return null;
   };
 
-  const review = async (turn: BaseMessage[]): Promise<string | null> => {
+  const review = async (
+    turn: BaseMessage[],
+    candidate?: string,
+  ): Promise<string | null> => {
     const calls = groundingToolCalls(turn, fg.sourceTools);
     const sources = calls.filter((c) => c.source);
     // NOTE: no source returned anything in this turn: nothing is reviewed, logged or billed.
     if (sources.length === 0) return null;
     const last = turn[turn.length - 1];
-    const reply = last ? contentToText(last.content).trim() : "";
+    const reply =
+      candidate?.trim() || (last ? contentToText(last.content).trim() : "");
     if (!reply) return null;
     const sourceNames = [...new Set(sources.map((c) => c.name))];
     const resultChars = calls.reduce((n, c) => n + c.result.length, 0);

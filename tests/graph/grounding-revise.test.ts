@@ -24,7 +24,7 @@ const NOTE = "[Sistema] Revisão factual: NOTA-DE-TESTE";
 
 async function run(
   model: ScriptedSilenceModel,
-  review: (turn: BaseMessage[]) => Promise<string | null>,
+  review: (turn: BaseMessage[], reply: string) => Promise<string | null>,
   provider = "openai",
 ) {
   const graph = buildAgentGraph({
@@ -101,9 +101,22 @@ describe("reviewReply", () => {
     expect(again.seen).toHaveLength(3);
   });
 
+  test("a reply written beside the call and then recovered is the one reviewed", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "Abre às 16h.", calls: [{ name: "catalogo", args: {} }] },
+      { text: "" },
+    ]);
+    const replies: string[] = [];
+    await run(model, async (_turn, reply) => {
+      replies.push(reply);
+      return null;
+    });
+    expect(replies).toEqual(["Abre às 16h."]);
+  });
+
   test("a round that calls tools, or says nothing, is not reviewed", async () => {
     const model = new ScriptedSilenceModel([
-      { text: "Vou ver.", calls: [{ name: "catalogo", args: {} }] },
+      { text: "", calls: [{ name: "catalogo", args: {} }] },
       { text: "" },
     ]);
     const seen: BaseMessage[][] = [];

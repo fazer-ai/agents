@@ -445,7 +445,7 @@ async function buildPlaygroundGraph(params: {
   spokenNotice?: () => string | null;
   replyChoice?: ReplyChoice;
   // The factual-grounding review, built by the caller from the config it resolved.
-  reviewReply?: (turn: BaseMessage[]) => Promise<string | null>;
+  reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;

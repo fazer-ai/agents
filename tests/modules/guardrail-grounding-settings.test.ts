@@ -3,8 +3,8 @@ import { assertSettingsClosedValues } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import {
   GUARDRAILS_DEFAULTS,
-  groundingReviewer,
   readGuardrailsConfig,
+  resolveGroundingReviewer,
 } from "@/modules/guardrails/settings";
 
 // `guardrails.factualGrounding` as stored, read and written: off and observing by default, the
@@ -34,37 +34,128 @@ describe("reading it", () => {
     expect(fg.action).toBe("observe");
     expect(fg.contextMessages).toBe(20);
   });
+});
 
-  test("the reviewer is the guardrails model until the check names its own", () => {
-    const shared = readGuardrailsConfig({
+// The reviewer as an override of the guardrails chat model, through the same resolver as every other
+// own-model field: the bug each case catches is a key or a model landing where it was not picked for.
+describe("resolving the reviewer", () => {
+  const KEYS = {
+    ownKey: "sk-own",
+    ownBaseUrl: null,
+    parentKey: "sk-guardrails",
+    parentBaseUrl: null,
+  };
+  const guard = (factualGrounding: Record<string, unknown>) =>
+    readGuardrailsConfig({
       guardrails: {
         provider: "openai",
         model: "m-guard",
         credentialRef: "vault:1",
-        factualGrounding: { model: "ignored", credentialRef: "vault:9" },
+        factualGrounding,
       },
     });
-    expect(groundingReviewer(shared)).toEqual({
+
+  test("nothing set runs on the guardrails model and its key", () => {
+    expect(resolveGroundingReviewer(guard({}), KEYS)).toEqual({
+      runnable: true,
       provider: "openai",
       model: "m-guard",
-      credentialRef: "vault:1",
       baseURL: null,
+      apiKey: "sk-guardrails",
     });
-    const own = readGuardrailsConfig({
+  });
+
+  test("a model of its own on the same provider keeps the guardrails key", () => {
+    expect(
+      resolveGroundingReviewer(
+        guard({ provider: "openai", model: "m-review" }),
+        KEYS,
+      ),
+    ).toMatchObject({
+      runnable: true,
+      model: "m-review",
+      apiKey: "sk-guardrails",
+    });
+  });
+
+  // The bug it catches: a guardrails model on a keyless OpenAI-compatible endpoint refused as a
+  // missing key for the reviewer that inherits it, so no reply was reviewed.
+  test("inheriting a keyless compatible guardrails model runs keyless, a configured key that did not resolve does not", () => {
+    const keyless = readGuardrailsConfig({
       guardrails: {
-        provider: "openai",
-        credentialRef: "vault:1",
-        factualGrounding: {
-          provider: "anthropic",
-          model: "m-review",
-          credentialRef: "vault:9",
-        },
+        provider: "openai-compatible",
+        model: "m-local",
+        baseURL: "http://modelo.local/v1",
+        factualGrounding: {},
       },
     });
-    expect(groundingReviewer(own)).toMatchObject({
+    const noKeys = { ...KEYS, ownKey: "", parentKey: "" };
+    expect([
+      resolveGroundingReviewer(keyless, noKeys),
+      resolveGroundingReviewer(guard({}), noKeys),
+    ]).toEqual([
+      {
+        runnable: true,
+        provider: "openai-compatible",
+        model: "m-local",
+        baseURL: "http://modelo.local/v1",
+        apiKey: "",
+      },
+      {
+        runnable: false,
+        reason: "credential_not_found",
+        provider: "openai",
+        model: "m-guard",
+      },
+    ]);
+  });
+
+  test("a model or a key stored with no provider is refused, as every override refuses it", () => {
+    for (const fg of [{ model: "m-orphan" }, { credentialRef: "vault:9" }])
+      expect(resolveGroundingReviewer(guard(fg), KEYS)).toMatchObject({
+        runnable: false,
+        reason: "override_without_provider",
+      });
+  });
+
+  test("another provider runs on its own key, and without one it is refused, never on the guardrails key", () => {
+    expect(
+      resolveGroundingReviewer(
+        guard({ provider: "anthropic", credentialRef: "vault:9" }),
+        KEYS,
+      ),
+    ).toMatchObject({
+      runnable: true,
       provider: "anthropic",
-      model: "m-review",
-      credentialRef: "vault:9",
+      apiKey: "sk-own",
+    });
+    expect(
+      resolveGroundingReviewer(guard({ provider: "anthropic" }), KEYS),
+    ).toMatchObject({ runnable: false, reason: "credential_required" });
+    expect(
+      resolveGroundingReviewer(
+        guard({ provider: "anthropic", credentialRef: "vault:9" }),
+        { ...KEYS, ownKey: "" },
+      ),
+    ).toMatchObject({ runnable: false, reason: "credential_not_found" });
+  });
+
+  test("a keyless compatible endpoint runs on no key at all", () => {
+    expect(
+      resolveGroundingReviewer(
+        guard({
+          provider: "openai-compatible",
+          model: "m-local",
+          baseURL: "http://revisor.local/v1",
+        }),
+        KEYS,
+      ),
+    ).toEqual({
+      runnable: true,
+      provider: "openai-compatible",
+      model: "m-local",
+      baseURL: "http://revisor.local/v1",
+      apiKey: "",
     });
   });
 });

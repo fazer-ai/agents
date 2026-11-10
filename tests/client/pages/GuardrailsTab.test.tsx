@@ -8,7 +8,13 @@ import {
   expect,
   test,
 } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { useState } from "react";
 import { GuardrailsTab } from "@/client/pages/agents/GuardrailsTab";
 import type { GuardrailsRefusals } from "@/client/pages/agents/types";
@@ -78,6 +84,13 @@ const NO_REFUSALS: GuardrailsRefusals = {
   externalSecret: null,
   groundingCredential: null,
 };
+
+// A field of the factual-grounding section, by its label. A picker answers to its group label and its
+// own aria-label, so the first match is the control itself or its group.
+const groundingField = (label: string): HTMLElement =>
+  within(
+    document.getElementById("gr-grounding") as HTMLElement,
+  ).getAllByLabelText(label)[0] as HTMLElement;
 
 describe("GuardrailsTab template message", () => {
   // The tab mounts a CredentialPicker, which loads over the network. Stubbing `globalThis.fetch`
@@ -655,10 +668,7 @@ describe("GuardrailsTab factual grounding", () => {
       baseURL: "http://antigo.local/v1",
     };
     render(<Stateful initial={c} />);
-    const provider = document.querySelector<HTMLSelectElement>(
-      '[data-testid="gr-grounding-provider"]',
-    );
-    fireEvent.change(provider as HTMLSelectElement, {
+    fireEvent.change(groundingField("Provider"), {
       target: { value: "openrouter" },
     });
     expect([
@@ -677,22 +687,101 @@ describe("GuardrailsTab factual grounding", () => {
     };
     c.factualGrounding = { ...c.factualGrounding, enabled: true };
     render(<Stateful initial={c} />);
-    fireEvent.change(
-      document.querySelector<HTMLSelectElement>(
-        '[data-testid="gr-grounding-provider"]',
-      ) as HTMLSelectElement,
-      { target: { value: "openai-compatible" } },
-    );
-    fireEvent.change(
-      document.querySelector<HTMLInputElement>(
-        '[data-testid="gr-grounding-baseurl"]',
-      ) as HTMLInputElement,
-      { target: { value: "http://revisor.local/v1" } },
-    );
+    fireEvent.change(groundingField("Provider"), {
+      target: { value: "openai-compatible" },
+    });
+    fireEvent.change(groundingField("Base URL"), {
+      target: { value: "http://revisor.local/v1" },
+    });
     expect([
       saved?.factualGrounding.provider,
       saved?.factualGrounding.baseURL,
     ]).toEqual(["openai-compatible", "http://revisor.local/v1"]);
+  });
+
+  // The bug it catches: the reviewer's key and model hidden until a provider is picked, unlike every
+  // other own-model section, which draws them inheriting from the model above.
+  test("with nothing set the reviewer's fields are all drawn, inheriting the guardrails model", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    const provider = groundingField("Provider") as HTMLSelectElement;
+    expect([
+      provider.value,
+      provider.options[0]?.textContent,
+      !!groundingField("API key"),
+      !!groundingField("Model"),
+    ]).toEqual(["", "Same as the guardrails", true, true]);
+  });
+
+  // The bug it catches: a reviewer endpoint that is not a URL saved as typed, where every other
+  // own-model section holds Save until it is fixed.
+  test("a reviewer endpoint that is not a URL holds Save", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      provider: "openai-compatible",
+    };
+    function Dirty() {
+      const [g, setG] = useState(c);
+      return (
+        <GuardrailsTab
+          agentId="7"
+          guardrails={g}
+          setGuardrails={setG as never}
+          refusals={NO_REFUSALS}
+          dirty
+          saving={false}
+          onSave={() => {}}
+          onDiscard={() => {}}
+        />
+      );
+    }
+    render(<Dirty />);
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.change(groundingField("Base URL"), {
+      target: { value: "http://revisor.local/v1" },
+    });
+    const okHeld = (save as HTMLButtonElement).disabled;
+    fireEvent.change(groundingField("Base URL"), {
+      target: { value: "not a url" },
+    });
+    expect([okHeld, (save as HTMLButtonElement).disabled]).toEqual([
+      false,
+      true,
+    ]);
+  });
+
+  // The bug it catches: a model picked while the provider still inherits is saved without one, and
+  // then follows whatever provider the guardrails switch to later.
+  test("picking the reviewer's model while it inherits pins the guardrails provider", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+      provider: "anthropic",
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    // The model field is a menu: open it, type a name, take the "Use" row.
+    const trigger = within(
+      document.getElementById("gr-grounding") as HTMLElement,
+    ).getByRole("button", { name: /Model/ });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.change(await screen.findByLabelText("Search models…"), {
+      target: { value: "claude-modelo-x" },
+    });
+    fireEvent.click(await screen.findByText('Use "claude-modelo-x"'));
+    expect([
+      saved?.factualGrounding.provider,
+      saved?.factualGrounding.model,
+    ]).toEqual(["anthropic", "claude-modelo-x"]);
   });
 
   test("template shows the Output template beside the action, and editing it edits that one", async () => {

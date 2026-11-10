@@ -1378,9 +1378,7 @@ function AgentEditor() {
     guardrailsClassifierShown:
       guardrails.enabled && guardrails.classifier === "decisions",
     guardrailsGroundingModelShown:
-      guardrails.enabled &&
-      guardrails.factualGrounding.enabled &&
-      guardrails.factualGrounding.provider !== null,
+      guardrails.enabled && guardrails.factualGrounding.enabled,
     followUpEnabled: followUp.enabled,
     followUpSteps: followUp.steps.length,
     snoozedFollowUpEnabled:
@@ -3372,7 +3370,10 @@ function AgentEditor() {
       !!tts.credentialRef &&
       (tts.provider !== "elevenlabs" || !!tts.voice.trim()),
     fileInput: vision.enabled && !!vision.credentialRef,
-    guardrails: playgroundGuardrailsUsable(guardrails),
+    guardrails: playgroundGuardrailsUsable(guardrails, {
+      guardrails: vaultBaseUrl(guardrails.credentialRef ?? ""),
+      grounding: vaultBaseUrl(guardrails.factualGrounding.credentialRef ?? ""),
+    }),
   };
 
   // Live draft sent with each playground turn: the unsaved prompt/model/settings (never grants —
@@ -5578,6 +5579,12 @@ function AgentEditor() {
                 agentId={id}
                 guardrails={guardrails}
                 setGuardrails={setGuardrails}
+                guardrailsCredBaseUrl={vaultBaseUrl(
+                  guardrails.credentialRef ?? "",
+                )}
+                groundingCredBaseUrl={vaultBaseUrl(
+                  guardrails.factualGrounding.credentialRef ?? "",
+                )}
                 refusals={{
                   credential: refusal.at(
                     "settings.guardrails.credentialRef",

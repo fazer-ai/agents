@@ -113,10 +113,11 @@ import {
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import type { DatedContextMessage } from "@/modules/guardrails/context";
 import {
+  type GroundingReviewerModel,
   type GuardrailsConfig,
-  groundingReviewer,
   guardrailCredentialRef,
   readGuardrailsConfig,
+  resolveGroundingReviewer,
 } from "@/modules/guardrails/settings";
 import {
   type HandoffConfig,
@@ -296,10 +297,9 @@ export interface AgentConfig {
   // configured entry did not resolve, which `guardrailsExternalSecretMissing` says.
   guardrailsExternalSecret: string | null;
   guardrailsExternalSecretMissing: boolean;
-  // The factual-grounding reviewer's resolved key and baseURL (`groundingReviewer`): "" when the check
-  // is off or the credential did not resolve, which the review reports as `credential_not_found`.
-  groundingApiKey: string;
-  groundingCredentialBaseUrl: string | null;
+  // The factual-grounding reviewer, resolved as an override of the guardrails chat model
+  // (`resolveGroundingReviewer`), key included; null while the check is off.
+  groundingReviewer: GroundingReviewerModel | null;
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
@@ -636,25 +636,27 @@ export async function loadAgentConfig(
       );
     }
   }
-  let groundingApiKey = "";
-  let groundingCredentialBaseUrl: string | null = null;
-  const groundingRef = groundingReviewer(guardrails).credentialRef;
-  if (
-    guardrails.enabled &&
-    guardrails.factualGrounding.enabled &&
-    groundingRef
-  ) {
-    const fEntry =
-      groundingRef === guardrailsRef && guardrailsApiKey
-        ? null
-        : await tryResolveApiKeyEntry(db, groundingRef);
-    if (!fEntry) {
-      groundingApiKey = guardrailsApiKey;
-      groundingCredentialBaseUrl = guardrailsCredentialBaseUrl;
-    } else if (fEntry.state === "ok") {
-      groundingApiKey = fEntry.secret;
-      groundingCredentialBaseUrl = fEntry.baseUrl;
-    }
+  let groundingReviewer: GroundingReviewerModel | null = null;
+  if (guardrails.enabled && guardrails.factualGrounding.enabled) {
+    // The two keys it may run on: its own credential's and the guardrails chat model's, the one it
+    // inherits from (which is the screening's key unless the screening runs on the decisions engine).
+    const resolve = async (ref: string | null) => {
+      if (!ref) return { key: "", baseUrl: null };
+      if (ref === guardrailsRef && guardrailsApiKey)
+        return { key: guardrailsApiKey, baseUrl: guardrailsCredentialBaseUrl };
+      const e = await tryResolveApiKeyEntry(db, ref);
+      return e.state === "ok"
+        ? { key: e.secret, baseUrl: e.baseUrl }
+        : { key: "", baseUrl: null };
+    };
+    const own = await resolve(guardrails.factualGrounding.credentialRef);
+    const parent = await resolve(guardrails.credentialRef);
+    groundingReviewer = resolveGroundingReviewer(guardrails, {
+      ownKey: own.key,
+      ownBaseUrl: own.baseUrl,
+      parentKey: parent.key,
+      parentBaseUrl: parent.baseUrl,
+    });
   }
   let guardrailsExternalSecret: string | null = null;
   let guardrailsExternalSecretMissing = false;
@@ -1116,8 +1118,7 @@ export async function loadAgentConfig(
     guardrailsCredentialBaseUrl,
     guardrailsExternalSecret,
     guardrailsExternalSecretMissing,
-    groundingApiKey,
-    groundingCredentialBaseUrl,
+    groundingReviewer,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,

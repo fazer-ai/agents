@@ -3,7 +3,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { BaseMessage } from "@langchain/core/messages";
 import type { LLMResult } from "@langchain/core/outputs";
 import { contentToText } from "@/graph/message-text";
-import { verdictAskMode } from "@/graph/model-config";
+import { type ModelConfig, verdictAskMode } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import {
   buildLangfuseHandler,
@@ -34,7 +34,7 @@ import {
   reviewGrounding,
   reviseNote,
 } from "./grounding";
-import { type GuardrailsConfig, groundingReviewer } from "./settings";
+import type { GroundingReviewerModel, GuardrailsConfig } from "./settings";
 
 // The factual-grounding check as the reactive turn and the playground run it. `review` is the graph's
 // `reviewReply` hook: it decides whether the turn is reviewed at all, runs the reviewer, writes the
@@ -44,9 +44,9 @@ import { type GuardrailsConfig, groundingReviewer } from "./settings";
 
 export interface GroundingGateParams {
   cfg: GuardrailsConfig;
-  // The reviewer's resolved key (`groundingReviewer`); "" when it did not resolve.
-  apiKey: string;
-  credentialBaseUrl?: string | null;
+  // The reviewer as `resolveGroundingReviewer` resolved it, key included, or why it cannot run; null
+  // when the loader did not resolve one (the check was off when the config was read).
+  reviewer: GroundingReviewerModel | null;
   flow: FlowContext;
   // `observability.logToolValues`: claims and evidence are model text quoting the reply and the tool
   // results, so they reach the flow line only with it on; otherwise only their count does.
@@ -100,26 +100,28 @@ export function buildGroundingGate(
   const gr = p.cfg;
   const fg = gr.factualGrounding;
   if (!gr.enabled || !fg.enabled || fg.sourceTools.length === 0) return null;
-  const reviewer = groundingReviewer(gr);
-  // An `openai-compatible` endpoint may need no key: with no credential configured the model factory
-  // sends a placeholder. A missing key is a failure only where one was configured, or is required.
-  const keyless =
-    reviewer.provider === "openai-compatible" && !reviewer.credentialRef;
+  const reviewer: GroundingReviewerModel = p.reviewer ?? {
+    runnable: false,
+    reason: "not_resolved",
+    provider: "",
+    model: "",
+  };
   let decision: GuardrailDecision | null = null;
   let model: BaseChatModel | null | undefined;
   let buildError: string | undefined;
   const resolveModel = (): BaseChatModel | null => {
     if (model !== undefined) return model;
-    if (!p.apiKey && !keyless) {
+    if (!reviewer.runnable) {
       model = null;
+      buildError = reviewer.reason;
       return model;
     }
     try {
       model = (p.makeModel ?? createChatModel)({
         provider: reviewer.provider,
         model: reviewer.model,
-        baseURL: p.credentialBaseUrl ?? reviewer.baseURL ?? undefined,
-        apiKey: p.apiKey,
+        baseURL: reviewer.baseURL ?? undefined,
+        apiKey: reviewer.apiKey,
         temperature: 0,
       });
     } catch (e) {
@@ -230,7 +232,9 @@ export function buildGroundingGate(
     const m = resolveModel();
     if (!m)
       return couldNotReview(
-        p.apiKey || keyless ? "model_unavailable" : "credential_not_found",
+        !reviewer.runnable && reviewer.reason === "credential_not_found"
+          ? "credential_not_found"
+          : "model_unavailable",
         sized,
         buildError,
       );
@@ -240,7 +244,7 @@ export function buildGroundingGate(
     const verdict = await reviewGrounding(
       m,
       { conversation, calls, reply },
-      verdictAskMode(reviewer.provider),
+      verdictAskMode(reviewer.provider as ModelConfig["provider"]),
       callbacks(tokens),
       p.signal,
     );

@@ -157,6 +157,20 @@ function billedReviewer(answer: string) {
   }) as never;
 }
 
+const RUNS = {
+  runnable: true,
+  provider: "openai",
+  model: "revisor",
+  baseURL: null,
+  apiKey: "k",
+} as const;
+const NO_KEY = {
+  runnable: false,
+  reason: "credential_not_found",
+  provider: "openai",
+  model: "revisor",
+} as const;
+
 const VIOLATED = JSON.stringify({
   violated: true,
   claims: [
@@ -193,7 +207,7 @@ test("off, or with no source tool named, there is no hook at all", () => {
     buildGroundingGate({
       langfuseCfg: null,
       cfg: { ...base, enabled: false },
-      apiKey: "k",
+      reviewer: RUNS,
       flow: { tenantId: 1n, turnId: "x", source: "inbox" } as FlowContext,
     }),
   ).toBeNull();
@@ -204,7 +218,7 @@ test("off, or with no source tool named, there is no hook at all", () => {
         ...base,
         factualGrounding: { ...base.factualGrounding, sourceTools: [] },
       },
-      apiKey: "k",
+      reviewer: RUNS,
       flow: { tenantId: 1n, turnId: "x", source: "inbox" } as FlowContext,
     }),
   ).toBeNull();
@@ -238,7 +252,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
     });
@@ -265,7 +279,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     await buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
     })?.review(turn());
@@ -285,7 +299,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
       logValues: true,
@@ -310,7 +324,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     await buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: reviewer(VIOLATED).make,
     })?.review(turn());
@@ -323,7 +337,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("revise"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: flow(),
       makeModel: reviewer(VIOLATED).make,
     });
@@ -337,7 +351,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("revise"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: flow(),
       makeModel: reviewer(VIOLATED).make,
     });
@@ -352,7 +366,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const t = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("template"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: flow(),
       makeModel: reviewer(VIOLATED).make,
     });
@@ -361,7 +375,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const h = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("handoff"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: flow(),
       makeModel: reviewer(VIOLATED).make,
     });
@@ -376,7 +390,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("revise"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: billedReviewer(
         '{"violated": false, "claims": [], "rationale": ""}',
@@ -412,7 +426,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
     });
@@ -435,7 +449,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
         ...base,
         factualGrounding: { ...base.factualGrounding, contextMessages: 1 },
       },
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
     })?.review(fromMemory());
@@ -452,7 +466,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const pass = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("revise"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: reviewer(new Error("down")).make,
     });
@@ -462,7 +476,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const held = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("revise", { onFailure: "hold" }),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: flow(),
       makeModel: reviewer(new Error("down")).make,
     });
@@ -476,7 +490,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     await buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
     })?.review(turn("catalogo", "x".repeat(GROUNDING_SOURCES_MAX + 1)));
@@ -484,26 +498,23 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect((await lines(f.turnId))[0]?.outcome).toBe("sources_too_large");
   });
 
-  test("a keyless compatible endpoint is reviewed, and no key elsewhere is a missing credential", async () => {
+  test("a reviewer the resolver refused is reported with its reason, never as clean", async () => {
+    const f = flow();
     const r = reviewer(VIOLATED);
-    const base = cfg("observe");
     await buildGroundingGate({
       langfuseCfg: null,
-      cfg: {
-        ...base,
-        factualGrounding: {
-          ...base.factualGrounding,
-          provider: "openai-compatible",
-          model: "revisor",
-          credentialRef: null,
-          baseURL: "http://revisor.local/v1",
-        },
+      cfg: cfg("observe"),
+      reviewer: {
+        runnable: false,
+        reason: "override_without_provider",
+        provider: "openai",
+        model: "",
       },
-      apiKey: "",
-      flow: flow(),
+      flow: f,
       makeModel: r.make,
     })?.review(turn());
-    expect(r.calls).toHaveLength(1);
+    expect(r.calls).toHaveLength(0);
+    expect((await lines(f.turnId))[0]?.outcome).toBe("model_unavailable");
   });
 
   test("no key is reported as a missing credential, never as clean", async () => {
@@ -511,7 +522,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     await buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("observe"),
-      apiKey: "",
+      reviewer: NO_KEY,
       flow: f,
       makeModel: reviewer(VIOLATED).make,
     })?.review(turn());
@@ -526,7 +537,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("handoff"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: r.make,
       signal: done.signal,
@@ -537,7 +548,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const mid = buildGroundingGate({
       langfuseCfg: null,
       cfg: cfg("handoff"),
-      apiKey: "k",
+      reviewer: RUNS,
       flow: f,
       makeModel: (() =>
         guardrailModel(async () => {

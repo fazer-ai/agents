@@ -1490,6 +1490,8 @@ function AgentEditor() {
       guardrails.decisions.credentialRef,
     "settings.guardrails.external.credentialRef":
       guardrails.external.credentialRef,
+    "settings.guardrails.factualGrounding.credentialRef":
+      guardrails.factualGrounding.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
     // NOTE: `buildSettings` stores null for an empty prompt or one still at the default, so an untouched

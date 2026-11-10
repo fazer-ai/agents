@@ -6,6 +6,7 @@ import {
 import {
   type GuardrailDirectionConfig,
   type GuardrailsConfig,
+  groundingReviewer,
   guardrailCredentialRef,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
@@ -13,12 +14,18 @@ import {
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime
 // has (modules/guardrails/gate), the feature switched on and its OWN credential. Under `hold` a
 // missing credential still screens (every turn is held), so the operator has to be able to turn it
-// off. A configured external check calls out on every turn, so it also needs the switch. A direction
+// off. A configured external check calls out on every turn, and so does a factual-grounding reviewer
+// with its own key on a turn a source answered, so both need the switch. A direction
 // being off is not checked here: the gate returns "not-run" for it at no cost.
 export function playgroundGuardrailsUsable(g: GuardrailsConfig): boolean {
   return (
     g.enabled &&
-    (!!guardrailCredentialRef(g) || g.onFailure === "hold" || !!g.external.url)
+    (!!guardrailCredentialRef(g) ||
+      g.onFailure === "hold" ||
+      !!g.external.url ||
+      (g.factualGrounding.enabled &&
+        g.factualGrounding.sourceTools.length > 0 &&
+        !!groundingReviewer(g).credentialRef))
   );
 }
 

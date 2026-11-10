@@ -544,6 +544,12 @@ describe("GuardrailsTab factual grounding", () => {
             ? {
                 tools: [
                   {
+                    name: "set_labels",
+                    description: "",
+                    category: "native",
+                    simulated: true,
+                  },
+                  {
                     name: "catalogo_ficticio",
                     description: "",
                     category: "code",
@@ -606,6 +612,30 @@ describe("GuardrailsTab factual grounding", () => {
       ["catalogo_ficticio"],
       "revise",
     ]);
+    expect(screen.queryByRole("switch", { name: "set_labels" }) === null).toBe(
+      true,
+    );
+  });
+
+  test("template shows the Output template beside the action, and editing it edits that one", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.output = { ...c.output, enabled: false };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      action: "template",
+    };
+    render(<Stateful initial={c} />);
+    const box = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="gr-grounding-message"]',
+    );
+    fireEvent.change(box as HTMLTextAreaElement, {
+      target: { value: "Não tenho essa informação." },
+    });
+    expect(saved?.output.templateMessage).toBe("Não tenho essa informação.");
   });
 
   test("off, the section shows only its switch", () => {

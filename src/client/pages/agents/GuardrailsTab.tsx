@@ -131,7 +131,14 @@ function useAgentToolNames(agentId: string, wanted: boolean): string[] {
       .agents({ id: agentId })
       .playground.tools.get()
       .then(({ data }) => {
-        if (live && data) setNames(data.tools.map((tl) => tl.name));
+        // NOTE: the conversation natives (labels, notes, hand-over) act on the conversation and
+        // return no facts, so they are not offered as sources.
+        if (live && data)
+          setNames(
+            data.tools
+              .filter((tl) => tl.category !== "native")
+              .map((tl) => tl.name),
+          );
       })
       .catch(() => {});
     return () => {
@@ -1071,6 +1078,40 @@ export function GuardrailsTab({
                         ))}
                       </Select>
                     </FormField>
+                    {(fg.action === "template" || fg.action === "handoff") && (
+                      <FormField
+                        label={
+                          fg.action === "template"
+                            ? t(
+                                "editor.guardrails.groundingTemplate",
+                                "Template message (the same one as Output)",
+                              )
+                            : t(
+                                "editor.guardrails.groundingHandoff",
+                                "Message to the customer (the same one as Output)",
+                              )
+                        }
+                      >
+                        <Textarea
+                          value={
+                            fg.action === "template"
+                              ? g.output.templateMessage
+                              : g.output.handoffMessage
+                          }
+                          onChange={(e) =>
+                            setDir(
+                              "output",
+                              fg.action === "template"
+                                ? { templateMessage: e.target.value }
+                                : { handoffMessage: e.target.value },
+                            )
+                          }
+                          rows={2}
+                          maxLength={TEMPLATE_MESSAGE_MAX}
+                          data-testid="gr-grounding-message"
+                        />
+                      </FormField>
+                    )}
                     <FormField
                       label={t(
                         "editor.guardrails.groundingContext",

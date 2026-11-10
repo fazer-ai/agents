@@ -714,7 +714,7 @@ describe("GuardrailsTab factual grounding", () => {
       provider.options[0]?.textContent,
       !!groundingField("API key"),
       !!groundingField("Model"),
-    ]).toEqual(["", "Same as the guardrails model", true, true]);
+    ]).toEqual(["", "Same as the guardrails", true, true]);
   });
 
   // The bug it catches: a reviewer endpoint that is not a URL saved as typed, where every other

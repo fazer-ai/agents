@@ -1225,11 +1225,11 @@ export function GuardrailsTab({
                       }
                       sameAsLabel={t(
                         "editor.guardrails.groundingSameModel",
-                        "Same as the guardrails model",
+                        "Same as the guardrails",
                       )}
                       credentialHint={t(
                         "editor.guardrails.groundingCredentialHint",
-                        "Required when the reviewer uses another provider; without its own key, replies are not reviewed.",
+                        "Required when the reviewer uses another provider; without its own key, replies go out unreviewed.",
                       )}
                       baseURLHint={t(
                         "editor.reviewBaseURLHint",

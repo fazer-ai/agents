@@ -31,6 +31,7 @@ async function run(
   opts: {
     onReplyRevised?: (text: string) => void;
     history?: BaseMessage[];
+    recoversReply?: () => boolean;
   } = {},
 ) {
   const graph = buildAgentGraph({
@@ -41,6 +42,7 @@ async function run(
     tools: [catalogo],
     reviewReply: review,
     onReplyRevised: opts.onReplyRevised,
+    recoversReply: opts.recoversReply ?? (() => true),
   });
   const out = await graph.invoke(
     {
@@ -219,5 +221,23 @@ describe("reviewReply", () => {
       (m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0,
     ) as AIMessage | undefined;
     expect(caller?.tool_calls?.[0]?.name).toBe("catalogo");
+  });
+
+  test("a reply the caller would not recover is not reviewed", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "Abre às 16h.", calls: [{ name: "catalogo", args: {} }] },
+      { text: "" },
+    ]);
+    let asked = 0;
+    await run(
+      model,
+      async () => {
+        asked++;
+        return NOTE;
+      },
+      "openai",
+      { recoversReply: () => false },
+    );
+    expect(asked).toBe(0);
   });
 });

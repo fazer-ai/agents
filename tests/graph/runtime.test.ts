@@ -10176,12 +10176,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(notes[0]?.[1]).toContain("factual_grounding");
       });
 
-      test("a silent hand-over keeps its silence even when the draft beside it was flagged", async () => {
+      test("a silent hand-over keeps its silence, and the draft beside it is not reviewed", async () => {
         await grounded("template");
         await seedConv(1766);
         const sent: Array<[number, string]> = [];
         const toggles: Array<[number, string]> = [];
         let n = 0;
+        let reviews = 0;
         const handsOver = {
           async invoke() {
             return new AIMessage("");
@@ -10224,13 +10225,20 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           event: incoming({ conversationId: 1766, inboxId: G_INBOX }),
           base: appDb,
           deps: {
-            makeModel: branchingWith(flagged, handsOver),
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    reviews++;
+                    return { content: flagged };
+                  })
+                : handsOver,
             makeClient: guardStub(sent, [], toggles),
             checkpointer: new MemorySaver(),
           },
         });
         expect(toggles.length).toBeGreaterThan(0);
         expect(sent).toEqual([]);
+        expect(reviews).toBe(0);
       });
 
       test("observe sends the reply as written", async () => {

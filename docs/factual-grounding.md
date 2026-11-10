@@ -20,7 +20,7 @@ The console draws it in the Guardrails tab (section `gr-grounding`); REST (`PATC
 
 ## When it runs
 
-Only on a turn in which at least one source tool returned something (a non-empty result that is not a tool error). A turn with no source costs nothing: no call, no flow line, no trace row. It runs on the text that would go out: the answer that ends the turn, or, when that is empty, the reply written beside an earlier call that the runtime recovers (on a stalled turn too, where a revise has no model call left and reads as an empty rewrite). Once per turn, on the reactive inbox turn and on the playground turn. Proactive follow-ups are not reviewed.
+Only on a turn in which at least one source tool returned something (a non-empty result that is not a tool error). A turn with no source costs nothing: no call, no flow line, no trace row. It runs on the text that would go out: the answer that ends the turn, or, when that is empty, the reply written beside an earlier call that the runtime recovers, only when it would recover it: not after a transfer or once something was delivered or queued (on a stalled turn too, where a revise has no model call left and reads as an empty rewrite). A revise takes that draft out of the thread. The playground does not recover such a reply, so there it is not reviewed either. Once per turn, on the reactive inbox turn and on the playground turn. Proactive follow-ups are not reviewed.
 
 ## What the reviewer reads
 

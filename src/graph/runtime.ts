@@ -1208,6 +1208,10 @@ async function runTurnBody(
   const graph = await buildModelAndGraph(loaded, tools, {
     reviewReply: grounding?.review,
     onReplyRevised: grounding?.revised,
+    // The recovery's own condition below, minus the empty final answer the graph checks itself.
+    recoversReply: () =>
+      !handoffState.completed &&
+      !turnDeliveredToCustomer(turnState, handoffState),
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
     // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end.

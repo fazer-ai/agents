@@ -2495,6 +2495,7 @@ export interface GraphBuildDeps {
   // See BuildAgentGraphParams.reviewReply. The reactive turn and the playground pass it.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
   onReplyRevised?: (text: string) => void;
+  recoversReply?: () => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2646,6 +2647,7 @@ export async function buildModelAndGraph(
     onSilenceRetry: deps.onSilenceRetry,
     reviewReply: deps.reviewReply,
     onReplyRevised: deps.onReplyRevised,
+    recoversReply: deps.recoversReply,
     clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)

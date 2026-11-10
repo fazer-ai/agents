@@ -201,6 +201,10 @@ export interface BuildAgentGraphParams {
   // Fired with the rewrite's text after a revise ("" when there is none), so the caller can stop a
   // refused draft that would otherwise be recovered and delivered.
   onReplyRevised?: (text: string) => void;
+  // Whether the caller would deliver the reply written beside an earlier call when the turn ends on
+  // an empty answer (the runtime's recovery). Absent means it would not, and that text is not
+  // reviewed: only what goes out is.
+  recoversReply?: () => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -722,6 +726,7 @@ export function buildAgentGraph({
   onSilenceRetry,
   reviewReply,
   onReplyRevised,
+  recoversReply,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -835,7 +840,11 @@ export function buildAgentGraph({
       // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
       // no model call left to rewrite it, a revise reads as an empty rewrite.
       const recovered =
-        reviewReply && !replyRevised && !noReplyChannel && !silentTurn
+        reviewReply &&
+        !replyRevised &&
+        !noReplyChannel &&
+        !silentTurn &&
+        recoversReply?.()
           ? customerFacingReply(replyWrittenThisTurn(history)).text
           : "";
       if (reviewReply && recovered) {
@@ -1113,7 +1122,9 @@ export function buildAgentGraph({
       ((response as AIMessage).tool_calls?.length ?? 0) === 0
         ? customerFacingReply(
             contentToText(response.content).trim() ||
-              replyWrittenThisTurn([...history, response]),
+              (recoversReply?.()
+                ? replyWrittenThisTurn([...history, response])
+                : ""),
           ).text
         : "";
     let draftRemoved: BaseMessage[] = [];

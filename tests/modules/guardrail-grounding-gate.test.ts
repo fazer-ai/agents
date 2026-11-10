@@ -339,4 +339,37 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     })?.review(turn());
     expect((await lines(f.turnId))[0]?.outcome).toBe("credential_not_found");
   });
+
+  test("a turn that ended is not reviewed, and one ending during the review decides nothing", async () => {
+    const r = reviewer(VIOLATED);
+    const f = flow();
+    const done = new AbortController();
+    done.abort(new Error("job deadline"));
+    const gate = buildGroundingGate({
+      langfuseCfg: null,
+      cfg: cfg("handoff"),
+      apiKey: "k",
+      flow: f,
+      makeModel: r.make,
+      signal: done.signal,
+    });
+    expect(await gate?.review(turn())).toBeNull();
+    expect(r.calls).toHaveLength(0);
+    const ending = new AbortController();
+    const mid = buildGroundingGate({
+      langfuseCfg: null,
+      cfg: cfg("handoff"),
+      apiKey: "k",
+      flow: f,
+      makeModel: (() =>
+        guardrailModel(async () => {
+          ending.abort(new Error("job deadline"));
+          return { content: VIOLATED };
+        })) as never,
+      signal: ending.signal,
+    });
+    expect(await mid?.review(turn())).toBeNull();
+    expect(mid?.pending()).toBeNull();
+    expect(await lines(f.turnId)).toEqual([]);
+  });
 });

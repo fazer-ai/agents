@@ -1202,6 +1202,7 @@ async function runTurnBody(
     },
     conversationId,
     makeModel: params.deps?.makeModel,
+    signal: params.signal,
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });

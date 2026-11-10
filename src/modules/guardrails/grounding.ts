@@ -290,6 +290,8 @@ export async function reviewGrounding(
   input: GroundingReviewInput,
   mode: VerdictMode,
   callbacks?: BaseCallbackHandler[],
+  // The turn's own end (a scheduler job's deadline): it ends the wait for a permit and the call.
+  turnSignal?: AbortSignal,
 ): Promise<GroundingVerdict> {
   const messages: BaseMessage[] = [
     new SystemMessage(GROUNDING_SYSTEM_PROMPT),
@@ -302,11 +304,11 @@ export async function reviewGrounding(
           model,
           mode,
           messages,
-          signal,
+          turnSignal ? AbortSignal.any([signal, turnSignal]) : signal,
           { json: GROUNDING_SCHEMA, openapi: GROUNDING_SCHEMA },
           callbacks,
         ),
-      { deadlineMs: REVIEW_TIMEOUT_MS },
+      { deadlineMs: REVIEW_TIMEOUT_MS, signal: turnSignal },
     );
     return readGroundingVerdict(parsed, raw);
   } catch (err) {

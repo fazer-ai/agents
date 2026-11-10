@@ -51,6 +51,9 @@ export interface GroundingGateParams {
   // Absent in the playground, whose thread is one session.
   conversationId?: number;
   makeModel?: typeof createChatModel;
+  // The turn's own end (a scheduler job's deadline). A turn that already ended is not reviewed, and
+  // one that ends during the review stops waiting for a permit and for the reviewer.
+  signal?: AbortSignal;
   persistUsage?: UsagePersist;
   langfuseCfg: LangfuseConfig | null;
 }
@@ -170,6 +173,7 @@ export function buildGroundingGate(
     turn: BaseMessage[],
     candidate?: string,
   ): Promise<string | null> => {
+    if (p.signal?.aborted) return null;
     const calls = groundingToolCalls(turn, fg.sourceTools);
     const sources = calls.filter((c) => c.source);
     // NOTE: no source returned anything in this turn: nothing is reviewed, logged or billed.
@@ -203,7 +207,10 @@ export function buildGroundingGate(
       { conversation, calls, reply },
       verdictAskMode(reviewer.provider),
       callbacks(),
+      p.signal,
     );
+    // Ended during the review: nothing of this turn goes out, so nothing is decided or logged.
+    if (p.signal?.aborted) return null;
     const timed = { ...sized, latencyMs: Date.now() - started };
     if (verdict.error)
       return couldNotReview("analysis_failed", timed, verdict.error);

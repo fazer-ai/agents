@@ -575,28 +575,42 @@ function withoutText(message: BaseMessage): BaseMessage {
 function silenceNarration(history: BaseMessage[]): BaseMessage[] {
   const { caller } = lastBatch(history);
   if (!caller || typeof caller.id !== "string") return [];
-  const ai = caller as AIMessage;
-  return [
-    new AIMessage({
-      id: ai.id,
-      // NOTE: a block list without the text, never `""` and never a blanket `[]`. Not `""`: this
-      // message keeps its tool calls, so `isEmptyAssistantTurn` leaves it in the prompt, and
-      // `@langchain/anthropic` renders a string as a text block Anthropic refuses when empty. Not `[]`:
-      // Anthropic's signed `thinking`/`redacted_thinking` must be replayed unchanged before the tool
-      // result they precede, or the next round fails at the provider.
-      content: textlessContent(ai.content),
-      tool_calls: ai.tool_calls ?? [],
-      // NOTE: Carried like the valid ones: they are part of what the model asked for, and a rebuild that
-      // dropped them would erase the record of a call that failed to parse.
-      ...(ai.invalid_tool_calls?.length
-        ? { invalid_tool_calls: ai.invalid_tool_calls }
-        : {}),
-      additional_kwargs: ai.additional_kwargs,
-      response_metadata: textlessResponseMetadata(ai.response_metadata),
-      ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
-      ...(ai.name ? { name: ai.name } : {}),
-    }),
-  ];
+  return [textlessCopy(caller as AIMessage, caller.id)];
+}
+
+// An assistant message with its text taken out and everything else carried, replacing it by `id`.
+function textlessCopy(ai: AIMessage, id: string): AIMessage {
+  return new AIMessage({
+    id,
+    // NOTE: a block list without the text, never `""` and never a blanket `[]`. Not `""`: this
+    // message keeps its tool calls, so `isEmptyAssistantTurn` leaves it in the prompt, and
+    // `@langchain/anthropic` renders a string as a text block Anthropic refuses when empty. Not `[]`:
+    // Anthropic's signed `thinking`/`redacted_thinking` must be replayed unchanged before the tool
+    // result they precede, or the next round fails at the provider.
+    content: textlessContent(ai.content),
+    tool_calls: ai.tool_calls ?? [],
+    // NOTE: Carried like the valid ones: they are part of what the model asked for, and a rebuild that
+    // dropped them would erase the record of a call that failed to parse.
+    ...(ai.invalid_tool_calls?.length
+      ? { invalid_tool_calls: ai.invalid_tool_calls }
+      : {}),
+    additional_kwargs: ai.additional_kwargs,
+    response_metadata: textlessResponseMetadata(ai.response_metadata),
+    ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
+    ...(ai.name ? { name: ai.name } : {}),
+  });
+}
+
+// The reply `replyWrittenThisTurn` would recover, taken out of the thread once a factual-grounding
+// revise replaced it, so the refused draft is neither delivered nor read by the next turn as said.
+function recoveredDraftRemoved(messages: BaseMessage[]): BaseMessage[] {
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.getType() === "human") return [];
+    if (m.getType() !== "ai" || !contentToText(m.content).trim()) continue;
+    return typeof m.id === "string" ? [textlessCopy(m as AIMessage, m.id)] : [];
+  }
+  return [];
 }
 
 // Providers whose adapter re-serializes their own non-text blocks. `@langchain/openai` filters an
@@ -834,6 +848,7 @@ export function buildAgentGraph({
       return {
         messages: [
           ...narration,
+          ...(replyRevised && recovered ? recoveredDraftRemoved(history) : []),
           ...(stalled ? dropRepeatedBatch(history) : []),
           new AIMessage(""),
         ],
@@ -1101,10 +1116,13 @@ export function buildAgentGraph({
               replyWrittenThisTurn([...history, response]),
           ).text
         : "";
+    let draftRemoved: BaseMessage[] = [];
     if (reviewReply && candidate) {
       const note = await reviewReply([...history, response], candidate);
       if (note) {
         replyRevised = true;
+        if (!contentToText(response.content).trim())
+          draftRemoved = recoveredDraftRemoved([...history, response]);
         // NOTE: asked without tools, so the rewrite is the turn's last answer and the note is still
         // in front of the model when it writes it. An empty rewrite is reported, never replaced by
         // the draft the reviewer refused.
@@ -1119,7 +1137,7 @@ export function buildAgentGraph({
         );
       }
     }
-    return { messages: [...narration, silenced(response)] };
+    return { messages: [...narration, ...draftRemoved, silenced(response)] };
   };
 
   // The node as the graph runs it. A model call ended by the job's deadline fails with whatever

@@ -149,7 +149,7 @@ describe("reviewReply", () => {
     ]);
     const replies: string[] = [];
     const revised: string[] = [];
-    await run(
+    const messages = await run(
       model,
       async (_turn, reply) => {
         replies.push(reply);
@@ -173,6 +173,7 @@ describe("reviewReply", () => {
       },
     );
     expect([replies, revised]).toEqual([["Abre às 16h."], [""]]);
+    expect(messages.some((m) => text(m) === "Abre às 16h.")).toBe(false);
   });
 
   test("a round that calls tools, or says nothing, is not reviewed", async () => {
@@ -203,5 +204,20 @@ describe("reviewReply", () => {
     });
     expect(asked).toBe(0);
     expect(model.seen).toHaveLength(2);
+  });
+
+  test("a revised recovered draft leaves the thread, and its call stays", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "Abre às 16h.", calls: [{ name: "catalogo", args: {} }] },
+      { text: "" },
+      { text: "Abre às 18h." },
+    ]);
+    const messages = await run(model, async () => NOTE);
+    expect(messages.some((m) => text(m) === "Abre às 16h.")).toBe(false);
+    expect(text(messages.at(-1))).toBe("Abre às 18h.");
+    const caller = messages.find(
+      (m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0,
+    ) as AIMessage | undefined;
+    expect(caller?.tool_calls?.[0]?.name).toBe("catalogo");
   });
 });

@@ -78,6 +78,38 @@ describe("resolving the reviewer", () => {
     });
   });
 
+  // The bug it catches: a guardrails model on a keyless OpenAI-compatible endpoint refused as a
+  // missing key for the reviewer that inherits it, so no reply was reviewed.
+  test("inheriting a keyless compatible guardrails model runs keyless, a configured key that did not resolve does not", () => {
+    const keyless = readGuardrailsConfig({
+      guardrails: {
+        provider: "openai-compatible",
+        model: "m-local",
+        baseURL: "http://modelo.local/v1",
+        factualGrounding: {},
+      },
+    });
+    const noKeys = { ...KEYS, ownKey: "", parentKey: "" };
+    expect([
+      resolveGroundingReviewer(keyless, noKeys),
+      resolveGroundingReviewer(guard({}), noKeys),
+    ]).toEqual([
+      {
+        runnable: true,
+        provider: "openai-compatible",
+        model: "m-local",
+        baseURL: "http://modelo.local/v1",
+        apiKey: "",
+      },
+      {
+        runnable: false,
+        reason: "credential_not_found",
+        provider: "openai",
+        model: "m-guard",
+      },
+    ]);
+  });
+
   test("a model or a key stored with no provider is refused, as every override refuses it", () => {
     for (const fg of [{ model: "m-orphan" }, { credentialRef: "vault:9" }])
       expect(resolveGroundingReviewer(guard(fg), KEYS)).toMatchObject({

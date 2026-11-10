@@ -141,6 +141,31 @@ describe("playgroundGuardrailsUsable", () => {
     ]).toEqual([true, false, true]);
   });
 
+  // The bug it catches: a reviewer whose compatible endpoint lives on its credential read as
+  // unusable, so the playground toggle was disabled while every turn still billed a review.
+  test("reads the reviewer's endpoint from its credential, as the runtime does", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const g = {
+      ...on,
+      credentialRef: null,
+      factualGrounding: {
+        ...on.factualGrounding,
+        enabled: true,
+        sourceTools: ["catalogo"],
+        provider: "openai-compatible" as const,
+        credentialRef: "vault:9",
+        baseURL: null,
+      },
+    };
+    expect([
+      playgroundGuardrailsUsable(g),
+      playgroundGuardrailsUsable(g, {
+        guardrails: null,
+        grounding: "http://revisor.local/v1",
+      }),
+    ]).toEqual([false, true]);
+  });
+
   // The bug it catches: under hold with no credential every playground turn is held, while the
   // toggle that would switch moderation off reads disabled.
   test("is usable with a credential, or with none under hold, and never when off", () => {

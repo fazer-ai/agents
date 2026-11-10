@@ -501,7 +501,14 @@ export function resolveGroundingReviewer(
       : r.credential === "agent"
         ? keys.parentKey
         : "";
-  if (r.credential !== "none" && !apiKey)
+  // A key is missing only when a credential was configured and did not resolve. A guardrails model on
+  // a keyless OpenAI-compatible endpoint has no key to inherit, and the reviewer that inherits it
+  // runs keyless too, as the guardrails model does.
+  const keylessParent =
+    r.credential === "agent" &&
+    !cfg.credentialRef &&
+    r.provider === "openai-compatible";
+  if (r.credential !== "none" && !apiKey && !keylessParent)
     return {
       runnable: false,
       reason: "credential_not_found",

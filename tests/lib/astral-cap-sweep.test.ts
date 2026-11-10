@@ -516,6 +516,8 @@ const BARE_SLICES: Record<
   // LIST, and each entry is a slot object this code built, never received text.
   "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
   // The tabs whose header row is read in one batch: a list of tabs, never text.
+  // The drift signal's left-out statements: an array of rows, capped at a count.
+  "src/modules/instance-health/database/drift.ts": [1, "array"],
   // The database screen's top lists: arrays of statement and table rows, capped at a count.
   "src/modules/instance-health/database/read.ts": [4, "array"],
   // A statement's fingerprint: a sha256 hex digest, so the cut cannot land inside a surrogate pair.

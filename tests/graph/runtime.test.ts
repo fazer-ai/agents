@@ -71,6 +71,7 @@ import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { GROUNDING_NO_SOURCE_PROMPT } from "@/modules/guardrails/grounding";
 import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -10179,6 +10180,77 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         const { sent, notes } = await turn(1763);
         expect(sent).toEqual([[1763, "TEMPLATE-OUT"]]);
         expect(notes[0]?.[1]).toContain("factual_grounding");
+      });
+
+      // The bug it catches: a reply stating an in-scope fact with no tool consulted went out unreviewed,
+      // since only a turn a source answered was reviewed.
+      describe("a reply that consulted nothing", () => {
+        const FACT = "O Camarote Aurora dá acesso ao setor Coral.";
+        const ASK = "Para qual evento é o seu pedido?";
+        const answersDirectly = (text: string) =>
+          ({
+            async invoke() {
+              return new AIMessage(text);
+            },
+            bindTools() {
+              return { invoke: async () => new AIMessage(text) };
+            },
+          }) as unknown as BaseChatModel;
+        const unsourcedTurn = async (
+          convId: number,
+          text: string,
+          verdict: string,
+        ) => {
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const reviewerSystem: string[] = [];
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: (cfg: ResolvedModelConfig) =>
+                cfg.model === GUARD_MODEL
+                  ? guardrailModel(async (msgs) => {
+                      reviewerSystem.push(
+                        String((msgs as BaseMessage[])[0]?.content),
+                      );
+                      return { content: verdict };
+                    })
+                  : answersDirectly(text),
+              makeClient: guardStub(sent, notes),
+              checkpointer: new MemorySaver(),
+            },
+          });
+          return { sent, reviewerSystem };
+        };
+
+        test("a fact stated with no source is reviewed as unsourced and caught", async () => {
+          await grounded("template");
+          const { sent, reviewerSystem } = await unsourcedTurn(
+            1771,
+            FACT,
+            flagged,
+          );
+          expect([
+            sent,
+            reviewerSystem.length,
+            reviewerSystem[0]?.includes(GROUNDING_NO_SOURCE_PROMPT),
+          ]).toEqual([[[1771, "TEMPLATE-OUT"]], 1, true]);
+        });
+
+        test("a question to the customer with no source is reviewed and, clean, goes out as written", async () => {
+          await grounded("template");
+          const { sent, reviewerSystem } = await unsourcedTurn(
+            1772,
+            ASK,
+            CLEAN_GROUNDING,
+          );
+          expect([sent, reviewerSystem.length]).toEqual([[[1772, ASK]], 1]);
+        });
       });
 
       test("after a completed hand-over the final text is dropped, so it is not reviewed", async () => {

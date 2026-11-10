@@ -2468,8 +2468,6 @@
       "groundingDesc": "Antes de a resposta sair, um modelo revisor a compara com o que as ferramentas de fonte devolveram, naquele turno e nos turnos anteriores da conversa que ele lê, e lista as afirmações que eles não sustentam. Só roda quando uma ferramenta de fonte devolveu algo num desses turnos.",
       "groundingEnabled": "Conferir a resposta com os resultados das ferramentas",
       "groundingHandoff": "Mensagem ao cliente (a mesma de Saída)",
-      "groundingReviewer": "Modelo revisor",
-      "groundingReviewerHint": "O modelo dos guardrails acima, ou um modelo próprio. Um modelo mais forte aponta menos respostas corretas.",
       "groundingSameModel": "O mesmo modelo dos guardrails",
       "groundingSourceAdd": "Outra ferramenta, pelo nome",
       "groundingSources": "Ferramentas de fonte",

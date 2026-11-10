@@ -1209,43 +1209,33 @@ export function GuardrailsTab({
                         data-testid="gr-grounding-context"
                       />
                     </FormField>
-                    <FormField
-                      group
-                      label={t(
-                        "editor.guardrails.groundingReviewer",
-                        "Reviewer model",
+                    {/* The reviewer's model, drawn exactly as every other model of its own (the
+                    suggestion reviewer, the choice check): the same fields, no title of its own. */}
+                    <ModelOverrideFields
+                      value={groundingOverride}
+                      onChange={(update) =>
+                        setGrounding(
+                          groundingFromForm(update(groundingOverride)),
+                        )
+                      }
+                      parent={guardrailsModel}
+                      credBaseUrl={groundingCredBaseUrl}
+                      credentialError={
+                        refusals.groundingCredential ?? undefined
+                      }
+                      sameAsLabel={t(
+                        "editor.guardrails.groundingSameModel",
+                        "Same as the guardrails model",
                       )}
-                      description={t(
-                        "editor.guardrails.groundingReviewerHint",
-                        "The guardrails model above, or a model of its own. A stronger model flags fewer correct replies.",
+                      credentialHint={t(
+                        "editor.guardrails.groundingCredentialHint",
+                        "Required when the reviewer uses another provider; without its own key, replies are not reviewed.",
                       )}
-                    >
-                      <ModelOverrideFields
-                        value={groundingOverride}
-                        onChange={(update) =>
-                          setGrounding(
-                            groundingFromForm(update(groundingOverride)),
-                          )
-                        }
-                        parent={guardrailsModel}
-                        credBaseUrl={groundingCredBaseUrl}
-                        credentialError={
-                          refusals.groundingCredential ?? undefined
-                        }
-                        sameAsLabel={t(
-                          "editor.guardrails.groundingSameModel",
-                          "Same as the guardrails model",
-                        )}
-                        credentialHint={t(
-                          "editor.guardrails.groundingCredentialHint",
-                          "Required when the reviewer uses another provider; without its own key, replies are not reviewed.",
-                        )}
-                        baseURLHint={t(
-                          "editor.reviewBaseURLHint",
-                          "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-                        )}
-                      />
-                    </FormField>
+                      baseURLHint={t(
+                        "editor.reviewBaseURLHint",
+                        "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                      )}
+                    />
                   </>
                 )}
               </Section>

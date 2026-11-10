@@ -668,6 +668,33 @@ describe("GuardrailsTab factual grounding", () => {
     ]).toEqual(["openrouter", null, null]);
   });
 
+  // The bug it catches: a keyless compatible reviewer the console cannot finish configuring, since
+  // nothing there sets its endpoint.
+  test("a compatible reviewer takes its endpoint in the section", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    fireEvent.change(
+      document.querySelector<HTMLSelectElement>(
+        '[data-testid="gr-grounding-provider"]',
+      ) as HTMLSelectElement,
+      { target: { value: "openai-compatible" } },
+    );
+    fireEvent.change(
+      document.querySelector<HTMLInputElement>(
+        '[data-testid="gr-grounding-baseurl"]',
+      ) as HTMLInputElement,
+      { target: { value: "http://revisor.local/v1" } },
+    );
+    expect([
+      saved?.factualGrounding.provider,
+      saved?.factualGrounding.baseURL,
+    ]).toEqual(["openai-compatible", "http://revisor.local/v1"]);
+  });
+
   test("template shows the Output template beside the action, and editing it edits that one", async () => {
     const c: GuardrailsConfig = {
       ...structuredClone(GUARDRAILS_DEFAULTS),

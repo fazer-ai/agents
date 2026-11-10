@@ -1232,6 +1232,28 @@ export function GuardrailsTab({
                             aria-label={t("editor.model", "Model")}
                           />
                         </FormField>
+                        {(fg.provider === "openai-compatible" ||
+                          !!fg.baseURL) && (
+                          <FormField
+                            label={t("editor.baseURL", "Base URL")}
+                            description={t(
+                              "editor.reviewBaseURLHint",
+                              "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                            )}
+                            group
+                          >
+                            <Input
+                              value={fg.baseURL ?? ""}
+                              onChange={(e) =>
+                                setGrounding({
+                                  baseURL: e.target.value.trim() || null,
+                                })
+                              }
+                              placeholder="https://api.groq.com/openai/v1"
+                              data-testid="gr-grounding-baseurl"
+                            />
+                          </FormField>
+                        )}
                       </>
                     )}
                   </>

@@ -84,6 +84,7 @@ import {
   screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { buildGroundingGate } from "@/modules/guardrails/grounding-gate";
 import {
   applyGuardrailHandoff,
   GuardrailHandoffFailedError,
@@ -1187,7 +1188,25 @@ async function runTurnBody(
   // What this turn survives, for the turn-errors message the closing block posts.
   const turnErrors = new TurnErrors();
   const telemetry = modelTelemetry(flow, loaded.mc.provider);
+  // The factual-grounding check, asked by the graph on the answer that would end the turn. A
+  // `template` or `handoff` trip waits in `pending()` for the output gate below.
+  const grounding = buildGroundingGate({
+    cfg: loaded.guardrails,
+    apiKey: loaded.groundingApiKey,
+    credentialBaseUrl: loaded.groundingCredentialBaseUrl,
+    flow,
+    logValues: loaded.logToolValues,
+    announce: async (r) => {
+      turnErrors.guardrail(r);
+      await chatwootNoteSink(client, conversationId)(r);
+    },
+    conversationId,
+    makeModel: params.deps?.makeModel,
+    persistUsage: params.deps?.persistUsage,
+    langfuseCfg: loaded.langfuseCfg,
+  });
   const graph = await buildModelAndGraph(loaded, tools, {
+    reviewReply: grounding?.review,
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
     // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end.
@@ -2513,7 +2532,12 @@ async function runTurnBody(
         ),
       );
       const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
-      const outGuard = screened ? await runGuardrail("output", screened) : null;
+      // A factual-grounding trip under `template` or `handoff` decides the reply in place of the
+      // screening; it stands only while there is still a reply of the model's to replace.
+      const groundingTrip = reply && !handedOff ? grounding?.pending() : null;
+      const outGuard =
+        groundingTrip ??
+        (screened ? await runGuardrail("output", screened) : null);
       // Whether what goes out below is the operator's text standing in for the reply.
       let replyByOperator = false;
       // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns

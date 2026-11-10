@@ -71,6 +71,13 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     sectionId: "gr-external",
     use: "apiKey",
   },
+  // The factual-grounding reviewer's own model, when it has one.
+  {
+    path: ["guardrails", "factualGrounding", "credentialRef"],
+    tab: "guardrails",
+    sectionId: "gr-grounding",
+    use: "apiKey",
+  },
   {
     path: ["memory", "compaction", "credentialRef"],
     tab: "behavior",

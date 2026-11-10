@@ -82,7 +82,7 @@ export const VERDICT_SCHEMA_OPENAPI = {
 
 // Every TOP-LEVEL balanced object in the response, in order. Nested objects are not returned (they
 // belong to their parent), braces inside strings do not count, and \" does not close one.
-function topLevelObjects(raw: string): string[] {
+export function topLevelObjects(raw: string): string[] {
   const out: string[] = [];
   let start = -1;
   let depth = 0;

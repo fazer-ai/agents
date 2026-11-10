@@ -1353,9 +1353,27 @@ export function guardrailTraceLabel(
   t: (key: string, fallback: string) => string,
   entry: Pick<
     Extract<TraceEntry, { type: "guardrail" }>,
-    "direction" | "outcome" | "action" | "held" | "external"
+    "direction" | "outcome" | "action" | "held" | "external" | "check"
   >,
 ): string {
+  // The factual-grounding check names what it found, and under `revise` that the agent rewrote it.
+  if (entry.check) {
+    if (entry.outcome === "revised")
+      return t(
+        "playground.trace.groundingRevised",
+        "claims the tool results do not support; the agent wrote the reply again",
+      );
+    if (entry.outcome === "observed")
+      return t(
+        "playground.trace.groundingObserved",
+        "claims the tool results do not support; only recorded, the reply went out as written",
+      );
+    if (entry.outcome === "clean")
+      return t(
+        "playground.trace.groundingClean",
+        "every claim is supported by the tool results",
+      );
+  }
   // Only recorded: whatever the judge or the endpoint decided, nothing it decided was carried out.
   if (entry.outcome === "observed")
     return entry.external
@@ -1433,6 +1451,11 @@ export function guardrailTraceLabel(
         "playground.trace.guardrailHandedOff",
         "blocked, the case would go to the team",
       );
+    case "revised":
+      return t(
+        "playground.trace.groundingRevised",
+        "claims the tool results do not support; the agent wrote the reply again",
+      );
     case "replaced":
       // `generated` reaches here only when the judge actually handed text back: the gate reports
       // `template` when the action was `generated` and no reply came with it, so this reads the
@@ -1481,16 +1504,28 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
             "text-warning":
               tripped ||
               entry.outcome === "unavailable" ||
-              entry.outcome === "observed",
+              entry.outcome === "observed" ||
+              entry.outcome === "revised",
             "text-text-secondary": entry.outcome === "clean",
           })}
         >
           <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
           {entry.external
             ? t("playground.trace.externalCheck", "External check on the reply")
-            : entry.direction === "input"
-              ? t("playground.trace.guardrailInput", "Guardrail on the message")
-              : t("playground.trace.guardrailOutput", "Guardrail on the reply")}
+            : entry.check
+              ? t(
+                  "playground.trace.groundingCheck",
+                  "Factual grounding of the reply",
+                )
+              : entry.direction === "input"
+                ? t(
+                    "playground.trace.guardrailInput",
+                    "Guardrail on the message",
+                  )
+                : t(
+                    "playground.trace.guardrailOutput",
+                    "Guardrail on the reply",
+                  )}
           <span className="text-text-muted font-normal">
             {guardrailTraceLabel(t, entry)}
           </span>
@@ -1522,8 +1557,26 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
               .join(" · ")}
           </p>
         )}
+        {entry.claims && entry.claims.length > 0 && (
+          <ul
+            className="bg-bg-tertiary text-text-muted flex flex-col gap-1 rounded px-2 py-1"
+            data-testid="guardrail-claims"
+          >
+            {entry.claims.map((c) => (
+              <li key={`${c.type}:${c.claim}`} className="whitespace-pre-wrap">
+                {t("playground.trace.groundingClaim", {
+                  defaultValue:
+                    "“{{claim}}” · the tool results say: {{evidence}}",
+                  claim: c.claim,
+                  evidence: c.evidence || "-",
+                })}
+              </li>
+            ))}
+          </ul>
+        )}
         {(tripped || entry.outcome === "observed") &&
           !entry.scores &&
+          !entry.claims &&
           !entry.external && (
             <pre className="bg-bg-tertiary text-text-muted overflow-x-auto rounded px-2 py-1 whitespace-pre-wrap">
               {[entry.categories?.join(", "), entry.rationale]

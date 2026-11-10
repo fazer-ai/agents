@@ -1,0 +1,119 @@
+import { describe, expect, test } from "bun:test";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import {
+  type AIMessage,
+  type BaseMessage,
+  HumanMessage,
+} from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
+import { MemorySaver } from "@langchain/langgraph";
+import { z } from "zod";
+import { buildAgentGraph } from "@/graph/graph";
+import { contentToText } from "@/graph/message-text";
+import { ScriptedSilenceModel } from "../utils/scripted-models";
+
+// The graph's side of the factual-grounding `revise`: the review is asked about the answer that would
+// end the turn, and a note back buys exactly one more answer, which is the one the thread keeps.
+
+const catalogo = tool(async () => "Portões: 18h.", {
+  name: "catalogo",
+  description: "catálogo",
+  schema: z.object({}),
+});
+const NOTE = "[Sistema] Revisão factual: NOTA-DE-TESTE";
+
+async function run(
+  model: ScriptedSilenceModel,
+  review: (turn: BaseMessage[]) => Promise<string | null>,
+  provider = "openai",
+) {
+  const graph = buildAgentGraph({
+    primary: { provider, model: "test-model" },
+    model: model as unknown as BaseChatModel,
+    systemPrompt: "PROMPT",
+    checkpointer: new MemorySaver(),
+    tools: [catalogo],
+    reviewReply: review,
+  });
+  const out = await graph.invoke(
+    { messages: [new HumanMessage("Que horas abrem os portões?")] },
+    { configurable: { thread_id: `g-${Math.random()}` } },
+  );
+  return out.messages as BaseMessage[];
+}
+
+const text = (m: BaseMessage | undefined) =>
+  contentToText(m?.content ?? "").trim();
+
+describe("reviewReply", () => {
+  test("a note asks the model once more, and only the revised answer stays in the thread", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "", calls: [{ name: "catalogo", args: {} }] },
+      { text: "Abre às 16h." },
+      { text: "Abre às 18h." },
+    ]);
+    const seen: BaseMessage[][] = [];
+    const messages = await run(model, async (turn) => {
+      seen.push(turn);
+      return NOTE;
+    });
+    expect(seen).toHaveLength(1);
+    expect(text(seen[0]?.at(-1))).toBe("Abre às 16h.");
+    expect(model.seen).toHaveLength(3);
+    const last = model.seen[2]?.at(-1);
+    expect(last?.getType()).toBe("system");
+    expect(text(last)).toBe(NOTE);
+    expect(text(messages.at(-1))).toBe("Abre às 18h.");
+    expect(messages.some((m) => text(m) === "Abre às 16h.")).toBe(false);
+  });
+
+  test("where a late system message is not accepted, the note rides in the system prompt", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "Abre às 16h." },
+      { text: "Abre às 18h." },
+    ]);
+    await run(model, async () => NOTE, "google");
+    const second = model.seen[1] ?? [];
+    expect(second.filter((m) => m.getType() === "system")).toHaveLength(1);
+    expect(text(second[0])).toContain(NOTE);
+  });
+
+  test("no note, no second answer; a revised answer is never reviewed again", async () => {
+    const model = new ScriptedSilenceModel([{ text: "Abre às 18h." }]);
+    let asked = 0;
+    await run(model, async () => {
+      asked++;
+      return null;
+    });
+    expect(model.seen).toHaveLength(1);
+    expect(asked).toBe(1);
+    const again = new ScriptedSilenceModel([
+      { text: "Abre às 16h." },
+      { text: "", calls: [{ name: "catalogo", args: {} }] },
+      { text: "Abre às 18h." },
+    ]);
+    let reviews = 0;
+    await run(again, async () => {
+      reviews++;
+      return NOTE;
+    });
+    expect(reviews).toBe(1);
+    expect(again.seen).toHaveLength(3);
+  });
+
+  test("a round that calls tools, or says nothing, is not reviewed", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "Vou ver.", calls: [{ name: "catalogo", args: {} }] },
+      { text: "" },
+    ]);
+    const seen: BaseMessage[][] = [];
+    await run(model, async (turn) => {
+      seen.push(turn);
+      return NOTE;
+    });
+    expect(seen).toHaveLength(0);
+    expect(
+      ((model.seen[0] ?? []).at(-1) as AIMessage | undefined)?.getType(),
+    ).toBe("human");
+  });
+});

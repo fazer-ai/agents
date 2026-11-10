@@ -10059,6 +10059,124 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(attachments).toEqual([]);
     });
 
+    // Factual grounding (docs/factual-grounding.md): the graph reviews the answer that would end the
+    // turn, and the inbox delivers what the action decided. The calculator stands in for a source.
+    describe("factual grounding", () => {
+      const DRAFT = "Deu 3.";
+      const REVISED = "Deu 2.";
+      const flagged = JSON.stringify({
+        violated: true,
+        claims: [{ claim: "deu 3", type: "contradiction", evidence: "2" }],
+        rationale: "r",
+      });
+      const calcThenAnswer = () => {
+        let answers = 0;
+        return {
+          async invoke() {
+            return new AIMessage(DRAFT);
+          },
+          bindTools() {
+            return {
+              async invoke(msgs: BaseMessage[]) {
+                const sinceHuman = msgs.slice(
+                  msgs.findLastIndex((m) => m.getType() === "human") + 1,
+                );
+                if (!sinceHuman.some((m) => m.getType() === "tool"))
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: `c${Math.random()}`,
+                      },
+                    ],
+                  });
+                answers += 1;
+                return new AIMessage(answers === 1 ? DRAFT : REVISED);
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+      };
+      const grounded = (action: string) =>
+        setGuardrails({
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          credentialRef: gVaultRef,
+          input: { enabled: false },
+          output: {
+            enabled: false,
+            templateMessage: "TEMPLATE-OUT",
+            handoffMessage: "HANDOFF-OUT",
+          },
+          factualGrounding: {
+            enabled: true,
+            sourceTools: ["calculator"],
+            action,
+          },
+        });
+      const turn = async (convId: number) => {
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(flagged, calcThenAnswer()),
+            makeClient: guardStub(sent, notes),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        return { outcome, sent, notes };
+      };
+
+      beforeAll(async () => {
+        await suDb.agentToolSelection.create({
+          data: {
+            tenantId: gTenantId,
+            agentId: gAgentId,
+            source: "NATIVE",
+            enabledTools: ["calculator"],
+            knowledgeBaseIds: [],
+          },
+        });
+      });
+      // The calculator grant would change what every later test of this agent is offered.
+      afterAll(async () => {
+        await suDb.agentToolSelection.deleteMany({
+          where: { tenantId: gTenantId, agentId: gAgentId, source: "NATIVE" },
+        });
+      });
+
+      test("revise delivers the agent's second answer and posts no note", async () => {
+        await grounded("revise");
+        const { outcome, sent, notes } = await turn(1762);
+        expect(outcome).toBe("posted");
+        expect(sent).toEqual([[1762, REVISED]]);
+        expect(notes).toEqual([]);
+      });
+
+      test("template replaces the reply with the Output template and leaves a note", async () => {
+        await grounded("template");
+        const { sent, notes } = await turn(1763);
+        expect(sent).toEqual([[1763, "TEMPLATE-OUT"]]);
+        expect(notes[0]?.[1]).toContain("factual_grounding");
+      });
+
+      test("observe sends the reply as written", async () => {
+        await grounded("observe");
+        const { sent, notes } = await turn(1764);
+        expect(sent).toEqual([[1764, DRAFT]]);
+        expect(notes).toEqual([]);
+      });
+    });
+
     // The input check reads the conversation's thread as context: the second message is
     // judged after the first one and the agent's reply to it, and is the only text judged.
     test("the input check reads the earlier turns of the conversation as context", async () => {

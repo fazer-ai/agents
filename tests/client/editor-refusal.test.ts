@@ -158,6 +158,7 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     guardrailsEnabled: true,
     guardrailsChatModelShown: true,
     guardrailsClassifierShown: true,
+    guardrailsGroundingModelShown: true,
     followUpEnabled: true,
     followUpSteps: 2,
     snoozedFollowUpEnabled: true,
@@ -319,6 +320,7 @@ describe("editorRefusalFields", () => {
         guardrailsEnabled: false,
         guardrailsChatModelShown: false,
         guardrailsClassifierShown: false,
+        guardrailsGroundingModelShown: false,
       }),
     );
     expect(off.drawn).toEqual([]);

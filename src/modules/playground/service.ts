@@ -93,11 +93,13 @@ import {
 } from "@/modules/guardrails/external";
 import {
   buildGuardrailGate,
+  type GuardrailDecision,
   type GuardrailGate,
   guardrailTripped,
   screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { buildGroundingGate } from "@/modules/guardrails/grounding-gate";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
@@ -442,6 +444,8 @@ async function buildPlaygroundGraph(params: {
   // nudge, is not offered reply_as_text.
   spokenNotice?: () => string | null;
   replyChoice?: ReplyChoice;
+  // The factual-grounding review, built by the caller from the config it resolved.
+  reviewReply?: (turn: BaseMessage[]) => Promise<string | null>;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -508,6 +512,7 @@ async function buildPlaygroundGraph(params: {
     onModelFallbackFailed: params.onModelFallbackFailed,
     onModelFallbackUnavailable: params.onModelFallbackUnavailable,
     onHistoryTrim: params.onHistoryTrim,
+    reviewReply: params.reviewReply,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -943,6 +948,21 @@ async function runPlaygroundTurnOnce(
   // The model that answered once the fallback took the turn, for the stage's closing line.
   let answeredBy: { provider: string; model: string } | null = null;
 
+  // The same factual-grounding check the inbox runs; its rows land in the trace after the graph's.
+  const grounding = screensThisTurn(params)
+    ? buildGroundingGate({
+        cfg: loadedConfig.guardrails,
+        apiKey: loadedConfig.groundingApiKey,
+        credentialBaseUrl: loadedConfig.groundingCredentialBaseUrl,
+        flow,
+        logValues: loadedConfig.logToolValues,
+        announce: (r) => {
+          gTrace.push(traceGuardrail(r));
+        },
+        makeModel: params.deps?.makeModel,
+        langfuseCfg: loadedConfig.langfuseCfg,
+      })
+    : null;
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
       ctx,
@@ -954,6 +974,7 @@ async function runPlaygroundTurnOnce(
       turnId,
       flow,
       loaded: loadedConfig,
+      reviewReply: grounding?.review,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,
@@ -1177,9 +1198,12 @@ async function runPlaygroundTurnOnce(
       );
     }
   }
-  const outGuard = raw
-    ? await screen("output", raw)
-    : { kind: "not-run" as const };
+  const groundingTrip = raw ? grounding?.pending() : null;
+  const outGuard: GuardrailDecision = groundingTrip
+    ? groundingTrip
+    : raw
+      ? await screen("output", raw)
+      : { kind: "not-run" as const };
   let reply = screenedText(outGuard, raw) ?? "";
   // The operator's endpoint, as the inbox asks it: after the built-in screening, on what would go
   // out, unless that is already the operator's own text. Its line lands in the trace.

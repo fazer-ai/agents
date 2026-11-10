@@ -1,13 +1,15 @@
 import {
+  FileSearch,
   MessageCircle,
   Send,
   ShieldCheck,
   TriangleAlert,
   Webhook,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Button,
   CredentialPicker,
   FormField,
   Input,
@@ -17,6 +19,7 @@ import {
   SwitchField,
   Textarea,
 } from "@/client/components";
+import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
@@ -41,7 +44,12 @@ import type {
   GuardrailsConfig,
   GuardrailThresholdKey,
 } from "@/modules/guardrails/settings";
-import { readCompetitors } from "@/modules/guardrails/settings";
+import {
+  GROUNDING_ACTIONS,
+  type GroundingAction,
+  MAX_SOURCE_TOOLS,
+  readCompetitors,
+} from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
 import { Section, SectionNav } from "./SectionNav";
@@ -54,6 +62,8 @@ import type { GuardrailsRefusals } from "./types";
 // IS the config shape (GuardrailsConfig) — no separate form model needed.
 
 interface GuardrailsTabProps {
+  // The saved agent's id, to offer its tools as factual-grounding sources; empty for an unsaved one.
+  agentId: string;
   guardrails: GuardrailsConfig;
   setGuardrails: React.Dispatch<React.SetStateAction<GuardrailsConfig>>;
   // The refused input this tab draws, if the standing refusal is about one of them. Read in
@@ -110,7 +120,29 @@ function ThresholdInput({
   );
 }
 
+// The agent's tool names, as a playground turn would have them, for the source picker. Best-effort:
+// a failed load leaves the list empty and the names already saved still show.
+function useAgentToolNames(agentId: string, wanted: boolean): string[] {
+  const [names, setNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (!wanted || !/^\d+$/.test(agentId)) return;
+    let live = true;
+    api.api.v1
+      .agents({ id: agentId })
+      .playground.tools.get()
+      .then(({ data }) => {
+        if (live && data) setNames(data.tools.map((tl) => tl.name));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [agentId, wanted]);
+  return names;
+}
+
 export function GuardrailsTab({
+  agentId,
   guardrails: g,
   setGuardrails: setG,
   refusals,
@@ -143,11 +175,65 @@ export function GuardrailsTab({
       label: t("editor.guardrails.navPolicy", "Policy"),
     },
     {
+      id: "gr-grounding",
+      icon: FileSearch,
+      label: t("editor.guardrails.navGrounding", "Factual grounding"),
+    },
+    {
       id: "gr-external",
       icon: Webhook,
       label: t("editor.guardrails.navExternal", "External check"),
     },
   ];
+  const fg = g.factualGrounding;
+  const setGrounding = (patch: Partial<GuardrailsConfig["factualGrounding"]>) =>
+    setG((s) => ({
+      ...s,
+      factualGrounding: { ...s.factualGrounding, ...patch },
+    }));
+  const toolNames = useAgentToolNames(agentId, g.enabled && fg.enabled);
+  // Every name the picker draws: the agent's tools, then any saved name the agent no longer offers.
+  const sourceChoices = [
+    ...toolNames,
+    ...fg.sourceTools.filter((n) => !toolNames.includes(n)),
+  ];
+  const [extraSource, setExtraSource] = useState("");
+  // The window as typed while it is not a whole number in range; the form keeps its last valid value.
+  const [groundingContextDraft, setGroundingContextDraft] = useState<
+    string | null
+  >(null);
+  const toggleSource = (name: string, on: boolean) =>
+    setGrounding({
+      sourceTools: on
+        ? [...fg.sourceTools.filter((n) => n !== name), name]
+        : fg.sourceTools.filter((n) => n !== name),
+    });
+  const addExtraSource = () => {
+    const name = extraSource.trim();
+    if (!name || fg.sourceTools.length >= MAX_SOURCE_TOOLS) return;
+    toggleSource(name, true);
+    setExtraSource("");
+  };
+  const groundingActionLabel = (a: GroundingAction) =>
+    a === "observe"
+      ? t(
+          "editor.guardrails.groundingActionObserve",
+          "Only record it (the reply goes out as written)",
+        )
+      : a === "revise"
+        ? t(
+            "editor.guardrails.groundingActionRevise",
+            "Ask the agent to rewrite the reply without those claims",
+          )
+        : a === "template"
+          ? t(
+              "editor.guardrails.groundingActionTemplate",
+              "Reply with the Output template message",
+            )
+          : t(
+              "editor.guardrails.groundingActionHandoff",
+              "Hand the conversation to the team",
+            );
   const setExternal = (patch: Partial<GuardrailsConfig["external"]>) =>
     setG((s) => ({ ...s, external: { ...s.external, ...patch } }));
 
@@ -873,6 +959,228 @@ export function GuardrailsTab({
                       ),
                     )}
                   </FormField>
+                )}
+              </Section>
+              <Section
+                id="gr-grounding"
+                icon={FileSearch}
+                title={t("editor.guardrails.grounding", "Factual grounding")}
+                description={t(
+                  "editor.guardrails.groundingDesc",
+                  "Before a reply is sent, a reviewer model compares it with what the source tools returned in that turn and with the recent conversation, and lists the claims they do not support. It runs only on a turn in which a source tool returned something.",
+                )}
+              >
+                <SwitchField
+                  checked={fg.enabled}
+                  onCheckedChange={(v) => setGrounding({ enabled: v })}
+                  label={t(
+                    "editor.guardrails.groundingEnabled",
+                    "Check the reply against the tool results",
+                  )}
+                />
+                {fg.enabled && (
+                  <>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.groundingSources",
+                        "Source tools",
+                      )}
+                      description={t(
+                        "editor.guardrails.groundingSourcesHint",
+                        "The tools whose results count as sources, such as a catalog or the knowledge search. With none chosen the check does not run.",
+                      )}
+                      group
+                    >
+                      <div
+                        className="flex flex-col gap-1"
+                        data-testid="gr-grounding-sources"
+                      >
+                        {sourceChoices.map((name) => (
+                          <SwitchField
+                            key={name}
+                            checked={fg.sourceTools.includes(name)}
+                            onCheckedChange={(v) => toggleSource(name, v)}
+                            label={name}
+                          />
+                        ))}
+                        <div className="flex gap-2">
+                          <Input
+                            value={extraSource}
+                            onChange={(e) => setExtraSource(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                addExtraSource();
+                              }
+                            }}
+                            placeholder={t(
+                              "editor.guardrails.groundingSourceAdd",
+                              "Another tool, by name",
+                            )}
+                            aria-label={t(
+                              "editor.guardrails.groundingSourceAdd",
+                              "Another tool, by name",
+                            )}
+                            data-testid="gr-grounding-source-input"
+                          />
+                          <Button
+                            variant="secondary"
+                            onClick={addExtraSource}
+                            disabled={!extraSource.trim()}
+                          >
+                            {t("common.add", "Add")}
+                          </Button>
+                        </div>
+                      </div>
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.groundingAction",
+                        "On unsupported claims",
+                      )}
+                      description={
+                        fg.action === "revise"
+                          ? t(
+                              "editor.guardrails.groundingActionReviseHint",
+                              "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn.",
+                            )
+                          : fg.action === "observe"
+                            ? t(
+                                "editor.guardrails.groundingActionObserveHint",
+                                "The verdict, the claims and the evidence go to the Logs page. Use it to measure before letting the check act.",
+                              )
+                            : t(
+                                "editor.guardrails.groundingActionReplaceHint",
+                                "Uses the messages set in Output. A false positive replaces a correct answer, so measure with “only record it” first.",
+                              )
+                      }
+                    >
+                      <Select
+                        value={fg.action}
+                        onChange={(e) =>
+                          setGrounding({
+                            action: e.target.value as GroundingAction,
+                          })
+                        }
+                        data-testid="gr-grounding-action"
+                      >
+                        {GROUNDING_ACTIONS.map((a) => (
+                          <option key={a} value={a}>
+                            {groundingActionLabel(a)}
+                          </option>
+                        ))}
+                      </Select>
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.groundingContext",
+                        "Earlier messages the reviewer reads",
+                      )}
+                      description={t(
+                        "editor.guardrails.groundingContextHint",
+                        "Customer and agent messages before the turn, including what was read from images the customer sent.",
+                      )}
+                    >
+                      <NumberInput
+                        range={GUARDRAIL_RANGES.contextMessages}
+                        value={
+                          groundingContextDraft ?? String(fg.contextMessages)
+                        }
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setGroundingContextDraft(raw);
+                          if (
+                            raw.trim() !== "" &&
+                            inRange(
+                              Number(raw),
+                              GUARDRAIL_RANGES.contextMessages,
+                            )
+                          )
+                            setGrounding({ contextMessages: Number(raw) });
+                        }}
+                        onBlur={() => setGroundingContextDraft(null)}
+                        data-testid="gr-grounding-context"
+                      />
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.groundingReviewer",
+                        "Reviewer model",
+                      )}
+                      description={t(
+                        "editor.guardrails.groundingReviewerHint",
+                        "The guardrails model above, or a model of its own. A stronger model flags fewer correct replies.",
+                      )}
+                    >
+                      <Select
+                        value={fg.provider ?? ""}
+                        onChange={(e) => {
+                          const provider = e.target.value;
+                          setGrounding(
+                            provider
+                              ? {
+                                  provider:
+                                    provider as GuardrailsConfig["provider"],
+                                  model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
+                                }
+                              : {
+                                  provider: null,
+                                  model: "",
+                                  credentialRef: null,
+                                  baseURL: null,
+                                },
+                          );
+                        }}
+                        data-testid="gr-grounding-provider"
+                      >
+                        <option value="">
+                          {t(
+                            "editor.guardrails.groundingSameModel",
+                            "Same as the guardrails model",
+                          )}
+                        </option>
+                        {MODEL_PROVIDERS.map((p) => (
+                          <option key={p} value={p}>
+                            {providerLabel(p, t)}
+                          </option>
+                        ))}
+                      </Select>
+                    </FormField>
+                    {fg.provider && (
+                      <>
+                        <FormField
+                          label={t("editor.credential", "API key")}
+                          error={refusals.groundingCredential}
+                          group
+                        >
+                          <CredentialPicker
+                            value={fg.credentialRef ?? ""}
+                            onChange={(v) =>
+                              setGrounding({ credentialRef: v || null })
+                            }
+                            required={fg.provider !== "openai-compatible"}
+                            compatibleTypes={credentialCompat.model(
+                              fg.provider,
+                            )}
+                            defaultCreateType={
+                              credentialCompat.model(fg.provider)[0]
+                            }
+                            ariaLabel={t("editor.credential", "API key")}
+                          />
+                        </FormField>
+                        <FormField label={t("editor.model", "Model")} group>
+                          <ModelPicker
+                            value={fg.model}
+                            onChange={(v) => setGrounding({ model: v })}
+                            provider={fg.provider}
+                            credentialRef={fg.credentialRef || undefined}
+                            baseURL={fg.baseURL || undefined}
+                            aria-label={t("editor.model", "Model")}
+                          />
+                        </FormField>
+                      </>
+                    )}
+                  </>
                 )}
               </Section>
               <Section

@@ -1377,6 +1377,10 @@ function AgentEditor() {
       guardrails.enabled && guardrails.classifier === "chat",
     guardrailsClassifierShown:
       guardrails.enabled && guardrails.classifier === "decisions",
+    guardrailsGroundingModelShown:
+      guardrails.enabled &&
+      guardrails.factualGrounding.enabled &&
+      guardrails.factualGrounding.provider !== null,
     followUpEnabled: followUp.enabled,
     followUpSteps: followUp.steps.length,
     snoozedFollowUpEnabled:
@@ -5569,6 +5573,7 @@ function AgentEditor() {
 
             {tab === "guardrails" && (
               <GuardrailsTab
+                agentId={id}
                 guardrails={guardrails}
                 setGuardrails={setGuardrails}
                 refusals={{
@@ -5614,6 +5619,12 @@ function AgentEditor() {
                     "settings.guardrails.external.credentialRef",
                     currentRef.current[
                       "settings.guardrails.external.credentialRef"
+                    ],
+                  ),
+                  groundingCredential: refusal.at(
+                    "settings.guardrails.factualGrounding.credentialRef",
+                    currentRef.current[
+                      "settings.guardrails.factualGrounding.credentialRef"
                     ],
                   ),
                 }}

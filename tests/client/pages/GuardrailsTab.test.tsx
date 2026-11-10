@@ -46,6 +46,7 @@ function renderWith(
   config.output = { ...config.output, enabled: true, action };
   render(
     <GuardrailsTab
+      agentId=""
       guardrails={config}
       setGuardrails={setGuardrails as never}
       refusals={NO_REFUSALS}
@@ -74,6 +75,7 @@ const NO_REFUSALS: GuardrailsRefusals = {
   outputHandoffMessage: null,
   externalUrl: null,
   externalSecret: null,
+  groundingCredential: null,
 };
 
 describe("GuardrailsTab template message", () => {
@@ -220,6 +222,7 @@ describe("a refusal handed to the guardrails tab lands at its input", () => {
     config.output = { ...config.output, enabled: true, action: "generated" };
     render(
       <GuardrailsTab
+        agentId=""
         guardrails={config}
         setGuardrails={() => {}}
         refusals={refusals}
@@ -283,6 +286,7 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     saved = g;
     return (
       <GuardrailsTab
+        agentId=""
         guardrails={g}
         setGuardrails={setG as never}
         refusals={NO_REFUSALS}
@@ -483,6 +487,7 @@ describe("GuardrailsTab conversation context", () => {
           reset-from-outside
         </button>
         <GuardrailsTab
+          agentId=""
           guardrails={g}
           setGuardrails={setG as never}
           refusals={NO_REFUSALS}
@@ -523,5 +528,94 @@ describe("GuardrailsTab conversation context", () => {
     fireEvent.change(field() as HTMLInputElement, { target: { value: "25" } });
     fireEvent.click(screen.getByText("reset-from-outside"));
     expect([field()?.value, saved?.input.contextMessages]).toEqual(["4", 4]);
+  });
+});
+
+// The factual-grounding section: the agent's own tools are offered as sources, the four actions are
+// the ones offered, and what is picked is what the form will save.
+describe("GuardrailsTab factual grounding", () => {
+  let previousFetch: typeof globalThis.fetch;
+  beforeAll(() => {
+    previousFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      new Response(
+        JSON.stringify(
+          String(input).includes("/playground/tools")
+            ? {
+                tools: [
+                  {
+                    name: "catalogo_ficticio",
+                    description: "",
+                    category: "code",
+                    simulated: false,
+                  },
+                ],
+              }
+            : { entries: [] },
+        ),
+        { headers: { "content-type": "application/json" } },
+      )) as unknown as typeof globalThis.fetch;
+  });
+  afterEach(() => cleanup());
+  afterAll(() => {
+    globalThis.fetch = previousFetch;
+  });
+
+  let saved: GuardrailsConfig | null = null;
+  function Stateful({ initial }: { initial: GuardrailsConfig }) {
+    const [g, setG] = useState(initial);
+    saved = g;
+    return (
+      <GuardrailsTab
+        agentId="7"
+        guardrails={g}
+        setGuardrails={setG as never}
+        refusals={NO_REFUSALS}
+        dirty={false}
+        saving={false}
+        onSave={() => {}}
+        onDiscard={() => {}}
+      />
+    );
+  }
+
+  test("the agent's tools are offered as sources, and a pick reaches the form", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    const toolSwitch = await screen.findByRole("switch", {
+      name: "catalogo_ficticio",
+    });
+    fireEvent.click(toolSwitch);
+    const action = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-grounding-action"]',
+    );
+    const offered = [...(action?.options ?? [])].map((o) => o.value);
+    fireEvent.change(action as HTMLSelectElement, {
+      target: { value: "revise" },
+    });
+    expect([
+      offered,
+      saved?.factualGrounding.sourceTools,
+      saved?.factualGrounding.action,
+    ]).toEqual([
+      ["observe", "revise", "template", "handoff"],
+      ["catalogo_ficticio"],
+      "revise",
+    ]);
+  });
+
+  test("off, the section shows only its switch", () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    render(<Stateful initial={c} />);
+    expect(
+      document.querySelector('[data-testid="gr-grounding-action"]') === null,
+    ).toBe(true);
   });
 });

@@ -431,7 +431,7 @@ const BARE_SLICES: Record<
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
-  "src/graph/trace.ts": [3, "array + index"],
+  "src/graph/trace.ts": [4, "array + index"],
   // The queue of statement timeouts waiting to be stored, capped at a count of events.
   "src/lib/pool-stats.ts": [1, "array"],
   "src/lib/redact.ts": [1, "array"],
@@ -509,6 +509,8 @@ const BARE_SLICES: Record<
   "src/modules/flowlog/settings.ts": [1, "fixed-format"],
   "src/modules/followups/settings.ts": [1, "array"],
   "src/modules/followups/snoozed-settings.ts": [2, "array"],
+  "src/modules/guardrails/grounding-gate.ts": [2, "array"],
+  "src/modules/guardrails/grounding.ts": [1, "array"],
   "src/modules/images/fetch.ts": [1, "array"],
   // No response-body cap here: `lib/outbound.ts` caps the READ, cutting through `clipText`.
   "src/modules/integrations/toolpacks/asaas.ts": [1, "fixed-format"],

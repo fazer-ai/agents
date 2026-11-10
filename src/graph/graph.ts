@@ -194,6 +194,10 @@ export interface BuildAgentGraphParams {
   retrySilence?: () => boolean;
   // Fired once when that retry ran, with what the second answer did, for the turn's trail.
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
+  // The factual-grounding review (modules/guardrails/grounding-gate.ts), asked with the turn as it
+  // would end: the history plus the final answer. A note back means "revise": the model is asked once
+  // more with it, and only that second answer returns to the thread. Asked at most once per invocation.
+  reviewReply?: (turn: BaseMessage[]) => Promise<string | null>;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -699,6 +703,7 @@ export function buildAgentGraph({
   signal: jobSignal,
   retrySilence,
   onSilenceRetry,
+  reviewReply,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -743,6 +748,8 @@ export function buildAgentGraph({
   // Once per turn, by the same closure argument: the silence retry runs at most once in this
   // invocation, however many rounds follow it.
   let silenceRetried = false;
+  // Same closure argument: the factual-grounding revision runs at most once per invocation.
+  let replyRevised = false;
   const reportToolLimit = (info: {
     maxToolCalls: number;
     toolCalls: number;
@@ -1053,6 +1060,27 @@ export function buildAgentGraph({
         : [new SystemMessage(`${prompt}\n\n${text}`), ...shown, ...wrapUp];
       response = await ask(retried);
       onSilenceRetry?.({ outcome: silenceRetryOutcome(response) });
+    }
+    // NOTE: the factual-grounding review, on the answer that would end the turn: text, no calls, on a
+    // turn that answers somebody and did not decide silence. The note travels like the silence retry's
+    // instruction, and the draft is quoted inside it rather than sent as an assistant turn.
+    if (
+      reviewReply &&
+      !replyRevised &&
+      !noReplyChannel &&
+      !silentTurn &&
+      ((response as AIMessage).tool_calls?.length ?? 0) === 0 &&
+      contentToText(response.content).trim() !== ""
+    ) {
+      const note = await reviewReply([...history, response]);
+      if (note) {
+        replyRevised = true;
+        response = await ask(
+          lateSystemAccepted
+            ? [...messages, new SystemMessage(note)]
+            : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
+        );
+      }
     }
     return { messages: [...narration, silenced(response)] };
   };

@@ -110,6 +110,7 @@ export interface GuardrailsRefusals {
   outputHandoffMessage: string | null;
   externalUrl: string | null;
   externalSecret: string | null;
+  groundingCredential: string | null;
 }
 
 export interface ToolRefusals {

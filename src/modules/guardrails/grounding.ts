@@ -21,9 +21,8 @@ import { topLevelObjects, type VerdictMode } from "./verdict";
 // The factual-grounding output check (docs/factual-grounding.md): a reviewer model reads the turn's
 // tool calls with their full results, the source results of the earlier turns still in the window it
 // reads, the recent conversation and the reply, and lists every claim in the reply that the results
-// do not support. Every reply is reviewed: one with no SOURCE result (a tool named by the operator
-// that returned something) in this turn or in that window is reviewed knowing that no source was
-// consulted, so any in-scope fact it states is unsupported.
+// do not support. Only a turn with a SOURCE (a tool named by the operator) that returned something,
+// in this turn or in that window, is reviewed.
 
 // The key the check is named by in the log, the trace and the operator note.
 export const FACTUAL_GROUNDING_KEY = "factual_grounding" as const;
@@ -226,22 +225,6 @@ export const GROUNDING_SYSTEM_PROMPT = [
   'Answer ONLY with a JSON object: {"violated": boolean, "claims": [{"claim": "<the reply\'s claim>", "type": "unsupported" | "contradiction" | "false_absence", "evidence": "<what the tool results say, or \'nothing\'>"}], "rationale": "<one sentence>"}. "claims" lists only violating claims, and is empty when "violated" is false.',
 ].join("\n");
 
-// Added to the system message when no call of the review is a source, so the reviewer is told at
-// system level, where nothing the customer or a tool wrote can reach, that the reply rests on nothing.
-// Out of scope stays out of scope: only the facts the sources would cover become unsupported.
-export const GROUNDING_NO_SOURCE_PROMPT = [
-  'No source was consulted for this reply: no call in <tool_results> is marked source="yes", in this turn or in the earlier turns shown (the block may hold other calls, or be empty).',
-  "",
-  'So every in-scope fact the reply states is an unsupported claim (evidence: "nothing"), whether it sounds plausible or not: prices, dates, times, places, sectors or areas, availability, quantities, what a product, plan or ticket includes, eligibility rules such as age limits or discounts, and conditions of sale. A non-source call shown in <tool_results> still supports what it states.',
-  "",
-  "In scope here means facts about a specific event, product, plan or offer, the kind a source would hold. Still not violations, exactly as above: general guidance about how the service or platform works (where something is found in the customer's account, how to sign in, how to open, download or transfer a purchase), greetings, offers of further help, asking the customer for information, saying the information is not available or must be confirmed elsewhere, and facts the customer stated or showed in the conversation, when the reply attributes them to the customer.",
-].join("\n");
-
-// Whether any call of the review is a source: what decides the system message, and what the flow
-// line reports as `sourced`.
-export const groundingSourced = (calls: readonly GroundingToolCall[]) =>
-  calls.some((c) => c.source);
-
 const roleLine = (c: DatedContextMessage) =>
   `${c.role === "tool" ? `tool ${c.tool ?? ""}`.trim() : c.role}: ${unfenced(c.text)}`;
 
@@ -361,11 +344,7 @@ export async function reviewGrounding(
   turnSignal?: AbortSignal,
 ): Promise<GroundingVerdict> {
   const messages: BaseMessage[] = [
-    new SystemMessage(
-      groundingSourced(input.calls)
-        ? GROUNDING_SYSTEM_PROMPT
-        : `${GROUNDING_SYSTEM_PROMPT}\n\n${GROUNDING_NO_SOURCE_PROMPT}`,
-    ),
+    new SystemMessage(GROUNDING_SYSTEM_PROMPT),
     new HumanMessage(groundingUserMessage(input)),
   ];
   try {

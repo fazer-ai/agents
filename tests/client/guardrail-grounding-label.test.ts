@@ -45,31 +45,6 @@ describe("a factual-grounding review on the Logs page", () => {
     ).toBeNull();
   });
 
-  // The bug it catches: an unsourced review read as one that matched sources it never had.
-  test("a review with no source consulted says so, and names no results", () => {
-    const unsourced = {
-      ...reviewed,
-      sourced: false,
-      resultChars: 0,
-      earlierSources: 0,
-    };
-    expect([
-      guardrailGroundingLabel(
-        "guardrail",
-        { ...unsourced, verdict: "clean", claimCount: 0 },
-        t,
-      ),
-      guardrailGroundingLabel(
-        "guardrail",
-        { ...unsourced, verdict: "violated", claimCount: 1, action: "observe" },
-        t,
-      ),
-    ]).toEqual([
-      "Factual grounding: no source consulted, and the reply states no fact that needs one · 8100 in / 240 out tokens, 3100 ms",
-      "Factual grounding: 1 claim(s) stated with no source consulted (observe) · 8100 in / 240 out tokens, 3100 ms",
-    ]);
-  });
-
   test("a flagged review names the claim count and the action", () => {
     expect(
       guardrailGroundingLabel(

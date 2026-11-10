@@ -164,44 +164,24 @@ export function guardrailGroundingLabel(
   )
     return null;
   const n = (v: unknown) => (typeof v === "number" ? v : 0);
-  // A review with no source result in the window (`sourced: false`) judged the reply against nothing,
-  // so its headline says so instead of naming sources it never had. A line written before the field
-  // existed came from a sourced review.
-  const unsourced = detail.sourced === false;
-  const count = n(detail.claimCount);
-  const action = typeof detail.action === "string" ? detail.action : "?";
   const head =
     detail.verdict === "clean"
-      ? unsourced
-        ? t(
-            "logs.guardrailGrounding.cleanUnsourced",
-            "Factual grounding: no source consulted, and the reply states no fact that needs one",
-          )
-        : t(
-            "logs.guardrailGrounding.clean",
-            "Factual grounding: the reply matches the sources",
-          )
-      : unsourced
-        ? t("logs.guardrailGrounding.violatedUnsourced", {
-            defaultValue:
-              "Factual grounding: {{count}} claim(s) stated with no source consulted ({{action}})",
-            count,
-            action,
-          })
-        : t("logs.guardrailGrounding.violated", {
-            defaultValue:
-              "Factual grounding: {{count}} claim(s) the sources do not support ({{action}})",
-            count,
-            action,
-          });
+      ? t(
+          "logs.guardrailGrounding.clean",
+          "Factual grounding: the reply matches the sources",
+        )
+      : t("logs.guardrailGrounding.violated", {
+          defaultValue:
+            "Factual grounding: {{count}} claim(s) the sources do not support ({{action}})",
+          count: n(detail.claimCount),
+          action: typeof detail.action === "string" ? detail.action : "?",
+        });
   return [
     head,
-    unsourced
-      ? null
-      : t("logs.guardrailGrounding.sources", {
-          defaultValue: "{{chars}} characters of results",
-          chars: n(detail.resultChars),
-        }),
+    t("logs.guardrailGrounding.sources", {
+      defaultValue: "{{chars}} characters of results",
+      chars: n(detail.resultChars),
+    }),
     n(detail.earlierSources) > 0
       ? t("logs.guardrailGrounding.earlier", {
           defaultValue: "{{count}} source(s) from earlier turns",

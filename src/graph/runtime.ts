@@ -1206,7 +1206,14 @@ async function runTurnBody(
     langfuseCfg: loaded.langfuseCfg,
   });
   const graph = await buildModelAndGraph(loaded, tools, {
-    reviewReply: grounding?.review,
+    // A completed transfer answers the turn (or silences it) and the model's text is dropped,
+    // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
+    reviewReply: grounding
+      ? (turn, reply) =>
+          handoffState.completed
+            ? Promise.resolve(null)
+            : grounding.review(turn, reply)
+      : undefined,
     onReplyRevised: grounding?.revised,
     // The recovery's own condition below, minus the empty final answer the graph checks itself.
     recoversReply: () =>

@@ -10176,6 +10176,70 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(notes[0]?.[1]).toContain("factual_grounding");
       });
 
+      test("after a completed hand-over the final text is dropped, so it is not reviewed", async () => {
+        await grounded("template");
+        await seedConv(1767);
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        let n = 0;
+        let reviews = 0;
+        const handsOver = {
+          async invoke() {
+            return new AIMessage(DRAFT);
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                n++;
+                if (n === 1)
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: "g1",
+                      },
+                    ],
+                  });
+                if (n === 2)
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: "ATENDENTE-JA-VEM" },
+                        id: "g2",
+                      },
+                    ],
+                  });
+                return new AIMessage(DRAFT);
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 1767, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    reviews++;
+                    return { content: flagged };
+                  })
+                : handsOver,
+            makeClient: guardStub(sent, [], toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(sent).toEqual([[1767, "ATENDENTE-JA-VEM"]]);
+        expect(reviews).toBe(0);
+      });
+
       test("a silent hand-over keeps its silence, and the draft beside it is not reviewed", async () => {
         await grounded("template");
         await seedConv(1766);

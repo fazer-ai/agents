@@ -1061,11 +1061,10 @@ export function buildAgentGraph({
       response = await ask(retried);
       onSilenceRetry?.({ outcome: silenceRetryOutcome(response) });
     }
-    // NOTE: the factual-grounding review, on the answer that would end the turn: text, no calls, on a
-    // turn that answers somebody and did not decide silence. The note travels like the silence retry's
-    // instruction, and the draft is quoted inside it rather than sent as an assistant turn.
-    // The candidate is the final text, or, when that is empty, the reply written beside an earlier
-    // call that the runtime recovers and delivers (`replyWrittenThisTurn`).
+    // The factual-grounding review's candidate, on a turn that answers somebody and did not decide
+    // silence: the final text, or, when that is empty, the reply written beside an earlier call that
+    // the runtime recovers and delivers (`replyWrittenThisTurn`). A revise note travels like the
+    // silence retry's instruction, with the draft quoted inside it rather than sent as an assistant turn.
     const candidate =
       reviewReply &&
       !replyRevised &&

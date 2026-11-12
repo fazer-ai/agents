@@ -71,7 +71,10 @@ import {
 } from "@/modules/documents/templates";
 import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { disarmFullDetail } from "@/modules/flowlog/settings";
-import { readReferenceKnowledgeBaseIds } from "@/modules/guardrails/settings";
+import {
+  MAX_REFERENCE_KNOWLEDGE_BASES,
+  readReferenceKnowledgeBaseIds,
+} from "@/modules/guardrails/settings";
 import {
   getCatalogEntry,
   isKnownCatalogType,
@@ -649,9 +652,16 @@ async function referenceBasesById(
   const raw = fg.referenceKnowledgeBases;
   delete fg.referenceKnowledgeBases;
   delete fg.referenceKnowledgeBaseIds;
-  const names = Array.isArray(raw)
+  const all = Array.isArray(raw)
     ? [...new Set(raw.filter((n): n is string => typeof n === "string"))]
     : [];
+  // The write's limit, which this bag skips: it is stored past `dropUnusableImportedSettingsInPlace`.
+  const names = all.slice(0, MAX_REFERENCE_KNOWLEDGE_BASES);
+  if (all.length > names.length)
+    warnings.push({
+      code: "settingsValueDropped",
+      params: { field: "guardrails.factualGrounding.referenceKnowledgeBases" },
+    });
   if (names.length === 0) return;
   const rows = await db.knowledgeBase.findMany({
     where: { name: { in: names } },

@@ -88,8 +88,8 @@ interface GuardrailsTabProps {
   // carry, which outrank the typed fields; null when they carry none.
   guardrailsCredBaseUrl?: string | null;
   groundingCredBaseUrl?: string | null;
-  // The tenant's knowledge bases, offered as the reviewer's reference bases, and how to reload them
-  // after one is created or edited from its card.
+  // The tenant's knowledge bases, offered as the reviewer's reference bases (undefined while they
+  // load), and how to reload them after one is created or edited from its card.
   knowledgeBases?: ToolCatalog["knowledgeBases"];
   onCatalogChange?: () => void | Promise<void>;
 }
@@ -194,7 +194,7 @@ export function GuardrailsTab({
   onDiscard,
   guardrailsCredBaseUrl = null,
   groundingCredBaseUrl = null,
-  knowledgeBases = [],
+  knowledgeBases,
   onCatalogChange = () => {},
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
@@ -292,20 +292,24 @@ export function GuardrailsTab({
     toggleSource(name, true);
     setExtraSource("");
   };
-  const referenceIds = new Set(fg.referenceKnowledgeBaseIds);
-  const referenceFull =
-    fg.referenceKnowledgeBaseIds.length >= MAX_REFERENCE_KNOWLEDGE_BASES;
+  // A picked base deleted since has no card to take it out with, so any pick drops it, and a line
+  // below the cards offers to drop it on its own. Asked only once the tenant's bases have loaded.
+  const knownBases = knowledgeBases
+    ? new Set(knowledgeBases.map((b) => b.id))
+    : null;
+  const liveReference = knownBases
+    ? fg.referenceKnowledgeBaseIds.filter((id) => knownBases.has(id))
+    : fg.referenceKnowledgeBaseIds;
+  const staleReference =
+    fg.referenceKnowledgeBaseIds.length - liveReference.length;
+  const referenceIds = new Set(liveReference);
   const toggleReference = (id: string) => {
     if (referenceIds.has(id))
       setGrounding({
-        referenceKnowledgeBaseIds: fg.referenceKnowledgeBaseIds.filter(
-          (k) => k !== id,
-        ),
+        referenceKnowledgeBaseIds: liveReference.filter((k) => k !== id),
       });
-    else if (!referenceFull)
-      setGrounding({
-        referenceKnowledgeBaseIds: [...fg.referenceKnowledgeBaseIds, id],
-      });
+    else if (liveReference.length < MAX_REFERENCE_KNOWLEDGE_BASES)
+      setGrounding({ referenceKnowledgeBaseIds: [...liveReference, id] });
   };
   const groundingActionLabel = (a: GroundingAction) =>
     a === "observe"
@@ -1141,7 +1145,7 @@ export function GuardrailsTab({
                       group
                     >
                       <div data-testid="gr-grounding-reference">
-                        {knowledgeBases.length === 0 ? (
+                        {!knowledgeBases?.length ? (
                           <p className="text-text-muted text-xs">
                             {t(
                               "editor.knowledge.noBases",
@@ -1155,6 +1159,26 @@ export function GuardrailsTab({
                             onToggle={toggleReference}
                             onChanged={onCatalogChange}
                           />
+                        )}
+                        {staleReference > 0 && (
+                          <p className="text-warning mt-2 flex items-center gap-2 text-xs">
+                            {t(
+                              "editor.guardrails.groundingReferenceStale",
+                              "{{count}} picked bases no longer exist and are not read.",
+                              { count: staleReference },
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setGrounding({
+                                  referenceKnowledgeBaseIds: liveReference,
+                                })
+                              }
+                              className="text-accent hover:underline"
+                            >
+                              {t("common.remove", "Remove")}
+                            </button>
+                          </p>
                         )}
                       </div>
                     </FormField>

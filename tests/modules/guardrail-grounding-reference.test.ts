@@ -428,6 +428,68 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     ]).toEqual([[String(bA.id)], ["Regras B"]]);
   });
 
+  test("an import keeps at most the write's limit of reference bases, and says it dropped the rest", async () => {
+    const ctxB = {
+      tenantId: otherTenantId,
+      userId: null,
+      role: "TENANT_ADMIN",
+    } as never;
+    const names = Array.from({ length: 21 }, (_, i) => `Limite ${i}`);
+    for (const name of names)
+      await suDb.knowledgeBase.create({
+        data: { tenantId: otherTenantId, name },
+      });
+    const source = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Limite",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+    const exp = await exportAgent(
+      { tenantId, userId: null, role: "TENANT_ADMIN" } as never,
+      source.id,
+      appDb,
+    );
+    const { agent, warnings } = await importAgent(
+      ctxB,
+      {
+        ...exp,
+        agent: {
+          ...exp.agent,
+          settings: {
+            ...exp.agent.settings,
+            guardrails: {
+              factualGrounding: { referenceKnowledgeBases: names },
+            },
+          },
+        },
+      },
+      appDb,
+    );
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const raw = (
+      stored.settings as {
+        guardrails: {
+          factualGrounding: { referenceKnowledgeBaseIds: string[] };
+        };
+      }
+    ).guardrails.factualGrounding.referenceKnowledgeBaseIds;
+    expect([
+      raw.length,
+      warnings.some(
+        (w) =>
+          w.code === "settingsValueDropped" &&
+          w.params?.field ===
+            "guardrails.factualGrounding.referenceKnowledgeBases",
+      ),
+    ]).toEqual([20, true]);
+  });
+
   test("a reference past the ceiling is not reviewed, and the line says why", async () => {
     const r = reviewer();
     const f = flow();

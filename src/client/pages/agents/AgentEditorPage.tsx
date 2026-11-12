@@ -5585,7 +5585,7 @@ function AgentEditor() {
                 groundingCredBaseUrl={vaultBaseUrl(
                   guardrails.factualGrounding.credentialRef ?? "",
                 )}
-                knowledgeBases={catalog?.knowledgeBases ?? []}
+                knowledgeBases={catalog?.knowledgeBases}
                 onCatalogChange={refreshCatalog}
                 refusals={{
                   credential: refusal.at(

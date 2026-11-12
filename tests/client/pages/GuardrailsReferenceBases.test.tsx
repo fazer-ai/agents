@@ -126,3 +126,18 @@ test("each base is a selectable card in the section, and a pick lands in the for
     saved?.factualGrounding.referenceKnowledgeBaseIds,
   ]).toEqual([true, ["false", "true"], ["12", "11"], ["11"]]);
 });
+
+test("a picked base deleted since is dropped by the next pick, or on its own from the line below the cards", () => {
+  mount(["99", "12"]);
+  const line = !!screen.queryByText(/no longer exist/);
+  fireEvent.click(card("Regras da casa"));
+  const afterPick = saved?.factualGrounding.referenceKnowledgeBaseIds;
+  cleanup();
+  mount(["99", "12"]);
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  expect([
+    line,
+    afterPick,
+    saved?.factualGrounding.referenceKnowledgeBaseIds,
+  ]).toEqual([true, ["12", "11"], ["12"]]);
+});

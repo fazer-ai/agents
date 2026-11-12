@@ -269,3 +269,29 @@ export function destinationIdentity(
       return null;
   }
 }
+
+// The channel the team answers the case on, named in what the model tells the customer. A Twilio
+// inbox carries WhatsApp or SMS, which its `medium` says.
+export type ReplyChannel = "email" | "whatsapp" | "sms" | "web_widget" | "api";
+
+export function replyChannel(
+  channelType: string | null,
+  medium: string | null = null,
+): ReplyChannel | null {
+  switch (channelType) {
+    case "Channel::Email":
+      return "email";
+    case "Channel::Whatsapp":
+      return "whatsapp";
+    case "Channel::TwilioSms":
+      return medium === "whatsapp" ? "whatsapp" : "sms";
+    case "Channel::Sms":
+      return "sms";
+    case "Channel::WebWidget":
+      return "web_widget";
+    case "Channel::Api":
+      return "api";
+    default:
+      return null;
+  }
+}

@@ -57,7 +57,10 @@ interface Conv {
 
 function fakeChatwoot(
   opts: {
-    inboxes?: Record<number, { name: string; channel_type: string }>;
+    inboxes?: Record<
+      number,
+      { name: string; channel_type: string; medium?: string }
+    >;
     contacts?: Record<number, { email?: string | null; phone?: string | null }>;
     convs?: Conv[];
     incoming?: string[];
@@ -144,7 +147,10 @@ function fakeChatwoot(
         meta.assignee_type = "AgentBot";
       }
       if (c.teamId) meta.team = { id: c.teamId };
-      meta.sender = { id: c.contactId };
+      meta.sender = {
+        id: c.contactId,
+        email: contacts.get(c.contactId)?.email ?? null,
+      };
       return {
         id: c.id,
         inbox_id: c.inboxId,
@@ -3122,7 +3128,7 @@ describe("the tool", () => {
     const closed = toolFor(fakeChatwoot({ canReply: false }));
     expect(
       String(await closed.t.invoke({ reason: "x", customer_message: "Olá" })),
-    ).toContain("Do not say a message was sent to them there");
+    ).toContain("Do not say a message was sent to them by email");
     const same = toolFor(
       fakeChatwoot({
         inboxes: { 40: { name: "WhatsApp", channel_type: "Channel::Api" } },
@@ -5101,7 +5107,7 @@ describe("the tool on the client channel", () => {
     expect(f.calls.map((c) => c.fn)).toEqual(["getInbox"]);
   });
 
-  test("a missing email says the team cannot be reached from here, and not to ask for it", async () => {
+  test("a missing email says the team cannot be reached from this chat, and not to ask for it", async () => {
     const f = fakeChatwoot({ convs: [], contacts: { 5: { email: null } } });
     const out = String(await clientTool(f).tools[0]?.invoke({ reason: "x" }));
     expect(out).toContain("did not provide this user's email");
@@ -5133,5 +5139,240 @@ describe("the tool on the client channel", () => {
     const out = await tools[0]?.invoke({ reason: "x" });
     expect(String(out)).toContain("resolve_contact");
     expect(writesOf(f.calls)).toEqual([]);
+  });
+});
+
+// The result names where the team answers, because "there" read as this conversation to the factual
+// check and to the agent's model alike.
+describe("where the result says the team replies", () => {
+  const ORIGIN: Conv = {
+    id: 7,
+    inboxId: 10,
+    contactId: 5,
+    status: "pending",
+    attrs: {},
+    labels: [],
+  };
+  const LOCATIVE = /\b(there|here)\b/i;
+  const CONTACTS = { 5: { email: "ana@example.com", phone: "+5511999" } };
+
+  function inboxTool(
+    f: ReturnType<typeof fakeChatwoot>,
+    config: Partial<typeof CROSS_INBOX_CASE_DEFAULTS> = {},
+  ) {
+    const client = {
+      ...f.client,
+      muted: false,
+      toggleStatus: async () => ({}),
+    } as unknown as ChatwootClient;
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        crossInboxCase: {
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            ...config,
+          },
+          contactId: 5,
+        },
+      },
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    return t;
+  }
+
+  const destination = (channel_type: string, medium?: string) => ({
+    40: { name: "Equipe", channel_type, ...(medium ? { medium } : {}) },
+  });
+
+  test("a phone case carries no address, even when the contact has an email", async () => {
+    const f = fakeChatwoot({
+      contacts: CONTACTS,
+      inboxes: destination("Channel::Whatsapp"),
+    });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).toMatchObject({
+      kind: "opened",
+      reply: { channel: "whatsapp", address: null },
+    });
+  });
+
+  test("an email case says the team replies by email, to the case's address, and not in this conversation", async () => {
+    const out = String(
+      await inboxTool(fakeChatwoot({ contacts: CONTACTS })).invoke({
+        reason: "x",
+        customer_message: "Olá",
+      }),
+    );
+    expect(out).toContain("Case opened: conversation #100");
+    expect(out).toContain("by email, to ana@example.com");
+    expect(out).toContain("not in this conversation");
+    expect(out).not.toMatch(LOCATIVE);
+  });
+
+  test("the address the customer typed is the one named", async () => {
+    const f = fakeChatwoot({
+      contacts: { 5: { email: null, phone: "+5511999" } },
+      incoming: ["meu email é carla@example.com"],
+    });
+    const out = String(
+      await inboxTool(f).invoke({ reason: "x", email: "carla@example.com" }),
+    );
+    expect(out).toContain("by email, to carla@example.com");
+    expect(out).not.toContain("ana@example.com");
+  });
+
+  test.each([
+    ["Channel::Whatsapp", undefined, "on WhatsApp"],
+    ["Channel::TwilioSms", "whatsapp", "on WhatsApp"],
+    ["Channel::TwilioSms", "sms", "by SMS"],
+    ["Channel::Sms", undefined, "by SMS"],
+    ["Channel::WebWidget", undefined, "in the website chat"],
+    ["Channel::Api", undefined, "API channel"],
+  ])(
+    "a %s (%s) case names its channel and promises no email",
+    async (type, medium, says) => {
+      const f = fakeChatwoot({
+        contacts: CONTACTS,
+        inboxes: destination(type, medium),
+      });
+      const out = String(await inboxTool(f).invoke({ reason: "x" }));
+      expect(out).toContain("Case opened");
+      expect(out).toContain(says);
+      expect(out).toContain("not in this conversation");
+      expect(out).not.toMatch(/email/i);
+      expect(out).not.toMatch(LOCATIVE);
+    },
+  );
+
+  test("a continued email case names the email channel", async () => {
+    const f = fakeChatwoot({
+      contacts: CONTACTS,
+      continueOpen: true,
+      convs: [
+        ORIGIN,
+        {
+          id: 30,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const out = String(await inboxTool(f).invoke({ reason: "x" }));
+    expect(out).toContain("already had an open case in the destination inbox");
+    expect(out).toContain("#30");
+    expect(out).toContain("by email, to ana@example.com");
+    expect(out).not.toMatch(LOCATIVE);
+  });
+
+  test("a second call on the same conversation says where the answer comes from", async () => {
+    const f = fakeChatwoot({ contacts: CONTACTS });
+    const t = inboxTool(f);
+    await t.invoke({ reason: "x" });
+    const out = String(await t.invoke({ reason: "o print" }));
+    expect(out).toContain("already opened a case that is still open");
+    expect(out).toContain("by email, to ana@example.com");
+    expect(out).toContain("not in this conversation");
+    expect(out).not.toMatch(LOCATIVE);
+  });
+
+  test("an addition to a case opened from another conversation names the channel both times", async () => {
+    const f = fakeChatwoot({
+      contacts: CONTACTS,
+      convs: [
+        ORIGIN,
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: { origin_conversation_id: 3 },
+          labels: [],
+        },
+      ],
+    });
+    const out = String(await inboxTool(f).invoke({ reason: "o print" }));
+    expect(out).toContain("#60");
+    expect(out).toContain("no message was sent to them by email");
+    expect(out).toContain("by email, to ana@example.com");
+    expect(out).not.toMatch(LOCATIVE);
+  });
+
+  test("an opening held outside the reply window names the channel nothing went out on", async () => {
+    const f = fakeChatwoot({
+      contacts: CONTACTS,
+      inboxes: destination("Channel::Whatsapp"),
+      canReply: false,
+    });
+    const out = String(
+      await inboxTool(f).invoke({ reason: "x", customer_message: "Olá" }),
+    );
+    expect(out).toContain("was NOT sent");
+    expect(out).toContain("Do not say a message was sent to them on WhatsApp");
+    expect(out).not.toMatch(LOCATIVE);
+  });
+
+  test.each([
+    ["no template", null],
+    ["a template with the message", "Caso {{numero_caso}}: {{mensagem}}"],
+    ["a fixed template", "Abrimos o caso {{numero_caso}}."],
+  ])(
+    "the inbox description with %s leaves no place to guess",
+    (_name, openingTemplate) => {
+      const t = inboxTool(fakeChatwoot({ contacts: CONTACTS }), {
+        openingTemplate,
+      });
+      expect(t.description).not.toMatch(LOCATIVE);
+    },
+  );
+
+  test("on the client channel the result says email without showing the address, and so does the description", async () => {
+    const f = fakeChatwoot({ contacts: CONTACTS, convs: [] });
+    const recorded: number[] = [];
+    const [t] = buildChannelNativeTools(
+      {
+        client: {} as ChatwootClient,
+        conversationId: 0,
+        crossInboxCase: {
+          config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 40 },
+          contactId: null,
+          detached: {
+            client: f.client,
+            caseTeamId: 9,
+            serialKey: "client-case:1:7",
+            contact: async () => ({
+              id: 5,
+              addressUpdated: false,
+              email: "ana@example.com",
+            }),
+            origin: {
+              key: "client-thread:th-1",
+              url: "https://agents.example/logs?turnId=t1",
+              knownCaseId: async () => recorded.at(-1) ?? null,
+              recordCase: async (id: number) => {
+                recorded.push(id);
+              },
+            },
+          },
+        },
+      },
+      ["open_case_in_inbox"],
+      CLIENT_CHANNEL_NATIVES,
+    );
+    if (!t) throw new Error("tool not built");
+    expect(t.description).not.toMatch(LOCATIVE);
+    for (const reason of ["quer falar com o financeiro", "mais um detalhe"]) {
+      const out = String(await t.invoke({ reason }));
+      expect(out).toContain("by email");
+      expect(out).toContain("not in this chat");
+      expect(out).not.toContain("ana@");
+      expect(out).not.toMatch(LOCATIVE);
+    }
   });
 });

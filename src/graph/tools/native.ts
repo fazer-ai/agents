@@ -2982,10 +2982,40 @@ function additionLost(r: OpenCaseResult): boolean {
 const NON_ASCII_EMAIL_TEXT = (who: "customer" | "user") =>
   `Nothing was opened: that email address has an accent or another non-ASCII character before the @, and email cannot be delivered to it. Ask the ${who} to confirm their address written without the accent, then call this tool again with \`email\` set to exactly what they type.`;
 
+type CaseReply = Extract<OpenCaseResult, { reply: unknown }>["reply"];
+
+const REPLY_CHANNEL_PHRASE: Record<CaseReply["channel"], string> = {
+  email: "by email",
+  whatsapp: "on WhatsApp",
+  sms: "by SMS",
+  web_widget: "in the website chat",
+  api: "through the destination inbox's API channel",
+};
+
+// How the team answers the customer, said in full: "there" read as the origin conversation, both to
+// the factual check and to the agent's model.
+function caseReplyRoute(reply: CaseReply): string {
+  const via = REPLY_CHANNEL_PHRASE[reply.channel];
+  switch (reply.channel) {
+    case "email":
+      return `${via}, to ${reply.address ?? "the address on their contact"}`;
+    case "whatsapp":
+    case "sms":
+      return `${via}, at the phone number on their contact`;
+    default:
+      return via;
+  }
+}
+
+// `where` names the place the model is replying in; `route` replaces the destination's own route
+// where the model must not see the address.
 function openCaseOutcomeText(
   r: OpenCaseResult,
   closing: "scheduled" | "not_here" | null = null,
+  where: { here: string; route?: string } = { here: "this conversation" },
 ): string {
+  const answer = (reply: CaseReply) =>
+    `${where.route ?? caseReplyRoute(reply)}, not in ${where.here}`;
   const close =
     closing === "scheduled"
       ? " This conversation will be marked resolved after your reply in this turn is delivered."
@@ -2998,21 +3028,21 @@ function openCaseOutcomeText(
       const how =
         r.kind === "opened"
           ? `Case opened: conversation #${r.caseId} in the destination inbox.`
-          : `The customer already had an open case there, so it was continued: conversation #${r.caseId}. No new opening message was sent.`;
+          : `The customer already had an open case in the destination inbox, so it was continued: conversation #${r.caseId}. No new opening message was sent.`;
       const partial = r.partial.length
         ? ` Some follow-up writes did not land (${r.partial.join(", ")}); the case itself is open.`
         : "";
       const blocked = r.openingBlocked
         ? " The opening message was refused by the output check and was NOT sent; the case is open without it."
         : r.openingOutsideWindow
-          ? " The opening message was NOT sent: that channel only lets the team write first with an approved template, so it was left for the team as a note. Do not say a message was sent to them there."
+          ? ` The opening message was NOT sent: that channel only lets the team write first with an approved template, so it was left for the team as a note. Do not say a message was sent to them ${REPLY_CHANNEL_PHRASE[r.reply.channel]}.`
           : "";
-      return `${how}${partial}${blocked} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
+      return `${how}${partial}${blocked} Tell the customer in your reply that their case was opened and that the team will answer them ${answer(r.reply)}.${close}`;
     }
     case "already_open":
       return additionLost(r)
         ? `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened, and what you passed in \`reason\` could NOT be added to that case, so the team does not have it. Do not tell the customer it reached the team; hand off to a human with handoff_to_human so a person sees it.${close}`
-        : `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened; what you passed in \`reason\` was added to that case as an internal note. Tell the customer their case is already with the team.${close}`;
+        : `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened; what you passed in \`reason\` was added to that case as an internal note. Tell the customer their case is already with the team, and that the team will answer them ${answer(r.reply)}.${close}`;
     case "appended": {
       if (additionLost(r)) {
         return `The customer already has an open case with the team, opened from another conversation: conversation #${r.caseId}. Nothing new was opened, but what you passed in \`reason\` could NOT be added to that case, so the team does not have it. Do not tell the customer it reached the team; hand off to a human with handoff_to_human so a person sees it.${close}`;
@@ -3020,7 +3050,7 @@ function openCaseOutcomeText(
       const partial = r.partial.length
         ? ` Some writes did not land (${r.partial.join(", ")}).`
         : "";
-      return `The customer already has an open case with the team, opened from another conversation: conversation #${r.caseId}. Nothing new was opened and no message was sent to them there; what you passed in \`reason\` was added to that case as an internal note, and this conversation is now linked to it.${partial} Tell the customer, in your reply here, that what they added reached the team handling their case, and that the answer still comes from there.${close}`;
+      return `The customer already has an open case with the team, opened from another conversation: conversation #${r.caseId}. Nothing new was opened and no message was sent to them ${REPLY_CHANNEL_PHRASE[r.reply.channel]}; what you passed in \`reason\` was added to that case as an internal note, and this conversation is now linked to it.${partial} Tell the customer in your reply that what they added reached the team handling their case, and that the answer still comes ${answer(r.reply)}.${close}`;
     }
     case "needs_email":
       return "Nothing was opened: the destination is an email inbox and this contact has no email address. Ask the customer for their email, then call this tool again with `email` set to exactly what they typed.";
@@ -3051,12 +3081,12 @@ function openCaseInInboxTool(ctx: ToolCtx) {
   const asksMessage = openingAsksMessage(openingTemplate);
   const opening =
     openingTemplate === null
-      ? "`customer_message` is the first message the customer receives THERE (for an email inbox, the opening email), so write it as that message."
+      ? "`customer_message` is the first message the customer receives from the destination inbox (for an email inbox, the opening email), so write it as that message."
       : asksMessage
-        ? "`customer_message` is your part of the first message the customer receives THERE: it goes inside the team's own opening text, so write only what is specific to this request."
-        : "The customer receives the team's fixed opening message THERE; you do not write it.";
+        ? "`customer_message` is your part of the first message the customer receives from the destination inbox: it goes inside the team's own opening text, so write only what is specific to this request."
+        : "The customer receives the team's fixed opening message from the destination inbox; you do not write it.";
   const description =
-    `Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. \`reason\` becomes an internal note on the case. ${opening} Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer here where their case went. When the customer adds something after their case was opened, in this conversation or in a new one, call it again with the addition in \`reason\`: it goes to the open case as a note, and no second case is opened.` +
+    `Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. \`reason\` becomes an internal note on the case. ${opening} Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer, in this conversation, where their case went and how the team will answer them, as the result says. When the customer adds something after their case was opened, in this conversation or in a new one, call it again with the addition in \`reason\`: it goes to the open case as a note, and no second case is opened.` +
     (ctx.crossInboxCase?.config.resolveOrigin && ctx.turnState
       ? " Once the case is open, this conversation is closed after your reply is delivered."
       : " This tool does NOT close this conversation; close with resolve_conversation if that is the next step.");
@@ -3280,7 +3310,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         }
         fallback = customerLine(handoff_message)
           ? ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. Your handoff_message will be delivered to the customer; do not repeat it.`
-          : ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. No message will reach the customer here.`;
+          : ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. No message will reach the customer in this conversation.`;
       } catch (e) {
         ctx.onSideEffectError?.({
           tool: OPEN_CASE_TOOL_NAME,
@@ -3358,7 +3388,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
 const DETACHED_REPLY_CHANNEL =
   "The team replies by email, to the address this user has in the application: tell the user that, in those words, without guessing the address.";
 const ANONYMOUS_REPLY_CHANNEL =
-  "The team replies by email, to the address the user gave here: tell the user that.";
+  "The team replies by email, to the address the user gave in this chat: tell the user that.";
 
 // The note on a case opened for an anonymous visitor: the team replies to an address nobody proved.
 export function unverifiedAddressNote(email: string): string {
@@ -3376,11 +3406,16 @@ function detachedOpenCaseOutcomeText(
     case "appended":
       return additionLost(r)
         ? `The user already has an open case with the team: conversation #${r.caseId}. Nothing new was opened, and what you passed in \`reason\` could NOT be added to it, so the team does not have it. Do not tell the user it reached the team; tell them you could not pass it on right now.`
-        : `${openCaseOutcomeText(r)} ${anonymous ? ANONYMOUS_REPLY_CHANNEL : DETACHED_REPLY_CHANNEL}`;
+        : `${openCaseOutcomeText(r, null, {
+            here: "this chat",
+            route: anonymous
+              ? "by email, to the address the user gave in this chat"
+              : "by email, to the address this user has in the application",
+          })} ${anonymous ? ANONYMOUS_REPLY_CHANNEL : DETACHED_REPLY_CHANNEL}`;
     case "needs_email":
       return anonymous
         ? "Nothing was opened: the team replies by email and you passed no address. Ask the user for the email address where the team should reply, then call this again with it in `email`."
-        : "Nothing was opened: the team's inbox answers by email and the host application did not provide this user's email. Tell the user the team cannot be reached from here. Do not ask for their email: this chat cannot pass it on.";
+        : "Nothing was opened: the team's inbox answers by email and the host application did not provide this user's email. Tell the user the team cannot be reached from this chat. Do not ask for their email: this chat cannot pass it on.";
     // NOTE: this channel escalates to an email inbox only, so a phone destination is one it cannot use.
     case "needs_phone":
     case "unsupported_channel":
@@ -3409,15 +3444,15 @@ function detachedOpenCaseTool(
   const asksMessage = openingAsksMessage(openingTemplate);
   const opening =
     openingTemplate === null
-      ? "`customer_message` is the first message the user receives THERE (for an email inbox, the opening email), so write it as that message."
+      ? "`customer_message` is the first message the user receives from the team's inbox (for an email inbox, the opening email), so write it as that message."
       : asksMessage
-        ? "`customer_message` is your part of the first message the user receives THERE: it goes inside the team's own opening text, so write only what is specific to this request."
-        : "The user receives the team's fixed opening message THERE; you do not write it.";
+        ? "`customer_message` is your part of the first message the user receives from the team's inbox: it goes inside the team's own opening text, so write only what is specific to this request."
+        : "The user receives the team's fixed opening message from the team's inbox; you do not write it.";
   const anonymous = detached.anonymous === true;
   const address = anonymous
     ? " This user is not signed in, so the team replies to an address the user gives you: ask for it before calling, and pass in `email` exactly what they typed, never one you guessed or completed."
     : "";
-  const description = `Open the user's request as a case in the team's inbox (configured by the operator: you choose WHETHER to open it, never where). Use it when the request needs a person from the team. Nobody from the team answers in this chat: they reply through that inbox's own channel (for an email inbox, by email to the user). \`reason\` becomes an internal note on the case, so write what the team needs to act on it without asking again. ${opening}${address} Tell the user here that their case was opened and where the team will reply. When the user adds something after the case was opened, call it again with the addition in \`reason\`: it goes to the open case as a note, and no second case is opened.`;
+  const description = `Open the user's request as a case in the team's inbox (configured by the operator: you choose WHETHER to open it, never where). Use it when the request needs a person from the team. Nobody from the team answers in this chat: they reply through that inbox's own channel (for an email inbox, by email to the user). \`reason\` becomes an internal note on the case, so write what the team needs to act on it without asking again. ${opening}${address} Tell the user in this chat that their case was opened and where the team will reply. When the user adds something after the case was opened, call it again with the addition in \`reason\`: it goes to the open case as a note, and no second case is opened.`;
   // One call at a time per `serialKey`, from the contact to the case: a second call compares the
   // address with the case the first one recorded, and no call changes the contact's address between
   // another's reconciliation and its opening.

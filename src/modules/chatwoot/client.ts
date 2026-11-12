@@ -2577,12 +2577,10 @@ export class ChatwootClient {
     return Number.isInteger(id) && id > 0 ? id : null;
   }
 
-  // The kanban card (task) OBJECT linked to a conversation. The Pro fork embeds the whole card under
-  // `kanban_task` on the conversation payload (`json.kanban_task do … partial 'kanban/tasks/task'` —
-  // SAME shape as GET /kanban/tasks/:id), per conversations/_conversation.json.jbuilder.
-  // Returns the raw object so turn-prep builds the kanban context from ONE conversation
-  // GET (no extra task fetch); null when the conversation has no card. NOTE: the embedded board.steps
-  // carry only {id,name,color}; per-step description/cancelled come from the board_steps endpoint.
+  // The kanban card (task) OBJECT linked to a conversation, as the conversation payload embeds it
+  // under `kanban_task`: the whole card (same shape as GET /kanban/tasks/:id) on Pro builds before
+  // .168, only `{id}` from .168 on. null when the conversation has no card. `loadKanbanContext`
+  // reads the task endpoint when the object is the reference only.
   async kanbanTaskForConversation(
     conversationId: number,
   ): Promise<Record<string, unknown> | null> {

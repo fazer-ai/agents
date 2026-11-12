@@ -20,32 +20,46 @@ const STEPS = [
   { id: 10, name: "Perdido", cancelled: true },
 ];
 
+function fullCard(id: number) {
+  return {
+    id,
+    board_id: 2,
+    board_step_id: 8,
+    board: { name: "Vendas SDR" },
+    title: "João - Plano Pro",
+    description: "Cliente quer fechar até o fim do mês",
+    priority: "high",
+    status: "open",
+    value: 1500,
+    start_date: "2026-06-10T09:00:00-03:00",
+    due_date: "2026-06-30T18:00:00-03:00",
+    custom_attributes: { orcamento: 2000, produto: "Plano Pro" },
+    labels: ["vip", "quente"],
+  };
+}
+
 function fakeClient(opts: {
   taskId: number | null;
   stepsCalls?: { n: number };
   // The fork wraps steps under `steps`; older shapes used `payload` or a bare array — all accepted.
   stepsShape?: "wrapped" | "payload" | "array";
+  // Pro builds before .168 embed the whole card under conversation.kanban_task; .168+ embed only
+  // `{id}` and serve the card from GET /kanban/tasks/:id.
+  embedded?: "full" | "reference";
+  taskReads?: number[];
+  taskRead?: () => Promise<unknown>;
 }): ChatwootClient {
   return {
-    // The Pro fork embeds the whole card under conversation.kanban_task (same shape as the task GET).
-    kanbanTaskForConversation: async () =>
-      opts.taskId == null
-        ? null
-        : {
-            id: opts.taskId,
-            board_id: 2,
-            board_step_id: 8,
-            board: { name: "Vendas SDR" },
-            title: "João - Plano Pro",
-            description: "Cliente quer fechar até o fim do mês",
-            priority: "high",
-            status: "open",
-            value: 1500,
-            start_date: "2026-06-10T09:00:00-03:00",
-            due_date: "2026-06-30T18:00:00-03:00",
-            custom_attributes: { orcamento: 2000, produto: "Plano Pro" },
-            labels: ["vip", "quente"],
-          },
+    kanbanTaskForConversation: async () => {
+      if (opts.taskId == null) return null;
+      return opts.embedded === "reference"
+        ? { id: opts.taskId }
+        : fullCard(opts.taskId);
+    },
+    getKanbanTask: async (id: number) => {
+      opts.taskReads?.push(id);
+      return opts.taskRead ? opts.taskRead() : fullCard(id);
+    },
     listKanbanSteps: async () => {
       if (opts.stepsCalls) opts.stepsCalls.n++;
       const shape = opts.stepsShape ?? "wrapped";
@@ -108,6 +122,55 @@ describe("loadKanbanContext", () => {
       );
       expect(k?.steps.map((s) => s.id)).toEqual([7, 8, 9, 10]);
     }
+  });
+
+  test("reads the card from the task endpoint when the conversation carries only its id", async () => {
+    const taskReads: number[] = [];
+    const k = await loadKanbanContext(
+      fakeClient({ taskId: 11, embedded: "reference", taskReads }),
+      7,
+      "1:2",
+    );
+    expect(taskReads).toEqual([11]);
+    expect(k?.taskId).toBe(11);
+    expect(k?.boardId).toBe(2);
+    expect(k?.boardName).toBe("Vendas SDR");
+    expect(k?.currentStepName).toBe("Qualificando");
+    expect(k?.steps.map((s) => s.id)).toEqual([7, 8, 9, 10]);
+    expect(k?.card.title).toBe("João - Plano Pro");
+    expect(k?.card.labels).toEqual(["vip", "quente"]);
+  });
+
+  test("gives the same context for both payload shapes, reading the task only when needed", async () => {
+    const taskReads: number[] = [];
+    const full = await loadKanbanContext(
+      fakeClient({ taskId: 11, embedded: "full", taskReads }),
+      7,
+      "1:2",
+    );
+    expect(taskReads).toEqual([]);
+    __resetKanbanStepsCache();
+    const ref = await loadKanbanContext(
+      fakeClient({ taskId: 11, embedded: "reference" }),
+      7,
+      "1:2",
+    );
+    expect(ref).toEqual(full);
+  });
+
+  test("a refused task read fails the load instead of an empty funnel", async () => {
+    const refused = new Error("403");
+    await expect(
+      loadKanbanContext(
+        fakeClient({
+          taskId: 11,
+          embedded: "reference",
+          taskRead: () => Promise.reject(refused),
+        }),
+        7,
+        "1:2",
+      ),
+    ).rejects.toBe(refused);
   });
 
   test("returns null when the conversation has no linked card", async () => {

@@ -120,10 +120,11 @@ export async function loadKanbanContext(
   cacheKey: string,
   now: number = Date.now(),
 ): Promise<KanbanContext | null> {
-  // The conversation payload embeds the whole card under `kanban_task` (same shape as GET
-  // /kanban/tasks/:id), so ONE conversation GET yields the board + current step + card snapshot — no
-  // separate task fetch. Confirmed against the Pro fork conversations/_conversation.json.jbuilder.
-  const task = (await client.kanbanTaskForConversation(conversationId)) as {
+  // Pro builds before .168 embed the whole card under the conversation's `kanban_task` (same shape as
+  // GET /kanban/tasks/:id); .168+ embed only `{id}` and leave the card to the task endpoint, which
+  // applies the Kanban access rules. No `board_id` key is the reference-only shape; the full card
+  // always carries the key, null included.
+  let task = (await client.kanbanTaskForConversation(conversationId)) as {
     id?: unknown;
     board_id?: unknown;
     board_step_id?: unknown;
@@ -141,6 +142,10 @@ export async function loadKanbanContext(
   if (task == null) return null;
   const taskId = Number(task.id);
   if (!Number.isInteger(taskId) || taskId <= 0) return null;
+  if (!("board_id" in task)) {
+    task = (await client.getKanbanTask(taskId)) as typeof task;
+    if (task == null) return null;
+  }
   const boardId = Number(task.board_id);
   const currentStepId = Number(task.board_step_id);
   const hasBoard = Number.isInteger(boardId) && boardId > 0;

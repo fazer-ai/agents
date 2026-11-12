@@ -6,6 +6,7 @@ import {
 import {
   type GuardrailDirectionConfig,
   type GuardrailsConfig,
+  groundingHasSources,
   guardrailCredentialRef,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
@@ -29,7 +30,7 @@ export function playgroundGuardrailsUsable(
       g.onFailure === "hold" ||
       !!g.external.url ||
       (g.factualGrounding.enabled &&
-        g.factualGrounding.sourceTools.length > 0 &&
+        groundingHasSources(g.factualGrounding) &&
         groundingReviewerCalls(g, credBaseUrls)))
   );
 }

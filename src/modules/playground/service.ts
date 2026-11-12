@@ -955,6 +955,7 @@ async function runPlaygroundTurnOnce(
     ? buildGroundingGate({
         cfg: loadedConfig.guardrails,
         reviewer: loadedConfig.groundingReviewer,
+        reference: loadedConfig.groundingReference,
         flow,
         logValues: loadedConfig.logToolValues,
         announce: (r) => {

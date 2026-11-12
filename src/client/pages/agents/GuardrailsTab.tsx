@@ -47,11 +47,13 @@ import type {
 import {
   GROUNDING_ACTIONS,
   type GroundingAction,
+  MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
   readCompetitors,
 } from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
+import { ManagedKnowledgeBaseCards } from "./KnowledgeBaseCards";
 import {
   ModelOverrideFields,
   type ModelOverrideForm,
@@ -63,7 +65,7 @@ import {
 } from "./modelOverrideForm";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
-import type { GuardrailsRefusals } from "./types";
+import type { GuardrailsRefusals, ToolCatalog } from "./types";
 
 // Agent editor "Guardrails" tab: input/output moderation (agent.settings.guardrails). Own Save +
 // dirty tracking (its own SECTION_KEY). A dedicated LLM screens the customer message (input) and/or
@@ -86,6 +88,10 @@ interface GuardrailsTabProps {
   // carry, which outrank the typed fields; null when they carry none.
   guardrailsCredBaseUrl?: string | null;
   groundingCredBaseUrl?: string | null;
+  // The tenant's knowledge bases, offered as the reviewer's reference bases, and how to reload them
+  // after one is created or edited from its card.
+  knowledgeBases?: ToolCatalog["knowledgeBases"];
+  onCatalogChange?: () => void | Promise<void>;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -188,6 +194,8 @@ export function GuardrailsTab({
   onDiscard,
   guardrailsCredBaseUrl = null,
   groundingCredBaseUrl = null,
+  knowledgeBases = [],
+  onCatalogChange = () => {},
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
 
@@ -283,6 +291,21 @@ export function GuardrailsTab({
     if (!name || sourcesFull) return;
     toggleSource(name, true);
     setExtraSource("");
+  };
+  const referenceIds = new Set(fg.referenceKnowledgeBaseIds);
+  const referenceFull =
+    fg.referenceKnowledgeBaseIds.length >= MAX_REFERENCE_KNOWLEDGE_BASES;
+  const toggleReference = (id: string) => {
+    if (referenceIds.has(id))
+      setGrounding({
+        referenceKnowledgeBaseIds: fg.referenceKnowledgeBaseIds.filter(
+          (k) => k !== id,
+        ),
+      });
+    else if (!referenceFull)
+      setGrounding({
+        referenceKnowledgeBaseIds: [...fg.referenceKnowledgeBaseIds, id],
+      });
   };
   const groundingActionLabel = (a: GroundingAction) =>
     a === "observe"
@@ -1057,7 +1080,7 @@ export function GuardrailsTab({
                       )}
                       description={t(
                         "editor.guardrails.groundingSourcesHint",
-                        "The tools whose results count as sources, such as a catalog or the knowledge search. With none chosen the check does not run.",
+                        "The tools whose results count as sources, such as a catalog or the knowledge search. With no source tool and no reference base, the check does not run.",
                       )}
                       group
                     >
@@ -1104,6 +1127,35 @@ export function GuardrailsTab({
                             {t("common.add", "Add")}
                           </Button>
                         </div>
+                      </div>
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.groundingReference",
+                        "Reference knowledge bases",
+                      )}
+                      description={t(
+                        "editor.guardrails.groundingReferenceHint",
+                        "The reviewer reads every indexed document of these bases on every reply, whether or not the agent searched them, so a reply that repeats a house rule written there is grounded. Keep them short: they are sent whole on each review.",
+                      )}
+                      group
+                    >
+                      <div data-testid="gr-grounding-reference">
+                        {knowledgeBases.length === 0 ? (
+                          <p className="text-text-muted text-xs">
+                            {t(
+                              "editor.knowledge.noBases",
+                              "No knowledge bases yet. Create some in Components.",
+                            )}
+                          </p>
+                        ) : (
+                          <ManagedKnowledgeBaseCards
+                            bases={knowledgeBases}
+                            selected={referenceIds}
+                            onToggle={toggleReference}
+                            onChanged={onCatalogChange}
+                          />
+                        )}
                       </div>
                     </FormField>
                     <FormField

@@ -1,9 +1,9 @@
-import { BookOpen, Database, FileText, Pencil, Plus } from "lucide-react";
+import { BookOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { SelectableCard, SwitchField } from "@/client/components";
-import { Tooltip } from "@/client/components/Tooltip";
+import { SwitchField } from "@/client/components";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
 import { KnowledgeTokens } from "./CallFloor";
+import { KnowledgeBaseCards } from "./KnowledgeBaseCards";
 import type { GrantState, ToolCatalog } from "./types";
 
 interface Props {
@@ -128,50 +128,12 @@ export function KnowledgeGrantsEditor({
               )}
             </p>
           ) : (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {catalog.knowledgeBases.map((kb) => (
-                <div key={kb.id} className="relative h-full">
-                  <SelectableCard
-                    selected={selectedKbs.has(kb.id)}
-                    onToggle={() => toggleKb(kb.id)}
-                    icon={Database}
-                    title={kb.name}
-                    description={kb.description ?? undefined}
-                    className="h-full"
-                  />
-                  {/* Align the action cluster's vertical center with the card's selection check
-                      (mt-0.5 h-5): top-3.5 + h-5 buttons put both centers at the same y. */}
-                  <div className="absolute top-3.5 right-9 flex items-center gap-0.5">
-                    <Tooltip content={t("knowledge.documents", "Documents")}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          km.openDocs({ id: kb.id, name: kb.name });
-                        }}
-                        aria-label={t("knowledge.documents", "Documents")}
-                        className="text-text-muted hover:text-text-primary flex h-5 w-5 items-center justify-center rounded"
-                      >
-                        <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                    <Tooltip content={t("common.edit", "Edit")}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void km.openEditById(kb.id);
-                        }}
-                        aria-label={t("common.edit", "Edit")}
-                        className="text-text-muted hover:text-text-primary flex h-5 w-5 items-center justify-center rounded"
-                      >
-                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <KnowledgeBaseCards
+              bases={catalog.knowledgeBases}
+              selected={selectedKbs}
+              onToggle={toggleKb}
+              manager={km}
+            />
           )}
           {selectedKbs.size === 0 && catalog.knowledgeBases.length > 0 && (
             <p className="text-warning text-xs">

@@ -37,6 +37,7 @@ import {
   assertCredentialRefsUsable,
   assertDecisionActionArgsUsable,
   assertPromptSize,
+  assertReferenceKnowledgeBasesUsable,
   assertResolveLabelsNotProtected,
   assertSettingsClosedValues,
   assertSettingsContactAuthRule,
@@ -761,6 +762,12 @@ export async function agentSettingsSet(
         settings: current.settings,
       });
       await assertDecisionActionArgsUsable(
+        ctx,
+        nextBag,
+        current.settings,
+        base,
+      );
+      await assertReferenceKnowledgeBasesUsable(
         ctx,
         nextBag,
         current.settings,

@@ -113,6 +113,10 @@ import {
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import type { DatedContextMessage } from "@/modules/guardrails/context";
 import {
+  type GroundingReference,
+  loadGroundingReference,
+} from "@/modules/guardrails/grounding-reference";
+import {
   type GroundingReviewerModel,
   type GuardrailsConfig,
   guardrailCredentialRef,
@@ -300,6 +304,9 @@ export interface AgentConfig {
   // The factual-grounding reviewer, resolved as an override of the guardrails chat model
   // (`resolveGroundingReviewer`), key included; null while the check is off.
   groundingReviewer: GroundingReviewerModel | null;
+  // The reference bases' READY documents, read for this turn; null while the check is off or none is
+  // picked.
+  groundingReference: GroundingReference | null;
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
@@ -637,7 +644,11 @@ export async function loadAgentConfig(
     }
   }
   let groundingReviewer: GroundingReviewerModel | null = null;
+  let groundingReference: GroundingReference | null = null;
   if (guardrails.enabled && guardrails.factualGrounding.enabled) {
+    const refIds = guardrails.factualGrounding.referenceKnowledgeBaseIds;
+    if (refIds.length > 0)
+      groundingReference = await loadGroundingReference(db, refIds);
     // The two keys it may run on: its own credential's and the guardrails chat model's, the one it
     // inherits from (which is the screening's key unless the screening runs on the decisions engine).
     const resolve = async (ref: string | null) => {
@@ -1119,6 +1130,7 @@ export async function loadAgentConfig(
     guardrailsExternalSecret,
     guardrailsExternalSecretMissing,
     groundingReviewer,
+    groundingReference,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,

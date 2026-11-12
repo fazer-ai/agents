@@ -222,6 +222,12 @@ export function importWarningMessage(
         'Knowledge base "{{name}}" already existed and was reused; its {{count}} bundled documents were not imported.',
         { ...p, count: importWarningCount(p) },
       );
+    case "groundingReferenceNotFound":
+      return t(
+        "editor.importWarning.groundingReferenceNotFound",
+        'Knowledge base "{{name}}" was not found, so the factual-grounding check does not read it as a reference.',
+        p,
+      );
     case "kbGrantNotFound":
       return t(
         "editor.importWarning.kbGrantNotFound",

@@ -20,6 +20,7 @@ export const IMPORT_WARNING_CODES = [
   "documentTemplateNameTaken",
   "documentTemplateReused",
   "documentToolNameTaken",
+  "groundingReferenceNotFound",
   "guidanceClipped",
   "hoursExceptionsDropped",
   "hoursNotFound",

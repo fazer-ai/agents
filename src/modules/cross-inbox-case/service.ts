@@ -21,9 +21,11 @@ import {
   type CrossInboxCaseConfig,
   destinationIdentity,
   openingAsksMessage,
+  type ReplyChannel,
   renderCaseAddition,
   renderCaseNote,
   renderCaseOpening,
+  replyChannel,
 } from "./settings";
 
 export { destinationIdentity };
@@ -134,6 +136,9 @@ export type OpenCaseResult =
       kind: "opened" | "continued" | "already_open" | "appended";
       caseId: number;
       caseUrl: string;
+      // Where the team answers the customer: the destination's channel and, on email, the case's
+      // address.
+      reply: { channel: ReplyChannel; address: string | null };
       // How the address that reached the destination was settled, when one had to be.
       identity: "held" | "written" | "merged" | "other_contact" | null;
       // Writes after the case existed that did not land. The case is open either way. On an
@@ -523,7 +528,14 @@ async function run(
         ? (field(inbox, "name") as string)
         : `#${target}`;
     const needs = destinationIdentity(channelType);
-    if (needs === null) return { kind: "unsupported_channel", channelType };
+    const channel = replyChannel(
+      channelType,
+      typeof field(inbox, "medium") === "string"
+        ? (field(inbox, "medium") as string)
+        : null,
+    );
+    if (needs === null || channel === null)
+      return { kind: "unsupported_channel", channelType };
     // NOTE: a detached origin escalates to an email inbox only. The team's email replies go to the
     // contact's address, which follows what the host states; a phone channel replies to the number
     // its conversation was opened with, which a later change of the contact does not move.
@@ -600,10 +612,21 @@ async function run(
           detached || partial.includes("called_off")
             ? null
             : await carryInto(client, input, known);
+        const heldEmail = field(
+          field(field(existing, "meta"), "sender"),
+          "email",
+        );
         return {
           kind: "already_open",
           caseId: known,
           caseUrl: client.conversationLink(known),
+          reply: {
+            channel,
+            address:
+              needs === "email" && typeof heldEmail === "string"
+                ? heldEmail
+                : null,
+          },
           identity: null,
           partial,
           additionDelivered,
@@ -1032,6 +1055,10 @@ async function run(
         ...(appended ? { additionDelivered: noteDelivered } : {}),
         caseId,
         caseUrl,
+        reply: {
+          channel,
+          address: needs === "email" ? (writtenEmail ?? currentEmail) : null,
+        },
         identity,
         partial,
         ...(openingBlocked ? { openingBlocked } : {}),

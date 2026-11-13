@@ -7,6 +7,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "@/graph/silence";
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
+import { isReadOnlyTool, markReadOnly } from "@/graph/tools/reads";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -101,6 +102,22 @@ describe("applyToolMocks (P4)", () => {
     const untouched = applyToolMocks(base, {});
     const calc2 = untouched.find((t) => t.name === "calculator");
     expect(String(await calc2?.invoke({ expression: "2 + 2" }))).toContain("4");
+  });
+
+  // The bug it catches: a mocked source losing its read-only mark, so the playground rewrite runs
+  // without the consultation production allows; or a mocked write becoming one the rewrite may call.
+  test("a mocked source keeps whether it is read-only, and a mocked write does not become one", () => {
+    const schema = z.object({});
+    const get = markReadOnly(
+      tool(async () => "real", { name: "consultar", description: "", schema }),
+    );
+    const post = tool(async () => "real", {
+      name: "gravar",
+      description: "",
+      schema,
+    });
+    const mocked = applyToolMocks([get, post], { consultar: "x", gravar: "y" });
+    expect(mocked.map(isReadOnlyTool)).toEqual([true, false]);
   });
 
   // NOTE: the same exemption as the test at the top of this block, one layer over. The

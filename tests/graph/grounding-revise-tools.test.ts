@@ -316,4 +316,30 @@ describe("a rewrite that may consult the sources", () => {
     expect(model.bound[2]).toEqual([]);
     expect(revised).toEqual([""]);
   });
+
+  // The bug it catches: a rewrite batch admitted by its own cap alone, so a turn with one call left
+  // runs three more and passes the limit every turn obeys.
+  test("a batch is cut at the turn's remaining budget when that is smaller than the rewrite's cap", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "consultar_preco", args: { a: 0 } }] },
+      { text: "O ingresso custa 120 créditos." },
+      {
+        text: "",
+        calls: [
+          { name: "consultar_preco", args: { a: 1 } },
+          { name: "consultar_preco", args: { a: 2 } },
+          { name: "consultar_preco", args: { a: 3 } },
+        ],
+      },
+      { text: "O ingresso custa 187 créditos." },
+    ]);
+    const infos: RevisionInfo[] = [];
+    await run(model, {
+      turnMax: 2,
+      maxToolCalls: 3,
+      second: (_t, _r, info) => infos.push(info),
+    });
+    expect(ran).toEqual(["consultar_preco", "consultar_preco"]);
+    expect(infos[0]).toMatchObject({ toolCalls: 1 });
+  });
 });

@@ -55,6 +55,7 @@ import {
   type McpLoadDeps,
   type McpServerMeta,
 } from "@/graph/tools/mcp";
+import { isReadOnlyTool, markReadOnly } from "@/graph/tools/reads";
 import type { ReplyChoice } from "@/graph/tools/reply-as-text";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import {
@@ -359,15 +360,17 @@ export function applyToolMocks(
   // other source, so no operator tool is ever bound under it.
   for (const n of protocol) names.delete(n);
   if (names.size === 0) return tools;
-  return tools.map((tl) =>
-    names.has(tl.name)
-      ? tool(async () => mocks?.[tl.name] ?? "", {
-          name: tl.name,
-          description: tl.description,
-          schema: tl.schema,
-        })
-      : tl,
-  );
+  return tools.map((tl) => {
+    if (!names.has(tl.name)) return tl;
+    const mocked = tool(async () => mocks?.[tl.name] ?? "", {
+      name: tl.name,
+      description: tl.description,
+      schema: tl.schema,
+    });
+    // A mocked source keeps whether the factual-grounding rewrite may call it, as it would in
+    // production; the mock never makes a tool that writes read-only.
+    return isReadOnlyTool(tl) ? markReadOnly(mocked) : mocked;
+  });
 }
 
 // The playground's agent config: a detached turn's, which can also leave the chat model unbuilt (a

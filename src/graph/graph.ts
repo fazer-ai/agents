@@ -1130,7 +1130,10 @@ export function buildAgentGraph({
     const askRevision = async (
       r: NonNullable<typeof revision>,
     ): Promise<BaseMessage> => {
-      const room = r.plan ? r.plan.maxToolCalls - r.attempts : 0;
+      // Bounded by the turn's own budget too: the rewrite's calls are the turn's calls.
+      const room = r.plan
+        ? Math.min(r.plan.maxToolCalls - r.attempts, max - toolCalls)
+        : 0;
       const canCall = room > 0 && !hardLimit && r.tools.length > 0;
       const bound: Bound = canCall
         ? {

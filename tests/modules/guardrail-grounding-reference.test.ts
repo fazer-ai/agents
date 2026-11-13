@@ -177,6 +177,26 @@ describe("the reviewer's messages", () => {
   });
 });
 
+test("a document indexed between the size and the read still counts against the ceiling", async () => {
+  // The size statement sees one small document; the read that follows sees a large one too.
+  const big = "x".repeat(GROUNDING_REFERENCE_MAX);
+  const db = {
+    $queryRaw: async () => [{ n: 1, chars: 10n }],
+    knowledgeDocument: {
+      findMany: async () => [
+        { title: "a", content: "0123456789", kb: { name: "b" } },
+        { title: "b", content: big, kb: { name: "b" } },
+      ],
+    },
+  } as never;
+  const ref = await loadGroundingReference(db, ["1"]);
+  expect([ref.docs.length, ref.count, ref.chars]).toEqual([
+    0,
+    2,
+    GROUNDING_REFERENCE_MAX + 10,
+  ]);
+});
+
 describe("the settings", () => {
   test("the reader keeps decimal ids once each and drops the rest", () => {
     const g = readGuardrailsConfig({

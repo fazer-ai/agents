@@ -55,5 +55,10 @@ export async function loadGroundingReference(
     title: r.title,
     content: r.content,
   }));
-  return { docs, count, chars };
+  // Measured again on what was read: a document indexed between the two statements is in `docs` and
+  // not in the count above, and the ceiling is about what would be sent.
+  const read = docs.reduce((n, d) => n + d.content.length, 0);
+  return read > GROUNDING_REFERENCE_MAX
+    ? { docs: [], count: docs.length, chars: read }
+    : { docs, count: docs.length, chars: read };
 }

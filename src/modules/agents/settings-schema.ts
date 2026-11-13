@@ -1157,7 +1157,9 @@ const guardrails = z
         action: oneOf(GROUNDING_ACTIONS)
           .optional()
           .describe("revise = one more generation told the claims"),
-        contextMessages: ranged(GUARDRAIL_RANGES.contextMessages).optional(),
+        contextMessages: ranged(
+          GUARDRAIL_RANGES.groundingContextMessages,
+        ).optional(),
         reviseWithTools: z
           .boolean()
           .optional()

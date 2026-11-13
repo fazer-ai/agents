@@ -19,7 +19,6 @@ import {
 } from "@/graph/usage";
 import { scrubbedClip } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
-import { openAttendance } from "./context";
 import type {
   GuardrailAnnounce,
   GuardrailDecision,
@@ -29,9 +28,12 @@ import {
   earlierSourceCalls,
   FACTUAL_GROUNDING_KEY,
   GROUNDING_REFERENCE_MAX,
+  GROUNDING_SOURCE_WINDOW,
   GROUNDING_SOURCES_MAX,
   type GroundingClaim,
   groundingConversation,
+  groundingMemory,
+  groundingNow,
   groundingSourced,
   groundingToolCalls,
   reviewGrounding,
@@ -66,9 +68,9 @@ export interface GroundingGateParams {
   // results, so they reach the flow line only with it on; otherwise only their count does.
   logValues?: boolean;
   announce?: GuardrailAnnounce;
-  // The Chatwoot conversation the turn answers, to keep the window to the attendance that is open.
-  // Absent in the playground, whose thread is one session.
-  conversationId?: number;
+  // The instant the turn's prompt was rendered and the agent's timezone, the same clock the agent's
+  // own date variables read, so the reviewer computes "today" and "tomorrow" as the agent did.
+  clock: { now: Date; timezone: string };
   makeModel?: typeof createChatModel;
   // The turn's own end (a scheduler job's deadline). A turn that already ended is not reviewed, and
   // one that ends during the review stops waiting for a permit and for the reviewer.
@@ -230,16 +232,15 @@ export function buildGroundingGate(
     reply: string;
   } | null> => {
     if (p.signal?.aborted) return null;
+    // The whole thread the agent reads, earlier attendances included.
     const history = turn.slice(0, -1);
-    const scoped =
-      p.conversationId === undefined
-        ? history
-        : openAttendance(history, p.conversationId);
-    // Earlier first, so the block reads in the order the calls were made.
+    // Earlier first, so the block reads in the order the calls were made. 0 reads only the turn.
     const earlier = earlierSourceCalls(
-      scoped,
+      history,
       fg.sourceTools,
-      fg.contextMessages,
+      fg.contextMessages > 0
+        ? Math.max(fg.contextMessages, GROUNDING_SOURCE_WINDOW)
+        : 0,
     );
     const calls = [...earlier, ...groundingToolCalls(turn, fg.sourceTools)];
     // Reviewed with or without a source: a reply that states an in-scope fact having consulted
@@ -274,12 +275,20 @@ export function buildGroundingGate(
         sized,
         buildError,
       );
-    const conversation = groundingConversation(scoped, fg.contextMessages);
+    const conversation = groundingConversation(history, fg.contextMessages);
+    const memory = fg.contextMessages > 0 ? groundingMemory(history) : null;
     const started = Date.now();
     const tokens = new ReviewTokens();
     const verdict = await reviewGrounding(
       m,
-      { conversation, calls, reply, reference: reference.docs },
+      {
+        now: groundingNow(p.clock.now, p.clock.timezone),
+        memory,
+        conversation,
+        calls,
+        reply,
+        reference: reference.docs,
+      },
       verdictAskMode(reviewer.provider as ModelConfig["provider"]),
       callbacks(tokens),
       p.signal,

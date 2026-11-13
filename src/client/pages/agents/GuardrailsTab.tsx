@@ -1329,11 +1329,11 @@ export function GuardrailsTab({
                       )}
                       description={t(
                         "editor.guardrails.groundingContextHint",
-                        "Customer and agent messages before the turn, including what was read from images the customer sent. The source results of the turns in this window are reviewed too.",
+                        "Customer and agent messages before the turn, earlier conversations with the same contact included, with what was read from images the customer sent. Source results from the last 60 messages and the summary of earlier conversations are reviewed too. 0 reviews the turn alone. 0-40.",
                       )}
                     >
                       <NumberInput
-                        range={GUARDRAIL_RANGES.contextMessages}
+                        range={GUARDRAIL_RANGES.groundingContextMessages}
                         value={
                           groundingContextDraft ?? String(fg.contextMessages)
                         }
@@ -1344,7 +1344,7 @@ export function GuardrailsTab({
                             raw.trim() !== "" &&
                             inRange(
                               Number(raw),
-                              GUARDRAIL_RANGES.contextMessages,
+                              GUARDRAIL_RANGES.groundingContextMessages,
                             )
                           )
                             setGrounding({ contextMessages: Number(raw) });

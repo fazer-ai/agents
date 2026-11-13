@@ -1200,7 +1200,7 @@ async function runTurnBody(
       turnErrors.guardrail(r);
       await chatwootNoteSink(client, conversationId)(r);
     },
-    conversationId,
+    clock: { now: loaded.promptOpts.now, timezone: loaded.timezone },
     makeModel: params.deps?.makeModel,
     signal: params.signal,
     persistUsage: params.deps?.persistUsage,

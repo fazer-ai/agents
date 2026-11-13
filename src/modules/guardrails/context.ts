@@ -80,10 +80,18 @@ export interface DatedContextMessage {
 // The same window with every message whole, for a reader that must not decide on a prefix of what
 // someone said. `toolResultChars` also takes in each tool result, cut to that many characters: they
 // are no one's words, and a reader may need them to tell which record an id in a call names.
+// `acrossAttendances` keeps walking past a divider, reading the customer's words it carries as one more
+// customer message, for a reader that must see the thread the agent reads, earlier attendances
+// included; without it the walk stops at the divider of the attendance that is open.
+export interface ContextWindowOptions {
+  toolResultChars?: number;
+  acrossAttendances?: boolean;
+}
+
 export function unclippedContext(
   messages: readonly BaseMessage[],
   limit: number,
-  opts?: { toolResultChars?: number },
+  opts?: ContextWindowOptions,
 ): DatedContextMessage[] {
   return contextWindow(messages, limit, opts).out;
 }
@@ -94,14 +102,15 @@ export function unclippedContext(
 export function contextWindowStart(
   messages: readonly BaseMessage[],
   limit: number,
+  opts?: ContextWindowOptions,
 ): number {
-  return contextWindow(messages, limit).start;
+  return contextWindow(messages, limit, opts).start;
 }
 
 function contextWindow(
   messages: readonly BaseMessage[],
   limit: number,
-  opts?: { toolResultChars?: number },
+  opts?: ContextWindowOptions,
 ): { out: DatedContextMessage[]; start: number } {
   const out: DatedContextMessage[] = [];
   let start = messages.length;
@@ -116,6 +125,7 @@ function contextWindow(
         text = text.slice(CONVERSATION_DIVIDER.length).trim();
       if (text) out.push({ role: "customer", text, at: stampedSentAt(m) });
       start = i;
+      if (opts?.acrossAttendances) continue;
       break;
     }
     const before = out.length;

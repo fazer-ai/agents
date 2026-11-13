@@ -62,6 +62,8 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const RULE = "O reembolso pode ser pedido em até 11 dias após a compra.";
+const CLOCK = { now: new Date("2026-11-12T17:05:00Z"), timezone: "UTC" };
+
 const REFERENCE: GroundingReference = {
   docs: [{ base: "Regras da casa", title: "Reembolso", content: RULE }],
   count: 1,
@@ -144,6 +146,38 @@ describe("the reviewer's messages", () => {
       `${text(ms[0])}\n${text(ms[1]).split("</reference_sources>")[0]}`;
     expect(head(one)).toBe(head(two));
     expect(text(one[1])).not.toBe(text(two[1]));
+  });
+
+  // The bug it catches: a clock that changes every minute ahead of the reference would make every
+  // review miss the cache of the reference block.
+  test("the current instant comes after the reference block, which stays the same bytes", () => {
+    const at = (now: string) =>
+      groundingMessages({
+        now,
+        conversation: [],
+        calls: [],
+        reply: "Até 11 dias.",
+        reference: REFERENCE.docs,
+      });
+    const one = at("Thursday, 2026-11-12 14:05 (America/Sao_Paulo)");
+    const two = at("Thursday, 2026-11-12 14:06 (America/Sao_Paulo)");
+    const [block, turnOne] = text(one[1]).split("</reference_sources>\n\n");
+    const [blockTwo, turnTwo] = text(two[1]).split("</reference_sources>\n\n");
+    expect(block).toBe(blockTwo as string);
+    expect(turnOne?.startsWith("<now>Thursday, 2026-11-12 14:05")).toBe(true);
+    expect(turnTwo?.startsWith("<now>Thursday, 2026-11-12 14:06")).toBe(true);
+    const [, marked] = groundingMessages(
+      {
+        now: "x",
+        conversation: [],
+        calls: [],
+        reply: "x",
+        reference: REFERENCE.docs,
+      },
+      true,
+    );
+    const blocks = marked?.content as { text?: string }[];
+    expect(String(blocks[1]?.text).startsWith("<now>x</now>")).toBe(true);
   });
 
   test("on a provider that caches only what is marked, the reference is its own marked block", () => {
@@ -231,6 +265,7 @@ describe("the settings", () => {
     expect(
       buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg({ sourceTools: [] }),
         reviewer: RUNS,
         flow: { tenantId: 1n, turnId: "x", source: "inbox" } as FlowContext,
@@ -357,6 +392,7 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     );
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg({ referenceKnowledgeBaseIds: [String(kbA)] }),
       reviewer: RUNS,
       reference,
@@ -604,6 +640,7 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     const big = "x".repeat(GROUNDING_REFERENCE_MAX + 1);
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg(),
       reviewer: RUNS,
       reference: {

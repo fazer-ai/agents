@@ -120,6 +120,8 @@ export const GUARDRAIL_RANGES = {
   // Held by the schema to the turn limit's own range; the write boundary also refuses a value above the
   // agent's `limits.maxToolCalls` (assertSettingsReviseToolCalls), which the schema cannot see.
   reviseMaxToolCalls: intRange(1, LIMITS_RANGES.maxToolCalls.max),
+  // Earlier messages the factual-grounding reviewer reads; 0 reads only the turn.
+  groundingContextMessages: intRange(0, 40),
 } as const;
 
 // A knowledge hit's cosine distance; 0 would drop every hit, and nothing is farther than 2.

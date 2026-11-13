@@ -258,7 +258,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     sourceTools: [],
     referenceKnowledgeBaseIds: [],
     action: "observe",
-    contextMessages: 6,
+    contextMessages: 24,
     reviseWithTools: true,
     reviseMaxToolCalls: 3,
     provider: null,
@@ -461,7 +461,7 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
       : d.action,
     contextMessages: clampToRange(
       b.contextMessages,
-      GUARDRAIL_RANGES.contextMessages,
+      GUARDRAIL_RANGES.groundingContextMessages,
       d.contextMessages,
     ),
     reviseWithTools: bool(b.reviseWithTools, d.reviseWithTools),

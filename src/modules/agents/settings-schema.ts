@@ -1162,7 +1162,7 @@ const guardrails = z
           .boolean()
           .optional()
           .describe(
-            "revise: the rewrite may call the sources that are reads (default true)",
+            "revise: the rewrite may call the read-only sources (default true)",
           ),
         reviseMaxToolCalls: ranged(
           GUARDRAIL_RANGES.reviseMaxToolCalls,

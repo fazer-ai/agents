@@ -8,7 +8,7 @@ import {
   parseToolInputSchema,
   sanitizeToolName,
 } from "@/graph/tools/http";
-import { isReadTool } from "@/graph/tools/reads";
+import { isReadOnlyTool, isReadTool } from "@/graph/tools/reads";
 import {
   buildToolpackTools,
   deadlineFetch,
@@ -121,6 +121,15 @@ describe("buildHttpTool", () => {
     expect(url.pathname).toBe("/v1/things/..%2F..%2Fadmin");
     expect(url.searchParams.get("q")).toBe("hello world");
     expect(captured.init?.body).toBeUndefined();
+  });
+
+  // The bug it catches: a POST offered to the factual-grounding rewrite as a source it may call.
+  test("a GET is read-only and a POST is not", () => {
+    const ctx = { resolveCredential: async () => null };
+    expect([
+      isReadOnlyTool(buildHttpTool(def(), ctx)),
+      isReadOnlyTool(buildHttpTool(def({ method: "POST" }), ctx)),
+    ]).toEqual([true, false]);
   });
 
   test("rejects when the host is not in the per-tool allowlist", async () => {
@@ -1810,6 +1819,8 @@ describe("the turn's deadline reaches a toolpack", () => {
         },
       );
       expect(built.map(isReadTool)).toEqual([true]);
+      // Read for an observation, never read-only: a pack does not say which of its tools write.
+      expect(built.map(isReadOnlyTool)).toEqual([false]);
     });
   }
 

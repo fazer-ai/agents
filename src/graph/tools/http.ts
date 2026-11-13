@@ -11,7 +11,7 @@ import {
   isExpectedResult,
   normalizeExpectedStatuses,
 } from "@/graph/tools/http-status";
-import { markRead } from "@/graph/tools/reads";
+import { markRead, markReadOnly } from "@/graph/tools/reads";
 import { AppError } from "@/lib/errors";
 import { fetchBounded, withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -1101,8 +1101,9 @@ export function buildHttpTool(
   if (def.ackMessage) {
     (tool as { [ASKS_WAIT_MESSAGE]?: true })[ASKS_WAIT_MESSAGE] = true;
   }
-  // A GET answers with what the model asked for, so an observation goes on to read it (reads.ts).
-  return method === "GET" ? markRead(tool) : tool;
+  // A GET answers with what the model asked for, so an observation goes on to read it, and it
+  // changes nothing, so the factual-grounding rewrite may call it (reads.ts).
+  return method === "GET" ? markReadOnly(markRead(tool)) : tool;
 }
 
 // The header a tool's server sends when it trimmed its own response to fit. Present at all declares

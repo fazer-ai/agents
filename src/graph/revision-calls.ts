@@ -6,7 +6,7 @@ import {
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { MessagesAnnotation } from "@langchain/langgraph";
 import { contentToText } from "./message-text";
-import { isReadTool } from "./tools/reads";
+import { isReadOnlyTool } from "./tools/reads";
 
 // The factual-grounding rewrite that may consult the check's sources (docs/factual-grounding.md). The
 // model is bound to those tools alone, and the tool node runs only the calls the agent node admitted,
@@ -36,7 +36,8 @@ export function revisionToolsNote(
   return `Antes de reescrever, você pode consultar ${names.map((n) => `\`${n}\``).join(", ")} (no máximo ${max} ${max === 1 ? "chamada" : "chamadas"}) para confirmar ou corrigir essas afirmações. Só essas ferramentas estão disponíveis agora.`;
 }
 
-// The sources the rewrite may call: granted to the agent, named as a source, a read, and run on the
+// The sources the rewrite may call: granted to the agent, named as a source, read-only (an MCP or
+// integration tool counts as a read for an observation and may still send or charge), and run on the
 // server (a client tool suspends the turn, and the rewrite would not survive the resume).
 export function revisionTools(
   tools: readonly StructuredToolInterface[],
@@ -45,7 +46,7 @@ export function revisionTools(
 ): StructuredToolInterface[] {
   const sources = new Set(sourceTools);
   return tools.filter(
-    (t) => sources.has(t.name) && isReadTool(t) && !clientNames.has(t.name),
+    (t) => sources.has(t.name) && isReadOnlyTool(t) && !clientNames.has(t.name),
   );
 }
 

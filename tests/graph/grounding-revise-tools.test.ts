@@ -11,7 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph, type RevisionInfo } from "@/graph/graph";
 import { contentToText } from "@/graph/message-text";
-import { markRead } from "@/graph/tools/reads";
+import { markRead, markReadOnly } from "@/graph/tools/reads";
 
 // The factual-grounding rewrite that may consult the check's sources: which tools it is handed, what
 // runs when it asks for another one, the cap on its calls, and the second review of what it wrote.
@@ -57,7 +57,7 @@ class BoundRecordingModel {
 }
 
 const ran: string[] = [];
-const consultarPreco = markRead(
+const consultarPreco = markReadOnly(
   tool(
     async () => {
       ran.push("consultar_preco");
@@ -76,6 +76,16 @@ const abrirChamado = tool(
     return "chamado aberto";
   },
   { name: "abrir_chamado", description: "abre chamado", schema: z.object({}) },
+);
+// An MCP or integration tool: a read for an observation, and still able to send an e-mail.
+const enviarEmail = markRead(
+  tool(
+    async () => {
+      ran.push("enviar_email");
+      return "enviado";
+    },
+    { name: "enviar_email", description: "envia e-mail", schema: z.object({}) },
+  ),
 );
 const setLabels = tool(
   async () => {
@@ -105,7 +115,7 @@ async function run(
     model: model as unknown as BaseChatModel,
     systemPrompt: "PROMPT",
     checkpointer: new MemorySaver(),
-    tools: [consultarPreco, abrirChamado, setLabels],
+    tools: [consultarPreco, abrirChamado, setLabels, enviarEmail],
     maxToolCalls: opts.turnMax,
     reviewReply: async () => (reviews++ === 0 ? NOTE : null),
     revisionPlan:
@@ -218,6 +228,19 @@ describe("a rewrite that may consult the sources", () => {
     await run(model, { sourceTools: ["consultar_preco", "set_labels"] });
     expect(model.bound[1]).toEqual(["consultar_preco"]);
     expect(ran).toEqual(["consultar_preco"]);
+  });
+
+  // The bug it catches: an MCP or integration source, a read only for an observation, handed to the
+  // rewrite, which could then send an e-mail or create a charge a second time.
+  test("a source that only an observation reads (MCP, integration) is neither offered nor run", async () => {
+    const model = new BoundRecordingModel([
+      { text: "O ingresso custa 120 créditos." },
+      { text: "", calls: [{ name: "enviar_email" }] },
+      { text: "O ingresso custa 187 créditos." },
+    ]);
+    await run(model, { sourceTools: ["consultar_preco", "enviar_email"] });
+    expect(model.bound[1]).toEqual(["consultar_preco"]);
+    expect(ran).toEqual([]);
   });
 
   test("calls past the cap are refused, in one batch and across rounds, and the turn ends on text", async () => {

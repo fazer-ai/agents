@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import { type RunnableConfig, RunnableLambda } from "@langchain/core/runnables";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { startObservation } from "@langfuse/tracing";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import { TRUNCATED_MARKER, traceIdForTurn } from "@/graph/langfuse-otel";
@@ -248,7 +249,8 @@ describe("langfuse export over OTLP", () => {
     const ctxA = { tenantId: 11n, threadId: "11:1:1", turnId: TURN_A };
     const ctxB = { tenantId: 22n, threadId: "22:1:1", turnId: TURN_A };
     const handlerA = buildLangfuseHandler(cfgFor("a"), ctxA);
-    const handlerB = buildLangfuseHandler(cfgFor("b"), ctxB);
+    const cfgB = cfgFor("b", { sendContent: true });
+    const handlerB = buildLangfuseHandler(cfgB, ctxB);
     const run = async (handler: unknown, text: string) => {
       const model = new FakeListChatModel({ responses: [`reply ${text}`] });
       await RunnableLambda.from(
@@ -258,8 +260,9 @@ describe("langfuse export over OTLP", () => {
         .withConfig({ runName: "agent-turn" })
         .invoke({ content: text }, { callbacks: [handler as never] });
     };
-    await run(handlerA, "from-tenant-a");
     await run(handlerB, "from-tenant-b");
+    await run(handlerA, "from-tenant-a");
+    await runSecondary(cfgB, ctxB, "tenant-b guardrail");
     await shutdownLangfuseClients();
 
     const a = spansAt("a");
@@ -268,6 +271,26 @@ describe("langfuse export over OTLP", () => {
     expect(b.length).toBeGreaterThan(0);
     expect(a.every((s) => meta(s.attrs, "tenantId") === "11")).toBe(true);
     expect(b.every((s) => meta(s.attrs, "tenantId") === "22")).toBe(true);
+    const rootB = b.find((s) => s.name === "agent-turn");
+    const guardB = b.find((s) =>
+      String(s.attrs["langfuse.observation.input"] ?? "").includes(
+        "tenant-b guardrail",
+      ),
+    );
+    expect(guardB?.parentSpanId).toBe(rootB?.spanId);
+  });
+
+  test("a span started outside every handler is delivered nowhere", async () => {
+    await runTurn(
+      cfgFor("a"),
+      { tenantId: 11n, threadId: "11:1:1", turnId: TURN_A },
+      "x",
+      "y",
+    );
+    startObservation("stray-span", {}).end();
+    await shutdownLangfuseClients();
+    expect(posted.length).toBeGreaterThan(0);
+    expect(posted.some((p) => p.body.includes("stray-span"))).toBe(false);
   });
 
   test("without the content opt-in no message or reply byte leaves the process; with it, they do", async () => {

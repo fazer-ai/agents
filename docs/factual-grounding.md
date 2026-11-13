@@ -66,10 +66,10 @@ One reviewer call per reviewed turn, billed on its own ledger node, `guardrail_g
 
 The reference block is the same bytes on every review while the bases do not change, and it comes right after the system message, which is the same on every review that has a reference. That prefix is what the providers cache: OpenAI caches a repeated prefix on its own, and on Anthropic (and a Claude model behind OpenRouter) the reference rides as its own text block with its own `cache_control` mark, beside the marks `src/graph/prompt-cache.ts` already puts on the system message and the last block, so a review whose reply differs still reads the reference from cache. Measured on 12/11/2026 with a synthetic base of 15 documents and 39,409 characters, a reply that consulted nothing, and the reviewer's real messages (`reviewGrounding`):
 
-| Reviewer | Without reference | With reference, not cached | With reference, cached |
-|---|---|---|---|
-| gpt-5.6-luna (OpenAI) | 960 input, about 100 output: US$ 0.0003 | 10,922 input, 10,919 of them written to the cache: US$ 0.0029 | 10,922 input, 10,919 of them read from the cache: US$ 0.00035 |
-| claude-sonnet-5-5 (Anthropic) | 1,706 input, written to the cache as it goes, about 130 output: US$ 0.0056 | 18,897 input, 18,893 written: US$ 0.048 | 18,897 input, 18,801 read and 92 written: US$ 0.0037 |
+| Reviewer | Without reference, not cached | Without reference, cached | With reference, not cached | With reference, cached |
+|---|---|---|---|---|
+| gpt-5.6-luna (OpenAI) | 960 input, about 100 output: US$ 0.0003 | never cached: the prompt is under OpenAI's 1,024-token minimum, so the same US$ 0.0003 | 10,922 input, 10,919 of them written to the cache: US$ 0.0029 | 10,922 input, 10,919 of them read from the cache: US$ 0.00035 |
+| claude-sonnet-5-5 (Anthropic) | 1,706 input, written to the cache as it goes, about 130 output: US$ 0.0056 | 1,696 input, 1,607 read and 85 written: US$ 0.0015 | 18,897 input, 18,893 written: US$ 0.048 | 18,897 input, 18,801 read and 92 written: US$ 0.0037 |
 
 Prices from `src/modules/pricing/model-prices.json`. Cached, a review with a 40,000-character reference costs about what one without it does; uncached, about ten times as much. The caches live a few minutes (5 by default on Anthropic), so an agent with a review every few minutes pays the cached row, and one with a review an hour pays the other. The same runs judged the reference correctly: three replies stating its rule came out clean and three contradicting it came out flagged as a contradiction, on both models, where the same correct reply with no reference was flagged as unsupported.
 

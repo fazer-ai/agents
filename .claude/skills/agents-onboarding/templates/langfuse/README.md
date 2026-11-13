@@ -109,7 +109,8 @@ A green health check is **not** enough (it only proves Postgres). Confirm a trac
 # 1) use the seeded pk-lf-…/sk-lf-… pair (or create one in the UI), then:
 PK=pk-lf-...; SK=sk-lf-...; BASE=https://langfuse.example.com
 
-# 2) POST one OTLP span (the endpoint the app exports to), expect HTTP 200 (NOT 500):
+# 2) POST one OTLP span (the endpoint the app exports to), expect HTTP 200 (NOT 500)
+#    and no partialSuccess.rejectedSpans in the body:
 NOW=$(date +%s)000000000
 curl -s -u "$PK:$SK" -H 'Content-Type: application/json' -X POST "$BASE/api/public/otel/v1/traces" \
   -d '{"resourceSpans":[{"resource":{"attributes":[]},"scopeSpans":[{"scope":{"name":"langfuse-sdk"},"spans":[{"traceId":"0af7651916cd43dd8448eb211c80319c","spanId":"b7ad6b7169203331","name":"verify","kind":1,"startTimeUnixNano":"'$NOW'","endTimeUnixNano":"'$NOW'","attributes":[{"key":"langfuse.observation.type","value":{"stringValue":"span"}}]}]}]}]}' \

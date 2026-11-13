@@ -103,8 +103,18 @@ def cmd_ingestion(args):
         status, raw = exc.code, exc.read().decode("utf-8", "replace")
     except urllib.error.URLError as exc:
         fail(f"request failed: {exc.reason}", url=url)
-    ok = status == 200
+    rejected = 0
+    if status == 200:
+        # An OTLP 200 can still refuse spans; with one span sent, any refusal means nothing landed.
+        try:
+            partial = (json.loads(raw) or {}).get("partialSuccess") or {}
+            rejected = int(partial.get("rejectedSpans") or 0)
+        except (ValueError, TypeError, AttributeError):
+            rejected = 0
+    ok = status == 200 and rejected == 0
     result = {"ok": ok, "status": status, "expected": "200", "body": raw[:300]}
+    if rejected:
+        result["rejectedSpans"] = rejected
     if status >= 500:
         result["hint"] = "500 usually means missing MinIO/S3 blob storage (LANGFUSE_S3_* empty); traces are dropped"
     elif status in (401, 403):

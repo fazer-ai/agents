@@ -244,6 +244,32 @@ describe("langfuse export over OTLP", () => {
       expect(p.auth).toBe(basic("b"));
   });
 
+  test("two tenants whose handlers share a turn id each still deliver only to their own project", async () => {
+    const ctxA = { tenantId: 11n, threadId: "11:1:1", turnId: TURN_A };
+    const ctxB = { tenantId: 22n, threadId: "22:1:1", turnId: TURN_A };
+    const handlerA = buildLangfuseHandler(cfgFor("a"), ctxA);
+    const handlerB = buildLangfuseHandler(cfgFor("b"), ctxB);
+    const run = async (handler: unknown, text: string) => {
+      const model = new FakeListChatModel({ responses: [`reply ${text}`] });
+      await RunnableLambda.from(
+        async (input: { content: string }, runConfig?: RunnableConfig) =>
+          (await model.invoke(input.content, runConfig)).content,
+      )
+        .withConfig({ runName: "agent-turn" })
+        .invoke({ content: text }, { callbacks: [handler as never] });
+    };
+    await run(handlerA, "from-tenant-a");
+    await run(handlerB, "from-tenant-b");
+    await shutdownLangfuseClients();
+
+    const a = spansAt("a");
+    const b = spansAt("b");
+    expect(a.length).toBeGreaterThan(0);
+    expect(b.length).toBeGreaterThan(0);
+    expect(a.every((s) => meta(s.attrs, "tenantId") === "11")).toBe(true);
+    expect(b.every((s) => meta(s.attrs, "tenantId") === "22")).toBe(true);
+  });
+
   test("without the content opt-in no message or reply byte leaves the process; with it, they do", async () => {
     await runTurn(
       cfgFor("a"),

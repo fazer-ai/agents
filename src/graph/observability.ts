@@ -14,6 +14,7 @@ import config from "@/config";
 import {
   drainLangfuseTracing,
   registerTurnTrace,
+  startInTurnRoute,
   startInTurnTrace,
   type TurnTrace,
   traceIdForTurn,
@@ -271,7 +272,7 @@ export function buildLangfuseHandler(
     const rootRuns = new Set<string>();
     internals.startAndRegisterOtelSpan = (params) => {
       if (params.parentRunId) {
-        const child = start(params);
+        const child = startInTurnRoute(turn, () => start(params));
         if (updateRoot) liftRunMetadata(child.otelSpan, params.metadata);
         return child;
       }

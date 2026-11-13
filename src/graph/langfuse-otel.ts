@@ -1,9 +1,9 @@
 /**
  * The OpenTelemetry transport behind Langfuse tracing (docs/graph.md, Langfuse tracing). There is one
  * tracer provider per process and every tenant traces into its own Langfuse project, so the provider's
- * only span processor is a router: each span goes to the destination of the tenant that registered
- * its trace id, a span of an unregistered trace is dropped, and content is redacted in the router
- * before a span reaches any processor when the tenant did not opt into sending it.
+ * only span processor is a router: each span goes to the destination of the handler that started it,
+ * a span started outside a handler is dropped, and content is redacted in the router before a span
+ * reaches any processor when the tenant did not opt into sending it.
  */
 
 import { LangfuseSpanProcessor } from "@langfuse/otel";
@@ -290,8 +290,7 @@ class TurnTraceIdGenerator implements IdGenerator {
   }
 }
 
-interface TraceEntry {
-  routeKey: string;
+interface RootEntry {
   rootSpanId?: string;
   at: number;
 }
@@ -302,17 +301,30 @@ interface Destination {
   sendContent: boolean;
 }
 
-// A trace stays routable this long after its last registration. A turn and the calls that join its
-// trace finish within it; a span started later has no destination and is dropped.
-const TRACE_ROUTE_TTL_MS = 60 * 60 * 1000;
+interface ArmedRoute {
+  routeKey: string;
+  route: LangfuseRoute;
+}
 
+// A turn's root stays known this long after the last handler of that turn was built. A call that
+// joins the turn later starts parentless in the same trace instead of under the root.
+const ROOT_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Sends each span to the destination of the handler that started it. Every span is started
+ * synchronously inside `startInTurnRoute`, which arms that handler's route for the duration of the
+ * start, so the destination is a property of who created the span, never a lookup by trace id that
+ * another tenant's handler could answer. A span started with nothing armed is dropped.
+ */
 class TenantSpanRouter implements SpanProcessor {
   private readonly destinations = new Map<string, Destination>();
-  private readonly traces = new Map<string, TraceEntry>();
+  private readonly roots = new Map<string, RootEntry>();
   private readonly routed = new WeakMap<object, Destination>();
+  armed: ArmedRoute | undefined;
 
-  destination(routeKey: string, route: LangfuseRoute): void {
-    if (this.destinations.has(routeKey)) return;
+  private destination({ routeKey, route }: ArmedRoute): Destination {
+    const existing = this.destinations.get(routeKey);
+    if (existing) return existing;
     const exporter = new LangfuseFetchExporter(route);
     const processor = new LangfuseSpanProcessor({
       publicKey: route.publicKey,
@@ -320,42 +332,34 @@ class TenantSpanRouter implements SpanProcessor {
       baseUrl: route.baseUrl,
       exporter,
     });
-    this.destinations.set(routeKey, {
+    const dest = {
       processor,
       exporter,
       sendContent: route.sendContent === true,
-    });
+    };
+    this.destinations.set(routeKey, dest);
+    return dest;
   }
 
-  /**
-   * Binds a trace id to a destination. Every handler of the turn registers the same trace, so a
-   * registration for the same destination refreshes the existing entry in place and keeps the root it
-   * already knows; a different destination (rotated keys) starts a fresh entry.
-   */
-  register(traceId: string, routeKey: string): void {
+  /** The root record of one destination's trace, refreshed on every lookup. */
+  root(traceId: string, routeKey: string): RootEntry {
     const now = Date.now();
-    const existing = this.traces.get(traceId);
-    const entry: TraceEntry =
-      existing?.routeKey === routeKey ? existing : { routeKey, at: now };
+    const key = `${routeKey}|${traceId}`;
+    const entry = this.roots.get(key) ?? { at: now };
     entry.at = now;
-    this.traces.delete(traceId);
-    this.traces.set(traceId, entry);
-    for (const [id, e] of this.traces) {
-      if (now - e.at < TRACE_ROUTE_TTL_MS) break;
-      this.traces.delete(id);
+    this.roots.delete(key);
+    this.roots.set(key, entry);
+    for (const [k, e] of this.roots) {
+      if (now - e.at < ROOT_TTL_MS) break;
+      this.roots.delete(k);
     }
-  }
-
-  /** The current entry of a trace, as long as it still routes to `routeKey`. */
-  entry(traceId: string, routeKey: string): TraceEntry | undefined {
-    const entry = this.traces.get(traceId);
-    return entry?.routeKey === routeKey ? entry : undefined;
+    return entry;
   }
 
   onStart(span: Span, parentContext: Parameters<SpanProcessor["onStart"]>[1]) {
-    const entry = this.traces.get(span.spanContext().traceId);
-    const dest = entry ? this.destinations.get(entry.routeKey) : undefined;
-    if (!dest) return;
+    const armed = this.armed;
+    if (!armed) return;
+    const dest = this.destination(armed);
     this.routed.set(span, dest);
     dest.processor.onStart(span, parentContext);
   }
@@ -378,11 +382,11 @@ class TenantSpanRouter implements SpanProcessor {
     );
   }
 
-  /** Delivers everything queued, then forgets every destination and trace route. */
+  /** Delivers everything queued, then forgets every destination and root. */
   async drain(): Promise<void> {
     const dests = [...this.destinations.values()];
     this.destinations.clear();
-    this.traces.clear();
+    this.roots.clear();
     await Promise.allSettled(dests.map((d) => d.processor.shutdown()));
     // NOTE: A processor that gave up on an export still leaves its request running in the exporter.
     await Promise.allSettled(dests.map((d) => d.exporter.shutdown()));
@@ -439,6 +443,7 @@ export function traceIdForTurn(turnId: string): string {
 export interface TurnTrace {
   traceId: string;
   routeKey: string;
+  route: LangfuseRoute;
 }
 
 export function registerTurnTrace(
@@ -446,10 +451,20 @@ export function registerTurnTrace(
   routeKey: string,
   route: LangfuseRoute,
 ): TurnTrace {
+  state().router.root(traceId, routeKey);
+  return { traceId, routeKey, route };
+}
+
+/** Runs a synchronous span start with the turn's destination armed, so the span is delivered there. */
+export function startInTurnRoute<T>(turn: TurnTrace, start: () => T): T {
   const { router } = state();
-  router.destination(routeKey, route);
-  router.register(traceId, routeKey);
-  return { traceId, routeKey };
+  const previous = router.armed;
+  router.armed = { routeKey: turn.routeKey, route: turn.route };
+  try {
+    return start();
+  } finally {
+    router.armed = previous;
+  }
 }
 
 /**
@@ -465,17 +480,16 @@ export function startInTurnTrace<T extends { id: string; otelSpan: ApiSpan }>(
   start: () => T,
 ): T {
   const { ids, router } = state();
-  const rootSpanId = router.entry(turn.traceId, turn.routeKey)?.rootSpanId;
-  if (!asTurnRoot && rootSpanId) {
+  const root = router.root(turn.traceId, turn.routeKey);
+  if (!asTurnRoot && root.rootSpanId) {
     const parent: SpanContext = {
       traceId: turn.traceId,
-      spanId: rootSpanId,
+      spanId: root.rootSpanId,
       traceFlags: TraceFlags.SAMPLED,
       isRemote: true,
     };
-    const child = context.with(
-      trace.setSpanContext(context.active(), parent),
-      start,
+    const child = startInTurnRoute(turn, () =>
+      context.with(trace.setSpanContext(context.active(), parent), start),
     );
     // NOTE: Langfuse marks a span whose parent it no longer tracks (the root already ended) as an app
     // root, which would let this call take the trace's headline.
@@ -485,13 +499,14 @@ export function startInTurnTrace<T extends { id: string; otelSpan: ApiSpan }>(
   ids.armed = turn.traceId;
   let observation: T;
   try {
-    observation = context.with(trace.deleteSpan(context.active()), start);
+    observation = startInTurnRoute(turn, () =>
+      context.with(trace.deleteSpan(context.active()), start),
+    );
   } finally {
     ids.armed = undefined;
   }
   if (asTurnRoot) {
-    const entry = router.entry(turn.traceId, turn.routeKey);
-    if (entry) entry.rootSpanId = observation.id;
+    root.rootSpanId = observation.id;
   } else {
     observation.otelSpan.setAttribute(
       LangfuseOtelSpanAttributes.IS_APP_ROOT,

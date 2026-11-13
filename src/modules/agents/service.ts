@@ -1948,6 +1948,65 @@ export async function assertCredentialRefsUsable(
   );
 }
 
+// The factual-grounding reference bases a write introduces must be knowledge bases of this tenant
+// (the scoped read cannot see another tenant's). Only ids absent from the stored bag are asked: a base
+// deleted after it was picked does not make an unrelated save fail, and the runtime reads none of it.
+async function assertReferenceKnowledgeBases(
+  db: ScopedDb,
+  settings: unknown,
+  stored: unknown,
+): Promise<void> {
+  dedupeReferenceKnowledgeBaseIds(settings);
+  const before = new Set(referenceKnowledgeBaseIdsIn(stored));
+  const added = referenceKnowledgeBaseIdsIn(settings).filter(
+    (id) => !before.has(id),
+  );
+  if (added.length === 0) return;
+  const ids = added.flatMap((id) => parseDbId(id) ?? []);
+  const found = await db.knowledgeBase.count({ where: { id: { in: ids } } });
+  if (found !== new Set(added).size)
+    throw new NotFoundError(
+      "knowledge base not found",
+      "errors.knowledgeBaseNotFound",
+    );
+}
+
+// A repeated id is stored once: the published schema cannot say "no repeats", so the write does not
+// refuse one, and a repeat would only show on read.
+function dedupeReferenceKnowledgeBaseIds(settings: unknown): void {
+  const fg = (
+    (settings as { guardrails?: { factualGrounding?: unknown } } | null)
+      ?.guardrails as { factualGrounding?: unknown } | undefined
+  )?.factualGrounding as { referenceKnowledgeBaseIds?: unknown } | undefined;
+  if (fg && Array.isArray(fg.referenceKnowledgeBaseIds))
+    fg.referenceKnowledgeBaseIds = [...new Set(fg.referenceKnowledgeBaseIds)];
+}
+
+function referenceKnowledgeBaseIdsIn(settings: unknown): string[] {
+  const fg = (
+    (settings as { guardrails?: { factualGrounding?: unknown } } | null)
+      ?.guardrails as { factualGrounding?: unknown } | undefined
+  )?.factualGrounding as { referenceKnowledgeBaseIds?: unknown } | undefined;
+  const ids = fg?.referenceKnowledgeBaseIds;
+  return Array.isArray(ids)
+    ? ids.filter(
+        (id): id is string => typeof id === "string" && parseDbId(id) !== null,
+      )
+    : [];
+}
+
+// The reference-bases half of a preview, as the apply asks it.
+export async function assertReferenceKnowledgeBasesUsable(
+  ctx: TenantContext,
+  settings: unknown,
+  stored: unknown,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) =>
+    assertReferenceKnowledgeBases(db, settings, stored),
+  );
+}
+
 // The same question for a preview, which holds no transaction: what `assertDecisionActionArgs` would
 // refuse on the apply, asked so a dry run does not approve what the write then refuses.
 export async function assertDecisionActionArgsUsable(
@@ -2270,6 +2329,7 @@ export async function updateAgentAndGrants(
       settings: before?.settings,
     });
     await assertDecisionActionArgs(db, rest.settings, before?.settings);
+    await assertReferenceKnowledgeBases(db, rest.settings, before?.settings);
     // See settingsForStorage: what is STORED is normalized on the way in, on every write path, not
     // only when it is read back.
     const normalizedSettings = settingsForStorage(rest.settings);
@@ -2572,6 +2632,7 @@ export async function createAgent(
     // Rewrites `data` in place; both bags below read from it.
     await assertCredentialRefsResolve(db, data, {});
     await assertDecisionActionArgs(db, data.settings, undefined);
+    await assertReferenceKnowledgeBases(db, data.settings, undefined);
     const createShape = {
       enabled: data.enabled ?? true,
       // NOTE: New agents are born in test mode (operator opt-in before going live).

@@ -69,6 +69,7 @@ import {
   GUARDRAIL_FAILURE_MODES,
   GUARDRAIL_THRESHOLD_KEYS,
   isExternalCheckUrl,
+  MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
 } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
@@ -1149,6 +1150,10 @@ const guardrails = z
           .describe(
             "tools whose results are sources; runs only when one returned",
           ),
+        referenceKnowledgeBaseIds: z
+          .array(z.string().regex(/^[1-9][0-9]{0,17}$/))
+          .max(MAX_REFERENCE_KNOWLEDGE_BASES)
+          .optional(),
         action: oneOf(GROUNDING_ACTIONS)
           .optional()
           .describe("revise = one more generation told the claims"),

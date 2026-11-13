@@ -9,6 +9,7 @@ import {
   buildLangfuseHandler,
   type LangfuseConfig,
 } from "@/graph/observability";
+import { promptCacheApplies } from "@/graph/prompt-cache";
 import {
   extractTokenUsage,
   UsageCapture,
@@ -26,6 +27,7 @@ import type {
 import {
   earlierSourceCalls,
   FACTUAL_GROUNDING_KEY,
+  GROUNDING_REFERENCE_MAX,
   GROUNDING_SOURCES_MAX,
   type GroundingClaim,
   groundingConversation,
@@ -34,7 +36,15 @@ import {
   reviewGrounding,
   reviseNote,
 } from "./grounding";
-import type { GroundingReviewerModel, GuardrailsConfig } from "./settings";
+import {
+  type GroundingReference,
+  NO_GROUNDING_REFERENCE,
+} from "./grounding-reference";
+import {
+  type GroundingReviewerModel,
+  type GuardrailsConfig,
+  groundingHasSources,
+} from "./settings";
 
 // The factual-grounding check as the reactive turn and the playground run it. `review` is the graph's
 // `reviewReply` hook: it decides whether the turn is reviewed at all, runs the reviewer, writes the
@@ -47,6 +57,9 @@ export interface GroundingGateParams {
   // The reviewer as `resolveGroundingReviewer` resolved it, key included, or why it cannot run; null
   // when the loader did not resolve one (the check was off when the config was read).
   reviewer: GroundingReviewerModel | null;
+  // The documents of the reference bases, as the loader read them for this turn; null when none is
+  // configured.
+  reference?: GroundingReference | null;
   flow: FlowContext;
   // `observability.logToolValues`: claims and evidence are model text quoting the reply and the tool
   // results, so they reach the flow line only with it on; otherwise only their count does.
@@ -82,10 +95,12 @@ class ReviewTokens extends BaseCallbackHandler {
   name = "fazerai-grounding-tokens";
   override awaitHandlers = true;
   input = 0;
+  cached = 0;
   output = 0;
   override async handleLLMEnd(output: LLMResult): Promise<void> {
     const u = extractTokenUsage(output);
     this.input += u.promptTokens;
+    this.cached += u.cachedReadTokens;
     this.output += u.completionTokens;
   }
 }
@@ -99,7 +114,8 @@ export function buildGroundingGate(
 ): GroundingGate | null {
   const gr = p.cfg;
   const fg = gr.factualGrounding;
-  if (!gr.enabled || !fg.enabled || fg.sourceTools.length === 0) return null;
+  if (!gr.enabled || !fg.enabled || !groundingHasSources(fg)) return null;
+  const reference = p.reference ?? NO_GROUNDING_REFERENCE;
   const reviewer: GroundingReviewerModel = p.reviewer ?? {
     runnable: false,
     reason: "not_resolved",
@@ -159,7 +175,8 @@ export function buildGroundingGate(
       | "credential_not_found"
       | "model_unavailable"
       | "analysis_failed"
-      | "sources_too_large",
+      | "sources_too_large"
+      | "reference_too_large",
     detail: Record<string, unknown>,
     errorMessage?: string,
   ): Promise<null> => {
@@ -176,7 +193,10 @@ export function buildGroundingGate(
       },
       errorMessage,
     });
-    const cause = outcome === "sources_too_large" ? "analysis_failed" : outcome;
+    const cause =
+      outcome === "sources_too_large" || outcome === "reference_too_large"
+        ? "analysis_failed"
+        : outcome;
     if (holds) {
       decision = {
         kind: "handed-off",
@@ -222,11 +242,15 @@ export function buildGroundingGate(
     const sourceNames = [...new Set(sources.map((c) => c.name))];
     const resultChars = calls.reduce((n, c) => n + c.result.length, 0);
     const sized = {
-      sourced: groundingSourced(calls),
+      sourced: groundingSourced(calls, reference.docs),
       sources: sourceNames,
       resultChars,
       earlierSources: earlier.length,
+      referenceDocs: reference.count,
+      referenceChars: reference.chars,
     };
+    if (reference.chars > GROUNDING_REFERENCE_MAX)
+      return couldNotReview("reference_too_large", sized);
     if (resultChars > GROUNDING_SOURCES_MAX)
       return couldNotReview("sources_too_large", sized);
     const m = resolveModel();
@@ -243,10 +267,11 @@ export function buildGroundingGate(
     const tokens = new ReviewTokens();
     const verdict = await reviewGrounding(
       m,
-      { conversation, calls, reply },
+      { conversation, calls, reply, reference: reference.docs },
       verdictAskMode(reviewer.provider as ModelConfig["provider"]),
       callbacks(tokens),
       p.signal,
+      promptCacheApplies(reviewer.provider, reviewer.model),
     );
     // Ended during the review: nothing of this turn goes out, so nothing is decided or logged.
     if (p.signal?.aborted) return null;
@@ -254,6 +279,7 @@ export function buildGroundingGate(
       ...sized,
       latencyMs: Date.now() - started,
       inputTokens: tokens.input,
+      cachedInputTokens: tokens.cached,
       outputTokens: tokens.output,
     };
     if (verdict.error)

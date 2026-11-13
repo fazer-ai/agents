@@ -72,6 +72,10 @@ import {
 import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { disarmFullDetail } from "@/modules/flowlog/settings";
 import {
+  MAX_REFERENCE_KNOWLEDGE_BASES,
+  readReferenceKnowledgeBaseIds,
+} from "@/modules/guardrails/settings";
+import {
   getCatalogEntry,
   isKnownCatalogType,
 } from "@/modules/integrations/catalog";
@@ -599,6 +603,92 @@ function blankDocumentContent(data: AgentExport): AgentExport {
   return clone;
 }
 
+// The factual-grounding reference bases travel by NAME, like a RAG grant's bases: the stored id is
+// tenant-local, and at the destination it would name another base or none.
+function groundingBlock(settings: unknown): Record<string, unknown> | null {
+  const gr = (settings as Record<string, unknown> | null)?.guardrails;
+  const fg =
+    gr && typeof gr === "object"
+      ? (gr as Record<string, unknown>).factualGrounding
+      : undefined;
+  return fg && typeof fg === "object" ? (fg as Record<string, unknown>) : null;
+}
+
+function referenceBaseIdsIn(settings: unknown): string[] {
+  return readReferenceKnowledgeBaseIds(
+    groundingBlock(settings)?.referenceKnowledgeBaseIds,
+  );
+}
+
+function referenceBasesByName(
+  settings: Record<string, unknown>,
+  nameById: ReadonlyMap<bigint, string>,
+): Record<string, unknown> {
+  const fg = groundingBlock(settings);
+  if (!fg || !("referenceKnowledgeBaseIds" in fg)) return settings;
+  const { referenceKnowledgeBaseIds: _ids, ...rest } = fg;
+  const names = referenceBaseIdsIn(settings)
+    .map((id) => nameById.get(parseDbId(id) ?? 0n))
+    .filter((n): n is string => !!n);
+  const gr = settings.guardrails as Record<string, unknown>;
+  return {
+    ...settings,
+    guardrails: {
+      ...gr,
+      factualGrounding: { ...rest, referenceKnowledgeBases: names },
+    },
+  };
+}
+
+// In place, on the bag about to be stored: the names back to this tenant's ids, a name with no base
+// here dropped with a warning, and any id the bundle carries dropped, since it was another tenant's.
+async function referenceBasesById(
+  db: ScopedDb,
+  settings: unknown,
+  warnings: ImportWarning[],
+): Promise<void> {
+  const fg = groundingBlock(settings);
+  if (!fg) return;
+  const raw = fg.referenceKnowledgeBases;
+  delete fg.referenceKnowledgeBases;
+  delete fg.referenceKnowledgeBaseIds;
+  const all = Array.isArray(raw)
+    ? [...new Set(raw.filter((n): n is string => typeof n === "string"))]
+    : [];
+  // The write's limit, which this bag skips: it is stored past `dropUnusableImportedSettingsInPlace`.
+  const names = all.slice(0, MAX_REFERENCE_KNOWLEDGE_BASES);
+  if (all.length > names.length)
+    warnings.push({
+      code: "settingsValueDropped",
+      params: { field: "guardrails.factualGrounding.referenceKnowledgeBases" },
+    });
+  if (names.length === 0) return;
+  const rows = await db.knowledgeBase.findMany({
+    where: { name: { in: names } },
+    select: { id: true, name: true },
+  });
+  const ids: string[] = [];
+  for (const n of names) {
+    // A name two bases answer to is skipped, not bound to one of them: which policies the reviewer
+    // trusts is not a choice the import makes.
+    const matches = rows.filter((r) => r.name === n);
+    if (matches.length === 1) ids.push(String(matches[0]?.id));
+    else if (matches.length > 1)
+      warnings.push({
+        code: "groundingReferenceAmbiguous",
+        params: { name: n, n: matches.length },
+        target: { kind: "knowledge", name: n },
+      });
+    else
+      warnings.push({
+        code: "groundingReferenceNotFound",
+        params: { name: n },
+        target: { kind: "knowledge", name: n },
+      });
+  }
+  fg.referenceKnowledgeBaseIds = ids;
+}
+
 // ── export ──
 
 export async function exportAgent(
@@ -663,7 +753,14 @@ export async function exportAgent(
 
     // RAG grants reference KB ids → resolve to names (those that still exist). The full rows feed the
     // KB component metadata when components are included.
-    const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
+    const kbIds = [
+      ...new Set([
+        ...grants.flatMap((g) => g.knowledgeBaseIds),
+        ...referenceBaseIdsIn(agent.settings).flatMap(
+          (k) => parseDbId(k) ?? [],
+        ),
+      ]),
+    ];
     const kbRows =
       kbIds.length > 0
         ? await db.knowledgeBase.findMany({
@@ -1059,7 +1156,10 @@ export async function exportAgent(
       string,
       unknown
     >;
-    const settings = withoutCallsAgentId(exported);
+    const settings = referenceBasesByName(
+      withoutCallsAgentId(exported),
+      kbNameById,
+    );
 
     // Translate component credential refs id→name (deletes the ref when the id no longer resolves).
     const components: ExportedComponents | undefined = componentsRaw
@@ -1497,6 +1597,7 @@ export async function importAgent(
     // Without an ElevenLabs agent id, whatever the bundle carries: an exported one is stripped, and a
     // bundle written by hand must not point this agent at another's.
     keepCallsSystemFields(storable, undefined);
+    await referenceBasesById(db, storable, warnings);
     const created = await db.agent.create({
       data: {
         tenantId,

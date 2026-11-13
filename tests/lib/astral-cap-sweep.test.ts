@@ -440,12 +440,12 @@ const BARE_SLICES: Record<
   "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],
   "src/modules/agents/text-caps.ts": [3, "array"],
-  // Three, none bounding prose. `countNotStoredAsWritten` cuts the bundled entries a schedule cap lets
+  // Four, none bounding prose. `countNotStoredAsWritten` cuts the bundled entries a schedule cap lets
   // through (an array of JSON entries). `renamedToolName` trims the STEM of a tool name, already
   // `[a-z0-9_-]` from `normalizeToolName`, so the `_2` suffix fits the provider's 64. The third clamps
-  // an imported protected-label list, an array of titles. The label and description that loop clips
-  // go through `clipText`.
-  "src/modules/agents/transfer.ts": [3, "array"],
+  // an imported protected-label list, and the fourth an imported list of reference bases, both arrays
+  // of names. The label and description that loop clips go through `clipText`.
+  "src/modules/agents/transfer.ts": [4, "array"],
   // A local day cut from `toISOString()`: ASCII the code itself produces.
   "src/modules/analytics/days.ts": [1, "ascii"],
   // The date the reminder says it was sent on, cut from `toISOString()`: a fixed-width ASCII

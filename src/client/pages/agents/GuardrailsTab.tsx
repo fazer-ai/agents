@@ -47,11 +47,13 @@ import type {
 import {
   GROUNDING_ACTIONS,
   type GroundingAction,
+  MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
   readCompetitors,
 } from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
+import { ManagedKnowledgeBaseCards } from "./KnowledgeBaseCards";
 import {
   ModelOverrideFields,
   type ModelOverrideForm,
@@ -63,7 +65,7 @@ import {
 } from "./modelOverrideForm";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
-import type { GuardrailsRefusals } from "./types";
+import type { GuardrailsRefusals, ToolCatalog } from "./types";
 
 // Agent editor "Guardrails" tab: input/output moderation (agent.settings.guardrails). Own Save +
 // dirty tracking (its own SECTION_KEY). A dedicated LLM screens the customer message (input) and/or
@@ -86,6 +88,10 @@ interface GuardrailsTabProps {
   // carry, which outrank the typed fields; null when they carry none.
   guardrailsCredBaseUrl?: string | null;
   groundingCredBaseUrl?: string | null;
+  // The tenant's knowledge bases, offered as the reviewer's reference bases (undefined while they
+  // load), and how to reload them after one is created or edited from its card.
+  knowledgeBases?: ToolCatalog["knowledgeBases"];
+  onCatalogChange?: () => void | Promise<void>;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -188,6 +194,8 @@ export function GuardrailsTab({
   onDiscard,
   guardrailsCredBaseUrl = null,
   groundingCredBaseUrl = null,
+  knowledgeBases,
+  onCatalogChange = () => {},
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
 
@@ -283,6 +291,25 @@ export function GuardrailsTab({
     if (!name || sourcesFull) return;
     toggleSource(name, true);
     setExtraSource("");
+  };
+  // A picked base deleted since has no card to take it out with, so any pick drops it, and a line
+  // below the cards offers to drop it on its own. Asked only once the tenant's bases have loaded.
+  const knownBases = knowledgeBases
+    ? new Set(knowledgeBases.map((b) => b.id))
+    : null;
+  const liveReference = knownBases
+    ? fg.referenceKnowledgeBaseIds.filter((id) => knownBases.has(id))
+    : fg.referenceKnowledgeBaseIds;
+  const staleReference =
+    fg.referenceKnowledgeBaseIds.length - liveReference.length;
+  const referenceIds = new Set(liveReference);
+  const toggleReference = (id: string) => {
+    if (referenceIds.has(id))
+      setGrounding({
+        referenceKnowledgeBaseIds: liveReference.filter((k) => k !== id),
+      });
+    else if (liveReference.length < MAX_REFERENCE_KNOWLEDGE_BASES)
+      setGrounding({ referenceKnowledgeBaseIds: [...liveReference, id] });
   };
   const groundingActionLabel = (a: GroundingAction) =>
     a === "observe"
@@ -1057,7 +1084,7 @@ export function GuardrailsTab({
                       )}
                       description={t(
                         "editor.guardrails.groundingSourcesHint",
-                        "The tools whose results count as sources, such as a catalog or the knowledge search. With none chosen the check does not run.",
+                        "The tools whose results count as sources, such as a catalog or the knowledge search. With no source tool and no reference base, the check does not run.",
                       )}
                       group
                     >
@@ -1104,6 +1131,55 @@ export function GuardrailsTab({
                             {t("common.add", "Add")}
                           </Button>
                         </div>
+                      </div>
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.groundingReference",
+                        "Reference knowledge bases",
+                      )}
+                      description={t(
+                        "editor.guardrails.groundingReferenceHint",
+                        "The reviewer reads every indexed document of these bases on every reply, searched or not, so a house rule written there grounds the reply. They go whole on each review.",
+                      )}
+                      group
+                    >
+                      <div data-testid="gr-grounding-reference">
+                        {!knowledgeBases?.length ? (
+                          <p className="text-text-muted text-xs">
+                            {t(
+                              "editor.knowledge.noBases",
+                              "No knowledge bases yet. Create some in Components.",
+                            )}
+                          </p>
+                        ) : (
+                          <ManagedKnowledgeBaseCards
+                            bases={knowledgeBases}
+                            selected={referenceIds}
+                            onToggle={toggleReference}
+                            onChanged={onCatalogChange}
+                          />
+                        )}
+                        {staleReference > 0 && (
+                          <p className="text-warning mt-2 flex items-center gap-2 text-xs">
+                            {t(
+                              "editor.guardrails.groundingReferenceStale",
+                              "{{count}} picked bases no longer exist and are not read.",
+                              { count: staleReference },
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setGrounding({
+                                  referenceKnowledgeBaseIds: liveReference,
+                                })
+                              }
+                              className="text-accent hover:underline"
+                            >
+                              {t("common.remove", "Remove")}
+                            </button>
+                          </p>
+                        )}
                       </div>
                     </FormField>
                     <FormField

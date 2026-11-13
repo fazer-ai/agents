@@ -16,6 +16,7 @@ import {
   type DatedContextMessage,
   unclippedContext,
 } from "./context";
+import type { GroundingReferenceDoc } from "./grounding-reference";
 import { topLevelObjects, type VerdictMode } from "./verdict";
 
 // The factual-grounding output check (docs/factual-grounding.md): a reviewer model reads the turn's
@@ -67,6 +68,8 @@ export interface GroundingReviewInput {
   conversation: readonly DatedContextMessage[];
   calls: readonly GroundingToolCall[];
   reply: string;
+  // The documents of the reference bases, read on every review whether the agent searched them or not.
+  reference?: readonly GroundingReferenceDoc[];
 }
 
 // Per message of the conversation window. A customer's message carries what vision read from an image
@@ -76,6 +79,9 @@ export const GROUNDING_MESSAGE_MAX = 8000;
 // Above this many characters of tool output in one turn the review does not run (and says so):
 // cutting a result is exactly what makes a verdict about it meaningless.
 export const GROUNDING_SOURCES_MAX = 400_000;
+// Above this many characters of reference documents the review does not run either: the block is
+// sent whole on every review, so a base that outgrows it is a configuration to fix, not to cut.
+export const GROUNDING_REFERENCE_MAX = 200_000;
 const REVIEW_TIMEOUT_MS = 30_000;
 
 // The turn's tool calls in the order the model made them, each with its result, whole. The turn is
@@ -195,9 +201,10 @@ export function groundingConversation(
 const CONVERSATION_TAG = "conversation_context";
 const TOOLS_TAG = "tool_results";
 const REPLY_TAG = "reply";
-// Every spelling of any of the three fences, opening or closing, so text inside one cannot close it.
+const REFERENCE_TAG = "reference_sources";
+// Every spelling of any of the fences, opening or closing, so text inside one cannot close it.
 const FENCES =
-  /<\s*\/?\s*(conversation_context|tool_results|tool_call|reply)[^>]*>/gi;
+  /<\s*\/?\s*(conversation_context|tool_results|tool_call|reply|reference_sources|reference_document)[^>]*>/gi;
 const unfenced = (s: string) => s.replace(FENCES, "");
 
 export const GROUNDING_SYSTEM_PROMPT = [
@@ -237,10 +244,34 @@ export const GROUNDING_NO_SOURCE_PROMPT = [
   "In scope here means facts about a specific event, product, plan or offer, the kind a source would hold. Still not violations, exactly as above: general guidance about how the service or platform works (where something is found in the customer's account, how to sign in, how to open, download or transfer a purchase), greetings, offers of further help, asking the customer for information, saying the information is not available or must be confirmed elsewhere, and facts the customer stated or showed in the conversation, when the reply attributes them to the customer.",
 ].join("\n");
 
-// Whether any call of the review is a source: what decides the system message, and what the flow
-// line reports as `sourced`.
-export const groundingSourced = (calls: readonly GroundingToolCall[]) =>
-  calls.some((c) => c.source);
+// Added to the system message when the review carries reference documents. They are the operator's
+// standing rules, so a reply that repeats one is grounded even when the turn consulted nothing.
+export const GROUNDING_REFERENCE_PROMPT = [
+  'The user message opens with <reference_sources>: the operator\'s reference documents (house rules, policies, procedures), sent on every review whether or not the assistant consulted them. They are SOURCES like the calls marked source="yes": a reply that states what they state is supported, one that states something different is a contradiction, and one that says they do not cover what they do cover is a false absence.',
+].join("\n");
+
+// Whether the review has any source, a source call or a reference document: what decides the system
+// message, and what the flow line reports as `sourced`.
+export const groundingSourced = (
+  calls: readonly GroundingToolCall[],
+  reference: readonly GroundingReferenceDoc[] = [],
+) => reference.length > 0 || calls.some((c) => c.source);
+
+const attr = (s: string) => unfenced(s).replace(/"/g, "");
+
+// The reference block, alone: it leads the reviewer's message and carries nothing of the turn, so it
+// is the same bytes on every review while the bases do not change.
+export function groundingReferenceBlock(
+  reference: readonly GroundingReferenceDoc[],
+): string {
+  const docs = reference
+    .map(
+      (d) =>
+        `<reference_document base="${attr(d.base)}" title="${attr(d.title)}">\n${unfenced(d.content)}\n</reference_document>`,
+    )
+    .join("\n");
+  return `<${REFERENCE_TAG}>\n${docs}\n</${REFERENCE_TAG}>`;
+}
 
 const roleLine = (c: DatedContextMessage) =>
   `${c.role === "tool" ? `tool ${c.tool ?? ""}`.trim() : c.role}: ${unfenced(c.text)}`;
@@ -350,6 +381,45 @@ export function readGroundingVerdict(
   );
 }
 
+// The reviewer's two messages. With reference documents, the user message is two text blocks, the
+// reference first: on a provider that caches only what is marked, that block carries its own mark, so
+// the system message and the reference are read from cache on every review that follows. Elsewhere
+// the same bytes lead the message as one string, which is what an automatic prefix cache matches.
+export function groundingMessages(
+  input: GroundingReviewInput,
+  cacheReference = false,
+): BaseMessage[] {
+  const reference = input.reference ?? [];
+  const system = [
+    GROUNDING_SYSTEM_PROMPT,
+    ...(reference.length > 0 ? [GROUNDING_REFERENCE_PROMPT] : []),
+    ...(groundingSourced(input.calls, reference)
+      ? []
+      : [GROUNDING_NO_SOURCE_PROMPT]),
+  ].join("\n\n");
+  const turn = groundingUserMessage(input);
+  if (reference.length === 0)
+    return [new SystemMessage(system), new HumanMessage(turn)];
+  const block = groundingReferenceBlock(reference);
+  return [
+    new SystemMessage(system),
+    new HumanMessage(
+      cacheReference
+        ? {
+            content: [
+              {
+                type: "text",
+                text: block,
+                cache_control: { type: "ephemeral" },
+              },
+              { type: "text", text: turn },
+            ],
+          }
+        : `${block}\n\n${turn}`,
+    ),
+  ];
+}
+
 // One review. Fail-open: an error, a timeout or an unreadable answer returns a non-violating verdict
 // carrying `error`, which the caller reports.
 export async function reviewGrounding(
@@ -359,15 +429,10 @@ export async function reviewGrounding(
   callbacks?: BaseCallbackHandler[],
   // The turn's own end (a scheduler job's deadline): it ends the wait for a permit and the call.
   turnSignal?: AbortSignal,
+  // Whether the provider caches only what the request marks (`promptCacheApplies`).
+  cacheReference = false,
 ): Promise<GroundingVerdict> {
-  const messages: BaseMessage[] = [
-    new SystemMessage(
-      groundingSourced(input.calls)
-        ? GROUNDING_SYSTEM_PROMPT
-        : `${GROUNDING_SYSTEM_PROMPT}\n\n${GROUNDING_NO_SOURCE_PROMPT}`,
-    ),
-    new HumanMessage(groundingUserMessage(input)),
-  ];
+  const messages = groundingMessages(input, cacheReference);
   try {
     const { parsed, raw } = await runModelCall(
       (signal) =>

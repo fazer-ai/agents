@@ -11,6 +11,7 @@ import { z } from "zod";
 import { parseModelConfig } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import { markAnthropicBody } from "@/graph/prompt-cache";
+import { groundingMessages } from "@/modules/guardrails/grounding";
 
 // What actually leaves for the provider when an agent's model config asks for prompt caching. The
 // provider is a local server that records each request body, so every assertion reads the bytes the
@@ -394,5 +395,62 @@ describe("the policy is refused where it would do nothing or break the request",
         promptCache: "auto",
       }),
     ).toThrow(/promptCache/);
+  });
+});
+
+// The factual-grounding reviewer with reference documents: the reference leads the user message as
+// its own block and keeps its own mark, so the system message and the reference are both a cached
+// prefix, on Anthropic and on a Claude model behind OpenRouter alike.
+describe("the grounding reviewer's reference block", () => {
+  const reviewInput = {
+    conversation: [],
+    calls: [],
+    reply: "Até 11 dias.",
+    reference: [
+      {
+        base: "Regras",
+        title: "Reembolso",
+        content: "Reembolso em até 11 dias. ".repeat(80),
+      },
+    ],
+  };
+  const referenceMarked = (msgs: Array<Record<string, unknown>>) => {
+    const user = msgs.find((m) => m.role === "user");
+    const blocks = (user?.content ?? []) as Array<Record<string, unknown>>;
+    return [
+      blocks.length,
+      String(blocks[0]?.text).startsWith("<reference_sources>"),
+      blocks[0]?.cache_control,
+      blocks[1]?.cache_control,
+    ];
+  };
+
+  test("anthropic", async () => {
+    const body = await send(anthropic, groundingMessages(reviewInput, true));
+    expect(referenceMarked(body.messages as never)).toEqual([
+      2,
+      true,
+      { type: "ephemeral" },
+      { type: "ephemeral" },
+    ]);
+    expect(marks(body).length).toBeLessThanOrEqual(4);
+  });
+
+  test("a Claude model behind openrouter", async () => {
+    const body = await send(
+      {
+        provider: "openrouter",
+        model: "anthropic/claude-haiku-5.5",
+        baseURL: `http://127.0.0.1:${server.port}`,
+      },
+      groundingMessages(reviewInput, true),
+    );
+    expect(referenceMarked(body.messages as never)).toEqual([
+      2,
+      true,
+      { type: "ephemeral" },
+      { type: "ephemeral" },
+    ]);
+    expect(marks(body).length).toBeLessThanOrEqual(4);
   });
 });

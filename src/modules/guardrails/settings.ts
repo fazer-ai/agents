@@ -1,6 +1,7 @@
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { resolveModelOverride } from "@/graph/model-override";
+import { parseDbId } from "@/lib/db-id";
 import { clampToRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
 import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
@@ -167,6 +168,9 @@ export const GROUNDING_ACTIONS: readonly GroundingAction[] = [
 export interface GuardrailGroundingConfig {
   enabled: boolean;
   sourceTools: string[];
+  // Knowledge bases of the tenant whose READY documents the reviewer reads whole on every reviewed
+  // turn, as sources the agent did not have to consult (decimal ids, as the editor holds them).
+  referenceKnowledgeBaseIds: string[];
   action: GroundingAction;
   contextMessages: number;
   provider: ModelConfig["provider"] | null;
@@ -176,6 +180,7 @@ export interface GuardrailGroundingConfig {
 }
 
 export const MAX_SOURCE_TOOLS = 50;
+export const MAX_REFERENCE_KNOWLEDGE_BASES = 20;
 const MAX_TOOL_NAME_LEN = 128;
 
 // An endpoint the operator runs that judges a reply before it is delivered (./external.ts). Active
@@ -247,6 +252,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
   factualGrounding: {
     enabled: false,
     sourceTools: [],
+    referenceKnowledgeBaseIds: [],
     action: "observe",
     contextMessages: 6,
     provider: null,
@@ -411,6 +417,25 @@ export function readSourceTools(v: unknown): string[] {
   return out;
 }
 
+// Decimal ids, deduplicated, bounded in count; anything else is dropped.
+export function readReferenceKnowledgeBaseIds(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const item of v) {
+    const s = typeof item === "number" ? String(item) : str(item);
+    const id = parseDbId(s);
+    if (id !== null && id > 0n && !out.includes(String(id)))
+      out.push(String(id));
+    if (out.length >= MAX_REFERENCE_KNOWLEDGE_BASES) break;
+  }
+  return out;
+}
+
+// Whether the check has anything to judge a reply against: a source tool, or a reference base.
+export function groundingHasSources(fg: GuardrailGroundingConfig): boolean {
+  return fg.sourceTools.length > 0 || fg.referenceKnowledgeBaseIds.length > 0;
+}
+
 function readGrounding(v: unknown): GuardrailGroundingConfig {
   const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
   const d = GUARDRAILS_DEFAULTS.factualGrounding;
@@ -422,6 +447,9 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
   return {
     enabled: bool(b.enabled, d.enabled),
     sourceTools: readSourceTools(b.sourceTools),
+    referenceKnowledgeBaseIds: readReferenceKnowledgeBaseIds(
+      b.referenceKnowledgeBaseIds,
+    ),
     action: GROUNDING_ACTIONS.includes(b.action as GroundingAction)
       ? (b.action as GroundingAction)
       : d.action,

@@ -1193,6 +1193,7 @@ async function runTurnBody(
   const grounding = buildGroundingGate({
     cfg: loaded.guardrails,
     reviewer: loaded.groundingReviewer,
+    reference: loaded.groundingReference,
     flow,
     logValues: loaded.logToolValues,
     announce: async (r) => {

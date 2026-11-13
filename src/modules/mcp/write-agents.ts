@@ -17,6 +17,7 @@ import {
   assertAgentUpdatable,
   assertCredentialRefsUsable,
   assertDecisionActionArgsUsable,
+  assertReferenceKnowledgeBasesUsable,
   assertSchedulesExist,
   assertVoiceAgentMode,
   cloneAgent,
@@ -165,6 +166,12 @@ export async function agentCreate(
       // SDK.
       await assertCredentialRefsUsable(ctx, input, base);
       await assertDecisionActionArgsUsable(
+        ctx,
+        input.settings,
+        undefined,
+        base,
+      );
+      await assertReferenceKnowledgeBasesUsable(
         ctx,
         input.settings,
         undefined,

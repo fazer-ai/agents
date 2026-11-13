@@ -254,5 +254,16 @@ describe("writing it", () => {
     ).toThrow(InvalidSettingsValueError);
     // A stored cap the write does not change is not judged again: lowering the limit later saves.
     expect(() => assertSettingsReviseToolCalls(bag(9), bag(9))).not.toThrow();
+    // The console writes the default 3 back on every Guardrails save: under a turn limit of 2 with no
+    // stored cap, that save goes through, and a cap of 4 does not.
+    const low = (n: number) => ({
+      limits: { maxToolCalls: 2 },
+      guardrails: { factualGrounding: { reviseMaxToolCalls: n } },
+    });
+    const stored = { limits: { maxToolCalls: 2 } };
+    expect(() => assertSettingsReviseToolCalls(low(3), stored)).not.toThrow();
+    expect(() => assertSettingsReviseToolCalls(low(4), stored)).toThrow(
+      InvalidSettingsValueError,
+    );
   });
 });

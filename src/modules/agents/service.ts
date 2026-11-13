@@ -83,6 +83,7 @@ import {
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
+import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -1894,7 +1895,7 @@ function rawSignatureField(settings: unknown, field: string): unknown {
 // The factual-grounding rewrite spends calls from the turn's own budget, so its cap cannot exceed the
 // agent's `limits.maxToolCalls` (the schema holds both to 1..50, `GUARDRAIL_RANGES`). Asked of the
 // MERGED bag, since the limit lives in another block, and only when this write introduces or changes
-// the cap: lowering the turn limit later does not refuse a save of the Behavior tab, because the
+// the cap (from what the agent runs with): lowering the turn limit later does not refuse a save of the Behavior tab, because the
 // rewrite's room is also clamped at runtime to what the turn has left (src/graph/graph.ts). A value
 // of the wrong type is left to the schema, which answers it with its own sentence.
 export function assertSettingsReviseToolCalls(
@@ -1903,7 +1904,11 @@ export function assertSettingsReviseToolCalls(
 ): void {
   const next = reviseMaxToolCallsAt(settings);
   if (typeof next !== "number" || !Number.isInteger(next)) return;
-  if (next === reviseMaxToolCallsAt(stored)) return;
+  // Against the value the agent RUNS with, the reader's default included: the console's form writes
+  // the default 3 back on every Guardrails save, and an agent whose turn limit is 1 or 2 must still
+  // save a change that has nothing to do with the rewrite.
+  if (next === readGuardrailsConfig(stored).factualGrounding.reviseMaxToolCalls)
+    return;
   const limit = readLimitsConfig(settings).maxToolCalls;
   if (next <= limit) return;
   const max = String(limit);

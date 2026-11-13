@@ -1164,9 +1164,9 @@ const guardrails = z
           .describe(
             "revise: the rewrite may call the read-only sources (default true)",
           ),
-        reviseMaxToolCalls: ranged(
-          GUARDRAIL_RANGES.reviseMaxToolCalls,
-        ).optional(),
+        reviseMaxToolCalls: ranged(GUARDRAIL_RANGES.reviseMaxToolCalls)
+          .optional()
+          .describe("revise: at most limits.maxToolCalls (default 3)"),
         provider: oneOf(MODEL_PROVIDERS)
           .nullable()
           .optional()

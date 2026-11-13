@@ -96,6 +96,7 @@ import {
 } from "@/modules/agents/config-health";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { worstFirst } from "@/modules/agents/config-health-severity";
+import { readLimitsConfig } from "@/modules/agents/limits";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
@@ -5587,6 +5588,10 @@ function AgentEditor() {
                 )}
                 knowledgeBases={catalog?.knowledgeBases}
                 onCatalogChange={refreshCatalog}
+                maxToolCalls={
+                  readLimitsConfig({ limits: limitsToStored(limits) })
+                    .maxToolCalls
+                }
                 refusals={{
                   credential: refusal.at(
                     "settings.guardrails.credentialRef",

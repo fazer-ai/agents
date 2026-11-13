@@ -117,7 +117,9 @@ export const GUARDRAIL_RANGES = {
   // Earlier messages the input check reads beside the customer's; 0 judges the message alone.
   contextMessages: intRange(0, 20),
   // Calls the factual-grounding rewrite may make to the check's sources; the second review reads them.
-  reviseMaxToolCalls: intRange(1, 5),
+  // Held by the schema to the turn limit's own range; the write boundary also refuses a value above the
+  // agent's `limits.maxToolCalls` (assertSettingsReviseToolCalls), which the schema cannot see.
+  reviseMaxToolCalls: intRange(1, LIMITS_RANGES.maxToolCalls.max),
 } as const;
 
 // A knowledge hit's cosine distance; 0 would drop every hit, and nothing is farther than 2.

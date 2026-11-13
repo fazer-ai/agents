@@ -25,6 +25,7 @@ import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { inRange } from "@/lib/number-range";
+import { DEFAULT_MAX_TOOL_CALLS } from "@/modules/agents/limits";
 import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
@@ -92,6 +93,9 @@ interface GuardrailsTabProps {
   // load), and how to reload them after one is created or edited from its card.
   knowledgeBases?: ToolCatalog["knowledgeBases"];
   onCatalogChange?: () => void | Promise<void>;
+  // The agent's tool calls per turn as the form holds them (Behavior tab, `limits.maxToolCalls`):
+  // the ceiling of the factual-grounding rewrite's cap, which spends calls from the same budget.
+  maxToolCalls?: number;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -196,8 +200,15 @@ export function GuardrailsTab({
   groundingCredBaseUrl = null,
   knowledgeBases,
   onCatalogChange = () => {},
+  maxToolCalls = DEFAULT_MAX_TOOL_CALLS,
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
+  // The rewrite's cap stops at the agent's turn limit, as the write boundary does
+  // (assertSettingsReviseToolCalls); the schema's own range is the outer fence.
+  const reviseCallsRange = {
+    ...GUARDRAIL_RANGES.reviseMaxToolCalls,
+    max: Math.min(GUARDRAIL_RANGES.reviseMaxToolCalls.max, maxToolCalls),
+  };
 
   const sections = [
     {
@@ -1249,11 +1260,12 @@ export function GuardrailsTab({
                             )}
                             description={t(
                               "editor.guardrails.groundingReviseCallsHint",
-                              "From 1 to 5. Each call adds latency to a flagged reply.",
+                              "From 1 to {{max}}, the agent's tool calls per turn. Each call adds latency to a flagged reply.",
+                              { max: reviseCallsRange.max },
                             )}
                           >
                             <NumberInput
-                              range={GUARDRAIL_RANGES.reviseMaxToolCalls}
+                              range={reviseCallsRange}
                               value={
                                 groundingReviseCallsDraft ??
                                 String(fg.reviseMaxToolCalls)
@@ -1263,10 +1275,7 @@ export function GuardrailsTab({
                                 setGroundingReviseCallsDraft(raw);
                                 if (
                                   raw.trim() !== "" &&
-                                  inRange(
-                                    Number(raw),
-                                    GUARDRAIL_RANGES.reviseMaxToolCalls,
-                                  )
+                                  inRange(Number(raw), reviseCallsRange)
                                 )
                                   setGrounding({
                                     reviseMaxToolCalls: Number(raw),

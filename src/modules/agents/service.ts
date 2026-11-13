@@ -42,6 +42,7 @@ import {
 } from "@/modules/agents/audit-projection";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
+import { readLimitsConfig } from "@/modules/agents/limits";
 import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
 import {
   BEHAVIOR_PATCH_SHAPE,
@@ -1890,6 +1891,41 @@ function rawSignatureField(settings: unknown, field: string): unknown {
   return (sg as Record<string, unknown>)[field];
 }
 
+// The factual-grounding rewrite spends calls from the turn's own budget, so its cap cannot exceed the
+// agent's `limits.maxToolCalls` (the schema holds both to 1..50, `GUARDRAIL_RANGES`). Asked of the
+// MERGED bag, since the limit lives in another block, and only when this write introduces or changes
+// the cap: lowering the turn limit later does not refuse a save of the Behavior tab, because the
+// rewrite's room is also clamped at runtime to what the turn has left (src/graph/graph.ts). A value
+// of the wrong type is left to the schema, which answers it with its own sentence.
+export function assertSettingsReviseToolCalls(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const next = reviseMaxToolCallsAt(settings);
+  if (typeof next !== "number" || !Number.isInteger(next)) return;
+  if (next === reviseMaxToolCallsAt(stored)) return;
+  const limit = readLimitsConfig(settings).maxToolCalls;
+  if (next <= limit) return;
+  const max = String(limit);
+  throw new InvalidSettingsValueError(
+    "guardrails.factualGrounding.reviseMaxToolCalls",
+    {
+      message: `a number of at most ${max}`,
+      key: "errors.settingsExpectedAtMost",
+      params: { max },
+    },
+    String(next),
+    422,
+  );
+}
+
+function reviseMaxToolCallsAt(settings: unknown): unknown {
+  const fg = plainObject(
+    plainObject(plainObject(settings)?.guardrails)?.factualGrounding,
+  );
+  return fg?.reviseMaxToolCalls;
+}
+
 export function assertSettingsDebugWindow(
   settings: unknown,
   stored: unknown,
@@ -2297,6 +2333,7 @@ export async function updateAgentAndGrants(
     assertSettingsContactAuthRule(rest.settings, before?.settings);
     assertSettingsContactFields(rest.settings, before?.settings);
     assertSettingsServiceWindow(rest.settings, before?.settings);
+    assertSettingsReviseToolCalls(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     keepCallsSystemFields(rest.settings, before?.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
@@ -2563,6 +2600,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsContactAuthRule(input.settings, undefined);
   assertSettingsContactFields(input.settings, undefined);
   assertSettingsServiceWindow(input.settings, undefined);
+  assertSettingsReviseToolCalls(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);

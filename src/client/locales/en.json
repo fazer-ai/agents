@@ -2387,7 +2387,7 @@
       "groundingReferenceStale_one": "{{count}} picked base no longer exists and is not read.",
       "groundingReferenceStale_other": "{{count}} picked bases no longer exist and are not read.",
       "groundingReviseCalls": "Calls the rewrite may make",
-      "groundingReviseCallsHint": "From 1 to 5. Each call adds latency to a flagged reply.",
+      "groundingReviseCallsHint": "From 1 to {{max}}, the agent's tool calls per turn. Each call adds latency to a flagged reply.",
       "groundingReviseTools": "Let the rewrite consult the source tools",
       "groundingReviseToolsHelp": "The rewrite may call the source tools above that only read, never a transfer, a label, a case or another tool with an effect. The new reply is reviewed once more against what they returned, and if it is still flagged the Output template is sent.\n\nOff, the rewrite runs without tools and can only drop the claims or say the information is not available.",
       "groundingSameModel": "Same as the guardrails",

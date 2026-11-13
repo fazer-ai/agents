@@ -727,6 +727,70 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(audits).toBe(0);
   });
 
+  // The bug it catches: the factual-grounding rewrite's cap saved above the agent's own turn limit,
+  // which the schema cannot see because the limit lives in another block. Both halves are asked:
+  // the MCP preview on the merged bag (the limit stored, or arriving in the same patch) and REST.
+  test("the rewrite's cap stops at limits.maxToolCalls: under 8, MCP and REST accept 8 and refuse 9", async () => {
+    await suDb.agent.update({
+      where: { id: agentA },
+      data: { settings: { limits: { maxToolCalls: 8 } } },
+    });
+    const since = new Date();
+    try {
+      const p = principal({ tenantId: tenantA });
+      const preview = async (args: Record<string, unknown>) => {
+        const r = await agentSettingsSet(
+          p,
+          { agent_id: String(agentA), ...args } as never,
+          { base: appDb },
+        );
+        return r.ok ? "ok" : r.error;
+      };
+      const cap = (n: number) => ({
+        guardrails: { factualGrounding: { reviseMaxToolCalls: n } },
+      });
+      expect(await preview(cap(8))).toBe("ok");
+      expect(await preview(cap(9))).toContain(
+        "guardrails.factualGrounding.reviseMaxToolCalls",
+      );
+      // The limit raised in the same patch is the one the cap is judged against.
+      expect(await preview({ ...cap(9), limits: { maxToolCalls: 9 } })).toBe(
+        "ok",
+      );
+      expect(
+        await preview({ ...cap(8), limits: { maxToolCalls: 7 } }),
+      ).not.toBe("ok");
+      const ctx = { tenantId: tenantA, userId: null, role: "TENANT_ADMIN" };
+      const write = (n: number) =>
+        agentsService
+          .updateAgent(
+            ctx as never,
+            agentA,
+            {
+              settings: {
+                limits: { maxToolCalls: 8 },
+                guardrails: { factualGrounding: { reviseMaxToolCalls: n } },
+              },
+            },
+            appDb,
+          )
+          .then(
+            () => "ok",
+            (e: { statusCode?: number }) => e.statusCode,
+          );
+      expect([await write(9), await write(8)]).toEqual([422, "ok"]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentA },
+        data: { settings: {} },
+      });
+      // A sibling counts this tenant's audits: the one the REST write recorded goes with it.
+      await suDb.auditLog.deleteMany({
+        where: { tenantId: tenantA, createdAt: { gte: since } },
+      });
+    }
+  });
+
   // The voice provider's agent id is the server's (the call setup writes it): a write's own value is
   // ignored by the apply, so the preview must not promise it either.
   test("agent_settings_set previews the stored voice provider id, as the apply keeps it", async () => {

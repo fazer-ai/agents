@@ -2475,7 +2475,7 @@
       "groundingReferenceStale_many": "{{count}} bases escolhidas não existem mais e não são lidas.",
       "groundingReferenceStale_other": "{{count}} bases escolhidas não existem mais e não são lidas.",
       "groundingReviseCalls": "Chamadas que a reescrita pode fazer",
-      "groundingReviseCallsHint": "De 1 a 5. Cada chamada soma latência a uma resposta apontada.",
+      "groundingReviseCallsHint": "De 1 a {{max}}, o limite de chamadas por turno do agente. Cada chamada soma latência a uma resposta apontada.",
       "groundingReviseTools": "Deixar a reescrita consultar as ferramentas de fonte",
       "groundingReviseToolsHelp": "A reescrita pode chamar as ferramentas de fonte acima que só leem, nunca uma transferência, uma etiqueta, um caso ou outra ferramenta com efeito. A nova resposta é revisada mais uma vez com o que elas devolveram, e se ainda vier apontada vai a mensagem template de Saída.\n\nDesligado, a reescrita roda sem ferramentas e só consegue tirar as afirmações ou dizer que não tem a informação.",
       "groundingSameModel": "Igual ao dos guardrails",

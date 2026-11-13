@@ -1405,11 +1405,10 @@ export function buildAgentGraph({
         ) => {
           const refused = await refuseCalledOffCalls(state);
           if (refused) return refused;
-          const shown = withServerCallsOnly(state, clientNames);
-          if (!shown) return { messages: [] };
-          // During the factual-grounding rewrite only the calls its round admitted run.
+          // During the factual-grounding rewrite only the calls its round admitted run, and the rest
+          // are refused here, client calls included: one left in the batch would suspend the turn.
           const aside = revision
-            ? setAsideRevisionCalls(shown, revision.admitted)
+            ? setAsideRevisionCalls(state, revision.admitted)
             : null;
           if (revision && aside) {
             revision.info.toolCalls += aside.ran.length;
@@ -1417,8 +1416,12 @@ export function buildAgentGraph({
             revision.info.refused.push(...aside.refused);
           }
           if (aside && !aside.view) return { messages: aside.answers };
-          const serverView = aside?.view ?? shown;
           const asideAnswers = aside?.answers ?? [];
+          const serverView = withServerCallsOnly(
+            aside?.view ?? state,
+            clientNames,
+          );
+          if (!serverView) return { messages: asideAnswers };
           // A fence that refused a call says so on the call's config, not in its result
           // (fence-report.ts); heard here, and passed on to a reporter already there.
           let fenced = false;

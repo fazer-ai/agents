@@ -104,6 +104,7 @@ async function run(
     sourceTools?: string[];
     maxToolCalls?: number;
     turnMax?: number;
+    clientTools?: string[];
     second?: (turn: BaseMessage[], reply: string, info: RevisionInfo) => void;
     revised?: string[];
     plan?: boolean;
@@ -118,6 +119,7 @@ async function run(
     checkpointer: new MemorySaver(),
     tools: [consultarPreco, abrirChamado, setLabels, enviarEmail],
     maxToolCalls: opts.turnMax,
+    ...(opts.clientTools ? { clientToolNames: new Set(opts.clientTools) } : {}),
     reviewReply: async () => (reviews++ === 0 ? NOTE : null),
     revisionPlan:
       opts.plan === false
@@ -342,6 +344,23 @@ describe("a rewrite that may consult the sources", () => {
     });
     expect(ran).toEqual(["consultar_preco", "consultar_preco"]);
     expect(infos[0]).toMatchObject({ toolCalls: 1 });
+  });
+
+  // The bug it catches: a client tool the rewrite names anyway, separated from the batch before the
+  // admission, so the turn suspends on a browser call the rewrite was never offered.
+  test("a client tool the rewrite names is refused, and the turn does not suspend", async () => {
+    const model = new BoundRecordingModel([
+      { text: "O ingresso custa 120 créditos." },
+      { text: "", calls: [{ name: "abrir_chamado" }] },
+      { text: "O ingresso custa 187 créditos." },
+    ]);
+    const revised: string[] = [];
+    const { messages } = await run(model, {
+      clientTools: ["abrir_chamado"],
+      revised,
+    });
+    expect(revised).toEqual(["O ingresso custa 187 créditos."]);
+    expect(text(messages.at(-1))).toBe("O ingresso custa 187 créditos.");
   });
 });
 

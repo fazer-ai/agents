@@ -160,10 +160,14 @@ export function guardrailGroundingLabel(
     stage !== "guardrail" ||
     !detail ||
     detail.check !== "factual_grounding" ||
-    (detail.verdict !== "clean" && detail.verdict !== "violated")
+    (detail.verdict !== "clean" &&
+      detail.verdict !== "violated" &&
+      detail.verdict !== "empty")
   )
     return null;
   const n = (v: unknown) => (typeof v === "number" ? v : 0);
+  if (detail.outcome === "revision") return groundingRevisionLabel(detail, t);
+  if (detail.verdict === "empty") return null;
   // A review with no source result in the window (`sourced: false`) judged the reply against nothing,
   // so its headline says so instead of naming sources it never had. A line written before the field
   // existed came from a sourced review.
@@ -214,6 +218,60 @@ export function guardrailGroundingLabel(
       output: n(detail.outputTokens),
       ms: n(detail.latencyMs),
     }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+// The rewrite's line (`outcome: "revision"`): the source calls it made and refused, its own tokens,
+// and what the second review decided.
+function groundingRevisionLabel(
+  detail: Record<string, unknown>,
+  t: TFunction,
+): string {
+  const n = (v: unknown) => (typeof v === "number" ? v : 0);
+  const refused = Array.isArray(detail.refused) ? detail.refused.length : 0;
+  const head =
+    detail.verdict === "clean"
+      ? t(
+          "logs.guardrailGrounding.revisionClean",
+          "Factual grounding, rewrite: the second review found it matches the sources, and it was sent",
+        )
+      : detail.verdict === "violated"
+        ? t("logs.guardrailGrounding.revisionViolated", {
+            defaultValue:
+              "Factual grounding, rewrite: still {{count}} claim(s) the sources do not support, so the Output template was sent",
+            count: n(detail.claimCount),
+          })
+        : t(
+            "logs.guardrailGrounding.revisionEmpty",
+            "Factual grounding, rewrite: it came back empty, so the Output template was sent",
+          );
+  return [
+    head,
+    t("logs.guardrailGrounding.revisionCalls", {
+      defaultValue: "{{count}} source call(s)",
+      count: n(detail.toolCalls),
+    }),
+    refused > 0
+      ? t("logs.guardrailGrounding.revisionRefused", {
+          defaultValue: "{{count}} call(s) refused",
+          count: refused,
+        })
+      : null,
+    t("logs.guardrailGrounding.revisionCost", {
+      defaultValue: "rewrite {{input}} in / {{output}} out tokens",
+      input: n(detail.revisionInputTokens),
+      output: n(detail.revisionOutputTokens),
+    }),
+    detail.verdict === "empty"
+      ? null
+      : t("logs.guardrailGrounding.cost", {
+          defaultValue: "{{input}} in / {{output}} out tokens, {{ms}} ms",
+          input: n(detail.inputTokens),
+          output: n(detail.outputTokens),
+          ms: n(detail.latencyMs),
+        }),
   ]
     .filter(Boolean)
     .join(" · ");

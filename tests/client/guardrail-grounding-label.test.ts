@@ -92,4 +92,39 @@ describe("a factual-grounding review on the Logs page", () => {
       ),
     ).toBeNull();
   });
+
+  // The bug it catches: the rewrite's line read as a first review, so a template sent after a rewrite
+  // still flagged looked like a reply that matched, and the calls it made were nowhere on the row.
+  test("the rewrite's line says what it called, what it cost and what the second review decided", () => {
+    const rewrite = {
+      ...reviewed,
+      outcome: "revision",
+      toolCalls: 1,
+      tools: ["consultar_preco"],
+      refused: ["abrir_chamado"],
+      revisionInputTokens: 900,
+      revisionOutputTokens: 40,
+    };
+    expect([
+      guardrailGroundingLabel(
+        "guardrail",
+        { ...rewrite, verdict: "clean", claimCount: 0 },
+        t,
+      ),
+      guardrailGroundingLabel(
+        "guardrail",
+        { ...rewrite, verdict: "violated", claimCount: 2, action: "template" },
+        t,
+      ),
+      guardrailGroundingLabel(
+        "guardrail",
+        { ...rewrite, verdict: "empty", claimCount: 0, refused: [] },
+        t,
+      ),
+    ]).toEqual([
+      "Factual grounding, rewrite: the second review found it matches the sources, and it was sent · 1 source call(s) · 1 call(s) refused · rewrite 900 in / 40 out tokens · 8100 in / 240 out tokens, 3100 ms",
+      "Factual grounding, rewrite: still 2 claim(s) the sources do not support, so the Output template was sent · 1 source call(s) · 1 call(s) refused · rewrite 900 in / 40 out tokens · 8100 in / 240 out tokens, 3100 ms",
+      "Factual grounding, rewrite: it came back empty, so the Output template was sent · 1 source call(s) · rewrite 900 in / 40 out tokens",
+    ]);
+  });
 });

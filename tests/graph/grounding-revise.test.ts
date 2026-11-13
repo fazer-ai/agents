@@ -110,8 +110,9 @@ describe("reviewReply", () => {
       reviews++;
       return NOTE;
     });
+    // A call the tool-less rewrite writes anyway does not run: the rewrite ends on its text.
     expect(reviews).toBe(1);
-    expect(again.seen).toHaveLength(3);
+    expect(again.seen).toHaveLength(2);
   });
 
   test("a reply written beside the call and then recovered is the one reviewed", async () => {

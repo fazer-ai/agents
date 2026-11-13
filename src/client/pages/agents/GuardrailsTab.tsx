@@ -25,6 +25,7 @@ import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { inRange } from "@/lib/number-range";
+import { DEFAULT_MAX_TOOL_CALLS } from "@/modules/agents/limits";
 import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
@@ -92,6 +93,9 @@ interface GuardrailsTabProps {
   // load), and how to reload them after one is created or edited from its card.
   knowledgeBases?: ToolCatalog["knowledgeBases"];
   onCatalogChange?: () => void | Promise<void>;
+  // The agent's tool calls per turn as the form holds them (Behavior tab, `limits.maxToolCalls`):
+  // the ceiling of the factual-grounding rewrite's cap, which spends calls from the same budget.
+  maxToolCalls?: number;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -196,8 +200,15 @@ export function GuardrailsTab({
   groundingCredBaseUrl = null,
   knowledgeBases,
   onCatalogChange = () => {},
+  maxToolCalls = DEFAULT_MAX_TOOL_CALLS,
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
+  // The rewrite's cap stops at the agent's turn limit, as the write boundary does
+  // (assertSettingsReviseToolCalls); the schema's own range is the outer fence.
+  const reviseCallsRange = {
+    ...GUARDRAIL_RANGES.reviseMaxToolCalls,
+    max: Math.min(GUARDRAIL_RANGES.reviseMaxToolCalls.max, maxToolCalls),
+  };
 
   const sections = [
     {
@@ -275,6 +286,10 @@ export function GuardrailsTab({
   const [groundingContextDraft, setGroundingContextDraft] = useState<
     string | null
   >(null);
+  // The rewrite's cap as typed, kept the same way as the window above.
+  const [groundingReviseCallsDraft, setGroundingReviseCallsDraft] = useState<
+    string | null
+  >(null);
   // At the schema's limit a new source is refused here, so the save never fails on it; taking one out
   // always works.
   const sourcesFull = fg.sourceTools.length >= MAX_SOURCE_TOOLS;
@@ -320,7 +335,7 @@ export function GuardrailsTab({
       : a === "revise"
         ? t(
             "editor.guardrails.groundingActionRevise",
-            "Ask the agent to rewrite the reply without those claims",
+            "Ask the agent to correct the reply, consulting the sources if needed",
           )
         : a === "template"
           ? t(
@@ -1191,7 +1206,7 @@ export function GuardrailsTab({
                         fg.action === "revise"
                           ? t(
                               "editor.guardrails.groundingActionReviseHint",
-                              "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn.",
+                              "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn, plus any source calls.",
                             )
                           : fg.action === "observe"
                             ? t(
@@ -1220,6 +1235,59 @@ export function GuardrailsTab({
                         ))}
                       </Select>
                     </FormField>
+                    {fg.action === "revise" && (
+                      <>
+                        <SwitchField
+                          checked={fg.reviseWithTools}
+                          onCheckedChange={(v) =>
+                            setGrounding({ reviseWithTools: v })
+                          }
+                          label={t(
+                            "editor.guardrails.groundingReviseTools",
+                            "Let the rewrite consult the source tools",
+                          )}
+                          help={t(
+                            "editor.guardrails.groundingReviseToolsHelp",
+                            "The rewrite may call the source tools above that only read, never a transfer, a label, a case or another tool with an effect. The new reply is reviewed once more against what they returned, and if it is still flagged the Output template is sent.\n\nOff, the rewrite runs without tools and can only drop the claims or say the information is not available.",
+                          )}
+                          id="gr-grounding-revise-tools"
+                        />
+                        {fg.reviseWithTools && (
+                          <FormField
+                            label={t(
+                              "editor.guardrails.groundingReviseCalls",
+                              "Calls the rewrite may make",
+                            )}
+                            description={t(
+                              "editor.guardrails.groundingReviseCallsHint",
+                              "From 1 to {{max}}, the agent's tool calls per turn. Each call adds latency to a flagged reply.",
+                              { max: reviseCallsRange.max },
+                            )}
+                          >
+                            <NumberInput
+                              range={reviseCallsRange}
+                              value={
+                                groundingReviseCallsDraft ??
+                                String(fg.reviseMaxToolCalls)
+                              }
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setGroundingReviseCallsDraft(raw);
+                                if (
+                                  raw.trim() !== "" &&
+                                  inRange(Number(raw), reviseCallsRange)
+                                )
+                                  setGrounding({
+                                    reviseMaxToolCalls: Number(raw),
+                                  });
+                              }}
+                              onBlur={() => setGroundingReviseCallsDraft(null)}
+                              data-testid="gr-grounding-revise-calls"
+                            />
+                          </FormField>
+                        )}
+                      </>
+                    )}
                     {(fg.action === "template" || fg.action === "handoff") && (
                       <FormField
                         label={

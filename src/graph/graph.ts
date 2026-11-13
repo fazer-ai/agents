@@ -53,6 +53,14 @@ import {
   droppedCallCount,
   droppedCallsStamp,
 } from "./markers";
+import {
+  admitRevisionCalls,
+  type RevisionInfo,
+  revisionTools,
+  revisionToolsNote,
+  setAsideRevisionCalls,
+  textOnly,
+} from "./revision-calls";
 import { customerFacingReply, SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 import {
   type CallReport,
@@ -198,6 +206,10 @@ export interface BuildAgentGraphParams {
   // would end: the history plus the final answer. A note back means "revise": the model is asked once
   // more with it, and only that second answer returns to the thread. Asked at most once per invocation.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  // Asked when a note comes back: the rewrite may then call the plan's sources that are reads, up to
+  // its cap, and what it writes is reviewed once by `review`. Absent or null, the rewrite runs without
+  // tools and is not reviewed again.
+  revisionPlan?: () => RevisionPlan | null;
   // Fired with the rewrite's text after a revise ("" when there is none), so the caller can stop a
   // refused draft that would otherwise be recovered and delivered.
   onReplyRevised?: (text: string) => void;
@@ -208,6 +220,18 @@ export interface BuildAgentGraphParams {
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
+}
+
+export type { RevisionInfo } from "./revision-calls";
+
+export interface RevisionPlan {
+  sourceTools: readonly string[];
+  maxToolCalls: number;
+  review: (
+    turn: BaseMessage[],
+    reply: string,
+    info: RevisionInfo,
+  ) => Promise<void>;
 }
 
 // What the retry of an unexplained silence got back: text for the customer, the declared silence,
@@ -725,6 +749,7 @@ export function buildAgentGraph({
   retrySilence,
   onSilenceRetry,
   reviewReply,
+  revisionPlan,
   onReplyRevised,
   recoversReply,
   clientToolNames,
@@ -738,6 +763,8 @@ export function buildAgentGraph({
       ? (fallback.model.bindTools?.(tools) ?? fallback.model)
       : fallback?.model;
   const max = maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
+  // A toolset other than the turn's, asked by the factual-grounding rewrite.
+  type Bound = { primary: typeof llm; fallback?: typeof llm };
 
   // Every model that can receive this turn's history, not just the one that starts it: the
   // fallback takes over mid-invocation and is handed the same array, so a turn kept for the primary
@@ -773,6 +800,16 @@ export function buildAgentGraph({
   let silenceRetried = false;
   // Same closure argument: the factual-grounding revision runs at most once per invocation.
   let replyRevised = false;
+  // The rewrite in progress, across the rounds its calls take: set when a note comes back, cleared on
+  // the answer that ends it. `admitted` is the call ids the tool node may run from the latest round.
+  let revision: {
+    note: string;
+    plan: RevisionPlan | null;
+    tools: StructuredToolInterface[];
+    attempts: number;
+    admitted: Set<string>;
+    info: RevisionInfo;
+  } | null = null;
   const reportToolLimit = (info: {
     maxToolCalls: number;
     toolCalls: number;
@@ -853,6 +890,13 @@ export function buildAgentGraph({
           replyRevised = true;
           onReplyRevised?.("");
         }
+      }
+      // A rewrite that stalls here ends with nothing written, which sends the Output template.
+      if (revision) {
+        const r = revision;
+        revision = null;
+        await r.plan?.review(history, "", r.info);
+        onReplyRevised?.("");
       }
       return {
         messages: [
@@ -946,7 +990,7 @@ export function buildAgentGraph({
     const messages = [new SystemMessage(prompt), ...shown, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
-    const secondFor = (msgs: BaseMessage[], noTools = false) =>
+    const secondFor = (msgs: BaseMessage[], bound?: Bound) =>
       fallback && fallbackLlm
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
@@ -960,8 +1004,8 @@ export function buildAgentGraph({
                 ? AbortSignal.any([deadline, jobSignal])
                 : deadline;
               return (
-                noTools
-                  ? fallback.model
+                bound
+                  ? (bound.fallback ?? fallback.model)
                   : hardLimit
                     ? (cappedFallback ?? fallback.model)
                     : fallbackLlm
@@ -980,13 +1024,13 @@ export function buildAgentGraph({
         : null;
 
     // One question to the model, the fallback's rules included. A function because the silence
-    // retry below asks it a second time, with different messages, under the same rules. `noTools`
-    // asks the raw model, for an answer that must be text: the factual-grounding rewrite.
+    // retry below asks it a second time, with different messages, under the same rules. `bound`
+    // replaces the turn's toolset: the raw model, or the sources, for the factual-grounding rewrite.
     const ask = async (
       msgs: BaseMessage[],
-      noTools = false,
+      bound?: Bound,
     ): Promise<BaseMessage> => {
-      const second = secondFor(msgs, noTools);
+      const second = secondFor(msgs, bound);
       // Already demoted this invocation: the fallback IS the model now, so it gets the
       // empty-completion retry under its own name, and a failure of its own is reported as that
       // rather than as a second failover the operator never caused.
@@ -1016,7 +1060,7 @@ export function buildAgentGraph({
         }
       }
 
-      const primaryLlm = noTools ? model : hardLimit ? capped : llm;
+      const primaryLlm = bound ? bound.primary : hardLimit ? capped : llm;
       // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of
       // joining it. The job's deadline is joined here with the call's own, which `runModelCall` hands
       // in, so a deadline that ends the job ends this call too.
@@ -1079,6 +1123,58 @@ export function buildAgentGraph({
       );
     };
 
+    // One round of the factual-grounding rewrite. The note travels like the silence retry's
+    // instruction, on every round, so it is in front of the model when it writes the answer. Calls go
+    // to the tool node only while the cap has room; the first `room` of a batch are offered, and of
+    // those only the sources run (`setAsideRevisionCalls`). A call written with no round left is
+    // dropped, and the text beside it is the rewrite.
+    const askRevision = async (
+      r: NonNullable<typeof revision>,
+    ): Promise<BaseMessage> => {
+      // Bounded by the turn's own budget too: the rewrite's calls are the turn's calls.
+      const room = r.plan
+        ? Math.min(r.plan.maxToolCalls - r.attempts, max - toolCalls)
+        : 0;
+      const canCall = room > 0 && !hardLimit && r.tools.length > 0;
+      const bound: Bound = canCall
+        ? {
+            primary: model.bindTools?.(r.tools) ?? model,
+            fallback: fallback
+              ? (fallback.model.bindTools?.(r.tools) ?? fallback.model)
+              : undefined,
+          }
+        : { primary: model, fallback: fallback?.model };
+      let res = await ask(
+        lateSystemAccepted
+          ? [...messages, new SystemMessage(r.note)]
+          : [new SystemMessage(`${prompt}\n\n${r.note}`), ...shown, ...wrapUp],
+        bound,
+      );
+      const usage = (res as AIMessage).usage_metadata;
+      r.info.inputTokens += usage?.input_tokens ?? 0;
+      r.info.outputTokens += usage?.output_tokens ?? 0;
+      const calls = (res as AIMessage).tool_calls ?? [];
+      if (calls.length > 0 && canCall) {
+        r.attempts += Math.min(calls.length, room);
+        r.admitted = admitRevisionCalls(
+          calls,
+          new Set(r.tools.map((t) => t.name)),
+          room,
+        );
+        return res;
+      }
+      if (calls.length > 0) {
+        r.info.refused.push(...calls.map((c) => c.name));
+        res = textOnly(res);
+      }
+      const reply = customerFacingReply(contentToText(res.content)).text;
+      revision = null;
+      await r.plan?.review([...history, res], reply, r.info);
+      onReplyRevised?.(reply);
+      return res;
+    };
+    if (revision) return { messages: [await askRevision(revision)] };
+
     let response = await ask(messages);
     // NOTE: the unexplained silence, asked once more. Only a final answer that says nothing: no text,
     // no calls, in a turn that declared no silence (`calledSkipThisTurn` covers the round right after
@@ -1134,18 +1230,35 @@ export function buildAgentGraph({
         replyRevised = true;
         if (!contentToText(response.content).trim())
           draftRemoved = recoveredDraftRemoved([...history, response]);
-        // NOTE: asked without tools, so the rewrite is the turn's last answer and the note is still
-        // in front of the model when it writes it. An empty rewrite is reported, never replaced by
-        // the draft the reviewer refused.
-        response = await ask(
-          lateSystemAccepted
-            ? [...messages, new SystemMessage(note)]
-            : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
-          true,
-        );
-        onReplyRevised?.(
-          customerFacingReply(contentToText(response.content)).text,
-        );
+        const plan = revisionPlan?.() ?? null;
+        const sources = plan
+          ? revisionTools(
+              tools ?? [],
+              plan.sourceTools,
+              clientToolNames ?? new Set(),
+            )
+          : [];
+        revision = {
+          note:
+            plan && sources.length > 0
+              ? `${note}\n\n${revisionToolsNote(
+                  sources.map((t) => t.name),
+                  plan.maxToolCalls,
+                )}`
+              : note,
+          plan,
+          tools: sources,
+          attempts: 0,
+          admitted: new Set(),
+          info: {
+            toolCalls: 0,
+            tools: [],
+            refused: [],
+            inputTokens: 0,
+            outputTokens: 0,
+          },
+        };
+        response = await askRevision(revision);
       }
     }
     return { messages: [...narration, ...draftRemoved, silenced(response)] };
@@ -1292,8 +1405,23 @@ export function buildAgentGraph({
         ) => {
           const refused = await refuseCalledOffCalls(state);
           if (refused) return refused;
-          const serverView = withServerCallsOnly(state, clientNames);
-          if (!serverView) return { messages: [] };
+          // During the factual-grounding rewrite only the calls its round admitted run, and the rest
+          // are refused here, client calls included: one left in the batch would suspend the turn.
+          const aside = revision
+            ? setAsideRevisionCalls(state, revision.admitted)
+            : null;
+          if (revision && aside) {
+            revision.info.toolCalls += aside.ran.length;
+            revision.info.tools.push(...aside.ran);
+            revision.info.refused.push(...aside.refused);
+          }
+          if (aside && !aside.view) return { messages: aside.answers };
+          const asideAnswers = aside?.answers ?? [];
+          const serverView = withServerCallsOnly(
+            aside?.view ?? state,
+            clientNames,
+          );
+          if (!serverView) return { messages: asideAnswers };
           // A fence that refused a call says so on the call's config, not in its result
           // (fence-report.ts); heard here, and passed on to a reporter already there.
           let fenced = false;
@@ -1323,13 +1451,21 @@ export function buildAgentGraph({
               // reads the turn's text off the LAST message, which must not be a tool result.
               return { messages: [...ran.messages, new AIMessage("")] };
             }
-            return ran;
+            return asideAnswers.length
+              ? { messages: [...asideAnswers, ...ran.messages] }
+              : ran;
           }
           // A handoff set aside is a call that did not run, so the turn goes on.
           onContradictedHandoff?.({ calls: contradicted.answers.length });
           // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
           const ran = await toolNode!.invoke(contradicted.view, heard);
-          return { messages: [...contradicted.answers, ...ran.messages] };
+          return {
+            messages: [
+              ...asideAnswers,
+              ...contradicted.answers,
+              ...ran.messages,
+            ],
+          };
         },
       )
       // NOTE: built on every graph so the edges type-check, and unreachable without client tools:

@@ -12,7 +12,11 @@ import {
   buildDetachedToolset,
   loadDetachedConfig,
 } from "@/graph/detached-turn";
-import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
+import {
+  lastAssistantText,
+  type RevisionPlan,
+  recursionLimitFor,
+} from "@/graph/graph";
 import { playgroundNudgeMarker, sentAtStamp } from "@/graph/markers";
 import type { FallbackFailedInfo, ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
@@ -51,6 +55,7 @@ import {
   type McpLoadDeps,
   type McpServerMeta,
 } from "@/graph/tools/mcp";
+import { isReadOnlyTool, markReadOnly } from "@/graph/tools/reads";
 import type { ReplyChoice } from "@/graph/tools/reply-as-text";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import {
@@ -355,15 +360,17 @@ export function applyToolMocks(
   // other source, so no operator tool is ever bound under it.
   for (const n of protocol) names.delete(n);
   if (names.size === 0) return tools;
-  return tools.map((tl) =>
-    names.has(tl.name)
-      ? tool(async () => mocks?.[tl.name] ?? "", {
-          name: tl.name,
-          description: tl.description,
-          schema: tl.schema,
-        })
-      : tl,
-  );
+  return tools.map((tl) => {
+    if (!names.has(tl.name)) return tl;
+    const mocked = tool(async () => mocks?.[tl.name] ?? "", {
+      name: tl.name,
+      description: tl.description,
+      schema: tl.schema,
+    });
+    // A mocked source keeps whether the factual-grounding rewrite may call it, as it would in
+    // production; the mock never makes a tool that writes read-only.
+    return isReadOnlyTool(tl) ? markReadOnly(mocked) : mocked;
+  });
 }
 
 // The playground's agent config: a detached turn's, which can also leave the chat model unbuilt (a
@@ -446,6 +453,7 @@ async function buildPlaygroundGraph(params: {
   replyChoice?: ReplyChoice;
   // The factual-grounding review, built by the caller from the config it resolved.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  revisionPlan?: () => RevisionPlan | null;
   onReplyRevised?: (text: string) => void;
 }) {
   const { ctx, agentId, threadId, base } = params;
@@ -514,6 +522,7 @@ async function buildPlaygroundGraph(params: {
     onModelFallbackUnavailable: params.onModelFallbackUnavailable,
     onHistoryTrim: params.onHistoryTrim,
     reviewReply: params.reviewReply,
+    revisionPlan: params.revisionPlan,
     onReplyRevised: params.onReplyRevised,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
@@ -977,6 +986,7 @@ async function runPlaygroundTurnOnce(
       flow,
       loaded: loadedConfig,
       reviewReply: grounding?.review,
+      revisionPlan: grounding?.revisionPlan,
       onReplyRevised: grounding?.revised,
       spokenNotice: () =>
         spokenNoticeFor(

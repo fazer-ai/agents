@@ -10,7 +10,7 @@ import {
   mcpServerSlug,
   namespacedToolName,
 } from "@/graph/tools/mcp";
-import { isReadTool } from "@/graph/tools/reads";
+import { isReadOnlyTool, isReadTool } from "@/graph/tools/reads";
 import { normalizeToolName } from "@/graph/tools/toolName";
 
 const PUBLIC = "8.8.8.8"; // public IP literal: no DNS lookup, not SSRF-blocked
@@ -326,6 +326,8 @@ describe("loadMcpToolsForAgent", () => {
     );
     expect(tools.map(isReadTool)).toEqual([true]);
     expect(isReadTool(original)).toBe(false);
+    // Nothing says a server's tool only reads, so it is never read-only.
+    expect(tools.map(isReadOnlyTool)).toEqual([false]);
   });
 
   test("invokes onDiscoverError for each failing connection, still loading the rest", async () => {

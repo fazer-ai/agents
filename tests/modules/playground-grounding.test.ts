@@ -50,17 +50,26 @@ const REVISED = "O resultado é 2.";
 let tenantId = 0n;
 let agentObserve = 0n;
 let agentRevise = 0n;
+let agentReviseTools = 0n;
 let agentTemplate = 0n;
 
 // The agent calls the calculator, then answers; asked again (the revision) it answers the second
 // line. The reviewer flags the first answer and sees whatever it is sent.
-function models(rewrite = REVISED) {
+function models(rewrite = REVISED, clean = new Set<number>()) {
   const reviewed: string[] = [];
   let answers = 0;
   const make = ((args: { model?: string }) => {
     if (args?.model === REVIEW_MODEL)
       return guardrailModel(async (msgs) => {
         reviewed.push(contentToText((msgs.at(-1)?.content ?? "") as never));
+        if (clean.has(reviewed.length))
+          return {
+            content: JSON.stringify({
+              violated: false,
+              claims: [],
+              rationale: "",
+            }),
+          };
         return {
           content: JSON.stringify({
             violated: true,
@@ -109,7 +118,11 @@ describe.skipIf(!dbUp)("factual grounding in the playground", () => {
         })
       ).id
     }`;
-    const mk = async (name: string, action: string) => {
+    const mk = async (
+      name: string,
+      action: string,
+      extra: Record<string, unknown> = {},
+    ) => {
       const id = (
         await suDb.agent.create({
           data: {
@@ -134,6 +147,7 @@ describe.skipIf(!dbUp)("factual grounding in the playground", () => {
                   enabled: true,
                   sourceTools: ["calculator"],
                   action,
+                  ...extra,
                 },
               },
             } as never,
@@ -152,7 +166,8 @@ describe.skipIf(!dbUp)("factual grounding in the playground", () => {
       return id;
     };
     agentObserve = await mk("Observe", "observe");
-    agentRevise = await mk("Revise", "revise");
+    agentRevise = await mk("Revise", "revise", { reviseWithTools: false });
+    agentReviseTools = await mk("ReviseTools", "revise");
     agentTemplate = await mk("Template", "template");
   });
 
@@ -214,6 +229,20 @@ describe.skipIf(!dbUp)("factual grounding in the playground", () => {
     const row = r.trace.find((e) => e.type === "guardrail");
     expect(row).toMatchObject({ outcome: "revised", action: "revise" });
     expect(m.reviewed).toHaveLength(1);
+  });
+
+  test("revise with the sources: the rewrite is reviewed again, and a clean one is what the operator reads", async () => {
+    const m = models(REVISED, new Set([2]));
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentReviseTools,
+      message: "quanto é 1+1?",
+      base: appDb,
+      deps: { makeModel: m.make, checkpointer: new MemorySaver() },
+    });
+    expect(r.reply).toBe(REVISED);
+    expect(m.reviewed).toHaveLength(2);
+    expect(m.reviewed[1]).toContain(REVISED);
   });
 
   test("revise: a rewrite that is only the silence token shows the Output template, as the inbox sends", async () => {

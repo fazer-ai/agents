@@ -47,6 +47,7 @@ import {
   assertSettingsProtectedLabels,
   assertSettingsRemovedFields,
   assertSettingsRetiredLabelKeys,
+  assertSettingsReviseToolCalls,
   assertSettingsTextSizes,
   assertSettingsToolPreconditions,
   getAgent,
@@ -739,6 +740,9 @@ export async function agentSettingsSet(
         );
       }
     }
+    // The rewrite's cap against the agent's turn limit, which may come from the stored bag or this
+    // same patch: only the merged bag holds both.
+    assertSettingsReviseToolCalls(nextBag, current.settings);
     // PROJECTED, like the read — the same question asked in a third place. A client is expected to
     // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the
     // write refuses hands back a document that the apply rejects.

@@ -1158,6 +1158,15 @@ const guardrails = z
           .optional()
           .describe("revise = one more generation told the claims"),
         contextMessages: ranged(GUARDRAIL_RANGES.contextMessages).optional(),
+        reviseWithTools: z
+          .boolean()
+          .optional()
+          .describe(
+            "revise: the rewrite may call the read-only sources (default true)",
+          ),
+        reviseMaxToolCalls: ranged(GUARDRAIL_RANGES.reviseMaxToolCalls)
+          .optional()
+          .describe("revise: at most limits.maxToolCalls (default 3)"),
         provider: oneOf(MODEL_PROVIDERS)
           .nullable()
           .optional()

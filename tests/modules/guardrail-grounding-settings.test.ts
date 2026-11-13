@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { assertSettingsClosedValues } from "@/modules/agents/service";
+import {
+  assertSettingsClosedValues,
+  assertSettingsReviseToolCalls,
+  InvalidSettingsValueError,
+} from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import {
   GUARDRAILS_DEFAULTS,
@@ -33,6 +37,22 @@ describe("reading it", () => {
     expect(fg.sourceTools).toEqual(["catalogo", "search_knowledge"]);
     expect(fg.action).toBe("observe");
     expect(fg.contextMessages).toBe(20);
+  });
+
+  test("the rewrite consults the sources by default, three calls at most, and a stored cap is clamped", () => {
+    const d = readGuardrailsConfig({}).factualGrounding;
+    expect([d.reviseWithTools, d.reviseMaxToolCalls]).toEqual([true, 3]);
+    const fg = readGuardrailsConfig({
+      guardrails: {
+        factualGrounding: { reviseWithTools: false, reviseMaxToolCalls: 400 },
+      },
+    }).factualGrounding;
+    expect([fg.reviseWithTools, fg.reviseMaxToolCalls]).toEqual([false, 50]);
+    expect(
+      readGuardrailsConfig({
+        guardrails: { factualGrounding: { reviseWithTools: "sim" } },
+      }).factualGrounding.reviseWithTools,
+    ).toBe(true);
   });
 });
 
@@ -183,5 +203,67 @@ describe("writing it", () => {
         {},
       ),
     ).not.toThrow();
+  });
+
+  test("the rewrite's cap is refused outside the turn limit's range, and the switch only as a boolean", () => {
+    for (const reviseMaxToolCalls of [0, 51, 1000, -1, 2.5])
+      expect(
+        schema.safeParse({ factualGrounding: { reviseMaxToolCalls } }).success,
+      ).toBe(false);
+    for (const reviseMaxToolCalls of [1, 3, 6, 50])
+      expect(
+        schema.safeParse({ factualGrounding: { reviseMaxToolCalls } }).success,
+      ).toBe(true);
+    expect(
+      schema.safeParse({ factualGrounding: { reviseWithTools: "sim" } })
+        .success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ factualGrounding: { reviseWithTools: false } })
+        .success,
+    ).toBe(true);
+  });
+
+  // The bug it catches: a cap above the agent's own turn limit saved, which the schema alone cannot
+  // see because the limit lives in another block; or a fixed ceiling refusing a cap the limit allows.
+  test("the rewrite's cap stops at the agent's limits.maxToolCalls: under 8, 8 is accepted and 9 refused", () => {
+    const bag = (reviseMaxToolCalls: number) => ({
+      limits: { maxToolCalls: 8 },
+      guardrails: {
+        factualGrounding: { action: "revise", reviseMaxToolCalls },
+      },
+    });
+    expect(() => assertSettingsReviseToolCalls(bag(8), {})).not.toThrow();
+    let refusal: unknown;
+    try {
+      assertSettingsReviseToolCalls(bag(9), {});
+    } catch (e) {
+      refusal = e;
+    }
+    expect(refusal).toBeInstanceOf(InvalidSettingsValueError);
+    expect((refusal as InvalidSettingsValueError).statusCode).toBe(422);
+    expect((refusal as Error).message).toContain(
+      "guardrails.factualGrounding.reviseMaxToolCalls expects a number of at most 8",
+    );
+    // Without a limits block the agent runs on the default turn limit, 10.
+    expect(() =>
+      assertSettingsReviseToolCalls(
+        { guardrails: { factualGrounding: { reviseMaxToolCalls: 11 } } },
+        {},
+      ),
+    ).toThrow(InvalidSettingsValueError);
+    // A stored cap the write does not change is not judged again: lowering the limit later saves.
+    expect(() => assertSettingsReviseToolCalls(bag(9), bag(9))).not.toThrow();
+    // The console writes the default 3 back on every Guardrails save: under a turn limit of 2 with no
+    // stored cap, that save goes through, and a cap of 4 does not.
+    const low = (n: number) => ({
+      limits: { maxToolCalls: 2 },
+      guardrails: { factualGrounding: { reviseMaxToolCalls: n } },
+    });
+    const stored = { limits: { maxToolCalls: 2 } };
+    expect(() => assertSettingsReviseToolCalls(low(3), stored)).not.toThrow();
+    expect(() => assertSettingsReviseToolCalls(low(4), stored)).toThrow(
+      InvalidSettingsValueError,
+    );
   });
 });

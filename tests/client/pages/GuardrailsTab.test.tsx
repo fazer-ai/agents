@@ -582,7 +582,13 @@ describe("GuardrailsTab factual grounding", () => {
   });
 
   let saved: GuardrailsConfig | null = null;
-  function Stateful({ initial }: { initial: GuardrailsConfig }) {
+  function Stateful({
+    initial,
+    maxToolCalls,
+  }: {
+    initial: GuardrailsConfig;
+    maxToolCalls?: number;
+  }) {
     const [g, setG] = useState(initial);
     saved = g;
     return (
@@ -595,6 +601,7 @@ describe("GuardrailsTab factual grounding", () => {
         saving={false}
         onSave={() => {}}
         onDiscard={() => {}}
+        maxToolCalls={maxToolCalls}
       />
     );
   }
@@ -803,6 +810,47 @@ describe("GuardrailsTab factual grounding", () => {
       target: { value: "Não tenho essa informação." },
     });
     expect(saved?.output.templateMessage).toBe("Não tenho essa informação.");
+  });
+
+  // The bug it catches: the rewrite's switch and cap drawn for an action that never rewrites, or a
+  // cap above the agent's turn limit reaching the form and the save (the limit, not a fixed 5, is the
+  // ceiling: 8 is accepted under a limit of 8).
+  test("revise shows the rewrite's switch and cap; the cap stops at the agent's turn limit", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      action: "template",
+    };
+    render(<Stateful initial={c} maxToolCalls={8} />);
+    const toolsSwitch = () =>
+      screen.queryByRole("switch", {
+        name: /Deixar a reescrita consultar|Let the rewrite consult/,
+      });
+    const cap = () =>
+      document.querySelector<HTMLInputElement>(
+        '[data-testid="gr-grounding-revise-calls"]',
+      );
+    expect([toolsSwitch() === null, cap() === null]).toEqual([true, true]);
+    fireEvent.change(
+      document.querySelector<HTMLSelectElement>(
+        '[data-testid="gr-grounding-action"]',
+      ) as HTMLSelectElement,
+      { target: { value: "revise" } },
+    );
+    expect(toolsSwitch()?.getAttribute("aria-checked")).toBe("true");
+    fireEvent.change(cap() as HTMLInputElement, { target: { value: "8" } });
+    fireEvent.change(cap() as HTMLInputElement, { target: { value: "9" } });
+    expect(saved?.factualGrounding.reviseMaxToolCalls).toBe(8);
+    expect(screen.getByText(/De 1 a 8,|From 1 to 8,/)).toBeTruthy();
+    fireEvent.click(toolsSwitch() as HTMLElement);
+    expect([saved?.factualGrounding.reviseWithTools, cap() === null]).toEqual([
+      false,
+      true,
+    ]);
   });
 
   test("off, the section shows only its switch", () => {

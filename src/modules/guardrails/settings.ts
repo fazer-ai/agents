@@ -173,6 +173,10 @@ export interface GuardrailGroundingConfig {
   referenceKnowledgeBaseIds: string[];
   action: GroundingAction;
   contextMessages: number;
+  // `revise` only: the rewrite may call the sources that are reads, up to the cap, and what it writes
+  // is reviewed once more. Off, the rewrite runs without tools and is not reviewed again.
+  reviseWithTools: boolean;
+  reviseMaxToolCalls: number;
   provider: ModelConfig["provider"] | null;
   model: string;
   credentialRef: string | null;
@@ -255,6 +259,8 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     referenceKnowledgeBaseIds: [],
     action: "observe",
     contextMessages: 6,
+    reviseWithTools: true,
+    reviseMaxToolCalls: 3,
     provider: null,
     model: "",
     credentialRef: null,
@@ -457,6 +463,12 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
       b.contextMessages,
       GUARDRAIL_RANGES.contextMessages,
       d.contextMessages,
+    ),
+    reviseWithTools: bool(b.reviseWithTools, d.reviseWithTools),
+    reviseMaxToolCalls: clampToRange(
+      b.reviseMaxToolCalls,
+      GUARDRAIL_RANGES.reviseMaxToolCalls,
+      d.reviseMaxToolCalls,
     ),
     // As stored: `resolveGroundingReviewer` decides what they mean, a model or a key without a
     // provider included (refused there, as every other model override refuses it).

@@ -177,6 +177,7 @@ import {
 import {
   buildAgentGraph,
   type FallbackModel,
+  type RevisionPlan,
   type SilenceRetryInfo,
 } from "./graph";
 import { DEFAULT_MODEL_CONFIG } from "./model-config";
@@ -2507,6 +2508,7 @@ export interface GraphBuildDeps {
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
   // See BuildAgentGraphParams.reviewReply. The reactive turn and the playground pass it.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  revisionPlan?: () => RevisionPlan | null;
   onReplyRevised?: (text: string) => void;
   recoversReply?: () => boolean;
 }
@@ -2659,6 +2661,7 @@ export async function buildModelAndGraph(
     retrySilence: deps.retrySilence,
     onSilenceRetry: deps.onSilenceRetry,
     reviewReply: deps.reviewReply,
+    revisionPlan: deps.revisionPlan,
     onReplyRevised: deps.onReplyRevised,
     recoversReply: deps.recoversReply,
     clientToolNames: deps.clientToolNames,

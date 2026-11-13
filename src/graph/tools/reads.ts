@@ -26,3 +26,22 @@ export function isReadTool(t: { name: string }): boolean {
     UTILITY_NAMES.has(t.name)
   );
 }
+
+// A narrower question than `isReadTool`: whether calling the tool can change anything outside the
+// turn. An MCP or integration tool is a read for an observation only because nothing says what it
+// does (it may send an e-mail or create a charge), so it is not read-only. Read-only is an HTTP GET,
+// an effect-free tool or a utility native; the factual-grounding rewrite may call only these.
+export const READ_ONLY_TOOL = Symbol.for("fazerai.tool.readOnly");
+
+export function markReadOnly<T extends object>(t: T): T {
+  (t as unknown as Record<symbol, boolean>)[READ_ONLY_TOOL] = true;
+  return t;
+}
+
+export function isReadOnlyTool(t: { name: string }): boolean {
+  return (
+    (t as unknown as Record<symbol, unknown>)[READ_ONLY_TOOL] === true ||
+    isEffectFreeTool(t) ||
+    UTILITY_NAMES.has(t.name)
+  );
+}

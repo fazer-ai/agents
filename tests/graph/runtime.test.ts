@@ -71,7 +71,10 @@ import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
-import { GROUNDING_NO_SOURCE_PROMPT } from "@/modules/guardrails/grounding";
+import {
+  GROUNDING_NO_SOURCE_PROMPT,
+  REVISE_NOTE_MARK,
+} from "@/modules/guardrails/grounding";
 import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -10106,7 +10109,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           },
         } as unknown as BaseChatModel;
       };
-      const grounded = (action: string) =>
+      const grounded = (action: string, extra: Record<string, unknown> = {}) =>
         setGuardrails({
           enabled: true,
           provider: "openai",
@@ -10122,6 +10125,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             enabled: true,
             sourceTools: ["calculator"],
             action,
+            ...extra,
           },
         });
       const turn = async (convId: number, rewrite = REVISED) => {
@@ -10162,7 +10166,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
 
       test("revise delivers the agent's second answer and posts no note", async () => {
-        await grounded("revise");
+        await grounded("revise", { reviseWithTools: false });
         const { outcome, sent, notes } = await turn(1762);
         expect(outcome).toBe("posted");
         expect(sent).toEqual([[1762, REVISED]]);
@@ -10170,9 +10174,92 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
 
       test("a revise whose rewrite is empty sends the Output template, never the refused draft", async () => {
-        await grounded("revise");
+        await grounded("revise", { reviseWithTools: false });
         const { sent } = await turn(1765, "");
         expect(sent).toEqual([[1765, "TEMPLATE-OUT"]]);
+      });
+
+      // The rewrite that consults the source: the draft answers from memory, the rewrite calls
+      // the calculator, and the second review decides what the customer reads.
+      describe("a rewrite that consults the source", () => {
+        const calls: string[] = [];
+        const memoryThenSource = {
+          async invoke() {
+            return new AIMessage("sem ferramentas");
+          },
+          bindTools(tools: Array<{ name: string }>) {
+            return {
+              async invoke(msgs: BaseMessage[]) {
+                const sinceHuman = msgs.slice(
+                  msgs.findLastIndex((m) => m.getType() === "human") + 1,
+                );
+                const revising = sinceHuman.some((m) =>
+                  String(m.content).startsWith(REVISE_NOTE_MARK),
+                );
+                if (!revising) return new AIMessage(DRAFT);
+                if (sinceHuman.some((m) => m.getType() === "tool"))
+                  return new AIMessage(REVISED);
+                calls.push(tools.map((t) => t.name).join(","));
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "calculator",
+                      args: { expression: "1+1" },
+                      id: `c${Math.random()}`,
+                    },
+                  ],
+                });
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const verdicts = (...seq: string[]) => {
+          let i = 0;
+          return (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? guardrailModel(async () => ({
+                  content: seq[Math.min(i++, seq.length - 1)] as string,
+                }))
+              : memoryThenSource;
+        };
+        const sourceTurn = async (convId: number, ...seq: string[]) => {
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          calls.length = 0;
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: verdicts(...seq),
+              makeClient: guardStub(sent, notes),
+              checkpointer: new MemorySaver(),
+            },
+          });
+          return { sent, notes };
+        };
+
+        test("the rewrite calls the source, and the reply it writes from the result is delivered", async () => {
+          await grounded("revise");
+          const { sent, notes } = await sourceTurn(
+            1781,
+            flagged,
+            CLEAN_GROUNDING,
+          );
+          expect(calls).toEqual(["calculator"]);
+          expect(sent).toEqual([[1781, REVISED]]);
+          expect(notes).toEqual([]);
+        });
+
+        test("a rewrite the second review still flags sends the Output template", async () => {
+          await grounded("revise");
+          const { sent } = await sourceTurn(1782, flagged, flagged);
+          expect(sent).toEqual([[1782, "TEMPLATE-OUT"]]);
+        });
       });
 
       test("template replaces the reply with the Output template and leaves a note", async () => {

@@ -398,9 +398,10 @@ describe("the policy is refused where it would do nothing or break the request",
   });
 });
 
-// The factual-grounding reviewer with reference documents: the reference leads the user message as
-// its own block and keeps its own mark, so the system message and the reference are both a cached
-// prefix, on Anthropic and on a Claude model behind OpenRouter alike.
+// The factual-grounding reviewer with reference documents: the reference is the first user message,
+// with its own mark, and the turn's message follows with the mark on its last block, so the system
+// message and the reference are both a cached prefix, on Anthropic and on a Claude model behind
+// OpenRouter alike.
 describe("the grounding reviewer's reference block", () => {
   const reviewInput = {
     conversation: [],
@@ -415,13 +416,18 @@ describe("the grounding reviewer's reference block", () => {
     ],
   };
   const referenceMarked = (msgs: Array<Record<string, unknown>>) => {
-    const user = msgs.find((m) => m.role === "user");
-    const blocks = (user?.content ?? []) as Array<Record<string, unknown>>;
+    const blocks = msgs
+      .filter((m) => m.role === "user")
+      .flatMap((m) =>
+        typeof m.content === "string"
+          ? [{ type: "text", text: m.content }]
+          : (m.content as Array<Record<string, unknown>>),
+      );
     return [
       blocks.length,
       String(blocks[0]?.text).startsWith("<reference_sources>"),
       blocks[0]?.cache_control,
-      blocks[1]?.cache_control,
+      blocks[blocks.length - 1]?.cache_control,
     ];
   };
 

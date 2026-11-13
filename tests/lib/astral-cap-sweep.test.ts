@@ -418,6 +418,8 @@ const BARE_SLICES: Record<
   // The history without its last message, when that message is a stalled repeat the dangling-call
   // repair leaves to the stall's own removal. An array of messages, never a string.
   "src/graph/graph.ts": [1, "array"],
+  // An export batch over the body limit is halved: a slice of an ARRAY of spans.
+  "src/graph/langfuse-otel.ts": [1, "array"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   // A server slug and MCP tool names, sanitized to ASCII before they are cut.

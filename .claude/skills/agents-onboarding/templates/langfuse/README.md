@@ -98,7 +98,7 @@ provisions everything on the first boot (Langfuse's own recommended headless-ini
    through the agent. The agent already holds the keys and wires them into fazer.ai agents (below).
 
 Empirically validated with this template's compose: the `LANGFUSE_INIT_USER` becomes org `OWNER`, the
-seeded user signs in (session shows `role: OWNER`), the seeded keys authenticate ingestion (`207`), and
+seeded user signs in (session shows `role: OWNER`), the seeded keys authenticate ingestion, and
 signup returns `422 Sign up is disabled` from the start, with no open-signup window.
 
 ## Verify ingestion actually works
@@ -109,9 +109,10 @@ A green health check is **not** enough (it only proves Postgres). Confirm a trac
 # 1) use the seeded pk-lf-…/sk-lf-… pair (or create one in the UI), then:
 PK=pk-lf-...; SK=sk-lf-...; BASE=https://langfuse.example.com
 
-# 2) POST a trace event, expect HTTP 207/200 (NOT 500):
-curl -s -u "$PK:$SK" -H 'Content-Type: application/json' -X POST "$BASE/api/public/ingestion" \
-  -d '{"batch":[{"id":"t1","type":"trace-create","timestamp":"2026-01-01T00:00:00.000Z","body":{"id":"verify-1","name":"verify"}}]}' \
+# 2) POST one OTLP span (the endpoint the app exports to), expect HTTP 200 (NOT 500):
+NOW=$(date +%s)000000000
+curl -s -u "$PK:$SK" -H 'Content-Type: application/json' -X POST "$BASE/api/public/otel/v1/traces" \
+  -d '{"resourceSpans":[{"resource":{"attributes":[]},"scopeSpans":[{"scope":{"name":"langfuse-sdk"},"spans":[{"traceId":"0af7651916cd43dd8448eb211c80319c","spanId":"b7ad6b7169203331","name":"verify","kind":1,"startTimeUnixNano":"'$NOW'","endTimeUnixNano":"'$NOW'","attributes":[{"key":"langfuse.observation.type","value":{"stringValue":"span"}}]}]}]}]}' \
   -w '\n[http %{http_code}]\n'
 
 # 3) read it back (give the worker a few seconds to flush to ClickHouse):

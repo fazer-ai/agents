@@ -31,6 +31,7 @@ import {
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import logger from "@/api/lib/logger";
+import { clipText } from "@/lib/text";
 
 export const REDACTED = "[redacted by fazer.ai PII policy]";
 
@@ -110,6 +111,28 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export const TRUNCATED_MARKER =
+  " …[truncated by fazer.ai: over the Langfuse request size]";
+
+/**
+ * Fits one span over the request limit by cutting its longest text attributes (prompt, completion,
+ * trace input/output), halving the cap until the body fits, so the span still lands with its model,
+ * usage and timings. Returns the body to post, or undefined when even the shortest cap does not fit.
+ */
+function boundSpan(span: ReadableSpan): Uint8Array | undefined {
+  const attrs = span.attributes as Record<string, unknown>;
+  for (let cap = 1_000_000; cap >= 1_000; cap = Math.floor(cap / 2)) {
+    for (const [key, value] of Object.entries(attrs)) {
+      if (typeof value === "string" && value.length > cap) {
+        attrs[key] = `${clipText(value, cap)}${TRUNCATED_MARKER}`;
+      }
+    }
+    const body = JsonTraceSerializer.serializeRequest([span]);
+    if (body && body.byteLength <= MAX_EXPORT_BODY_BYTES) return body;
+  }
+  return undefined;
+}
+
 /**
  * OTLP/HTTP JSON over `globalThis.fetch`, so delivery goes through the same fetch as every other
  * outbound call of the app, and a failure is reported with the tenant it belongs to.
@@ -162,7 +185,8 @@ export class LangfuseFetchExporter implements SpanExporter {
     if (spans.length === 0) return true;
     const body = JsonTraceSerializer.serializeRequest(spans);
     if (!body) return false;
-    if (body.byteLength > MAX_EXPORT_BODY_BYTES && spans.length > 1) {
+    if (body.byteLength <= MAX_EXPORT_BODY_BYTES) return this.post(body);
+    if (spans.length > 1) {
       const half = Math.ceil(spans.length / 2);
       const [a, b] = await Promise.all([
         this.sendAll(spans.slice(0, half)),
@@ -170,7 +194,8 @@ export class LangfuseFetchExporter implements SpanExporter {
       ]);
       return a && b;
     }
-    return this.post(body);
+    const bounded = boundSpan(spans[0] as ReadableSpan);
+    return bounded ? this.post(bounded) : false;
   }
 
   private async post(body: Uint8Array): Promise<boolean> {

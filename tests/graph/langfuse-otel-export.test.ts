@@ -11,7 +11,7 @@ import { type RunnableConfig, RunnableLambda } from "@langchain/core/runnables";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import logger from "@/api/lib/logger";
 import config from "@/config";
-import { traceIdForTurn } from "@/graph/langfuse-otel";
+import { TRUNCATED_MARKER, traceIdForTurn } from "@/graph/langfuse-otel";
 import {
   buildLangfuseHandler,
   type LangfuseConfig,
@@ -336,6 +336,29 @@ describe("langfuse export over OTLP", () => {
         .filter((s) => s.attrs["langfuse.internal.is_app_root"] === true)
         .map((s) => s.spanId),
     ).toEqual([String(root?.spanId)]);
+  });
+
+  test("a span whose content alone is over the request limit still lands, its text cut", async () => {
+    const huge = "x".repeat(5_000_000);
+    await runTurn(
+      cfgFor("a", { sendContent: true }),
+      { tenantId: 11n, threadId: "11:1:1", turnId: TURN_A },
+      huge,
+      "ok",
+    );
+    await shutdownLangfuseClients();
+
+    const toA = posted.filter((p) => p.url === `http://lf-a.test${OTLP}`);
+    expect(toA.length).toBeGreaterThan(0);
+    for (const p of toA) expect(p.body.length).toBeLessThanOrEqual(3_500_000);
+    const spans = spansAt("a");
+    const root = spans.find((s) => s.name === "agent-turn");
+    expect(String(root?.attrs["langfuse.trace.input"])).toContain(
+      TRUNCATED_MARKER,
+    );
+    expect(
+      spans.some((s) => s.attrs["langfuse.observation.type"] === "generation"),
+    ).toBe(true);
   });
 
   test("a generation written by hand lands in the turn's trace with its model and usage", async () => {

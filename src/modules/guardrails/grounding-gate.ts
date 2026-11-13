@@ -283,6 +283,7 @@ export function buildGroundingGate(
       m,
       {
         now: groundingNow(p.clock.now, p.clock.timezone),
+        timezone: p.clock.timezone,
         memory,
         conversation,
         calls,

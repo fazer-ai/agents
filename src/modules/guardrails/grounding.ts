@@ -6,6 +6,7 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 import logger from "@/api/lib/logger";
+import { historyDate } from "@/graph/history-dates";
 import { isMemoryHead } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
@@ -69,6 +70,9 @@ export interface GroundingToolCall {
 export interface GroundingReviewInput {
   // The current instant where the customer is, as `groundingNow` renders it.
   now?: string;
+  // The agent's timezone: a person's message that stored when it was sent carries that date, as the
+  // agent's dated history reads it, so a "tomorrow" said in an earlier attendance is read from its day.
+  timezone?: string;
   // The summaries of the contact's earlier attendances, as the agent reads them: context, never a source.
   memory?: string | null;
   conversation: readonly DatedContextMessage[];
@@ -246,7 +250,7 @@ export const GROUNDING_SYSTEM_PROMPT = [
   "",
   'A call marked turn="earlier" was made in an earlier turn (turns_back says how many customer messages ago) and was not repeated now. It is still a SOURCE: a reply that repeats, or contradicts, what it returned is judged against it like any other.',
   "",
-  '<now> holds the current date and time where the customer is. "Today", "tomorrow", a weekday, or whether a time has already passed, computed from it, is arithmetic, not an unsupported claim.',
+  '<now> holds the current date and time where the customer is. "Today", "tomorrow", a weekday, or whether a time has already passed, computed from it, is arithmetic, not an unsupported claim. A message in <conversation_context> may open with the date and time it was sent, in brackets: a relative date in it counts from that day.',
   "",
   "A line \"memory:\" at the start of <conversation_context> is the system's summary of this customer's earlier attendances. What it says about the customer (their name, what they asked, said, sent or received, a case opened for them) counts as stated by the customer. It is not a SOURCE for facts about products, offers or rules: what it says the assistant told the customer is a claim like any other, and repeating it needs a SOURCE.",
   "",
@@ -316,15 +320,15 @@ export function groundingReferenceBlock(
   return `<${REFERENCE_TAG}>\n${docs}\n</${REFERENCE_TAG}>`;
 }
 
-const roleLine = (c: DatedContextMessage) =>
-  `${c.role === "tool" ? `tool ${c.tool ?? ""}`.trim() : c.role}: ${unfenced(c.text)}`;
+const roleLine = (c: DatedContextMessage, timezone?: string) =>
+  `${c.role === "tool" ? `tool ${c.tool ?? ""}`.trim() : c.role}: ${c.at && timezone ? `${historyDate(c.at, timezone)} ` : ""}${unfenced(c.text)}`;
 
 // The user message the reviewer reads: the current instant, then the three fenced blocks, the
 // conversation first, opened by the memory of the earlier attendances when there is one.
 export function groundingUserMessage(input: GroundingReviewInput): string {
   const lines = [
     ...(input.memory ? [`memory: ${unfenced(input.memory)}`] : []),
-    ...input.conversation.map(roleLine),
+    ...input.conversation.map((c) => roleLine(c, input.timezone)),
   ];
   const conversation = lines.length
     ? lines.join("\n")

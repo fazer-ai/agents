@@ -11,6 +11,7 @@ import {
   conversationDividerMessage,
   conversationStamp,
   memoryHeadMessage,
+  sentAtStamp,
 } from "@/graph/markers";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
@@ -553,6 +554,23 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(sent).toContain("customer: Voltei, sobre aquele pedido");
     expect(sent).not.toContain("Contexto do sistema");
     expect([line?.sourced, line?.earlierSources]).toEqual([true, 1]);
+  });
+
+  test("a person's message carries the date it was sent, in the agent's timezone, as the agent reads it", async () => {
+    const thread: BaseMessage[] = [
+      new HumanMessage({
+        content: "Posso retirar amanhã?",
+        additional_kwargs: sentAtStamp(new Date("2026-11-11T01:30:00Z")),
+      }),
+      new AIMessage("Pode, a retirada abre às 10h."),
+      conversationDividerMessage(2, "Vou hoje então"),
+      new AIMessage("Hoje a retirada abre às 10h."),
+    ];
+    const { sent } = await reviewWith(thread, 24);
+    expect(sent).toContain(
+      "customer: [10/11/2026 22:30] Posso retirar amanhã?",
+    );
+    expect(sent).toContain("assistant: Pode, a retirada abre às 10h.");
   });
 
   test("the memory of earlier attendances opens the conversation as a marked line", async () => {

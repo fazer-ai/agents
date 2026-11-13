@@ -54,6 +54,9 @@ function nodesOn(node: PlanNode, relation: string): PlanNode[] {
 }
 
 async function planOf(sql: Prisma.Sql): Promise<PlanNode> {
+  // Statistics taken right before the plan: an autoanalyze that started before the seed and finished
+  // after it would otherwise leave the planner reading a near-empty table.
+  await suDb.$executeRawUnsafe("ANALYZE scheduler_jobs");
   const rows = await runScopedOn(
     appDb,
     { tenantId, userId: null, role: "TENANT_ADMIN" },

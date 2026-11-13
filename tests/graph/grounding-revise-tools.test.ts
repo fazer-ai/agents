@@ -11,6 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph, type RevisionInfo } from "@/graph/graph";
 import { contentToText } from "@/graph/message-text";
+import { admitRevisionCalls } from "@/graph/revision-calls";
 import { markRead, markReadOnly } from "@/graph/tools/reads";
 
 // The factual-grounding rewrite that may consult the check's sources: which tools it is handed, what
@@ -341,5 +342,27 @@ describe("a rewrite that may consult the sources", () => {
     });
     expect(ran).toEqual(["consultar_preco", "consultar_preco"]);
     expect(infos[0]).toMatchObject({ toolCalls: 1 });
+  });
+});
+
+// The admission as a table: which ids of a batch the tool node may run.
+describe("admitRevisionCalls", () => {
+  const sources = new Set(["consultar_preco"]);
+  // The bug it catches: an id shared by a source and a write, so admitting the source ran the write.
+  test("an id two calls share admits neither; names outside the sources and calls past the room are out", () => {
+    expect([
+      ...admitRevisionCalls(
+        [
+          { name: "consultar_preco", id: "a" },
+          { name: "set_labels", id: "a" },
+          { name: "consultar_preco", id: "b" },
+          { name: "abrir_chamado", id: "c" },
+          { name: "consultar_preco", id: "d" },
+          { name: "consultar_preco" },
+        ],
+        sources,
+        4,
+      ),
+    ]).toEqual(["b"]);
   });
 });

@@ -54,6 +54,7 @@ import {
   droppedCallsStamp,
 } from "./markers";
 import {
+  admitRevisionCalls,
   type RevisionInfo,
   revisionTools,
   revisionToolsNote,
@@ -1154,13 +1155,11 @@ export function buildAgentGraph({
       r.info.outputTokens += usage?.output_tokens ?? 0;
       const calls = (res as AIMessage).tool_calls ?? [];
       if (calls.length > 0 && canCall) {
-        const offered = calls.filter((_, i) => i < room);
-        r.attempts += offered.length;
-        const names = new Set(r.tools.map((t) => t.name));
-        r.admitted = new Set(
-          offered
-            .filter((c) => names.has(c.name) && typeof c.id === "string")
-            .map((c) => c.id as string),
+        r.attempts += Math.min(calls.length, room);
+        r.admitted = admitRevisionCalls(
+          calls,
+          new Set(r.tools.map((t) => t.name)),
+          room,
         );
         return res;
       }

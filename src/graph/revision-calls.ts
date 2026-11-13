@@ -50,6 +50,30 @@ export function revisionTools(
   );
 }
 
+// The call ids of a rewrite's batch that may run: the first `room` calls, those naming a source. The
+// tool node runs by id, so an id two calls share admits neither: admitting it would run the other
+// call too, whatever its name or position.
+export function admitRevisionCalls(
+  calls: readonly { name: string; id?: string }[],
+  sources: ReadonlySet<string>,
+  room: number,
+): Set<string> {
+  const seen = new Map<string, number>();
+  for (const c of calls)
+    if (typeof c.id === "string") seen.set(c.id, (seen.get(c.id) ?? 0) + 1);
+  return new Set(
+    calls
+      .filter((_, i) => i < room)
+      .filter(
+        (c): c is { name: string; id: string } =>
+          typeof c.id === "string" &&
+          seen.get(c.id) === 1 &&
+          sources.has(c.name),
+      )
+      .map((c) => c.id),
+  );
+}
+
 // The batch as the tool node should run it: only the admitted call ids, with a refusal for the rest.
 // `view` is null when nothing is left to run.
 export function setAsideRevisionCalls(

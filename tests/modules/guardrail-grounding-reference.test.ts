@@ -142,15 +142,13 @@ describe("the reviewer's messages", () => {
       reply: "Depois disso não há reembolso.",
       reference: REFERENCE.docs,
     });
-    const head = (ms: BaseMessage[]) =>
-      `${text(ms[0])}\n${text(ms[1]).split("</reference_sources>")[0]}`;
-    expect(head(one)).toBe(head(two));
-    expect(text(one[1])).not.toBe(text(two[1]));
+    expect([text(one[0]), text(one[1])]).toEqual([text(two[0]), text(two[1])]);
+    expect(text(one[2])).not.toBe(text(two[2]));
   });
 
-  // The bug it catches: a clock that changes every minute ahead of the reference would make every
-  // review miss the cache of the reference block.
-  test("the current instant comes after the reference block, which stays the same bytes", () => {
+  // The bug it catches: a clock in the reference's own message changes it every minute, and the
+  // provider's cache then misses the reference on every review.
+  test("the current instant opens the turn's message, after the reference's own", () => {
     const at = (now: string) =>
       groundingMessages({
         now,
@@ -159,14 +157,20 @@ describe("the reviewer's messages", () => {
         reply: "Até 11 dias.",
         reference: REFERENCE.docs,
       });
-    const one = at("Thursday, 2026-11-12 14:05 (America/Sao_Paulo)");
-    const two = at("Thursday, 2026-11-12 14:06 (America/Sao_Paulo)");
-    const [block, turnOne] = text(one[1]).split("</reference_sources>\n\n");
-    const [blockTwo, turnTwo] = text(two[1]).split("</reference_sources>\n\n");
-    expect(block).toBe(blockTwo as string);
-    expect(turnOne?.startsWith("<now>Thursday, 2026-11-12 14:05")).toBe(true);
-    expect(turnTwo?.startsWith("<now>Thursday, 2026-11-12 14:06")).toBe(true);
-    const [, marked] = groundingMessages(
+    const one = at("Thursday, 2026-11-12 14:00 (America/Sao_Paulo)");
+    const two = at("Thursday, 2026-11-12 14:30 (America/Sao_Paulo)");
+    expect([one.length, text(one[1])]).toEqual([3, text(two[1])]);
+    expect(text(one[1]).includes("<now>")).toBe(false);
+    expect(text(one[2]).startsWith("<now>Thursday, 2026-11-12 14:00")).toBe(
+      true,
+    );
+    expect(text(two[2]).startsWith("<now>Thursday, 2026-11-12 14:30")).toBe(
+      true,
+    );
+  });
+
+  test("on a provider that caches only what is marked, the reference is its own marked block", () => {
+    const [, reference, turn] = groundingMessages(
       {
         now: "x",
         conversation: [],
@@ -176,22 +180,13 @@ describe("the reviewer's messages", () => {
       },
       true,
     );
-    const blocks = marked?.content as { text?: string }[];
-    expect(String(blocks[1]?.text).startsWith("<now>x</now>")).toBe(true);
-  });
-
-  test("on a provider that caches only what is marked, the reference is its own marked block", () => {
-    const [, user] = groundingMessages(
-      { conversation: [], calls: [], reply: "x", reference: REFERENCE.docs },
-      true,
-    );
-    const blocks = user?.content as Record<string, unknown>[];
+    const blocks = reference?.content as Record<string, unknown>[];
     expect([
       blocks.length,
       blocks[0]?.cache_control,
       String(blocks[0]?.text).startsWith("<reference_sources>"),
-      blocks[1]?.cache_control,
-    ]).toEqual([2, { type: "ephemeral" }, true, undefined]);
+      text(turn).startsWith("<now>x</now>"),
+    ]).toEqual([1, { type: "ephemeral" }, true, true]);
   });
 
   test("a document cannot close the reference fence", () => {

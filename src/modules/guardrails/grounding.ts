@@ -10,7 +10,8 @@ import { historyDate } from "@/graph/history-dates";
 import { isMemoryHead } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
-import { partsInTimezone } from "@/graph/time";
+import { TIME_ROUND_MINUTES } from "@/graph/prompt";
+import { flooredLocalParts, partsInTimezone } from "@/graph/time";
 import { msgType } from "@/graph/trace";
 import { clipText, clipTextEnd } from "@/lib/text";
 import { invokeStructured } from "./analyze";
@@ -227,10 +228,14 @@ export function groundingMemory(
   return text ? clipTextEnd(text, GROUNDING_MEMORY_MAX) : null;
 }
 
-// The instant as the reviewer reads it: the local date, weekday and time, and the zone they are in.
+// The instant as the reviewer reads it: the local date, weekday and time, and the zone they are in. The
+// time is floored to the slot the agent's own {{hora_atual}} reads, so two reviews of the same turn in
+// one slot are the same bytes: OpenAI's automatic cache on gpt-5.6-luna reused only a whole identical
+// prompt (or the system message alone), never a prefix that stops before a changed minute.
 export function groundingNow(at: Date, timezone: string): string {
-  const p = partsInTimezone(at, timezone, "en-US");
-  return `${p.weekday}, ${p.YYYY}-${p.MM}-${p.DD} ${p.HH}:${p.mm} (${timezone})`;
+  const p = flooredLocalParts(at, timezone, TIME_ROUND_MINUTES);
+  const { weekday } = partsInTimezone(at, timezone, "en-US");
+  return `${weekday}, ${p.YYYY}-${p.MM}-${p.DD} ${p.HH}:${p.mm} (${timezone})`;
 }
 
 const NOW_TAG = "now";
@@ -431,10 +436,11 @@ export function readGroundingVerdict(
   );
 }
 
-// The reviewer's two messages. With reference documents, the user message is two text blocks, the
-// reference first: on a provider that caches only what is marked, that block carries its own mark, so
-// the system message and the reference are read from cache on every review that follows. Elsewhere
-// the same bytes lead the message as one string, which is what an automatic prefix cache matches.
+// The reviewer's messages. With reference documents the reference is a user message of its own, before
+// the turn's: OpenAI's automatic cache reused the reference on gpt-5.6-luna only up to the end of a
+// whole message (13/11/2026: 10,765 of 10,768 tokens with the reference alone in its message, 1,560
+// with <now> after it in the same one). On a provider that caches only what is marked, its block
+// carries the mark, so the system message and the reference are read from cache on every review.
 export function groundingMessages(
   input: GroundingReviewInput,
   cacheReference = false,
@@ -462,11 +468,11 @@ export function groundingMessages(
                 text: block,
                 cache_control: { type: "ephemeral" },
               },
-              { type: "text", text: turn },
             ],
           }
-        : `${block}\n\n${turn}`,
+        : block,
     ),
+    new HumanMessage(turn),
   ];
 }
 

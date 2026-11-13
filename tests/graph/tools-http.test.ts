@@ -123,13 +123,19 @@ describe("buildHttpTool", () => {
     expect(captured.init?.body).toBeUndefined();
   });
 
-  // The bug it catches: a POST offered to the factual-grounding rewrite as a source it may call.
-  test("a GET is read-only and a POST is not", () => {
+  // The bug it catches: a tool that writes (a POST, a GET that posts an ack to the customer or
+  // registers an appointment) offered to the factual-grounding rewrite as a source it may call.
+  test("a plain GET is read-only; a POST, an ack or a declared appointment is not", () => {
     const ctx = { resolveCredential: async () => null };
     expect([
       isReadOnlyTool(buildHttpTool(def(), ctx)),
       isReadOnlyTool(buildHttpTool(def({ method: "POST" }), ctx)),
-    ]).toEqual([true, false]);
+      isReadOnlyTool(buildHttpTool(def({ ackMessage: "Um instante." }), ctx)),
+      isReadOnlyTool(
+        buildHttpTool(def({ appointment: { externalId: "$.id" } }), ctx),
+      ),
+      isReadTool(buildHttpTool(def({ ackMessage: "Um instante." }), ctx)),
+    ]).toEqual([true, false, false, false, true]);
   });
 
   test("rejects when the host is not in the per-tool allowlist", async () => {

@@ -490,6 +490,58 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     ]).toEqual([20, true]);
   });
 
+  test("an import skips a reference name two bases answer to, and says so", async () => {
+    const ctxB = {
+      tenantId: otherTenantId,
+      userId: null,
+      role: "TENANT_ADMIN",
+    } as never;
+    for (let i = 0; i < 2; i++)
+      await suDb.knowledgeBase.create({
+        data: { tenantId: otherTenantId, name: "Duplicada" },
+      });
+    const source = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Ambígua",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+    const exp = await exportAgent(
+      { tenantId, userId: null, role: "TENANT_ADMIN" } as never,
+      source.id,
+      appDb,
+    );
+    const { agent, warnings } = await importAgent(
+      ctxB,
+      {
+        ...exp,
+        agent: {
+          ...exp.agent,
+          settings: {
+            ...exp.agent.settings,
+            guardrails: {
+              factualGrounding: { referenceKnowledgeBases: ["Duplicada"] },
+            },
+          },
+        },
+      },
+      appDb,
+    );
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect([
+      readGuardrailsConfig(stored.settings).factualGrounding
+        .referenceKnowledgeBaseIds,
+      warnings
+        .filter((w) => w.code === "groundingReferenceAmbiguous")
+        .map((w) => [w.params?.name, w.params?.n]),
+    ]).toEqual([[], [["Duplicada", 2]]]);
+  });
+
   test("a reference past the ceiling is not reviewed, and the line says why", async () => {
     const r = reviewer();
     const f = flow();

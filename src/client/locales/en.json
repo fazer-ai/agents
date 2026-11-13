@@ -2463,6 +2463,7 @@
       "documentTemplateNameTaken": "Document template \"{{name}}\" was not imported: this account already has a template with that name ({{existing}}). Names have to be unique, because the agent picks between documents by name.",
       "documentTemplateReused": "Document template \"{{name}}\" already existed and was reused; check it is right.",
       "documentToolNameTaken": "Document template \"{{name}}\" was not imported: the tool name {{tool}} it would publish is already used by the tool \"{{holder}}\". One name reaches the model, so one of the two would stop being callable.",
+      "groundingReferenceAmbiguous": "{{n}} knowledge bases here answer to the name \"{{name}}\", so the factual-grounding check reads none of them as a reference. Rename them apart and pick it by hand.",
       "groundingReferenceNotFound": "Knowledge base \"{{name}}\" was not found, so the factual-grounding check does not read it as a reference.",
       "guidanceClipped": "The text in \"{{field}}\" was longer than {{max}} characters and was trimmed on import.",
       "hoursExceptionsDropped_one": "Business hours \"{{name}}\": {{count}} date exception was not stored as written. Open the schedule and check the holidays and closures are right.",

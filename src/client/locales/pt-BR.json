@@ -2552,6 +2552,7 @@
       "documentTemplateNameTaken": "O modelo de documento \"{{name}}\" não foi importado: esta conta já tem um modelo com esse nome ({{existing}}). Os nomes precisam ser únicos, porque é por eles que o agente escolhe entre os documentos.",
       "documentTemplateReused": "O modelo de documento \"{{name}}\" já existia e foi reaproveitado; confira se está certo.",
       "documentToolNameTaken": "O modelo de documento \"{{name}}\" não foi importado: o nome de ferramenta {{tool}} que ele publicaria já é usado pela ferramenta \"{{holder}}\". Um nome só chega ao modelo, então uma das duas deixaria de ser chamável.",
+      "groundingReferenceAmbiguous": "{{n}} bases de conhecimento daqui respondem pelo nome \"{{name}}\", então a checagem factual não lê nenhuma delas como referência. Renomeie-as para nomes distintos e escolha à mão.",
       "groundingReferenceNotFound": "A base de conhecimento \"{{name}}\" não foi encontrada, então a checagem factual não a lê como referência.",
       "guidanceClipped": "O texto em \"{{field}}\" passava de {{max}} caracteres e foi cortado na importação.",
       "hoursExceptionsDropped_zero": "Horário \"{{name}}\": {{count}} exceções de data não foram gravadas como estavam escritas. Abra a agenda e confira os feriados e fechamentos.",

@@ -222,6 +222,12 @@ export function importWarningMessage(
         'Knowledge base "{{name}}" already existed and was reused; its {{count}} bundled documents were not imported.',
         { ...p, count: importWarningCount(p) },
       );
+    case "groundingReferenceAmbiguous":
+      return t(
+        "editor.importWarning.groundingReferenceAmbiguous",
+        '{{n}} knowledge bases here answer to the name "{{name}}", so the factual-grounding check reads none of them as a reference. Rename them apart and pick it by hand.',
+        p,
+      );
     case "groundingReferenceNotFound":
       return t(
         "editor.importWarning.groundingReferenceNotFound",

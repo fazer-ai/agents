@@ -667,11 +667,18 @@ async function referenceBasesById(
     where: { name: { in: names } },
     select: { id: true, name: true },
   });
-  const idByName = new Map(rows.map((r) => [r.name, String(r.id)]));
   const ids: string[] = [];
   for (const n of names) {
-    const id = idByName.get(n);
-    if (id) ids.push(id);
+    // A name two bases answer to is skipped, not bound to one of them: which policies the reviewer
+    // trusts is not a choice the import makes.
+    const matches = rows.filter((r) => r.name === n);
+    if (matches.length === 1) ids.push(String(matches[0]?.id));
+    else if (matches.length > 1)
+      warnings.push({
+        code: "groundingReferenceAmbiguous",
+        params: { name: n, n: matches.length },
+        target: { kind: "knowledge", name: n },
+      });
     else
       warnings.push({
         code: "groundingReferenceNotFound",

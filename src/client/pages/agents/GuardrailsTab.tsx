@@ -1140,7 +1140,7 @@ export function GuardrailsTab({
                       )}
                       description={t(
                         "editor.guardrails.groundingReferenceHint",
-                        "The reviewer reads every indexed document of these bases on every reply, whether or not the agent searched them, so a reply that repeats a house rule written there is grounded. Keep them short: they are sent whole on each review.",
+                        "The reviewer reads every indexed document of these bases on every reply, searched or not, so a house rule written there grounds the reply. They go whole on each review.",
                       )}
                       group
                     >

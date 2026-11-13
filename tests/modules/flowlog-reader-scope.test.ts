@@ -233,6 +233,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/followup-sweep-later-step.test.ts": 2,
   "tests/modules/followup-sweep-snoozed-isolated.test.ts": 1,
   "tests/modules/guardrail-grounding-gate.test.ts": 1,
+  "tests/modules/guardrail-grounding-reference.test.ts": 1,
   "tests/modules/guardrail-health.test.ts": 1,
   "tests/modules/guardrail-observe.test.ts": 1,
   "tests/modules/guardrail-on-failure.test.ts": 1,

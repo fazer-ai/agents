@@ -2383,7 +2383,7 @@
       "groundingEnabled": "Check the reply against the tool results",
       "groundingHandoff": "Message to the customer (the same one as Output)",
       "groundingReference": "Reference knowledge bases",
-      "groundingReferenceHint": "The reviewer reads every indexed document of these bases on every reply, whether or not the agent searched them, so a reply that repeats a house rule written there is grounded. Keep them short: they are sent whole on each review.",
+      "groundingReferenceHint": "The reviewer reads every indexed document of these bases on every reply, searched or not, so a house rule written there grounds the reply. They go whole on each review.",
       "groundingReferenceStale_one": "{{count}} picked base no longer exists and is not read.",
       "groundingReferenceStale_other": "{{count}} picked bases no longer exist and are not read.",
       "groundingSameModel": "Same as the guardrails",

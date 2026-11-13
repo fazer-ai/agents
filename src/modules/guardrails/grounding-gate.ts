@@ -246,7 +246,7 @@ export function buildGroundingGate(
       sources: sourceNames,
       resultChars,
       earlierSources: earlier.length,
-      referenceDocs: reference.docs.length,
+      referenceDocs: reference.count,
       referenceChars: reference.chars,
     };
     if (reference.chars > GROUNDING_REFERENCE_MAX)

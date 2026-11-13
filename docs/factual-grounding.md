@@ -29,7 +29,7 @@ An agent usually carries house rules (procedures, policies) that live in a knowl
 
 The documents are read once per turn, at the start of it, so an edit counts from the next turn on. Only READY documents (indexed) count. They travel whole, ordered by base id and document id, in a `<reference_sources>` block that leads the reviewer's user message, one `<reference_document base="…" title="…">` per document, and `GROUNDING_REFERENCE_PROMPT` is added to the system message: the documents are sources whether or not the assistant consulted them. A review with a reference is a sourced review, so the no-source instruction is not sent; a reply that states something the reference does not support is still an unsupported claim, and one that states something different is a contradiction. With bases picked and no READY document in them, the review runs as it would with none (`referenceDocs: 0`).
 
-Above 200,000 characters of reference documents (`GROUNDING_REFERENCE_MAX`) the review does not run and the flow line says `reference_too_large`, the same failure as `sources_too_large`: the block is sent whole on every review, so a base that outgrows it is a configuration to fix, not to cut.
+Above 200,000 characters of reference documents (`GROUNDING_REFERENCE_MAX`) the review does not run and the flow line says `reference_too_large`, the same failure as `sources_too_large`: the block is sent whole on every review, so a base that outgrows it is a configuration to fix, not to cut. The size is measured in the database before any document is read, so a base past the ceiling costs the turn one count, not its bodies.
 
 ## What the reviewer reads
 

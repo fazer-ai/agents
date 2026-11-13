@@ -64,6 +64,7 @@ const suDb = su as PrismaClient;
 const RULE = "O reembolso pode ser pedido em até 11 dias após a compra.";
 const REFERENCE: GroundingReference = {
   docs: [{ base: "Regras da casa", title: "Reembolso", content: RULE }],
+  count: 1,
   chars: RULE.length,
 };
 const RUNS = {
@@ -302,6 +303,30 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     );
     expect(ref.docs.map((d) => d.title)).toEqual(["A1", "A3", "B1"]);
     expect(ref.chars).toBe(RULE.length + "Regra A3.".length + 9);
+  });
+
+  test("a base past the ceiling is counted and measured in the database, and its bodies are not read", async () => {
+    const big = await suDb.knowledgeBase.create({
+      data: { tenantId, name: "Grande" },
+    });
+    await suDb.knowledgeDocument.create({
+      data: {
+        tenantId,
+        knowledgeBaseId: big.id,
+        title: "G",
+        sourceType: "text",
+        content: "x".repeat(GROUNDING_REFERENCE_MAX + 1),
+        status: "READY",
+      },
+    });
+    const ref = await runScopedOn(appDb, { tenantId } as never, (db) =>
+      loadGroundingReference(db, [String(big.id), String(kbA)]),
+    );
+    expect([ref.docs.length, ref.count, ref.chars]).toEqual([
+      0,
+      3,
+      GROUNDING_REFERENCE_MAX + 1 + RULE.length + "Regra A3.".length,
+    ]);
   });
 
   test("a reply that consulted nothing is reviewed against the reference, and the line counts it", async () => {
@@ -562,7 +587,8 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
       cfg: cfg(),
       reviewer: RUNS,
       reference: {
-        docs: [{ base: "b", title: "t", content: big }],
+        docs: [],
+        count: 1,
         chars: big.length,
       },
       flow: f,

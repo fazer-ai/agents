@@ -528,9 +528,9 @@ describe("langfuse export over OTLP", () => {
         String(c[1] ?? "").includes("langfuse trace delivery failed"),
       );
       expect(lines).toHaveLength(1);
-      expect(String((lines[0]?.[0] as { detail?: string }).detail)).toContain(
-        "2 span(s) rejected",
-      );
+      expect(
+        String((lines[0]?.[0] as { detail?: string } | undefined)?.detail),
+      ).toContain("2 span(s) rejected");
     } finally {
       warn.mockRestore();
     }
@@ -554,9 +554,9 @@ describe("langfuse export over OTLP", () => {
         String(c[1] ?? "").includes("langfuse trace delivery failed"),
       );
       expect(lines).toHaveLength(1);
-      expect(String((lines[0]?.[0] as { detail?: string }).detail)).toContain(
-        "connection reset mid-body",
-      );
+      expect(
+        String((lines[0]?.[0] as { detail?: string } | undefined)?.detail),
+      ).toContain("connection reset mid-body");
     } finally {
       warn.mockRestore();
     }

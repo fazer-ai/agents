@@ -275,6 +275,10 @@ export function GuardrailsTab({
   const [groundingContextDraft, setGroundingContextDraft] = useState<
     string | null
   >(null);
+  // The rewrite's cap as typed, kept the same way as the window above.
+  const [groundingReviseCallsDraft, setGroundingReviseCallsDraft] = useState<
+    string | null
+  >(null);
   // At the schema's limit a new source is refused here, so the save never fails on it; taking one out
   // always works.
   const sourcesFull = fg.sourceTools.length >= MAX_SOURCE_TOOLS;
@@ -1191,7 +1195,7 @@ export function GuardrailsTab({
                         fg.action === "revise"
                           ? t(
                               "editor.guardrails.groundingActionReviseHint",
-                              "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn.",
+                              "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn, plus any source calls.",
                             )
                           : fg.action === "observe"
                             ? t(
@@ -1220,6 +1224,61 @@ export function GuardrailsTab({
                         ))}
                       </Select>
                     </FormField>
+                    {fg.action === "revise" && (
+                      <>
+                        <SwitchField
+                          checked={fg.reviseWithTools}
+                          onCheckedChange={(v) =>
+                            setGrounding({ reviseWithTools: v })
+                          }
+                          label={t(
+                            "editor.guardrails.groundingReviseTools",
+                            "Let the rewrite consult the source tools",
+                          )}
+                          help={t(
+                            "editor.guardrails.groundingReviseToolsHelp",
+                            "The rewrite may call the source tools above that only read, never a transfer, a label, a case or another tool with an effect. The new reply is reviewed once more against what they returned, and if it is still flagged the Output template is sent.\n\nOff, the rewrite runs without tools and can only drop the claims or say the information is not available.",
+                          )}
+                          id="gr-grounding-revise-tools"
+                        />
+                        {fg.reviseWithTools && (
+                          <FormField
+                            label={t(
+                              "editor.guardrails.groundingReviseCalls",
+                              "Calls the rewrite may make",
+                            )}
+                            description={t(
+                              "editor.guardrails.groundingReviseCallsHint",
+                              "From 1 to 5. Each call adds latency to a flagged reply.",
+                            )}
+                          >
+                            <NumberInput
+                              range={GUARDRAIL_RANGES.reviseMaxToolCalls}
+                              value={
+                                groundingReviseCallsDraft ??
+                                String(fg.reviseMaxToolCalls)
+                              }
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setGroundingReviseCallsDraft(raw);
+                                if (
+                                  raw.trim() !== "" &&
+                                  inRange(
+                                    Number(raw),
+                                    GUARDRAIL_RANGES.reviseMaxToolCalls,
+                                  )
+                                )
+                                  setGrounding({
+                                    reviseMaxToolCalls: Number(raw),
+                                  });
+                              }}
+                              onBlur={() => setGroundingReviseCallsDraft(null)}
+                              data-testid="gr-grounding-revise-calls"
+                            />
+                          </FormField>
+                        )}
+                      </>
+                    )}
                     {(fg.action === "template" || fg.action === "handoff") && (
                       <FormField
                         label={

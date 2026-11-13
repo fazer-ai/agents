@@ -2,6 +2,7 @@ import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { LLMResult } from "@langchain/core/outputs";
+import type { RevisionInfo, RevisionPlan } from "@/graph/graph";
 import { contentToText } from "@/graph/message-text";
 import { type ModelConfig, verdictAskMode } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
@@ -80,6 +81,9 @@ export interface GroundingGate {
   // `reply` is the text that would go out: the final answer, or the one the runtime recovers.
   review: (turn: BaseMessage[], reply?: string) => Promise<string | null>;
   pending: () => GuardrailDecision | null;
+  // The graph's `revisionPlan`: with `revise` and `reviseWithTools` on, the rewrite may consult the
+  // sources, and its answer gets one more review; still flagged, the Output template goes out.
+  revisionPlan: () => RevisionPlan | null;
   // The graph's `onReplyRevised`: an empty rewrite leaves the Output template as the decision, so
   // the refused draft is never what the customer reads.
   revised: (text: string) => void;
@@ -214,10 +218,17 @@ export function buildGroundingGate(
     return null;
   };
 
-  const review = async (
+  // Runs the reviewer on the reply that would go out, or writes why it could not. `pass` marks the
+  // second review of a rewrite on its failure line.
+  const judge = async (
     turn: BaseMessage[],
-    candidate?: string,
-  ): Promise<string | null> => {
+    candidate: string | undefined,
+    pass?: "revision",
+  ): Promise<{
+    verdict: Awaited<ReturnType<typeof reviewGrounding>>;
+    timed: Record<string, unknown>;
+    reply: string;
+  } | null> => {
     if (p.signal?.aborted) return null;
     const history = turn.slice(0, -1);
     const scoped =
@@ -248,6 +259,7 @@ export function buildGroundingGate(
       earlierSources: earlier.length,
       referenceDocs: reference.count,
       referenceChars: reference.chars,
+      ...(pass ? { pass } : {}),
     };
     if (reference.chars > GROUNDING_REFERENCE_MAX)
       return couldNotReview("reference_too_large", sized);
@@ -282,8 +294,20 @@ export function buildGroundingGate(
       cachedInputTokens: tokens.cached,
       outputTokens: tokens.output,
     };
-    if (verdict.error)
-      return couldNotReview("analysis_failed", timed, verdict.error);
+    if (verdict.error) {
+      await couldNotReview("analysis_failed", timed, verdict.error);
+      return null;
+    }
+    return { verdict, timed, reply };
+  };
+
+  const review = async (
+    turn: BaseMessage[],
+    candidate?: string,
+  ): Promise<string | null> => {
+    const judged = await judge(turn, candidate);
+    if (!judged) return null;
+    const { verdict, timed, reply } = judged;
     if (!verdict.violated) {
       // One line per review, clean ones too, so the rate and the cost of the check are readable from
       // the log in any mode. `info` and no `action`: a clean review is not a trip, the same contract as
@@ -310,15 +334,7 @@ export function buildGroundingGate(
         categories: [FACTUAL_GROUNDING_KEY],
         ...timed,
         claimCount: claims.length,
-        ...(p.logValues
-          ? {
-              claims: claims.slice(0, LOGGED_CLAIMS_MAX).map((c) => ({
-                claim: scrubbedClip(c.claim, LOGGED_TEXT_MAX),
-                type: c.type,
-                evidence: scrubbedClip(c.evidence, LOGGED_TEXT_MAX),
-              })),
-            }
-          : {}),
+        ...loggedClaims(claims),
       },
     });
     const report: GuardrailReport = {
@@ -354,6 +370,87 @@ export function buildGroundingGate(
     return null;
   };
 
+  const loggedClaims = (claims: readonly GroundingClaim[]) =>
+    p.logValues
+      ? {
+          claims: claims.slice(0, LOGGED_CLAIMS_MAX).map((c) => ({
+            claim: scrubbedClip(c.claim, LOGGED_TEXT_MAX),
+            type: c.type,
+            evidence: scrubbedClip(c.evidence, LOGGED_TEXT_MAX),
+          })),
+        }
+      : {};
+
+  // The second review, once, on what the rewrite wrote with its calls in the turn. Its line is the
+  // rewrite's record: the calls it made and refused, its own tokens, and this verdict. No categories:
+  // the first review already counted the trip.
+  const reviewRevision = async (
+    turn: BaseMessage[],
+    reply: string,
+    info: RevisionInfo,
+  ): Promise<void> => {
+    if (p.signal?.aborted) return;
+    const rewrite = {
+      ...base,
+      toolCalls: info.toolCalls,
+      tools: info.tools,
+      refused: info.refused,
+      revisionInputTokens: info.inputTokens,
+      revisionOutputTokens: info.outputTokens,
+    };
+    if (!reply.trim()) {
+      emitFlowEvent(p.flow, {
+        stage: "guardrail",
+        status: "ok",
+        level: "warn",
+        detail: {
+          ...rewrite,
+          outcome: "revision",
+          verdict: "empty",
+          claimCount: 0,
+        },
+      });
+      return;
+    }
+    const judged = await judge(turn, reply, "revision");
+    if (!judged) return;
+    const { verdict, timed } = judged;
+    const claims = verdict.violated ? verdict.claims : [];
+    emitFlowEvent(p.flow, {
+      stage: "guardrail",
+      status: "ok",
+      level: verdict.violated ? "warn" : "info",
+      detail: {
+        ...rewrite,
+        ...timed,
+        outcome: "revision",
+        verdict: verdict.violated ? "violated" : "clean",
+        claimCount: claims.length,
+        ...(verdict.violated ? { action: "template" } : {}),
+        ...loggedClaims(claims),
+      },
+    });
+    if (!verdict.violated) return;
+    decision = { kind: "replaced", reply: gr.output.templateMessage };
+    await p.announce?.({
+      ...base,
+      outcome: "replaced",
+      action: "template",
+      categories: [FACTUAL_GROUNDING_KEY],
+      rationale: claimsText(claims) || verdict.rationale,
+      claims,
+    });
+  };
+
+  const revisionPlan = (): RevisionPlan | null =>
+    fg.action === "revise" && fg.reviseWithTools
+      ? {
+          sourceTools: fg.sourceTools,
+          maxToolCalls: fg.reviseMaxToolCalls,
+          review: reviewRevision,
+        }
+      : null;
+
   const revised = (text: string): void => {
     if (text.trim()) return;
     decision = { kind: "replaced", reply: gr.output.templateMessage };
@@ -365,5 +462,5 @@ export function buildGroundingGate(
     });
   };
 
-  return { review, pending: () => decision, revised };
+  return { review, pending: () => decision, revisionPlan, revised };
 }

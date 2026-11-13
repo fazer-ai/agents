@@ -12,7 +12,11 @@ import {
   buildDetachedToolset,
   loadDetachedConfig,
 } from "@/graph/detached-turn";
-import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
+import {
+  lastAssistantText,
+  type RevisionPlan,
+  recursionLimitFor,
+} from "@/graph/graph";
 import { playgroundNudgeMarker, sentAtStamp } from "@/graph/markers";
 import type { FallbackFailedInfo, ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
@@ -446,6 +450,7 @@ async function buildPlaygroundGraph(params: {
   replyChoice?: ReplyChoice;
   // The factual-grounding review, built by the caller from the config it resolved.
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  revisionPlan?: () => RevisionPlan | null;
   onReplyRevised?: (text: string) => void;
 }) {
   const { ctx, agentId, threadId, base } = params;
@@ -514,6 +519,7 @@ async function buildPlaygroundGraph(params: {
     onModelFallbackUnavailable: params.onModelFallbackUnavailable,
     onHistoryTrim: params.onHistoryTrim,
     reviewReply: params.reviewReply,
+    revisionPlan: params.revisionPlan,
     onReplyRevised: params.onReplyRevised,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
@@ -977,6 +983,7 @@ async function runPlaygroundTurnOnce(
       flow,
       loaded: loadedConfig,
       reviewReply: grounding?.review,
+      revisionPlan: grounding?.revisionPlan,
       onReplyRevised: grounding?.revised,
       spokenNotice: () =>
         spokenNoticeFor(

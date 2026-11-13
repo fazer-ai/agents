@@ -805,6 +805,45 @@ describe("GuardrailsTab factual grounding", () => {
     expect(saved?.output.templateMessage).toBe("Não tenho essa informação.");
   });
 
+  // The bug it catches: the rewrite's switch and cap drawn for an action that never rewrites, or a
+  // cap typed out of range reaching the form and the save.
+  test("revise shows the rewrite's switch and cap; the cap keeps its last value in range", async () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = {
+      ...c.factualGrounding,
+      enabled: true,
+      action: "template",
+    };
+    render(<Stateful initial={c} />);
+    const toolsSwitch = () =>
+      screen.queryByRole("switch", {
+        name: /Deixar a reescrita consultar|Let the rewrite consult/,
+      });
+    const cap = () =>
+      document.querySelector<HTMLInputElement>(
+        '[data-testid="gr-grounding-revise-calls"]',
+      );
+    expect([toolsSwitch() === null, cap() === null]).toEqual([true, true]);
+    fireEvent.change(
+      document.querySelector<HTMLSelectElement>(
+        '[data-testid="gr-grounding-action"]',
+      ) as HTMLSelectElement,
+      { target: { value: "revise" } },
+    );
+    expect(toolsSwitch()?.getAttribute("aria-checked")).toBe("true");
+    fireEvent.change(cap() as HTMLInputElement, { target: { value: "2" } });
+    fireEvent.change(cap() as HTMLInputElement, { target: { value: "9" } });
+    expect(saved?.factualGrounding.reviseMaxToolCalls).toBe(2);
+    fireEvent.click(toolsSwitch() as HTMLElement);
+    expect([saved?.factualGrounding.reviseWithTools, cap() === null]).toEqual([
+      false,
+      true,
+    ]);
+  });
+
   test("off, the section shows only its switch", () => {
     const c: GuardrailsConfig = {
       ...structuredClone(GUARDRAILS_DEFAULTS),

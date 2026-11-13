@@ -1215,6 +1215,7 @@ async function runTurnBody(
             ? Promise.resolve(null)
             : grounding.review(turn, reply)
       : undefined,
+    revisionPlan: grounding?.revisionPlan,
     onReplyRevised: grounding?.revised,
     // The recovery's own condition below, minus the empty final answer the graph checks itself.
     recoversReply: () =>

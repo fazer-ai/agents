@@ -561,4 +561,143 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(mid?.pending()).toBeNull();
     expect(await lines(f.turnId)).toEqual([]);
   });
+  // The rewrite that may consult the sources: what the plan hands the graph, and what the
+  // second review decides and writes.
+  describe("the rewrite with source tools", () => {
+    // What the rewrite wrote after calling the source, with that call in the turn.
+    function rewritten(reply = "Os portões abrem às 18h."): BaseMessage[] {
+      return [
+        ...turn().slice(0, -1),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "catalogo", args: {}, id: "r1" }],
+        }),
+        new ToolMessage({
+          content: "Portões: 18h (confirmado).",
+          tool_call_id: "r1",
+          name: "catalogo",
+        }),
+        new AIMessage(reply),
+      ];
+    }
+    const INFO = {
+      toolCalls: 1,
+      tools: ["catalogo"],
+      refused: [],
+      inputTokens: 900,
+      outputTokens: 40,
+    };
+
+    test("revise plans a rewrite with the sources and the cap; off, or another action, plans none", () => {
+      const on = buildGroundingGate({
+        langfuseCfg: null,
+        cfg: cfg("revise"),
+        reviewer: RUNS,
+        flow: flow(),
+      });
+      expect(on?.revisionPlan()).toMatchObject({
+        sourceTools: ["catalogo"],
+        maxToolCalls: GUARDRAILS_DEFAULTS.factualGrounding.reviseMaxToolCalls,
+      });
+      const base = cfg("revise");
+      const off = buildGroundingGate({
+        langfuseCfg: null,
+        cfg: {
+          ...base,
+          factualGrounding: {
+            ...base.factualGrounding,
+            reviseWithTools: false,
+          },
+        },
+        reviewer: RUNS,
+        flow: flow(),
+      });
+      expect(off?.revisionPlan()).toBeNull();
+      const template = buildGroundingGate({
+        langfuseCfg: null,
+        cfg: cfg("template"),
+        reviewer: RUNS,
+        flow: flow(),
+      });
+      expect(template?.revisionPlan()).toBeNull();
+    });
+
+    test("a clean second review lets the rewrite go, on a revision line with its calls, tokens and verdict", async () => {
+      const f = flow();
+      const rows: { node: string | null }[] = [];
+      const gate = buildGroundingGate({
+        langfuseCfg: null,
+        cfg: cfg("revise"),
+        reviewer: RUNS,
+        flow: f,
+        logValues: true,
+        makeModel: billedReviewer(CLEAN),
+        persistUsage: async (row) => {
+          rows.push({ node: row.node });
+        },
+      });
+      await gate
+        ?.revisionPlan()
+        ?.review(rewritten(), "Os portões abrem às 18h.", INFO);
+      expect(gate?.pending()).toBeNull();
+      const all = await lines(f.turnId);
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({
+        check: "factual_grounding",
+        outcome: "revision",
+        verdict: "clean",
+        claimCount: 0,
+        toolCalls: 1,
+        tools: ["catalogo"],
+        refused: [],
+        revisionInputTokens: 900,
+        revisionOutputTokens: 40,
+        inputTokens: 1200,
+        outputTokens: 80,
+      });
+      expect(all[0]?.categories).toBeUndefined();
+      expect(rows).toEqual([{ node: "guardrail_grounding" }]);
+    });
+
+    test("a rewrite still flagged sends the Output template, and the line says so", async () => {
+      const f = flow();
+      const r = reviewer(VIOLATED);
+      const gate = buildGroundingGate({
+        langfuseCfg: null,
+        cfg: cfg("revise"),
+        reviewer: RUNS,
+        flow: f,
+        makeModel: r.make,
+      });
+      await gate?.revisionPlan()?.review(rewritten(DRAFT), DRAFT, INFO);
+      gate?.revised(DRAFT);
+      expect(gate?.pending()).toEqual({ kind: "replaced", reply: TEMPLATE });
+      expect(r.calls).toHaveLength(1);
+      // The rewrite's own result is a source of the second review.
+      expect(JSON.stringify(r.calls[0])).toContain("confirmado");
+      const [line] = await lines(f.turnId);
+      expect(line).toMatchObject({
+        outcome: "revision",
+        verdict: "violated",
+        action: "template",
+        claimCount: 1,
+      });
+    });
+
+    test("an empty rewrite is not reviewed, and the line records it", async () => {
+      const f = flow();
+      const r = reviewer(CLEAN);
+      const gate = buildGroundingGate({
+        langfuseCfg: null,
+        cfg: cfg("revise"),
+        reviewer: RUNS,
+        flow: f,
+        makeModel: r.make,
+      });
+      await gate?.revisionPlan()?.review(rewritten(""), "", INFO);
+      expect(r.calls).toHaveLength(0);
+      const [line] = await lines(f.turnId);
+      expect(line).toMatchObject({ outcome: "revision", verdict: "empty" });
+    });
+  });
 });

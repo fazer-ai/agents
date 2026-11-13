@@ -34,6 +34,22 @@ describe("reading it", () => {
     expect(fg.action).toBe("observe");
     expect(fg.contextMessages).toBe(20);
   });
+
+  test("the rewrite consults the sources by default, three calls at most, and a stored cap is clamped", () => {
+    const d = readGuardrailsConfig({}).factualGrounding;
+    expect([d.reviseWithTools, d.reviseMaxToolCalls]).toEqual([true, 3]);
+    const fg = readGuardrailsConfig({
+      guardrails: {
+        factualGrounding: { reviseWithTools: false, reviseMaxToolCalls: 40 },
+      },
+    }).factualGrounding;
+    expect([fg.reviseWithTools, fg.reviseMaxToolCalls]).toEqual([false, 5]);
+    expect(
+      readGuardrailsConfig({
+        guardrails: { factualGrounding: { reviseWithTools: "sim" } },
+      }).factualGrounding.reviseWithTools,
+    ).toBe(true);
+  });
 });
 
 // The reviewer as an override of the guardrails chat model, through the same resolver as every other
@@ -183,5 +199,24 @@ describe("writing it", () => {
         {},
       ),
     ).not.toThrow();
+  });
+
+  test("the rewrite's cap is refused outside 1 to 5, and the switch only as a boolean", () => {
+    for (const reviseMaxToolCalls of [0, 6, 1000, -1, 2.5])
+      expect(
+        schema.safeParse({ factualGrounding: { reviseMaxToolCalls } }).success,
+      ).toBe(false);
+    for (const reviseMaxToolCalls of [1, 3, 5])
+      expect(
+        schema.safeParse({ factualGrounding: { reviseMaxToolCalls } }).success,
+      ).toBe(true);
+    expect(
+      schema.safeParse({ factualGrounding: { reviseWithTools: "sim" } })
+        .success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ factualGrounding: { reviseWithTools: false } })
+        .success,
+    ).toBe(true);
   });
 });

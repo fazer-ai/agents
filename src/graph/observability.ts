@@ -1,10 +1,24 @@
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
-import { CallbackHandler, Langfuse } from "langfuse-langchain";
+import { CallbackHandler } from "@langfuse/langchain";
+import {
+  LangfuseOtelSpanAttributes,
+  propagateAttributes,
+  startObservation,
+} from "@langfuse/tracing";
+import type { Span } from "@opentelemetry/api";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
 import config from "@/config";
+import {
+  drainLangfuseTracing,
+  registerTurnTrace,
+  startInTurnRoute,
+  startInTurnTrace,
+  type TurnTrace,
+  traceIdForTurn,
+} from "@/graph/langfuse-otel";
 import type { UsageSource } from "@/graph/usage";
 import type { ScopedDb } from "@/lib/tenancy";
 import { readLangfuseSettings } from "@/modules/tenant-settings/service";
@@ -72,46 +86,23 @@ export async function resolveLangfuseConfig(
   };
 }
 
-const REDACTED = "[redacted by fazer.ai PII policy]";
+export {
+  LANGFUSE_DELIVERY_RETRY,
+  setLangfuseDeliveryRetryForTest,
+} from "@/graph/langfuse-otel";
 
-// When content must not leave the process, replace every I/O payload with a marker. The trace
-// keeps its shape (spans, timings, usage); only the text is gone.
-export function makeMask(sendContent: boolean | undefined) {
-  if (sendContent) return undefined;
-  return () => REDACTED;
-}
-
-interface ClientHolder {
-  clients: Map<string, Langfuse>;
-}
-
-const CACHE_KEY = Symbol.for("fazerai.langfuse.clients");
-
-function clientCache(): Map<string, Langfuse> {
-  const g = globalThis as unknown as Record<symbol, ClientHolder>;
-  g[CACHE_KEY] ??= { clients: new Map() };
-  return g[CACHE_KEY].clients;
-}
-
-// Drains every cached client and drops them, so no queued trace is still owed delivery afterwards.
-// The SDK delivers on a BACKGROUND flush timer, so an event queued here is POSTed at some later
-// moment through whatever `globalThis.fetch` is installed by then — which in a test process is a
-// different file's stub, recording our telemetry as that file's traffic. That is not hypothetical:
-// it is what made `expect(posted).toEqual([])` receive three `POST /api/public/ingestion` in an
-// unrelated client test, roughly once every four CI runs. A caller that builds clients and then
-// ends (a test file, a worker shutting down) has to settle them rather than leave them to a timer.
+/**
+ * Delivers every queued span of every tenant and forgets the destinations, so nothing is still owed
+ * delivery afterwards. Delivery runs on a background batch timer through `globalThis.fetch`, so a
+ * caller that builds handlers and then ends (a test file, a worker shutting down) has to settle them
+ * rather than leave them to a timer that would POST through whatever `fetch` is installed by then.
+ * Settled, never rejected: an unreachable Langfuse is a normal case and must not fail the caller.
+ */
 export async function shutdownLangfuseClients(): Promise<void> {
-  const cache = clientCache();
-  const clients = [...cache.values()];
-  cache.clear();
-  // shutdownAsync flushes what is queued AND stops the timer; settled, never rejected, because a
-  // client pointed at an unreachable Langfuse is the normal case here and must not fail the caller.
-  await Promise.allSettled(clients.map((c) => c.shutdownAsync()));
+  await drainLangfuseTracing();
 }
 
-// djb2 over the config so a rotated secret/url yields a fresh cache entry (old client is left to
-// its flush timer and GC; not awaited). environment is NOT folded in here — it is appended to the
-// cache key separately below, since it is a closed, low-cardinality set per tenant (one per source).
+// djb2 over the config so a rotated secret or URL gets a fresh destination.
 function configHash(cfg: LangfuseConfig): string {
   const s = `${cfg.publicKey}|${cfg.secretKey}|${cfg.baseUrl ?? ""}|${cfg.sendContent ? 1 : 0}`;
   let h = 5381;
@@ -119,96 +110,39 @@ function configHash(cfg: LangfuseConfig): string {
   return (h >>> 0).toString(36);
 }
 
-// The Langfuse SDK delivers on a background flush and SWALLOWS delivery failures: a failed ingestion
-// POST is emitted as a "warning" event that has NO default listener (HTTP errors are at most
-// console.error'd), so a broken/misconfigured Langfuse instance is indistinguishable from a healthy
-// one on our side — traces simply never appear, with nothing in our logs. Route those events to our
-// structured logger so an operator SEES "traces aren't landing" instead of guessing. Deduped per
-// client (clients are cached per tenant+config) so a persistently-broken instance logs once per
-// distinct message, not once per turn. `log` is injectable for tests.
-const loggedDeliveryIssues = new WeakMap<object, Set<string>>();
-
-export function attachLangfuseDeliveryLogging(
-  client: { on(event: string, cb: (payload: unknown) => void): unknown },
-  ctx: { tenantId: bigint; environment: string; baseUrl?: string },
-  log: Pick<typeof logger, "warn"> = logger,
-): void {
-  const handle = (kind: "error" | "warning") => (payload: unknown) => {
-    const message =
-      payload instanceof Error ? payload.message : String(payload);
-    const seen = loggedDeliveryIssues.get(client) ?? new Set<string>();
-    loggedDeliveryIssues.set(client, seen);
-    const dedupKey = `${kind}:${message}`;
-    if (seen.has(dedupKey)) return;
-    seen.add(dedupKey);
-    log.warn(
-      {
-        err: payload instanceof Error ? payload : undefined,
-        langfuseEvent: kind,
-        detail: message,
-        tenantId: String(ctx.tenantId),
-        environment: ctx.environment,
-        baseUrl: ctx.baseUrl,
-      },
-      "langfuse trace delivery failed; traces will be missing — check the Langfuse instance (blob storage / credentials)",
-    );
-  };
-  client.on("error", handle("error"));
-  client.on("warning", handle("warning"));
-}
-
-// How a client retries a failed delivery: three more tries, three seconds apart. These are the SDK's
-// own defaults, stated so the value a client is built with is one this module names.
-export const LANGFUSE_DELIVERY_RETRY = {
-  fetchRetryCount: 3,
-  fetchRetryDelay: 3_000,
-} as const;
-
-let deliveryRetryForTest:
-  | { fetchRetryCount: number; fetchRetryDelay: number }
-  | undefined;
-
-/**
- * Test-only: the retry a client built from now on gets, so a test that drains clients pointed at an
- * unreachable Langfuse does not sit through nine seconds of retries. `undefined` puts
- * LANGFUSE_DELIVERY_RETRY back. Production never calls it.
- */
-export function setLangfuseDeliveryRetryForTest(
-  retry: { fetchRetryCount: number; fetchRetryDelay: number } | undefined,
-): void {
-  deliveryRetryForTest = retry;
-}
-
-// environment is pinned at the CLIENT level (constructor), NOT per-trace: with updateRoot:true the
-// LangChain handler emits a trace-update that does NOT carry environment, so traceStateless would
-// reinject the client default and the server's per-id merge would clobber a per-trace override.
-// Pinning it on the client keeps create + update consistent. At most a couple of clients per tenant
-// (one environment per UsageSource), so a separate cache entry per environment is cheap.
-function getClient(
-  tenantId: bigint,
+function turnTraceFor(
   cfg: LangfuseConfig,
-  environment: string,
-): Langfuse {
-  const cache = clientCache();
-  const key = `${tenantId}:${configHash(cfg)}:${environment}`;
-  let client = cache.get(key);
-  if (!client) {
-    client = new Langfuse({
+  tenantId: bigint,
+  turnId: string | undefined,
+): TurnTrace {
+  return registerTurnTrace(
+    traceIdForTurn(turnId ?? crypto.randomUUID()),
+    `${tenantId}:${configHash(cfg)}`,
+    {
       publicKey: cfg.publicKey,
       secretKey: cfg.secretKey,
       baseUrl: cfg.baseUrl,
-      mask: makeMask(cfg.sendContent),
-      environment,
-      ...(deliveryRetryForTest ?? LANGFUSE_DELIVERY_RETRY),
-    });
-    attachLangfuseDeliveryLogging(client, {
+      sendContent: cfg.sendContent,
       tenantId,
-      environment,
-      baseUrl: cfg.baseUrl,
-    });
-    cache.set(key, client);
-  }
-  return client;
+    },
+  );
+}
+
+/** Trace metadata carried on every span: identifiers only, each a short string. */
+function traceIdMetadata(ctx: {
+  tenantId: bigint;
+  conversationId?: bigint | null;
+  agentId?: bigint | null;
+  turnId?: string;
+  source?: UsageSource;
+}): Record<string, string> {
+  const out: Record<string, string> = { tenantId: String(ctx.tenantId) };
+  if (ctx.conversationId != null)
+    out.conversationId = String(ctx.conversationId);
+  if (ctx.agentId != null) out.agentId = String(ctx.agentId);
+  if (ctx.turnId) out.turnId = ctx.turnId;
+  if (ctx.source) out.source = ctx.source;
+  return out;
 }
 
 // The Langfuse environment for a turn: inbox traffic tracks the deployment tier (config.env); the
@@ -271,48 +205,125 @@ export function buildToolTraceMetadata(
   return { availableTools, availableToolSchemas };
 }
 
-// Builds a per-invocation callback handler bound to a cached client and a trace rooted on the
-// conversation. Trace identity: id = turnId (1 trace per turn, correlates with ExecutionLog),
-// sessionId = threadId (groups all turns of a conversation in Langfuse's Sessions view), userId =
-// tenant slug. Returns null on any failure — tracing must never break a reply.
+// The handler's own span bookkeeping, which the turn wiring below hooks into. These members are not
+// part of the SDK's typed surface, so the version is pinned in package.json and the tests in
+// tests/graph/langfuse-otel-export.test.ts exercise every hook through a real run.
+interface HandlerInternals {
+  startAndRegisterOtelSpan(params: {
+    runId: string;
+    parentRunId?: string;
+    runName: string;
+    attributes?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }): { id: string; otelSpan: Span };
+  handleOtelSpanEnd(params: {
+    runId: string;
+    attributes?: Record<string, unknown>;
+  }): void;
+  traceAttributesMap: Map<string, unknown>;
+  runMap: Map<string, { otelSpan: Span }>;
+}
+
+const TRACE_METADATA_PREFIX = `${LangfuseOtelSpanAttributes.TRACE_METADATA}.`;
+const HANDLER_METADATA_KEYS = new Set([
+  "langfusePrompt",
+  "langfuseUserId",
+  "langfuseSessionId",
+]);
+
+/** A run's LangChain metadata (provider, model type, graph node) lifted onto the trace's metadata. */
+function liftRunMetadata(
+  span: Span,
+  metadata: Record<string, unknown> | undefined,
+): void {
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (HANDLER_METADATA_KEYS.has(key) || value === undefined) continue;
+    span.setAttribute(`${TRACE_METADATA_PREFIX}${key}`, JSON.stringify(value));
+  }
+}
+
+/**
+ * A per-invocation callback handler whose runs land in the turn's trace (identity rules in
+ * docs/graph.md, Langfuse tracing). With `updateRoot` (the default) the top-level run is the trace's
+ * root and carries its name and input/output; a secondary call (`updateRoot: false`) joins under that
+ * root without touching them. Returns null on any failure, since tracing must never break a reply.
+ */
 export function buildLangfuseHandler(
   cfg: LangfuseConfig | null,
   ctx: TraceContext,
 ): BaseCallbackHandler | null {
   if (!cfg) return null;
   try {
-    const client = getClient(
-      ctx.tenantId,
-      cfg,
-      environmentForSource(ctx.source),
-    );
-    const metadata = {
-      tenantId: String(ctx.tenantId),
-      conversationId:
-        ctx.conversationId != null ? String(ctx.conversationId) : undefined,
-      agentId: ctx.agentId != null ? String(ctx.agentId) : undefined,
-      turnId: ctx.turnId,
-      source: ctx.source,
-      availableTools: ctx.availableTools,
-      availableToolSchemas: ctx.availableToolSchemas,
-    };
-    const trace = client.trace({
-      id: ctx.turnId,
-      sessionId: ctx.threadId || undefined,
+    const turn = turnTraceFor(cfg, ctx.tenantId, ctx.turnId);
+    const updateRoot = ctx.updateRoot ?? true;
+    const rootAttributes = {
       userId: ctx.userId,
-      metadata,
+      sessionId: ctx.threadId || undefined,
+      metadata: traceIdMetadata(ctx),
+      environment: environmentForSource(ctx.source),
+    };
+    const handler = new CallbackHandler({
+      userId: ctx.userId,
+      sessionId: ctx.threadId || undefined,
     });
-    // updateRoot: true so the LangChain handler lifts the run's name / input / output onto the ROOT
-    // trace (otherwise IO lives only deep in the nested generations and the trace-list top level shows
-    // blank name/input/output). The trace was created with id/sessionId/userId/metadata above; the
-    // handler's update events omit userId/sessionId (undefined → dropped on serialize), so Langfuse's
-    // per-id merge keeps the values we set here. Passing `metadata` keeps our keys through the merge.
-    // Content is still gated by the client `mask` (sendContent=false redacts the surfaced IO too).
-    return new CallbackHandler({
-      root: trace,
-      updateRoot: ctx.updateRoot ?? true,
-      metadata,
-    }) as unknown as BaseCallbackHandler;
+    const internals = handler as unknown as HandlerInternals;
+    const start = internals.startAndRegisterOtelSpan.bind(handler);
+    const end = internals.handleOtelSpanEnd.bind(handler);
+    const rootRuns = new Set<string>();
+    internals.startAndRegisterOtelSpan = (params) => {
+      if (params.parentRunId) {
+        const child = startInTurnRoute(turn, () => start(params));
+        if (updateRoot) liftRunMetadata(child.otelSpan, params.metadata);
+        return child;
+      }
+      internals.traceAttributesMap.set(params.runId, rootAttributes);
+      const observation = startInTurnTrace(turn, updateRoot, () =>
+        start(params),
+      );
+      if (updateRoot) {
+        rootRuns.add(params.runId);
+        const span = observation.otelSpan;
+        liftRunMetadata(span, params.metadata);
+        span.setAttribute(
+          LangfuseOtelSpanAttributes.TRACE_NAME,
+          params.runName,
+        );
+        const input = params.attributes?.input;
+        if (input !== undefined) {
+          span.setAttribute(
+            LangfuseOtelSpanAttributes.TRACE_INPUT,
+            JSON.stringify(input),
+          );
+        }
+        if (ctx.availableTools) {
+          span.setAttribute(
+            `${TRACE_METADATA_PREFIX}availableTools`,
+            JSON.stringify(ctx.availableTools),
+          );
+        }
+        if (ctx.availableToolSchemas) {
+          span.setAttribute(
+            `${TRACE_METADATA_PREFIX}availableToolSchemas`,
+            JSON.stringify(ctx.availableToolSchemas),
+          );
+        }
+      }
+      return observation;
+    };
+    internals.handleOtelSpanEnd = (params) => {
+      if (rootRuns.delete(params.runId)) {
+        const output = params.attributes?.output;
+        const span = internals.runMap.get(params.runId)?.otelSpan;
+        if (span && output !== undefined) {
+          span.setAttribute(
+            LangfuseOtelSpanAttributes.TRACE_OUTPUT,
+            JSON.stringify(output),
+          );
+        }
+      }
+      end(params);
+    };
+    return handler as unknown as BaseCallbackHandler;
   } catch (err) {
     logger.warn(
       { err, threadId: ctx.threadId },
@@ -344,10 +355,10 @@ export interface DirectGeneration {
 }
 
 // A billed call no callback saw, written to Langfuse by hand: vision reaches its provider by raw
-// fetch, so without this the dollar ceiling (which sums Langfuse generations) misses it. Same trace
-// identity and client as the handler, so the poll finds it and a later turn merges into the trace;
-// `usageDetails` uses the LangChain handler's keys so one model definition prices both paths.
-// Best-effort: never throws, and returns whether it queued anything so the caller can log a miss.
+// fetch, so without this the turn's trace would miss the call. It joins the turn's trace like a
+// secondary call, and `usageDetails` uses the LangChain handler's keys so one model definition prices
+// both paths. Best-effort: never throws, and returns whether it queued anything so the caller can log
+// a miss.
 export function recordDirectGeneration(
   cfg: LangfuseConfig | null,
   ctx: DirectGenerationContext,
@@ -355,11 +366,7 @@ export function recordDirectGeneration(
 ): boolean {
   if (!cfg) return false;
   try {
-    const client = getClient(
-      ctx.tenantId,
-      cfg,
-      environmentForSource(ctx.source),
-    );
+    const turn = turnTraceFor(cfg, ctx.tenantId, ctx.turnId);
     const cachedRead = gen.cachedReadTokens ?? 0;
     const cacheCreation = gen.cacheCreationTokens ?? 0;
     const usageDetails: Record<string, number> = {
@@ -370,29 +377,26 @@ export function recordDirectGeneration(
     if (cachedRead > 0) usageDetails.input_cache_read = cachedRead;
     if (cacheCreation > 0) usageDetails.input_cache_creation = cacheCreation;
     const at = gen.at ?? new Date();
-    const metadata = {
-      tenantId: String(ctx.tenantId),
-      conversationId:
-        ctx.conversationId != null ? String(ctx.conversationId) : undefined,
-      agentId: ctx.agentId != null ? String(ctx.agentId) : undefined,
-      turnId: ctx.turnId,
-      source: ctx.source,
-    };
-    client
-      .trace({
-        id: ctx.turnId,
-        sessionId: ctx.threadId ?? undefined,
+    propagateAttributes(
+      {
         userId: cfg.tenantSlug,
-        metadata,
-      })
-      .generation({
-        name: gen.name,
-        model: gen.model,
-        startTime: at,
-        endTime: at,
-        usageDetails,
-        metadata: { node: gen.name },
-      });
+        sessionId: ctx.threadId ?? undefined,
+        metadata: traceIdMetadata(ctx),
+        environment: environmentForSource(ctx.source),
+      },
+      () =>
+        startInTurnTrace(turn, false, () =>
+          startObservation(
+            gen.name,
+            {
+              model: gen.model,
+              usageDetails,
+              metadata: { node: gen.name },
+            },
+            { asType: "generation", startTime: at },
+          ),
+        ).end(at),
+    );
     return true;
   } catch (err) {
     logger.warn(

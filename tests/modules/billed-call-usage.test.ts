@@ -4,6 +4,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { traceIdForTurn } from "@/graph/langfuse-otel";
 import {
   environmentForSource,
   shutdownLangfuseClients,
@@ -28,6 +29,7 @@ import { extractInboundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { jsonAttr, LANGFUSE_OTLP_PATH, otlpSpans } from "../utils/otlp-capture";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 // `LlmUsage` is the only ledger of what an install spends on models, and a call reaches it only by
@@ -312,7 +314,7 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
 
   // THE GUARDRAIL'S CALL IN THE OTHER BOOK. The gate hands its model `[usage()]` and nothing else,
   // so the turn's Langfuse handler must see the call through LangChain's config propagation, or the
-  // guardrail's spend is invisible to the dollar ceiling. The ingestion batch itself is read.
+  // guardrail's call is missing from the turn's trace. The exported OTLP body itself is read.
   test("a screened turn reaches Langfuse with the guardrail's generation beside the agent's", async () => {
     const tctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
     const lf = await suDb.vaultEntry.create({
@@ -330,20 +332,17 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
       { enabled: true, credentialRef: formatVaultRef(lf.id) },
       appDb,
     );
-    const posted: Array<Record<string, unknown>> = [];
+    const bodies: string[] = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (
       input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
       const url = String(input instanceof Request ? input.url : input);
-      if (url.endsWith("/api/public/ingestion")) {
-        const body = JSON.parse(String(init?.body ?? "{}")) as {
-          batch?: Array<Record<string, unknown>>;
-        };
-        posted.push(...(body.batch ?? []));
-        return new Response(JSON.stringify({ successes: [], errors: [] }), {
-          status: 207,
+      if (url.endsWith(LANGFUSE_OTLP_PATH)) {
+        bodies.push(String(init?.body ?? "{}"));
+        return new Response("{}", {
+          status: 200,
           headers: { "content-type": "application/json" },
         });
       }
@@ -386,20 +385,19 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     }
     // The scripted model carries no model name, so the two generations are told apart by the usage
     // each reported: the agent's own, and the guardrail's 31 / 5. Both under the turn's trace.
-    const updates = posted
-      .filter((e) => e.type === "generation-update")
-      .map(
-        (e) =>
-          e.body as {
-            traceId?: string;
-            usageDetails?: { input?: number; output?: number };
-          },
-      );
-    const guard = updates.find(
-      (u) => u.usageDetails?.input === 31 && u.usageDetails?.output === 5,
+    const generations = otlpSpans(bodies)
+      .filter((sp) => sp.attrs["langfuse.observation.type"] === "generation")
+      .map((sp) => ({
+        traceId: sp.traceId,
+        usage: jsonAttr(sp.attrs, "langfuse.observation.usage_details") as
+          | { input?: number; output?: number }
+          | undefined,
+      }));
+    const guard = generations.find(
+      (g) => g.usage?.input === 31 && g.usage?.output === 5,
     );
     expect(guard).toBeDefined();
-    const agent = updates.find((u) => u.usageDetails?.input !== 31);
+    const agent = generations.find((g) => g.usage?.input !== 31);
     expect(agent).toBeDefined();
     expect(guard?.traceId).toBe(agent?.traceId);
   });
@@ -531,22 +529,16 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     ).slug;
     // The SDK posts through `globalThis.fetch`; the provider is reached through `fetchImpl`, so the
     // two never meet here.
-    const posted: Array<{
-      url: string;
-      batch: Array<Record<string, unknown>>;
-    }> = [];
+    const posted: Array<{ url: string; body: string }> = [];
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (
       input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
       const url = String(input instanceof Request ? input.url : input);
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        batch?: Array<Record<string, unknown>>;
-      };
-      posted.push({ url, batch: body.batch ?? [] });
-      return new Response(JSON.stringify({ successes: [], errors: [] }), {
-        status: 207,
+      posted.push({ url, body: String(init?.body ?? "{}") });
+      return new Response("{}", {
+        status: 200,
         headers: { "content-type": "application/json" },
       });
     }) as typeof fetch;
@@ -608,27 +600,25 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     for (const p of posted) {
       expect(p.url.startsWith("https://langfuse.example.test/")).toBe(true);
     }
-    const events = posted.flatMap((p) => p.batch);
-    expect(events.find((e) => e.type === "trace-create")?.body).toMatchObject({
-      id: turnId,
-      sessionId: threadId,
-      userId: slug,
-      environment: environmentForSource("inbox"),
-    });
+    const gen = otlpSpans(posted.map((p) => p.body)).find(
+      (sp) => sp.name === "vision",
+    );
+    expect(gen?.traceId).toBe(traceIdForTurn(turnId));
+    expect(gen?.attrs["session.id"]).toBe(threadId);
+    expect(gen?.attrs["user.id"]).toBe(slug);
+    expect(gen?.attrs["langfuse.environment"]).toBe(
+      environmentForSource("inbox"),
+    );
+    expect(gen?.attrs["langfuse.observation.type"]).toBe("generation");
+    expect(gen?.attrs["langfuse.observation.model.name"]).toBe(VISION_MODEL);
+    // `input` net of the cached subset, the subset under the handler's own key.
     expect(
-      events.find((e) => e.type === "generation-create")?.body,
-    ).toMatchObject({
-      traceId: turnId,
-      name: "vision",
-      model: VISION_MODEL,
-      environment: environmentForSource("inbox"),
-      // `input` net of the cached subset, the subset under the handler's own key.
-      usageDetails: {
-        input: 301,
-        output: 24,
-        total: 837,
-        input_cache_read: 512,
-      },
+      jsonAttr(gen?.attrs ?? {}, "langfuse.observation.usage_details"),
+    ).toEqual({
+      input: 301,
+      output: 24,
+      total: 837,
+      input_cache_read: 512,
     });
     // The ledger row was written too: both books, one call.
     expect((await usageRows(threadId)).map((u) => u.node)).toEqual(["vision"]);

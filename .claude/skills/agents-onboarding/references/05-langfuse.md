@@ -31,7 +31,7 @@ Como **você gerou** as keys no passo 1, elas já estão na sua mão pra ligar n
 
 ## Verifique a ingestion (health verde NÃO basta)
 
-`scripts/langfuse-verify.py` POSTa um batch em `/api/public/ingestion` e exige **207/200** (não 500); as chaves são o par que você semeou, lidas de um arquivo `0600` (a secret key fora do argv):
+`scripts/langfuse-verify.py` POSTa um span OTLP em `/api/public/otel/v1/traces`, o mesmo endpoint para onde o app exporta os traces, e exige **200** (não 500); as chaves são o par que você semeou, lidas de um arquivo `0600` (a secret key fora do argv):
 ```sh
 echo '{"publicKey":"<pk-lf>","secretKey":"<sk-lf>"}' > langfuse.keys && chmod 600 langfuse.keys
 python3 scripts/langfuse-verify.py ingestion --base-url https://langfuse.<seu-dominio>:3000 --keys-file langfuse.keys

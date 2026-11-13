@@ -114,7 +114,10 @@ jobs:
     # buys the same wall clock by adding runners instead of dividing one.
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        # Pinned to the Postgres 17.11 build: from 17.12 on, the follow-up sweep's dedupe lookups on
+        # scheduler_jobs plan as a Seq Scan and tests/modules/scoped-index-plans.test.ts fails. The
+        # planner side is #1779; move this pin only together with that answer.
+        image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
         env:
           POSTGRES_PASSWORD: postgres
         ports:

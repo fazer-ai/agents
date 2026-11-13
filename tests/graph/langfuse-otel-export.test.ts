@@ -44,6 +44,9 @@ interface Posted {
 
 let posted: Posted[] = [];
 let failWith: number | null = null;
+let answerWith: string | null = null;
+let hang = false;
+let inFlight = 0;
 const realFetch = globalThis.fetch;
 
 beforeAll(() => {
@@ -60,7 +63,17 @@ beforeAll(() => {
           ? new TextDecoder().decode(raw)
           : String(raw ?? "");
     posted.push({ url, auth: headers.get("authorization"), body });
+    if (hang) {
+      inFlight++;
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          inFlight--;
+          reject(new Error("aborted by the exporter"));
+        });
+      });
+    }
     if (failWith) return new Response("nope", { status: failWith });
+    if (answerWith) return new Response(answerWith, { status: 200 });
     if (url.endsWith(LEGACY)) {
       return new Response(JSON.stringify({ successes: [], errors: [] }), {
         status: 207,
@@ -78,6 +91,8 @@ afterEach(async () => {
   await shutdownLangfuseClients();
   posted = [];
   failWith = null;
+  answerWith = null;
+  hang = false;
 });
 
 afterAll(() => {
@@ -429,6 +444,63 @@ describe("langfuse export over OTLP", () => {
       expect(JSON.stringify(lines)).not.toContain("sk-lf-fail");
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  test("a 200 that rejects spans is a failed delivery, logged and not retried", async () => {
+    answerWith = JSON.stringify({
+      partialSuccess: { rejectedSpans: 2, errorMessage: "schema mismatch" },
+    });
+    const warn = spyOn(logger, "warn");
+    try {
+      await runTurn(
+        cfgFor("partial"),
+        { tenantId: 44n, threadId: "44:1:1", turnId: TURN_A },
+        "x",
+        "y",
+      );
+      await shutdownLangfuseClients();
+      expect(
+        posted.filter((p) => p.url.startsWith("http://lf-partial.test")),
+      ).toHaveLength(1);
+      const lines = warn.mock.calls.filter((c) =>
+        String(c[1] ?? "").includes("langfuse trace delivery failed"),
+      );
+      expect(lines).toHaveLength(1);
+      expect(String((lines[0]?.[0] as { detail?: string }).detail)).toContain(
+        "2 span(s) rejected",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("an export that never answers is abandoned within its budget, and the drain waits for it", async () => {
+    hang = true;
+    setLangfuseDeliveryRetryForTest({
+      fetchRetryCount: 3,
+      fetchRetryDelay: 1,
+      budgetMs: 300,
+    });
+    try {
+      await runTurn(
+        cfgFor("hang"),
+        { tenantId: 55n, threadId: "55:1:1", turnId: TURN_A },
+        "x",
+        "y",
+      );
+      const started = Date.now();
+      await shutdownLangfuseClients();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(inFlight).toBe(0);
+      expect(
+        posted.filter((p) => p.url.startsWith("http://lf-hang.test")).length,
+      ).toBeGreaterThan(0);
+    } finally {
+      setLangfuseDeliveryRetryForTest({
+        fetchRetryCount: 1,
+        fetchRetryDelay: 1,
+      });
     }
   });
 

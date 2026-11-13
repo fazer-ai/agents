@@ -60,7 +60,7 @@ export const LANGFUSE_DELIVERY_RETRY = {
 } as const;
 
 let deliveryRetryForTest:
-  | { fetchRetryCount: number; fetchRetryDelay: number }
+  | { fetchRetryCount: number; fetchRetryDelay: number; budgetMs?: number }
   | undefined;
 
 /**
@@ -69,12 +69,17 @@ let deliveryRetryForTest:
  * LANGFUSE_DELIVERY_RETRY back. Production never calls it.
  */
 export function setLangfuseDeliveryRetryForTest(
-  retry: { fetchRetryCount: number; fetchRetryDelay: number } | undefined,
+  retry:
+    | { fetchRetryCount: number; fetchRetryDelay: number; budgetMs?: number }
+    | undefined,
 ): void {
   deliveryRetryForTest = retry;
 }
 
 const EXPORT_ATTEMPT_TIMEOUT_MS = 10_000;
+// Every attempt and pause of one export fits in this budget, which stays under the batch processor's
+// 30-second export timeout, so the processor never gives up on an export that is still running.
+const EXPORT_BUDGET_MS = 25_000;
 // Langfuse refuses an OTLP body above its request limit, so a batch whose JSON passes this is split
 // in halves until each half fits or holds a single span.
 const MAX_EXPORT_BODY_BYTES = 3_500_000;
@@ -111,6 +116,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * An OTLP endpoint can answer 200 and still refuse spans (`partialSuccess.rejectedSpans`). Those are
+ * not retried, since the rest of the request was accepted, but they are a failed delivery all the
+ * same. Returns the failure to report, or undefined when nothing was refused.
+ */
+async function rejectedSpans(res: Response): Promise<string | undefined> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await res.text());
+  } catch {
+    return undefined;
+  }
+  const partial = (parsed as { partialSuccess?: unknown } | null)
+    ?.partialSuccess as
+    | { rejectedSpans?: number | string; errorMessage?: string }
+    | undefined;
+  const count = Number(partial?.rejectedSpans ?? 0);
+  if (!(count > 0)) return undefined;
+  return `${count} span(s) rejected by ${res.url || "the OTLP endpoint"}${partial?.errorMessage ? `: ${partial.errorMessage}` : ""}`;
+}
+
 export const TRUNCATED_MARKER =
   " …[truncated by fazer.ai: over the Langfuse request size]";
 
@@ -141,6 +167,7 @@ export class LangfuseFetchExporter implements SpanExporter {
   private readonly url: string;
   private readonly headers: Record<string, string>;
   private readonly retry: { fetchRetryCount: number; fetchRetryDelay: number };
+  private readonly budgetMs: number;
   private readonly inFlight = new Set<Promise<unknown>>();
   private stopped = false;
 
@@ -157,6 +184,7 @@ export class LangfuseFetchExporter implements SpanExporter {
       "x-langfuse-ingestion-version": "4",
     };
     this.retry = deliveryRetryForTest ?? LANGFUSE_DELIVERY_RETRY;
+    this.budgetMs = deliveryRetryForTest?.budgetMs ?? EXPORT_BUDGET_MS;
   }
 
   export(
@@ -199,17 +227,29 @@ export class LangfuseFetchExporter implements SpanExporter {
   }
 
   private async post(body: Uint8Array): Promise<boolean> {
+    const deadline = Date.now() + this.budgetMs;
     let detail = "";
     for (let attempt = 0; attempt <= this.retry.fetchRetryCount; attempt++) {
-      if (attempt > 0) await sleep(this.retry.fetchRetryDelay);
+      if (attempt > 0) {
+        if (Date.now() + this.retry.fetchRetryDelay >= deadline) break;
+        await sleep(this.retry.fetchRetryDelay);
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
       try {
         const res = await fetch(this.url, {
           method: "POST",
           headers: this.headers,
           body: new TextDecoder().decode(body),
-          signal: AbortSignal.timeout(EXPORT_ATTEMPT_TIMEOUT_MS),
+          signal: AbortSignal.timeout(
+            Math.min(EXPORT_ATTEMPT_TIMEOUT_MS, remaining),
+          ),
         });
-        if (res.ok) return true;
+        if (res.ok) {
+          const rejected = await rejectedSpans(res);
+          if (rejected) reportLangfuseDeliveryFailure(this.route, rejected);
+          return !rejected;
+        }
         detail = `HTTP ${res.status} from ${this.url}`;
         if (res.status !== 429 && res.status < 500) break;
       } catch (err) {
@@ -258,6 +298,7 @@ interface TraceEntry {
 
 interface Destination {
   processor: LangfuseSpanProcessor;
+  exporter: LangfuseFetchExporter;
   sendContent: boolean;
 }
 
@@ -272,14 +313,16 @@ class TenantSpanRouter implements SpanProcessor {
 
   destination(routeKey: string, route: LangfuseRoute): void {
     if (this.destinations.has(routeKey)) return;
+    const exporter = new LangfuseFetchExporter(route);
     const processor = new LangfuseSpanProcessor({
       publicKey: route.publicKey,
       secretKey: route.secretKey,
       baseUrl: route.baseUrl,
-      exporter: new LangfuseFetchExporter(route),
+      exporter,
     });
     this.destinations.set(routeKey, {
       processor,
+      exporter,
       sendContent: route.sendContent === true,
     });
   }
@@ -341,6 +384,8 @@ class TenantSpanRouter implements SpanProcessor {
     this.destinations.clear();
     this.traces.clear();
     await Promise.allSettled(dests.map((d) => d.processor.shutdown()));
+    // NOTE: A processor that gave up on an export still leaves its request running in the exporter.
+    await Promise.allSettled(dests.map((d) => d.exporter.shutdown()));
   }
 
   async shutdown(): Promise<void> {

@@ -1956,6 +1956,7 @@ async function assertReferenceKnowledgeBases(
   settings: unknown,
   stored: unknown,
 ): Promise<void> {
+  dedupeReferenceKnowledgeBaseIds(settings);
   const before = new Set(referenceKnowledgeBaseIdsIn(stored));
   const added = referenceKnowledgeBaseIdsIn(settings).filter(
     (id) => !before.has(id),
@@ -1968,6 +1969,17 @@ async function assertReferenceKnowledgeBases(
       "knowledge base not found",
       "errors.knowledgeBaseNotFound",
     );
+}
+
+// A repeated id is stored once: the published schema cannot say "no repeats", so the write does not
+// refuse one, and a repeat would only show on read.
+function dedupeReferenceKnowledgeBaseIds(settings: unknown): void {
+  const fg = (
+    (settings as { guardrails?: { factualGrounding?: unknown } } | null)
+      ?.guardrails as { factualGrounding?: unknown } | undefined
+  )?.factualGrounding as { referenceKnowledgeBaseIds?: unknown } | undefined;
+  if (fg && Array.isArray(fg.referenceKnowledgeBaseIds))
+    fg.referenceKnowledgeBaseIds = [...new Set(fg.referenceKnowledgeBaseIds)];
 }
 
 function referenceKnowledgeBaseIdsIn(settings: unknown): string[] {

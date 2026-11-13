@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import { parseDbId } from "@/lib/db-id";
 import { inRange, type NumberRange } from "@/lib/number-range";
 import {
   CALL_RANGES,
@@ -1152,20 +1151,9 @@ const guardrails = z
             "tools whose results are sources; runs only when one returned",
           ),
         referenceKnowledgeBaseIds: z
-          .array(
-            z
-              .string()
-              .refine(
-                (id) => (parseDbId(id) ?? 0n) > 0n,
-                "must be a knowledge base id",
-              ),
-          )
+          .array(z.string().regex(/^[1-9][0-9]{0,17}$/))
           .max(MAX_REFERENCE_KNOWLEDGE_BASES)
-          .refine((ids) => new Set(ids).size === ids.length, "repeats an id")
-          .optional()
-          .describe(
-            "knowledge base ids whose READY documents the reviewer reads whole on every reviewed reply, as sources the agent did not have to search",
-          ),
+          .optional(),
         action: oneOf(GROUNDING_ACTIONS)
           .optional()
           .describe("revise = one more generation told the claims"),

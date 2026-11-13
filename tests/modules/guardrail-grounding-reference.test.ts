@@ -192,14 +192,18 @@ describe("the settings", () => {
     ]);
   });
 
-  test("the write schema refuses a repeated id and one that is not an id", () => {
+  test("the write schema refuses what is not an id, as the pattern it publishes says", () => {
     const write = (ids: unknown) =>
       z.object(BEHAVIOR_PATCH_SHAPE).safeParse({
         guardrails: { factualGrounding: { referenceKnowledgeBaseIds: ids } },
       }).success;
-    expect([write(["5"]), write(["5", "5"]), write(["x"]), write("5")]).toEqual(
-      [true, false, false, false],
-    );
+    expect([
+      write(["5"]),
+      write(["x"]),
+      write(["0"]),
+      write(["1".repeat(19)]),
+      write("5"),
+    ]).toEqual([true, false, false, false, false]);
   });
 
   test("with only a reference base and no source tool, the check runs", () => {
@@ -351,18 +355,25 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
       );
     expect([
       await write([String(kbA)]),
+      await write([String(kbA), String(kbA)]),
       await write([String(kbA), String(kbOther)]),
       await write(["999999999"]),
       await preview([String(kbOther)]),
       await preview([String(kbB)]),
-    ]).toEqual(["ok", 404, 404, 404, "ok"]);
+    ]).toEqual(["ok", "ok", 404, 404, 404, "ok"]);
     const stored = await suDb.agent.findUniqueOrThrow({
       where: { id: agent.id },
       select: { settings: true },
     });
+    // Read raw, not through the reader, which dedupes on its own.
     expect(
-      readGuardrailsConfig(stored.settings).factualGrounding
-        .referenceKnowledgeBaseIds,
+      (
+        stored.settings as {
+          guardrails: {
+            factualGrounding: { referenceKnowledgeBaseIds: string[] };
+          };
+        }
+      ).guardrails.factualGrounding.referenceKnowledgeBaseIds,
     ).toEqual([String(kbA)]);
   });
 

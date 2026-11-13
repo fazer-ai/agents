@@ -12,7 +12,6 @@ import {
   GROUNDING_SYSTEM_PROMPT,
   groundingConversation,
   groundingMemory,
-  groundingNow,
   groundingToolCalls,
   groundingUserMessage,
   readGroundingVerdict,
@@ -210,24 +209,6 @@ describe("the reviewer's message", () => {
     });
     expect(text.match(/<\/conversation_context>/g)?.length).toBe(1);
     expect(text).not.toContain("<now>");
-  });
-
-  // The bug it catches: a clock that changes every minute makes every review of the same turn a new
-  // prompt, and the provider's cache then misses the whole reference.
-  test("the instant is the agent's 30-minute slot: one review a minute later is the same bytes", () => {
-    const tz = "America/Sao_Paulo";
-    const at = (iso: string) => groundingNow(new Date(iso), tz);
-    expect([
-      at("2026-11-12T17:05:00Z"),
-      at("2026-11-12T17:29:59Z") === at("2026-11-12T17:05:00Z"),
-      at("2026-11-12T17:30:00Z"),
-      at("2026-11-13T02:45:00Z"),
-    ]).toEqual([
-      "Thursday, 2026-11-12 14:00 (America/Sao_Paulo)",
-      true,
-      "Thursday, 2026-11-12 14:30 (America/Sao_Paulo)",
-      "Thursday, 2026-11-12 23:30 (America/Sao_Paulo)",
-    ]);
   });
 
   test("text that would close a fence is taken out", () => {

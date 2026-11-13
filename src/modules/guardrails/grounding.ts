@@ -10,8 +10,7 @@ import { historyDate } from "@/graph/history-dates";
 import { isMemoryHead } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
-import { TIME_ROUND_MINUTES } from "@/graph/prompt";
-import { flooredLocalParts, partsInTimezone } from "@/graph/time";
+import { partsInTimezone } from "@/graph/time";
 import { msgType } from "@/graph/trace";
 import { clipText, clipTextEnd } from "@/lib/text";
 import { invokeStructured } from "./analyze";
@@ -228,14 +227,10 @@ export function groundingMemory(
   return text ? clipTextEnd(text, GROUNDING_MEMORY_MAX) : null;
 }
 
-// The instant as the reviewer reads it: the local date, weekday and time, and the zone they are in. The
-// time is floored to the slot the agent's own {{hora_atual}} reads, so two reviews of the same turn in
-// one slot are the same bytes: OpenAI's automatic cache on gpt-5.6-luna reused only a whole identical
-// prompt (or the system message alone), never a prefix that stops before a changed minute.
+// The instant as the reviewer reads it: the local date, weekday and time, and the zone they are in.
 export function groundingNow(at: Date, timezone: string): string {
-  const p = flooredLocalParts(at, timezone, TIME_ROUND_MINUTES);
-  const { weekday } = partsInTimezone(at, timezone, "en-US");
-  return `${weekday}, ${p.YYYY}-${p.MM}-${p.DD} ${p.HH}:${p.mm} (${timezone})`;
+  const p = partsInTimezone(at, timezone, "en-US");
+  return `${p.weekday}, ${p.YYYY}-${p.MM}-${p.DD} ${p.HH}:${p.mm} (${timezone})`;
 }
 
 const NOW_TAG = "now";
@@ -297,7 +292,7 @@ export const GROUNDING_NO_SOURCE_PROMPT = [
 // Added to the system message when the review carries reference documents. They are the operator's
 // standing rules, so a reply that repeats one is grounded even when the turn consulted nothing.
 export const GROUNDING_REFERENCE_PROMPT = [
-  'The user message opens with <reference_sources>: the operator\'s reference documents (house rules, policies, procedures), sent on every review whether or not the assistant consulted them. They are SOURCES like the calls marked source="yes": a reply that states what they state is supported, one that states something different is a contradiction, and one that says they do not cover what they do cover is a false absence.',
+  'The system message ends with <reference_sources>: the operator\'s reference documents (house rules, policies, procedures), sent on every review whether or not the assistant consulted them. They are SOURCES like the calls marked source="yes": a reply that states what they state is supported, one that states something different is a contradiction, and one that says they do not cover what they do cover is a false absence.',
 ].join("\n");
 
 // Whether the review has any source, a source call or a reference document: what decides the system
@@ -309,8 +304,8 @@ export const groundingSourced = (
 
 const attr = (s: string) => unfenced(s).replace(/"/g, "");
 
-// The reference block, alone: it leads the reviewer's message and carries nothing of the turn, so it
-// is the same bytes on every review while the bases do not change.
+// The reference block, alone: it closes the reviewer's system message and carries nothing of the turn,
+// so it is the same bytes on every review while the bases do not change.
 export function groundingReferenceBlock(
   reference: readonly GroundingReferenceDoc[],
 ): string {
@@ -436,43 +431,25 @@ export function readGroundingVerdict(
   );
 }
 
-// The reviewer's messages. With reference documents the reference is a user message of its own, before
-// the turn's: OpenAI's automatic cache reused the reference on gpt-5.6-luna only up to the end of a
-// whole message (13/11/2026: 10,765 of 10,768 tokens with the reference alone in its message, 1,560
-// with <now> after it in the same one). On a provider that caches only what is marked, its block
-// carries the mark, so the system message and the reference are read from cache on every review.
-export function groundingMessages(
-  input: GroundingReviewInput,
-  cacheReference = false,
-): BaseMessage[] {
+// The reviewer's two messages. The reference closes the system message, after the policy: the same
+// bytes on every review while the bases do not change, which is what the providers cache. OpenAI's
+// automatic cache on gpt-5.6-luna reused, measured on 13/11/2026, the whole system message (11,044 of
+// 11,125 tokens with a reference, across different conversations and replies) and nothing after it;
+// on a provider that caches only what is marked, the mark on the last system block covers it.
+export function groundingMessages(input: GroundingReviewInput): BaseMessage[] {
   const reference = input.reference ?? [];
   const system = [
     GROUNDING_SYSTEM_PROMPT,
-    ...(reference.length > 0 ? [GROUNDING_REFERENCE_PROMPT] : []),
     ...(groundingSourced(input.calls, reference)
       ? []
       : [GROUNDING_NO_SOURCE_PROMPT]),
+    ...(reference.length > 0
+      ? [GROUNDING_REFERENCE_PROMPT, groundingReferenceBlock(reference)]
+      : []),
   ].join("\n\n");
-  const turn = groundingUserMessage(input);
-  if (reference.length === 0)
-    return [new SystemMessage(system), new HumanMessage(turn)];
-  const block = groundingReferenceBlock(reference);
   return [
     new SystemMessage(system),
-    new HumanMessage(
-      cacheReference
-        ? {
-            content: [
-              {
-                type: "text",
-                text: block,
-                cache_control: { type: "ephemeral" },
-              },
-            ],
-          }
-        : block,
-    ),
-    new HumanMessage(turn),
+    new HumanMessage(groundingUserMessage(input)),
   ];
 }
 
@@ -485,10 +462,8 @@ export async function reviewGrounding(
   callbacks?: BaseCallbackHandler[],
   // The turn's own end (a scheduler job's deadline): it ends the wait for a permit and the call.
   turnSignal?: AbortSignal,
-  // Whether the provider caches only what the request marks (`promptCacheApplies`).
-  cacheReference = false,
 ): Promise<GroundingVerdict> {
-  const messages = groundingMessages(input, cacheReference);
+  const messages = groundingMessages(input);
   try {
     const { parsed, raw } = await runModelCall(
       (signal) =>

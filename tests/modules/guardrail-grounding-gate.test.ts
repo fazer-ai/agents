@@ -590,7 +590,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const { sent } = await reviewWith(turn(), 24);
     expect(
       sent.startsWith(
-        "<now>Thursday, 2026-11-12 14:00 (America/Sao_Paulo)</now>\n\n<conversation_context>",
+        "<now>Thursday, 2026-11-12 14:05 (America/Sao_Paulo)</now>\n\n<conversation_context>",
       ),
     ).toBe(true);
   });

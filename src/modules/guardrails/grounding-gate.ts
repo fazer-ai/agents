@@ -10,7 +10,6 @@ import {
   buildLangfuseHandler,
   type LangfuseConfig,
 } from "@/graph/observability";
-import { promptCacheApplies } from "@/graph/prompt-cache";
 import {
   extractTokenUsage,
   UsageCapture,
@@ -293,7 +292,6 @@ export function buildGroundingGate(
       verdictAskMode(reviewer.provider as ModelConfig["provider"]),
       callbacks(tokens),
       p.signal,
-      promptCacheApplies(reviewer.provider, reviewer.model),
     );
     // Ended during the review: nothing of this turn goes out, so nothing is decided or logged.
     if (p.signal?.aborted) return null;

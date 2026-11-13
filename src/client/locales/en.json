@@ -2377,7 +2377,7 @@
       "groundingActionReviseHint": "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn, plus any source calls.",
       "groundingActionTemplate": "Reply with the Output template message",
       "groundingContext": "Earlier messages the reviewer reads",
-      "groundingContextHint": "Customer and agent messages before the turn, including what was read from images the customer sent. The source results of the turns in this window are reviewed too.",
+      "groundingContextHint": "Customer and agent messages before the turn, past conversations with this contact included. Sources from the last 60 messages and the memory of past conversations count too. 0-40.",
       "groundingCredentialHint": "Required when the reviewer uses another provider; without its own key, replies go out unreviewed.",
       "groundingDesc": "Before a reply is sent, a reviewer model compares it with what the source tools returned, in that turn and in the earlier turns of the conversation it reads, and lists the claims they do not support. It reviews every reply: when no source was consulted, any fact the sources would cover counts as unsupported.",
       "groundingEnabled": "Check the reply against the tool results",

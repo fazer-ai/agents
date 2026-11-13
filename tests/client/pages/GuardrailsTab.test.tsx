@@ -853,6 +853,22 @@ describe("GuardrailsTab factual grounding", () => {
     ]);
   });
 
+  test("the reviewer's window takes up to 40 messages, past the input check's 20", () => {
+    const c: GuardrailsConfig = {
+      ...structuredClone(GUARDRAILS_DEFAULTS),
+      enabled: true,
+    };
+    c.factualGrounding = { ...c.factualGrounding, enabled: true };
+    render(<Stateful initial={c} />);
+    const field = document.querySelector<HTMLInputElement>(
+      '[data-testid="gr-grounding-context"]',
+    ) as HTMLInputElement;
+    expect([field.value, field.max]).toEqual(["24", "40"]);
+    fireEvent.change(field, { target: { value: "40" } });
+    fireEvent.change(field, { target: { value: "41" } });
+    expect(saved?.factualGrounding.contextMessages).toBe(40);
+  });
+
   test("off, the section shows only its switch", () => {
     const c: GuardrailsConfig = {
       ...structuredClone(GUARDRAILS_DEFAULTS),

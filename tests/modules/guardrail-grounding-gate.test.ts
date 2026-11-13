@@ -7,6 +7,12 @@ import {
 } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import {
+  conversationDividerMessage,
+  conversationStamp,
+  memoryHeadMessage,
+  sentAtStamp,
+} from "@/graph/markers";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
 import {
@@ -51,6 +57,11 @@ const suDb = su as PrismaClient;
 
 let tenantId = 0n;
 let seq = 0;
+// A Thursday afternoon in São Paulo (UTC-3).
+const CLOCK = {
+  now: new Date("2026-11-12T17:05:00Z"),
+  timezone: "America/Sao_Paulo",
+};
 const TEMPLATE = "[resposta substituída]";
 const HANDOFF = "[time assume]";
 const DRAFT = "Os portões abrem às 16h.";
@@ -206,6 +217,7 @@ test("off, or with no source tool named, there is no hook at all", () => {
   expect(
     buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: { ...base, enabled: false },
       reviewer: RUNS,
       flow: { tenantId: 1n, turnId: "x", source: "inbox" } as FlowContext,
@@ -214,6 +226,7 @@ test("off, or with no source tool named, there is no hook at all", () => {
   expect(
     buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: {
         ...base,
         factualGrounding: { ...base.factualGrounding, sourceTools: [] },
@@ -251,6 +264,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const f = flow();
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
@@ -278,6 +292,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const f = flow();
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
@@ -298,6 +313,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const reports: GuardrailReport[] = [];
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
@@ -323,6 +339,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const f = flow();
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
@@ -336,6 +353,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
   test("revise answers with a note naming the claim", async () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("revise"),
       reviewer: RUNS,
       flow: flow(),
@@ -350,6 +368,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
   test("an empty rewrite leaves the Output template as the decision", async () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("revise"),
       reviewer: RUNS,
       flow: flow(),
@@ -365,6 +384,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
   test("template and handoff leave the decision for the output gate", async () => {
     const t = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("template"),
       reviewer: RUNS,
       flow: flow(),
@@ -374,6 +394,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(t?.pending()).toEqual({ kind: "replaced", reply: TEMPLATE });
     const h = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("handoff"),
       reviewer: RUNS,
       flow: flow(),
@@ -389,6 +410,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const rows: { node: string | null; promptTokens: number }[] = [];
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("revise"),
       reviewer: RUNS,
       flow: f,
@@ -425,6 +447,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const f = flow();
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
@@ -439,32 +462,144 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(line).toMatchObject({ verdict: "violated", earlierSources: 1 });
   });
 
-  test("when the window does not reach the turn that asked the source, the reply is reviewed as unsourced", async () => {
+  // A source asked `gap` customer messages before the reply, the conversation between it and the reply
+  // padding the thread with exchanges that call nothing.
+  function sourceFarBack(gap: number): BaseMessage[] {
+    const pad: BaseMessage[] = [];
+    for (let i = 0; i < gap; i++)
+      pad.push(
+        new HumanMessage(`Pergunta ${i}`),
+        new AIMessage(`Resposta ${i}`),
+      );
+    return [...fromMemory().slice(0, 4), ...pad, ...fromMemory().slice(4)];
+  }
+
+  async function reviewWith(
+    messages: BaseMessage[],
+    contextMessages: number,
+  ): Promise<{ sent: string; line: Record<string, unknown> | undefined }> {
     const r = reviewer(VIOLATED);
     const base = cfg("observe");
     const f = flow();
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: {
         ...base,
-        factualGrounding: { ...base.factualGrounding, contextMessages: 1 },
+        factualGrounding: { ...base.factualGrounding, contextMessages },
       },
       reviewer: RUNS,
       flow: f,
       makeModel: r.make,
-    })?.review(fromMemory());
+    })?.review(messages);
+    const [, user] = (r.calls[0] ?? []) as BaseMessage[];
     const [line] = await lines(f.turnId);
-    expect([r.calls.length, line?.sourced, line?.earlierSources]).toEqual([
-      1,
-      false,
+    return { sent: String(user?.content ?? ""), line };
+  }
+
+  // The bug it catches: a reply repeating what a source returned 15 messages back was flagged as
+  // unsupported, since the sources came only from the conversation window shown.
+  test("a source asked further back than the conversation shown still travels, up to the source window", async () => {
+    const near = await reviewWith(sourceFarBack(28), 4);
+    expect([near.line?.sourced, near.line?.earlierSources]).toEqual([true, 1]);
+    expect(near.sent).toContain("Portões: 18h.");
+    expect(near.sent).not.toContain("Pergunta 0");
+    const far = await reviewWith(sourceFarBack(31), 4);
+    expect([far.line?.sourced, far.line?.earlierSources]).toEqual([false, 0]);
+  });
+
+  test("with contextMessages at 0 the reviewer reads the turn alone: no conversation, no earlier source, no memory", async () => {
+    const { sent, line } = await reviewWith(
+      [
+        memoryHeadMessage(
+          "<atendimentos-anteriores>\nO cliente se chama Rui.\n</atendimentos-anteriores>",
+        ),
+        ...fromMemory(),
+      ],
       0,
-    ]);
+    );
+    expect([line?.sourced, line?.earlierSources]).toEqual([false, 0]);
+    expect(sent).toContain("(no earlier messages)");
+    expect(sent).not.toContain("Rui");
+  });
+
+  // The bug it catches: a customer who came back the next day had their earlier attendance, which the
+  // agent reads, cut from the reviewer's window, so a reply repeating it read as invented.
+  test("the window crosses the attendance divider, as the agent's thread does", async () => {
+    const stamped = (text: string, id: number) =>
+      new HumanMessage({
+        content: text,
+        additional_kwargs: conversationStamp(id),
+      });
+    const thread: BaseMessage[] = [
+      stamped("Meu pedido é o 4471, posso trocar o tamanho?", 1),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "catalogo", args: {}, id: "p1" }],
+      }),
+      new ToolMessage({
+        content: "Trocas: até 7 dias após a entrega.",
+        tool_call_id: "p1",
+        name: "catalogo",
+      }),
+      new AIMessage("Pode, até 7 dias após a entrega."),
+      conversationDividerMessage(2, "Voltei, sobre aquele pedido"),
+      stamped("Ainda dá tempo?", 2),
+      new AIMessage("Sim, o pedido 4471 pode ser trocado em até 7 dias."),
+    ];
+    const { sent, line } = await reviewWith(thread, 24);
+    expect(sent).toContain(
+      "customer: Meu pedido é o 4471, posso trocar o tamanho?",
+    );
+    expect(sent).toContain("customer: Voltei, sobre aquele pedido");
+    expect(sent).not.toContain("Contexto do sistema");
+    expect([line?.sourced, line?.earlierSources]).toEqual([true, 1]);
+  });
+
+  test("a person's message carries the date it was sent, in the agent's timezone, as the agent reads it", async () => {
+    const thread: BaseMessage[] = [
+      new HumanMessage({
+        content: "Posso retirar amanhã?",
+        additional_kwargs: sentAtStamp(new Date("2026-11-11T01:30:00Z")),
+      }),
+      new AIMessage("Pode, a retirada abre às 10h."),
+      conversationDividerMessage(2, "Vou hoje então"),
+      new AIMessage("Hoje a retirada abre às 10h."),
+    ];
+    const { sent } = await reviewWith(thread, 24);
+    expect(sent).toContain(
+      "customer: [10/11/2026 22:30] Posso retirar amanhã?",
+    );
+    expect(sent).toContain("assistant: Pode, a retirada abre às 10h.");
+  });
+
+  test("the memory of earlier attendances opens the conversation as a marked line", async () => {
+    const head = memoryHeadMessage(
+      '<atendimentos-anteriores>\n<atendimento data="2026-11-01">\nO cliente se chama Rui e pediu a troca do pedido 4471.\n</atendimento>\n</atendimentos-anteriores>',
+    );
+    const { sent } = await reviewWith([head, ...fromMemory()], 24);
+    const context = sent.split("<conversation_context>\n")[1] ?? "";
+    expect(context.startsWith("memory: <atendimentos-anteriores>")).toBe(true);
+    expect(context).toContain("O cliente se chama Rui");
+    expect(context.indexOf("memory:")).toBeLessThan(
+      context.indexOf("customer: Que horas abrem os portões?"),
+    );
+  });
+
+  test("the reviewer's message opens with the current instant in the agent's timezone", async () => {
+    const { sent } = await reviewWith(turn(), 24);
+    expect(
+      sent.startsWith(
+        "<now>Thursday, 2026-11-12 14:05 (America/Sao_Paulo)</now>\n\n<conversation_context>",
+      ),
+    ).toBe(true);
   });
 
   test("a review that fails lets the reply through, unless onFailure holds it", async () => {
     const f = flow();
     const pass = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("revise"),
       reviewer: RUNS,
       flow: f,
@@ -475,6 +610,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect((await lines(f.turnId))[0]?.outcome).toBe("analysis_failed");
     const held = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("revise", { onFailure: "hold" }),
       reviewer: RUNS,
       flow: flow(),
@@ -489,6 +625,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const f = flow();
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: RUNS,
       flow: f,
@@ -503,6 +640,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const r = reviewer(VIOLATED);
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: {
         runnable: false,
@@ -521,6 +659,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const f = flow();
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("observe"),
       reviewer: NO_KEY,
       flow: f,
@@ -536,6 +675,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     done.abort(new Error("job deadline"));
     const gate = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("handoff"),
       reviewer: RUNS,
       flow: f,
@@ -547,6 +687,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const ending = new AbortController();
     const mid = buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg("handoff"),
       reviewer: RUNS,
       flow: f,
@@ -591,6 +732,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     test("revise plans a rewrite with the sources and the cap; off, or another action, plans none", () => {
       const on = buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg("revise"),
         reviewer: RUNS,
         flow: flow(),
@@ -602,6 +744,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
       const base = cfg("revise");
       const off = buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: {
           ...base,
           factualGrounding: {
@@ -615,6 +758,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
       expect(off?.revisionPlan()).toBeNull();
       const template = buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg("template"),
         reviewer: RUNS,
         flow: flow(),
@@ -627,6 +771,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
       const rows: { node: string | null }[] = [];
       const gate = buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg("revise"),
         reviewer: RUNS,
         flow: f,
@@ -664,6 +809,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
       const r = reviewer(VIOLATED);
       const gate = buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg("revise"),
         reviewer: RUNS,
         flow: f,
@@ -689,6 +835,7 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
       const r = reviewer(CLEAN);
       const gate = buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg("revise"),
         reviewer: RUNS,
         flow: f,

@@ -36,7 +36,18 @@ describe("reading it", () => {
     }).factualGrounding;
     expect(fg.sourceTools).toEqual(["catalogo", "search_knowledge"]);
     expect(fg.action).toBe("observe");
-    expect(fg.contextMessages).toBe(20);
+    expect(fg.contextMessages).toBe(40);
+  });
+
+  test("an agent that never set the window reads 24 messages, and a stored value is kept", () => {
+    const read = (factualGrounding: Record<string, unknown>) =>
+      readGuardrailsConfig({ guardrails: { factualGrounding } })
+        .factualGrounding.contextMessages;
+    expect([
+      read({}),
+      read({ contextMessages: 6 }),
+      read({ contextMessages: 0 }),
+    ]).toEqual([24, 6, 0]);
   });
 
   test("the rewrite consults the sources by default, three calls at most, and a stored cap is clamped", () => {
@@ -193,9 +204,20 @@ describe("writing it", () => {
       );
   });
 
+  test("the reviewer's window takes up to 40 messages, while the input check's stays at 20", () => {
+    const ok = (g: Record<string, unknown>) => schema.safeParse(g).success;
+    expect([
+      ok({ factualGrounding: { contextMessages: 24 } }),
+      ok({ factualGrounding: { contextMessages: 40 } }),
+      ok({ factualGrounding: { contextMessages: 41 } }),
+      ok({ input: { contextMessages: 20 } }),
+      ok({ input: { contextMessages: 21 } }),
+    ]).toEqual([true, true, false, true, false]);
+  });
+
   test("an out-of-range window is refused, not clamped", () => {
     expect(
-      schema.safeParse({ factualGrounding: { contextMessages: 21 } }).success,
+      schema.safeParse({ factualGrounding: { contextMessages: -1 } }).success,
     ).toBe(false);
     expect(() =>
       assertSettingsClosedValues(

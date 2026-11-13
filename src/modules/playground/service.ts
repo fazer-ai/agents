@@ -970,6 +970,10 @@ async function runPlaygroundTurnOnce(
         announce: (r) => {
           gTrace.push(traceGuardrail(r));
         },
+        clock: {
+          now: loadedConfig.promptOpts.now,
+          timezone: loadedConfig.timezone,
+        },
         makeModel: params.deps?.makeModel,
         langfuseCfg: loadedConfig.langfuseCfg,
       })

@@ -62,6 +62,8 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const RULE = "O reembolso pode ser pedido em até 11 dias após a compra.";
+const CLOCK = { now: new Date("2026-11-12T17:05:00Z"), timezone: "UTC" };
+
 const REFERENCE: GroundingReference = {
   docs: [{ base: "Regras da casa", title: "Reembolso", content: RULE }],
   count: 1,
@@ -112,7 +114,7 @@ const text = (m: BaseMessage | undefined) =>
         .join("");
 
 describe("the reviewer's messages", () => {
-  test("a reference leads the user message, counts as a source, and is told at system level", () => {
+  test("a reference closes the system message, counts as a source, and is told at system level", () => {
     const [system, user] = groundingMessages({
       conversation: [],
       calls: [],
@@ -122,46 +124,40 @@ describe("the reviewer's messages", () => {
     expect([
       text(system).includes(GROUNDING_REFERENCE_PROMPT),
       text(system).includes(GROUNDING_NO_SOURCE_PROMPT),
-      text(user).startsWith("<reference_sources>"),
-      text(user).includes(RULE),
-    ]).toEqual([true, false, true, true]);
+      text(system).endsWith("</reference_sources>"),
+      text(system).includes(RULE),
+      text(user).includes("<reference_sources>"),
+    ]).toEqual([true, false, true, true, false]);
   });
 
-  test("the reference block and the system message are the same bytes from one turn to the next", () => {
+  // The bug it catches: anything of the turn in the message that carries the reference, a clock or the
+  // conversation, makes every review miss the provider's cache of the reference.
+  test("the system message is the same bytes from one turn to the next, and the turn is all in the user message", () => {
     const one = groundingMessages({
+      now: "Thursday, 2026-11-12 14:05 (America/Sao_Paulo)",
       conversation: [],
       calls: [],
       reply: "Até 11 dias.",
       reference: REFERENCE.docs,
     });
     const two = groundingMessages({
+      now: "Thursday, 2026-11-12 14:06 (America/Sao_Paulo)",
       conversation: [{ role: "customer", text: "E depois?" } as never],
       calls: [],
       reply: "Depois disso não há reembolso.",
       reference: REFERENCE.docs,
     });
-    const head = (ms: BaseMessage[]) =>
-      `${text(ms[0])}\n${text(ms[1]).split("</reference_sources>")[0]}`;
-    expect(head(one)).toBe(head(two));
-    expect(text(one[1])).not.toBe(text(two[1]));
-  });
-
-  test("on a provider that caches only what is marked, the reference is its own marked block", () => {
-    const [, user] = groundingMessages(
-      { conversation: [], calls: [], reply: "x", reference: REFERENCE.docs },
+    expect([one.length, text(one[0])]).toEqual([2, text(two[0])]);
+    expect(text(one[1]).startsWith("<now>Thursday, 2026-11-12 14:05")).toBe(
       true,
     );
-    const blocks = user?.content as Record<string, unknown>[];
-    expect([
-      blocks.length,
-      blocks[0]?.cache_control,
-      String(blocks[0]?.text).startsWith("<reference_sources>"),
-      blocks[1]?.cache_control,
-    ]).toEqual([2, { type: "ephemeral" }, true, undefined]);
+    expect(text(two[1]).startsWith("<now>Thursday, 2026-11-12 14:06")).toBe(
+      true,
+    );
   });
 
   test("a document cannot close the reference fence", () => {
-    const [, user] = groundingMessages({
+    const [system] = groundingMessages({
       conversation: [],
       calls: [],
       reply: "x",
@@ -173,7 +169,7 @@ describe("the reviewer's messages", () => {
         },
       ],
     });
-    expect(text(user).match(/<\/reference_sources>/g)?.length).toBe(1);
+    expect(text(system).match(/<\/reference_sources>/g)?.length).toBe(1);
   });
 });
 
@@ -231,6 +227,7 @@ describe("the settings", () => {
     expect(
       buildGroundingGate({
         langfuseCfg: null,
+        clock: CLOCK,
         cfg: cfg({ sourceTools: [] }),
         reviewer: RUNS,
         flow: { tenantId: 1n, turnId: "x", source: "inbox" } as FlowContext,
@@ -357,6 +354,7 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     );
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg({ referenceKnowledgeBaseIds: [String(kbA)] }),
       reviewer: RUNS,
       reference,
@@ -367,7 +365,7 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     const [line] = await lines(f.turnId);
     expect([
       text(system).includes(GROUNDING_NO_SOURCE_PROMPT),
-      text(user).includes(RULE),
+      text(system).includes(RULE) && !text(user).includes(RULE),
       line?.verdict,
       line?.sourced,
       line?.referenceDocs,
@@ -604,6 +602,7 @@ describe.skipIf(!dbUp)("a reviewed turn with reference bases", () => {
     const big = "x".repeat(GROUNDING_REFERENCE_MAX + 1);
     await buildGroundingGate({
       langfuseCfg: null,
+      clock: CLOCK,
       cfg: cfg(),
       reviewer: RUNS,
       reference: {

@@ -398,9 +398,9 @@ describe("the policy is refused where it would do nothing or break the request",
   });
 });
 
-// The factual-grounding reviewer with reference documents: the reference leads the user message as
-// its own block and keeps its own mark, so the system message and the reference are both a cached
-// prefix, on Anthropic and on a Claude model behind OpenRouter alike.
+// The factual-grounding reviewer with reference documents: the reference closes the system message, so
+// the mark on the last system block covers the policy and the reference as one cached prefix, on
+// Anthropic and on a Claude model behind OpenRouter alike.
 describe("the grounding reviewer's reference block", () => {
   const reviewInput = {
     conversation: [],
@@ -414,25 +414,34 @@ describe("the grounding reviewer's reference block", () => {
       },
     ],
   };
-  const referenceMarked = (msgs: Array<Record<string, unknown>>) => {
-    const user = msgs.find((m) => m.role === "user");
-    const blocks = (user?.content ?? []) as Array<Record<string, unknown>>;
+  const systemBlocks = (body: Record<string, unknown>) => {
+    const system = body.system as
+      | string
+      | Array<Record<string, unknown>>
+      | undefined;
+    const fromMessages = (
+      (body.messages ?? []) as Array<Record<string, unknown>>
+    ).filter((m) => m.role === "system");
+    const blocks =
+      system !== undefined
+        ? typeof system === "string"
+          ? [{ type: "text", text: system }]
+          : system
+        : fromMessages.flatMap((m) =>
+            typeof m.content === "string"
+              ? [{ type: "text", text: m.content }]
+              : (m.content as Array<Record<string, unknown>>),
+          );
+    const last = blocks[blocks.length - 1];
     return [
-      blocks.length,
-      String(blocks[0]?.text).startsWith("<reference_sources>"),
-      blocks[0]?.cache_control,
-      blocks[1]?.cache_control,
+      String(last?.text).trimEnd().endsWith("</reference_sources>"),
+      last?.cache_control,
     ];
   };
 
   test("anthropic", async () => {
-    const body = await send(anthropic, groundingMessages(reviewInput, true));
-    expect(referenceMarked(body.messages as never)).toEqual([
-      2,
-      true,
-      { type: "ephemeral" },
-      { type: "ephemeral" },
-    ]);
+    const body = await send(anthropic, groundingMessages(reviewInput));
+    expect(systemBlocks(body as never)).toEqual([true, { type: "ephemeral" }]);
     expect(marks(body).length).toBeLessThanOrEqual(4);
   });
 
@@ -443,14 +452,9 @@ describe("the grounding reviewer's reference block", () => {
         model: "anthropic/claude-haiku-5.5",
         baseURL: `http://127.0.0.1:${server.port}`,
       },
-      groundingMessages(reviewInput, true),
+      groundingMessages(reviewInput),
     );
-    expect(referenceMarked(body.messages as never)).toEqual([
-      2,
-      true,
-      { type: "ephemeral" },
-      { type: "ephemeral" },
-    ]);
+    expect(systemBlocks(body as never)).toEqual([true, { type: "ephemeral" }]);
     expect(marks(body).length).toBeLessThanOrEqual(4);
   });
 });

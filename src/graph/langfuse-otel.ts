@@ -259,22 +259,29 @@ class TenantSpanRouter implements SpanProcessor {
     });
   }
 
-  register(traceId: string, routeKey: string): TraceEntry {
+  /**
+   * Binds a trace id to a destination. Every handler of the turn registers the same trace, so a
+   * registration for the same destination refreshes the existing entry in place and keeps the root it
+   * already knows; a different destination (rotated keys) starts a fresh entry.
+   */
+  register(traceId: string, routeKey: string): void {
     const now = Date.now();
     const existing = this.traces.get(traceId);
-    const entry: TraceEntry = {
-      routeKey,
-      rootSpanId:
-        existing?.routeKey === routeKey ? existing.rootSpanId : undefined,
-      at: now,
-    };
+    const entry: TraceEntry =
+      existing?.routeKey === routeKey ? existing : { routeKey, at: now };
+    entry.at = now;
     this.traces.delete(traceId);
     this.traces.set(traceId, entry);
     for (const [id, e] of this.traces) {
       if (now - e.at < TRACE_ROUTE_TTL_MS) break;
       this.traces.delete(id);
     }
-    return entry;
+  }
+
+  /** The current entry of a trace, as long as it still routes to `routeKey`. */
+  entry(traceId: string, routeKey: string): TraceEntry | undefined {
+    const entry = this.traces.get(traceId);
+    return entry?.routeKey === routeKey ? entry : undefined;
   }
 
   onStart(span: Span, parentContext: Parameters<SpanProcessor["onStart"]>[1]) {
@@ -361,7 +368,7 @@ export function traceIdForTurn(turnId: string): string {
 /** A turn's trace, bound to the tenant destination its spans are delivered to. */
 export interface TurnTrace {
   traceId: string;
-  entry: TraceEntry;
+  routeKey: string;
 }
 
 export function registerTurnTrace(
@@ -371,7 +378,8 @@ export function registerTurnTrace(
 ): TurnTrace {
   const { router } = state();
   router.destination(routeKey, route);
-  return { traceId, entry: router.register(traceId, routeKey) };
+  router.register(traceId, routeKey);
+  return { traceId, routeKey };
 }
 
 /**
@@ -386,8 +394,8 @@ export function startInTurnTrace<T extends { id: string; otelSpan: ApiSpan }>(
   asTurnRoot: boolean,
   start: () => T,
 ): T {
-  const { ids } = state();
-  const rootSpanId = turn.entry.rootSpanId;
+  const { ids, router } = state();
+  const rootSpanId = router.entry(turn.traceId, turn.routeKey)?.rootSpanId;
   if (!asTurnRoot && rootSpanId) {
     const parent: SpanContext = {
       traceId: turn.traceId,
@@ -395,7 +403,14 @@ export function startInTurnTrace<T extends { id: string; otelSpan: ApiSpan }>(
       traceFlags: TraceFlags.SAMPLED,
       isRemote: true,
     };
-    return context.with(trace.setSpanContext(context.active(), parent), start);
+    const child = context.with(
+      trace.setSpanContext(context.active(), parent),
+      start,
+    );
+    // NOTE: Langfuse marks a span whose parent it no longer tracks (the root already ended) as an app
+    // root, which would let this call take the trace's headline.
+    child.otelSpan.setAttribute(LangfuseOtelSpanAttributes.IS_APP_ROOT, false);
+    return child;
   }
   ids.armed = turn.traceId;
   let observation: T;
@@ -405,7 +420,8 @@ export function startInTurnTrace<T extends { id: string; otelSpan: ApiSpan }>(
     ids.armed = undefined;
   }
   if (asTurnRoot) {
-    turn.entry.rootSpanId = observation.id;
+    const entry = router.entry(turn.traceId, turn.routeKey);
+    if (entry) entry.rootSpanId = observation.id;
   } else {
     observation.otelSpan.setAttribute(
       LangfuseOtelSpanAttributes.IS_APP_ROOT,

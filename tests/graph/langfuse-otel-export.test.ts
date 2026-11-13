@@ -295,6 +295,47 @@ describe("langfuse export over OTLP", () => {
       spans.filter((s) => s.attrs["langfuse.trace.output"] !== undefined),
     ).toHaveLength(1);
     expect(secondary?.attrs["user.id"]).toBe("slug-a");
+    expect(secondary?.attrs["langfuse.internal.is_app_root"]).not.toBe(true);
+    expect(root?.attrs["langfuse.internal.is_app_root"]).toBe(true);
+  });
+
+  test("in the runtime's order (turn handler, then an input guardrail before the turn, then a later call) the later call still lands under the root", async () => {
+    const cfg = cfgFor("a", { sendContent: true });
+    const ctx = {
+      tenantId: 11n,
+      threadId: "11:1:1",
+      turnId: TURN_A,
+      userId: "slug-a",
+    };
+    const turnHandler = buildLangfuseHandler(cfg, ctx);
+    await runSecondary(cfg, ctx, "input guardrail prompt");
+    const model = new FakeListChatModel({ responses: ["resposta"] });
+    await RunnableLambda.from(
+      async (input: { content: string }, runConfig?: RunnableConfig) =>
+        (await model.invoke(input.content, runConfig)).content,
+    )
+      .withConfig({ runName: "agent-turn" })
+      .invoke({ content: "pergunta" }, { callbacks: [turnHandler as never] });
+    await runSecondary(cfg, ctx, "speech normalizer prompt");
+    await shutdownLangfuseClients();
+
+    const spans = spansAt("a");
+    const root = spans.find((s) => s.name === "agent-turn");
+    const byInput = (text: string) =>
+      spans.find((s) =>
+        String(s.attrs["langfuse.observation.input"] ?? "").includes(text),
+      );
+    expect(byInput("speech normalizer prompt")?.parentSpanId).toBe(
+      root?.spanId,
+    );
+    const early = byInput("input guardrail prompt");
+    expect(early?.traceId).toBe(traceIdOf(TURN_A));
+    expect(early?.attrs["langfuse.internal.is_app_root"]).not.toBe(true);
+    expect(
+      spans
+        .filter((s) => s.attrs["langfuse.internal.is_app_root"] === true)
+        .map((s) => s.spanId),
+    ).toEqual([String(root?.spanId)]);
   });
 
   test("a generation written by hand lands in the turn's trace with its model and usage", async () => {

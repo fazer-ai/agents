@@ -12,7 +12,7 @@ import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { partsInTimezone } from "@/graph/time";
 import { msgType } from "@/graph/trace";
-import { clipText } from "@/lib/text";
+import { clipText, clipTextEnd } from "@/lib/text";
 import { invokeStructured } from "./analyze";
 import {
   contextWindowStart,
@@ -224,9 +224,7 @@ export function groundingMemory(
   const head = messages.find((m) => isMemoryHead(m));
   if (!head) return null;
   const text = contentToText(head.content).trim();
-  return text.length > GROUNDING_MEMORY_MAX
-    ? text.slice(-GROUNDING_MEMORY_MAX)
-    : text || null;
+  return text ? clipTextEnd(text, GROUNDING_MEMORY_MAX) : null;
 }
 
 // The instant as the reviewer reads it: the local date, weekday and time, and the zone they are in.

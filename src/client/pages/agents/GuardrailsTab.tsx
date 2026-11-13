@@ -1329,7 +1329,7 @@ export function GuardrailsTab({
                       )}
                       description={t(
                         "editor.guardrails.groundingContextHint",
-                        "Customer and agent messages before the turn, earlier conversations with the same contact included, with what was read from images the customer sent. Source results from the last 60 messages and the summary of earlier conversations are reviewed too. 0 reviews the turn alone. 0-40.",
+                        "Customer and agent messages before the turn, past conversations with this contact included. Sources from the last 60 messages and the memory of past conversations count too. 0-40.",
                       )}
                     >
                       <NumberInput

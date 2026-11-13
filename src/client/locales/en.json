@@ -2373,7 +2373,7 @@
       "groundingActionObserve": "Only record it (the reply goes out as written)",
       "groundingActionObserveHint": "The verdict, the claims and the evidence go to the Logs page. Use it to measure before letting the check act.",
       "groundingActionReplaceHint": "Uses the messages set in Output. A false positive replaces a correct answer, so measure with “only record it” first.",
-      "groundingActionRevise": "Ask the agent to rewrite the reply without those claims",
+      "groundingActionRevise": "Ask the agent to correct the reply, consulting the sources if needed",
       "groundingActionReviseHint": "The agent writes the reply once more, told which claims the sources do not support, and the new reply is sent. One extra generation per flagged turn, plus any source calls.",
       "groundingActionTemplate": "Reply with the Output template message",
       "groundingContext": "Earlier messages the reviewer reads",

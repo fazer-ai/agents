@@ -324,7 +324,7 @@ export function GuardrailsTab({
       : a === "revise"
         ? t(
             "editor.guardrails.groundingActionRevise",
-            "Ask the agent to rewrite the reply without those claims",
+            "Ask the agent to correct the reply, consulting the sources if needed",
           )
         : a === "template"
           ? t(

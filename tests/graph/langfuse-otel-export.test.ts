@@ -47,6 +47,7 @@ let posted: Posted[] = [];
 let failWith: number | null = null;
 let answerWith: string | null = null;
 let hang = false;
+let bodyFails = false;
 let inFlight = 0;
 const realFetch = globalThis.fetch;
 
@@ -73,6 +74,16 @@ beforeAll(() => {
         });
       });
     }
+    if (bodyFails) {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("connection reset mid-body"));
+          },
+        }),
+        { status: 200 },
+      );
+    }
     if (failWith) return new Response("nope", { status: failWith });
     if (answerWith) return new Response(answerWith, { status: 200 });
     if (url.endsWith(LEGACY)) {
@@ -94,6 +105,7 @@ afterEach(async () => {
   failWith = null;
   answerWith = null;
   hang = false;
+  bodyFails = false;
 });
 
 afterAll(() => {
@@ -518,6 +530,32 @@ describe("langfuse export over OTLP", () => {
       expect(lines).toHaveLength(1);
       expect(String((lines[0]?.[0] as { detail?: string }).detail)).toContain(
         "2 span(s) rejected",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a 200 whose body never arrives is retried and logged, not taken as delivered", async () => {
+    bodyFails = true;
+    const warn = spyOn(logger, "warn");
+    try {
+      await runTurn(
+        cfgFor("body"),
+        { tenantId: 66n, threadId: "66:1:1", turnId: TURN_A },
+        "x",
+        "y",
+      );
+      await shutdownLangfuseClients();
+      expect(
+        posted.filter((p) => p.url.startsWith("http://lf-body.test")),
+      ).toHaveLength(2);
+      const lines = warn.mock.calls.filter((c) =>
+        String(c[1] ?? "").includes("langfuse trace delivery failed"),
+      );
+      expect(lines).toHaveLength(1);
+      expect(String((lines[0]?.[0] as { detail?: string }).detail)).toContain(
+        "connection reset mid-body",
       );
     } finally {
       warn.mockRestore();

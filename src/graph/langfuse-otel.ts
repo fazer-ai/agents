@@ -122,9 +122,12 @@ function sleep(ms: number): Promise<void> {
  * same. Returns the failure to report, or undefined when nothing was refused.
  */
 async function rejectedSpans(res: Response): Promise<string | undefined> {
+  // Read outside the parse's catch: a body that fails to arrive is a transport failure the retry
+  // loop handles, while a body that is not JSON only means there is no partialSuccess to read.
+  const text = await res.text();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await res.text());
+    parsed = JSON.parse(text);
   } catch {
     return undefined;
   }

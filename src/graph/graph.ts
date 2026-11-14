@@ -1550,13 +1550,34 @@ function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
     if ((ai.tool_calls ?? []).some((c) => c.name === SKIP_REPLY_TOOL))
       return null;
     if (found) continue;
-    // NOTE: a `—` beside a call is no reply to recover, and would stand in front of an earlier one.
-    if (!saysNothing(contentToText(ai.content))) found = ai;
-    // NOTE: a note the provider hid (./anthropic-progress-notes) is then the latest thing the model
-    // meant to say, and nothing can deliver it, so an earlier preamble ("vou buscar") is no reply.
-    else if (hiddenNotesOf(ai).length > 0) return null;
+    const last = lastWritten(ai);
+    if (last === "text") found = ai;
+    // NOTE: a note the provider hid (./anthropic-progress-notes) is the latest thing the model meant
+    // to say, and nothing can deliver it, so a preamble before it ("vou buscar") is no reply.
+    else if (last === "note") return null;
   }
   return found;
+}
+
+// What an assistant message wrote last, in block order: text a person can read (a `—` is not), a
+// note the provider hid, or neither.
+function lastWritten(ai: AIMessage): "text" | "note" | null {
+  if (!Array.isArray(ai.content))
+    return saysNothing(contentToText(ai.content)) ? null : "text";
+  const hides = hiddenNotesOf(ai).length > 0;
+  for (let i = ai.content.length - 1; i >= 0; i--) {
+    const b = ai.content[i] as { type?: unknown; thinking?: unknown };
+    if (
+      hides &&
+      b?.type === "thinking" &&
+      typeof b.thinking === "string" &&
+      b.thinking.trim()
+    )
+      return "note";
+    if (!saysNothing(contentToText([ai.content[i]] as MessageContent)))
+      return "text";
+  }
+  return null;
 }
 
 // The retry of an unexplained silence, the helpers the agent node asks.

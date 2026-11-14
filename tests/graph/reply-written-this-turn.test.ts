@@ -82,6 +82,12 @@ describe("replyWrittenThisTurn", () => {
       new ToolMessage({ content: "ok", tool_call_id: "c1" }),
       new AIMessage({ content: "—", tool_calls: [call("set_labels", "c2")] }),
       new ToolMessage({ content: "ok", tool_call_id: "c2" }),
+      // The same dash as a block list, the shape Anthropic returns.
+      new AIMessage({
+        content: [{ type: "text", text: "..." }],
+        tool_calls: [call("set_labels", "c3")],
+      }),
+      new ToolMessage({ content: "ok", tool_call_id: "c3" }),
       new AIMessage(""),
     ];
     expect(replyWrittenThisTurn(msgs)).toBe("um");
@@ -151,5 +157,25 @@ describe("replyWrittenThisTurn", () => {
       new AIMessage(""),
     ];
     expect(replyWrittenThisTurn(msgs)).toBe("Vou ver.");
+  });
+
+  test("in one message, a note after the preamble wins; text after the note is the reply", () => {
+    const turn = (content: unknown[]) => [
+      new HumanMessage("oi"),
+      new AIMessage({
+        content: content as never,
+        tool_calls: [call("set_labels", "c1")],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      new ToolMessage({ content: "ok", tool_call_id: "c1" }),
+      new AIMessage(""),
+    ];
+    const note = { type: "thinking", thinking: "nota", signature: "sig" };
+    expect(
+      replyWrittenThisTurn(turn([{ type: "text", text: "Vou buscar." }, note])),
+    ).toBe("");
+    expect(
+      replyWrittenThisTurn(turn([note, { type: "text", text: "Aqui está." }])),
+    ).toBe("Aqui está.");
   });
 });

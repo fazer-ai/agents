@@ -139,17 +139,18 @@ describe("test-staged", () => {
 
   // husky puts node_modules/.bin first, and its `bun` would run the hook's tests past the machine's
   // own `bun` (a queue that caps concurrent runs); a filter that dropped more would lose the
-  // developer's tools, and a failing machine bun must still fail the commit.
-  test("the tests run with the machine's bun, not the one in node_modules/.bin", () => {
+  // developer's tools, a failing machine bun must still fail the commit, and a machine bun of another
+  // version than the pinned one would run the tests on a runtime `bun run test` does not use.
+  function fakeBuns(machineVersion: string) {
     const local = join(repo, "node_modules/.bin");
     const machine = join(repo, "machine-bin");
-    for (const [dir, code] of [
-      [local, 0],
-      [machine, 3],
+    for (const [dir, version, code] of [
+      [local, "1.4.4", 5],
+      [machine, machineVersion, 3],
     ] as const) {
       write(
         join(dir.slice(repo.length + 1), "bun"),
-        `#!/bin/sh\necho "$@" >> "${dir}/calls"\nexit ${code}\n`,
+        `#!/bin/sh\n[ "$1" = "--version" ] && { echo ${version}; exit 0; }\necho "$@" >> "${dir}/calls"\nexit ${code}\n`,
       );
       chmodSync(join(dir, "bun"), 0o755);
     }
@@ -163,10 +164,25 @@ describe("test-staged", () => {
         PATH: `${local}:${machine}:${process.env.PATH ?? ""}`,
       },
     });
+    return { out, local, machine };
+  }
+
+  test("the tests run with the machine's bun when it is the pinned version", () => {
+    const { out, local, machine } = fakeBuns("1.4.4");
 
     expect(out.exitCode).toBe(3);
     expect(existsSync(join(local, "calls"))).toBe(false);
     expect(readFileSync(join(machine, "calls"), "utf8")).toContain(
+      "test tests/modules/a-service.test.ts",
+    );
+  });
+
+  test("a machine bun of another version leaves the tests on the pinned one", () => {
+    const { out, local, machine } = fakeBuns("1.4.3");
+
+    expect(out.exitCode).toBe(5);
+    expect(existsSync(join(machine, "calls"))).toBe(false);
+    expect(readFileSync(join(local, "calls"), "utf8")).toContain(
       "test tests/modules/a-service.test.ts",
     );
   });

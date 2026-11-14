@@ -23,10 +23,15 @@ set -e
 
 # husky puts node_modules/.bin first on a hook's PATH, and the `bun` there is the package binary: a
 # `bun test` started from it would skip the `bun` the machine puts in front of the real one (a queue
-# that caps concurrent runs and workers on a shared machine). The tests run with the developer's PATH
-# minus the project's bin directories; where nothing else is installed (CI's setup-bun) that is the
-# same bun.
-PATH=$(printf '%s\n' "$PATH" | tr ':' '\n' | grep -vE '(^|/)node_modules/\.bin/?$' | paste -sd: -)
+# that caps concurrent runs and workers on a shared machine). The tests take the PATH without the
+# project's bin directories only when the `bun` found there is the same version as the pinned one; an
+# older system bun would run the commit's tests on a runtime `bun run test` does not use.
+outside=$(printf '%s\n' "$PATH" | tr ':' '\n' | grep -vE '(^|/)node_modules/\.bin/?$' | paste -sd: -)
+if [ "$outside" != "$PATH" ]; then
+  pinned=$(bun --version 2>/dev/null || true)
+  machine=$(PATH=$outside bun --version 2>/dev/null || true)
+  [ -n "$machine" ] && [ "$machine" = "$pinned" ] && PATH=$outside
+fi
 
 staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
 [ -z "$staged" ] && exit 0

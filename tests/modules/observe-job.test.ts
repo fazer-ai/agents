@@ -2474,6 +2474,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
           tool: "set_labels",
           args: { add: "array(1)" },
           output: expect.stringMatching(/^string\(\d+\)$/),
+          outputCut: false,
           resultSize: { chars: expect.any(Number), tokens: expect.any(Number) },
         },
         agentId,

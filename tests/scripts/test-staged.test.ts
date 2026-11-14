@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -126,5 +135,39 @@ describe("test-staged", () => {
     expect(
       select(["prisma/schema.prisma"], { TEST_STAGED_FULL: "1" }),
     ).toContain("running the whole suite (bun test --parallel)");
+  });
+
+  // husky puts node_modules/.bin first, and its `bun` would run the hook's tests past the machine's
+  // own `bun` (a queue that caps concurrent runs); a filter that dropped more would lose the
+  // developer's tools, and a failing machine bun must still fail the commit.
+  test("the tests run with the machine's bun, not the one in node_modules/.bin", () => {
+    const local = join(repo, "node_modules/.bin");
+    const machine = join(repo, "machine-bin");
+    for (const [dir, code] of [
+      [local, 0],
+      [machine, 3],
+    ] as const) {
+      write(
+        join(dir.slice(repo.length + 1), "bun"),
+        `#!/bin/sh\necho "$@" >> "${dir}/calls"\nexit ${code}\n`,
+      );
+      chmodSync(join(dir, "bun"), 0o755);
+    }
+    const out = Bun.spawnSync(["sh", "scripts/test-staged.sh"], {
+      cwd: repo,
+      env: {
+        ...process.env,
+        TEST_STAGED_FULL: "",
+        TEST_STAGED_LIST: "",
+        TEST_STAGED_FILES: "tests/modules/a-service.test.ts",
+        PATH: `${local}:${machine}:${process.env.PATH ?? ""}`,
+      },
+    });
+
+    expect(out.exitCode).toBe(3);
+    expect(existsSync(join(local, "calls"))).toBe(false);
+    expect(readFileSync(join(machine, "calls"), "utf8")).toContain(
+      "test tests/modules/a-service.test.ts",
+    );
   });
 });

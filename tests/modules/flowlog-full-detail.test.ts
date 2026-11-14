@@ -291,6 +291,20 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(entry?.fullOutput).not.toContain(token);
   });
 
+  test("a token in its own text block is masked before the blocks are joined", async () => {
+    // Joined, the block before glues its last word to the token and the boundary the pattern needs is
+    // gone. Assembled here so the file carries no key-shaped literal of its own.
+    const token = ["sk", "proj", "B".repeat(24)].join("-");
+    const blocks = [
+      { type: "text", text: `${"lote ".repeat(600)}prefixo` },
+      { type: "text", text: token },
+    ];
+    await toolCall(flow(agentA, 7), blocks);
+    const [entry] = await toolTrail();
+    expect(entry?.fullOutput).toContain("prefixo");
+    expect(entry?.fullOutput).not.toContain(token);
+  });
+
   test("a result with an image block keeps the block instead of an empty text that reads as whole", async () => {
     const blocks = [
       { type: "text", text: "foto do mapa de assentos" },

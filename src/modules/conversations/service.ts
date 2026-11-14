@@ -586,7 +586,9 @@ function isCompleteOutput(detail: Record<string, unknown> | null): boolean {
   if (typeof output !== "string" || !output.endsWith(TRUNCATED)) return true;
   const chars = (detail?.resultSize as { chars?: unknown } | null)?.chars;
   // A result the tool cut itself is stored as it came, so it is exactly as long as what was logged.
-  if (typeof chars !== "number" || chars === output.length) return true;
+  // With no size recorded (lines older than `resultSize`), the marker is the only evidence there is.
+  if (typeof chars !== "number") return false;
+  if (chars === output.length) return true;
   return chars <= output.length - TRUNCATED.length;
 }
 

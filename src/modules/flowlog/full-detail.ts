@@ -68,8 +68,8 @@ export async function storeFullDetail(
   const clipped = wouldClip(args.capture.text, FULL_DETAIL_MAX_CHARS);
   const hash = contentHash(body);
   await db.$executeRaw`
-    INSERT INTO full_detail_contents (tenant_id, hash, body, chars, clipped, expires_at)
-    VALUES (${args.tenantId}, ${hash}, ${body}, ${body.length}, ${clipped}, ${args.expiresAt})
+    INSERT INTO full_detail_contents (tenant_id, hash, body, chars, expires_at)
+    VALUES (${args.tenantId}, ${hash}, ${body}, ${body.length}, ${args.expiresAt})
     ON CONFLICT (tenant_id, hash) DO UPDATE SET expires_at = EXCLUDED.expires_at
      WHERE full_detail_contents.expires_at < EXCLUDED.expires_at`;
   await db.fullDetailRef.create({
@@ -79,6 +79,7 @@ export async function storeFullDetail(
       agentId: args.agentId,
       kind: args.capture.kind,
       contentHash: hash,
+      clipped,
       expiresAt: args.expiresAt,
     },
   });
@@ -114,7 +115,7 @@ export async function readFullDetails(
       clipped: boolean;
     }[]
   >`
-    SELECT r.execution_log_id, r.kind, c.chars, c.clipped
+    SELECT r.execution_log_id, r.kind, c.chars, r.clipped
       FROM full_detail_refs r
       JOIN full_detail_contents c
         ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash
@@ -139,7 +140,7 @@ export async function readFullDetailText(
   const [row] = await db.$queryRaw<
     { kind: string; body: string; chars: number; clipped: boolean }[]
   >`
-    SELECT r.kind, c.body, c.chars, c.clipped
+    SELECT r.kind, c.body, c.chars, r.clipped
       FROM full_detail_refs r
       JOIN full_detail_contents c
         ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash

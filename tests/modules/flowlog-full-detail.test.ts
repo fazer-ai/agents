@@ -347,12 +347,15 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     await legacy(own, { resultSize: { chars: own.length } });
     const logCut = `${"a".repeat(2_000)}…[truncated]`;
     await legacy(logCut, { resultSize: { chars: 9_000 } });
+    // Older still, with no size recorded: the marker is the only evidence, so it reads as cut.
+    await legacy(logCut);
     const entries = await toolTrail();
     expect(entries.map((e) => e.outputComplete)).toEqual([
       false,
       false,
       true,
       true,
+      false,
       false,
     ]);
   });
@@ -513,6 +516,22 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
       })
     ).length;
     expect(linesAfter).toBe(linesBefore);
+  });
+
+  test("whether a kept text was cut belongs to each call, even when two calls store the same text", async () => {
+    // A long result with a secret near its start: the redaction shrinks it, so its cut copy ends up
+    // shorter than the ceiling. A second result that IS that cut copy stores the same body, and it
+    // was not cut. Assembled here so the file carries no key-shaped literal of its own.
+    const token = ["sk", "proj", "C".repeat(56)].join("-");
+    const long = `${token} ${"x".repeat(FULL_DETAIL_MAX_CHARS + 10 - token.length - 1)}`;
+    await toolCall(flow(agentA, 7), long);
+    const [stored] = await suDb.$queryRaw<{ body: string }[]>`
+      SELECT body FROM full_detail_contents WHERE tenant_id = ${tenantId}`;
+    expect((stored?.body.length ?? 0) <= FULL_DETAIL_MAX_CHARS).toBe(true);
+    await toolCall(flow(agentA, 7), stored?.body ?? "");
+    expect(await count("full_detail_contents")).toBe(1);
+    const entries = await toolTrail();
+    expect(entries.map((e) => e.fullOutputCut)).toEqual([true, false]);
   });
 
   test("a text kept alive by a concurrent write does not end the sweep with expired texts left", async () => {

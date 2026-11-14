@@ -110,69 +110,75 @@ function gluedSpans(
   }
 }
 
-// Maximal runs of the characters a JWT is written in. Consumed match by match, so linear.
-const TOKEN_RUN = /[A-Za-z0-9_.-]+/g;
-const WORD = /\w/;
+const isWordCode = (c: number) =>
+  (c >= 48 && c <= 57) ||
+  (c >= 65 && c <= 90) ||
+  (c >= 97 && c <= 122) ||
+  c === 95;
 
-// Where the trailing `[\w-]{6,}\b` of a signature ends: a `-` before the next dot is not part of it.
-function signatureEnd(input: string, start: number, end: number): number {
-  let e = end;
-  while (e > start && input[e - 1] === "-") e--;
-  return e;
+// Where a run of JWT segment characters (`[\w-]`, with `.` too when `dots`) that starts at `from` ends.
+function runEnd(input: string, from: number, dots: boolean): number {
+  let i = from;
+  for (; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    if (!(isWordCode(c) || c === 45 || (dots && c === 46))) break;
+  }
+  return i;
 }
 
 // Every JWT, whole or cut by the end of the window, at a boundary or glued to a word, in one linear
-// pass. A regex cannot do this linearly: a candidate starts at every `eyJ` behind a `-` or a word
-// character, and each start would rescan the segment, and a cut head's `$` the rest of the text. In
-// each run of token characters, a segment's first acceptable `eyJ` with 10 header characters starts
-// one: at a boundary as is, glued only when its header decodes. With two more segments (10 and 6
-// characters) it is a whole token; otherwise, in the run that ends the window, it runs to the end.
+// pass over the `eyJ` occurrences. A regex is not linear here: a candidate starts at every `eyJ`
+// behind a `-` or a word character, and a failing JWT pattern rescans the segment from each start,
+// and a cut head's `$` the rest of the text. The rules and the cost argument are in docs/logs.md.
 function jwtSpans(input: string, out: Span[]): void {
-  let next = input.indexOf("eyJ");
-  if (next === -1) return;
-  for (const run of input.matchAll(TOKEN_RUN)) {
-    const runEnd = run.index + run[0].length;
-    const segs: Span[] = [];
-    for (let s = run.index, i = run.index; i <= runEnd; i++) {
-      if (i === runEnd || input[i] === ".") {
-        segs.push([s, i]);
-        s = i + 1;
-      }
-    }
-    for (let k = 0; k < segs.length; k++) {
-      const [a, b] = segs[k] as Span;
-      if (next !== -1 && next < a) next = input.indexOf("eyJ", a);
-      let start = -1;
-      while (next !== -1 && next <= b - 13) {
-        const glued = next > 0 && WORD.test(input[next - 1] ?? "");
-        const found = next;
-        next = input.indexOf("eyJ", next + 1);
-        if (
-          !glued ||
-          isJwtHeader(input.slice(found, Math.min(b, found + 64)))
-        ) {
-          start = found;
-          break;
+  // The current header segment's end, and whether it opens a whole token ending at `tokenEnd`.
+  let segEnd = -1;
+  let tokenEnd = -1;
+  // Where the run of token characters holding the last cut-head candidate ends.
+  let tokenRunEnd = -1;
+  // The span found last, so a candidate it already covers is not taken again.
+  let coveredUntil = -1;
+  let coveredSeg = -1;
+  for (
+    let i = input.indexOf("eyJ");
+    i !== -1;
+    i = input.indexOf("eyJ", i + 1)
+  ) {
+    if (i >= segEnd) {
+      segEnd = runEnd(input, i, false);
+      tokenEnd = -1;
+      if (input[segEnd] === ".") {
+        const payloadEnd = runEnd(input, segEnd + 1, false);
+        if (payloadEnd - segEnd - 1 >= 10 && input[payloadEnd] === ".") {
+          // The signature ends on a word character, as `[\w-]{6,}\b` does.
+          let sigEnd = runEnd(input, payloadEnd + 1, false);
+          while (sigEnd > payloadEnd + 1 && input[sigEnd - 1] === "-") sigEnd--;
+          if (sigEnd - payloadEnd - 1 >= 6) tokenEnd = sigEnd;
         }
       }
-      if (start === -1) continue;
-      const payload = segs[k + 1];
-      const sig = segs[k + 2];
-      const sigEnd = sig ? signatureEnd(input, sig[0], sig[1]) : -1;
-      if (
-        payload &&
-        sig &&
-        payload[1] - payload[0] >= 10 &&
-        sigEnd - sig[0] >= 6
-      ) {
-        out.push([start, sigEnd]);
-        k += 2;
-      } else if (runEnd === input.length) {
-        out.push([start, input.length]);
-        break;
-      }
     }
-    if (next === -1) return;
+    // NOTE: Inside a token already taken, a segment that starts at a dot is that token's own payload
+    // or signature, and another start in the same header segment is the same token; a header behind a
+    // `-` or a word character inside a later segment is a token of its own and is still read.
+    if (i < coveredUntil && (input[i - 1] === "." || segEnd === coveredSeg)) {
+      continue;
+    }
+    if (segEnd - i < 13) continue;
+    const glued = i > 0 && isWordCode(input.charCodeAt(i - 1));
+    if (glued && !isJwtHeader(input.slice(i, Math.min(segEnd, i + 64)))) {
+      continue;
+    }
+    if (tokenEnd !== -1) {
+      out.push([i, tokenEnd]);
+      coveredUntil = Math.max(coveredUntil, tokenEnd);
+      coveredSeg = segEnd;
+      continue;
+    }
+    if (i >= tokenRunEnd) tokenRunEnd = runEnd(input, i, true);
+    if (tokenRunEnd === input.length) {
+      out.push([i, input.length]);
+      return;
+    }
   }
 }
 

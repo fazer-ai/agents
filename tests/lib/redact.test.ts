@@ -485,6 +485,7 @@ describe("a key glued to the preceding word", () => {
     for (const text of [
       `a ${JWT_HEAD}.eyJzdWIi.signature ok`,
       `a ${JWT_HEAD}.${P}.abc ok`,
+      `a ${JWT_HEAD}.${P} signature ok`,
     ]) {
       expect(sanitizeErrorMessage(text)).toBe(text);
     }
@@ -492,6 +493,19 @@ describe("a key glued to the preceding word", () => {
     expect(sanitizeErrorMessage(`a ${JWT}.moredata12 ok`)).toBe(
       "a ‹redacted›.moredata12 ok",
     );
+  });
+
+  // A glued header can take a whole token whose signature segment holds another token's header:
+  // that second token is still read, payload and signature included.
+  test("a token inside another token's signature segment is redacted whole", () => {
+    const text = `x${JWT_HEAD}.aaaaaaaaaa.prefix-${JWT} ok`;
+    expect(sanitizeErrorMessage(text)).toBe("x‹redacted› ok");
+  });
+
+  test("a cut head after a million dots is found", () => {
+    const text = `${".".repeat(1_000_000)}eyJabcdefghij`;
+    const out = redactSecretsUnbounded({ text }) as { text: string };
+    expect(out.text).toBe(`${".".repeat(1_000_000)}‹redacted›`);
   });
 
   // A candidate refused by the shape check must not hide a real key that starts inside it.

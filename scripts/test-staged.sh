@@ -14,8 +14,11 @@
 # gate, CI shards it on machines built for it, and on a developer machine that runs several sessions
 # and worktrees at once it was the heaviest thing on the box (14/nov/2026: a pre-commit
 # `bun test --parallel` with ~17 workers and ~8 GB, 20 minutes in, with the Mac out of free memory).
-# TEST_STAGED_FULL=1 runs it here anyway, in parallel workers: one process holding every test file
-# grows past 8 GB, and each worker holds only its share.
+# Such a path is named and left to CI, and so are its importers (tests/db-gate.ts alone has about
+# 500); the rest of the commit (the staged tests, the tests that name a staged path, the importers of
+# the other staged paths, the sweeps) runs as for any other commit. TEST_STAGED_FULL=1 runs the whole
+# suite here anyway, in parallel workers: one process holding every test file grows past 8 GB, and
+# each worker holds only its share.
 set -e
 
 staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
@@ -24,13 +27,12 @@ staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-
 full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
 if [ -n "$full" ]; then
   run="bun test --parallel"
-  if [ "$TEST_STAGED_FULL" != "1" ]; then
-    echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: the whole suite is the CI gate, not run here (TEST_STAGED_FULL=1 runs it: $run)"
-    exit 0
+  if [ "$TEST_STAGED_FULL" = "1" ]; then
+    echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: running the whole suite ($run)"
+    [ -n "$TEST_STAGED_LIST" ] && exit 0
+    exec $run
   fi
-  echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: running the whole suite ($run)"
-  [ -n "$TEST_STAGED_LIST" ] && exit 0
-  exec $run
+  echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: the whole suite is left to CI, running only the staged tests, the importers of the rest of the change and the sweeps (TEST_STAGED_FULL=1 runs it here, in parallel workers)"
 fi
 
 picked=""
@@ -71,6 +73,10 @@ importers() {
 }
 
 for file in $staged; do
+  # A path that changes every test file is imported by much of the suite (tests/db-gate.ts by about
+  # 500 files): its importers are the whole suite's business. A test that names it as text still runs.
+  everywhere=""
+  printf '%s\n' "$full" | grep -qxF -- "$file" && everywhere=1
   # A file under tests/ that is not a test is a helper or a fixture, and a fixture is often loaded by
   # its bare name (`fixture("worker-hangs.ts")`), so the quoted name selects too.
   case "$file" in
@@ -84,7 +90,7 @@ for file in $staged; do
     tests/*.test.ts | tests/*.test.tsx) add "$file" ;;
     *.ts | *.tsx | *.json)
       # shellcheck disable=SC2046
-      add $(importers "$file")
+      [ -n "$everywhere" ] || add $(importers "$file")
       # shellcheck disable=SC2046
       add $(grep_tests -F -- "$file")
       ;;
@@ -102,7 +108,7 @@ done
 # A sweep reads whole trees (src/, tests/, scripts/, workers/) without naming the file it trips on:
 # a Glob or readdir, or a read by a computed path (an import-graph walk). Any staged change other than
 # prose runs every test that does either, itself or through a helper under tests/. The database gate is
-# not one: it reads only prisma/migrations, which already runs the whole suite, and nearly every
+# not one: it reads only prisma/migrations, whose changes are left to CI, and nearly every
 # database-backed test imports it.
 if printf '%s\n' "$staged" | grep -qvE '\.md$'; then
   walks='Glob\(|readdirSync|readdir\(|Bun\.file\([a-z]|readFileSync\([a-z]|readFile\([a-z]'

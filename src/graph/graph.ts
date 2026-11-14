@@ -855,11 +855,8 @@ export function buildAgentGraph({
     // Only the message that ends the turn, the one carrying no calls: a message still requesting
     // tools is not what the runtime posts, and a preamble beside an ordinary call is left alone (the
     // same line `silenceNarration` draws). `narration` covers the text beside the decision itself.
-    // A final answer with nothing to read (`—`) loses its text too, so every reader takes it for the
-    // empty answer it is (see `fillerOnly`).
     const silenced = (m: BaseMessage): BaseMessage =>
-      ((m as AIMessage).tool_calls?.length ?? 0) === 0 &&
-      (silentTurn || fillerOnly(m))
+      silentTurn && ((m as AIMessage).tool_calls?.length ?? 0) === 0
         ? withoutText(m)
         : m;
     // The decision sticks without ending the turn: `silentTurn` keeps the wrap-up suppressed,
@@ -1176,6 +1173,8 @@ export function buildAgentGraph({
         r.info.refused.push(...calls.map((c) => c.name));
         res = textOnly(res);
       }
+      // NOTE: a rewrite that is only a `—` is no rewrite, for the callbacks below and for the thread.
+      if (fillerOnly(res)) res = withoutText(res);
       const reply = customerFacingReply(contentToText(res.content)).text;
       revision = null;
       await r.plan?.review([...history, res], reply, r.info);

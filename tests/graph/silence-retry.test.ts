@@ -439,6 +439,7 @@ describe("a bare-punctuation answer under the factual-grounding review", () => {
   ) {
     const model = new ScriptedSilenceModel(steps);
     const seenReplies: string[] = [];
+    const revised: string[] = [];
     const graph = buildAgentGraph({
       primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
@@ -446,12 +447,13 @@ describe("a bare-punctuation answer under the factual-grounding review", () => {
       checkpointer: new MemorySaver(),
       tools: [noopTool, realSkipTool()],
       recoversReply: () => true,
+      onReplyRevised: (text) => revised.push(text),
       reviewReply: async (_turn, reply) => {
         seenReplies.push(reply);
         return seenReplies.length === 1 ? note : null;
       },
     });
-    return { model, seenReplies, graph };
+    return { model, seenReplies, revised, graph };
   }
 
   test("after a reply written beside a call, the review reads that reply and not the dash", async () => {
@@ -470,7 +472,7 @@ describe("a bare-punctuation answer under the factual-grounding review", () => {
   });
 
   test("a rewrite that comes back as a dash ends the turn empty", async () => {
-    const { graph } = reviewed(
+    const { graph, revised } = reviewed(
       [{ text: "São 30 dias." }, { text: "—" }],
       "o prazo não consta na fonte",
     );
@@ -479,5 +481,7 @@ describe("a bare-punctuation answer under the factual-grounding review", () => {
       { configurable: { thread_id: "t-1788-rewrite" } },
     );
     expect(lastText(out.messages as BaseMessage[])).toBe("");
+    // An empty rewrite is what makes the caller send its Output template instead.
+    expect(revised).toEqual([""]);
   });
 });

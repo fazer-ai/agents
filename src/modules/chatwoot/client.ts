@@ -121,9 +121,11 @@ export class ChatwootMissingTokenError extends Error {
 export const BOT_ENDPOINT_NOT_AUTHORIZED =
   "Access to this endpoint is not authorized for bots";
 
+// access_token_auth_helper.rb: the token is blank or matches no user.
+export const UNKNOWN_ACCESS_TOKEN = "Invalid Access Token";
+
 const KNOWN_AUTH_REASONS: ReadonlySet<string> = new Set([
-  // access_token_auth_helper.rb: the token is blank or matches no user.
-  "Invalid Access Token",
+  UNKNOWN_ACCESS_TOKEN,
   // access_token_auth_helper.rb: the endpoint is outside BOT_ACCESSIBLE_ENDPOINTS.
   BOT_ENDPOINT_NOT_AUTHORIZED,
   // ensure_current_account_helper.rb: the bot belongs to another account.

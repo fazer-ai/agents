@@ -84,26 +84,37 @@ export async function storeFullDetail(
   });
 }
 
-export interface KeptFullDetail {
+export interface KeptFullDetailInfo {
   kind: FullDetailKind;
-  text: string;
-  // The text hit FULL_DETAIL_MAX_CHARS, so even this copy is not the whole of it.
+  chars: number;
+  // The text hit FULL_DETAIL_MAX_CHARS, so even the kept copy is not the whole of it.
   clipped: boolean;
 }
 
-// The kept texts of these log lines that have not expired, by line id. A line with no entry kept
+export interface KeptFullDetail extends KeptFullDetailInfo {
+  text: string;
+}
+
+// What is kept, unexpired, for these log lines, by line id, WITHOUT the texts: a conversation's trail
+// lists sixty tool calls and is refreshed while it is open, so it carries the sizes and each text is
+// fetched alone when an operator asks for it (`readFullDetailText`). A line with no entry kept
 // nothing, or kept something that is gone: its own `fullDetailKeptUntil` says which.
 export async function readFullDetails(
   db: ScopedDb,
   executionLogIds: bigint[],
   now: Date = new Date(),
-): Promise<Map<string, KeptFullDetail>> {
-  const out = new Map<string, KeptFullDetail>();
+): Promise<Map<string, KeptFullDetailInfo>> {
+  const out = new Map<string, KeptFullDetailInfo>();
   if (executionLogIds.length === 0) return out;
   const rows = await db.$queryRaw<
-    { execution_log_id: bigint; kind: string; body: string; clipped: boolean }[]
+    {
+      execution_log_id: bigint;
+      kind: string;
+      chars: number;
+      clipped: boolean;
+    }[]
   >`
-    SELECT r.execution_log_id, r.kind, c.body, c.clipped
+    SELECT r.execution_log_id, r.kind, c.chars, c.clipped
       FROM full_detail_refs r
       JOIN full_detail_contents c
         ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash
@@ -112,11 +123,36 @@ export async function readFullDetails(
   for (const r of rows) {
     out.set(String(r.execution_log_id), {
       kind: r.kind as FullDetailKind,
-      text: r.body,
+      chars: r.chars,
       clipped: r.clipped,
     });
   }
   return out;
+}
+
+// One log line's kept text, or null when it kept nothing or it has expired.
+export async function readFullDetailText(
+  db: ScopedDb,
+  executionLogId: bigint,
+  now: Date = new Date(),
+): Promise<KeptFullDetail | null> {
+  const [row] = await db.$queryRaw<
+    { kind: string; body: string; chars: number; clipped: boolean }[]
+  >`
+    SELECT r.kind, c.body, c.chars, c.clipped
+      FROM full_detail_refs r
+      JOIN full_detail_contents c
+        ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash
+     WHERE r.execution_log_id = ${executionLogId}
+       AND r.expires_at > ${now}
+     LIMIT 1`;
+  if (!row) return null;
+  return {
+    kind: row.kind as FullDetailKind,
+    text: row.body,
+    chars: row.chars,
+    clipped: row.clipped,
+  };
 }
 
 export type FullOutputStatus = "kept" | "gone" | "not_kept";

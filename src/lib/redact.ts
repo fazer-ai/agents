@@ -35,8 +35,11 @@ const SECRET_KEY_RE =
   /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret|credential)/i;
 
 export const MAX_STRING = 2000;
-const MAX_ARRAY = 50;
+export const MAX_ARRAY = 50;
 const MAX_DEPTH = 6;
+
+// What a level past MAX_DEPTH is stored as.
+export const DEPTH_MARKER = "‹…›";
 
 export const TRUNCATED = "…[truncated]";
 
@@ -115,6 +118,31 @@ function redactSecretsInText(input: string): string {
 // The placeholder a credential-named key gets, CHARGED like any other value: an object's key count
 // is unbounded here, so a thousand `password`-ish fields would otherwise write a thousand placeholders
 // past an exhausted budget. Emitted whole rather than cut, because half of `‹redacted›` says nothing.
+// The KEY layer of `redactSecretsDeep` alone, with none of its size bounds: a credential-named key's
+// value becomes the placeholder, everything else is copied whole. For a structured value about to be
+// kept as text (the full turn detail), which the value layer (`scrubbedClip`) then scrubs, so the kept
+// copy is masked the same way as its cut log line without being cut like it.
+export function redactSecretKeys(value: unknown, depth = 0): unknown {
+  if (value == null || typeof value !== "object") return value;
+  // A guard against a cyclic or absurdly deep value, far past anything a tool returns.
+  if (depth > 64) return DEPTH_MARKER;
+  if (Array.isArray(value))
+    return value.map((v) => redactSecretKeys(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    const key = makeStorable(k);
+    Object.defineProperty(out, key, {
+      value: SECRET_KEY_RE.test(key)
+        ? REDACTED
+        : redactSecretKeys(v, depth + 1),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
 // Asked of a walk that wants to know whether it dropped anything: `onCut` runs when a string is
 // shortened, an array loses items past MAX_ARRAY, or a level past MAX_DEPTH is collapsed. With `only`,
 // just the subtree under that top-level key reports, so a caller can ask about one field of a line.
@@ -149,7 +177,7 @@ export function redactSecretsDeep(
   const track = cut && cut.only === undefined ? cut : undefined;
   if (depth > MAX_DEPTH) {
     track?.onCut();
-    return "‹…›";
+    return DEPTH_MARKER;
   }
   if (value == null) return null;
   if (typeof value === "string") {

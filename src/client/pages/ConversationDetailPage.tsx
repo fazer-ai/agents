@@ -466,7 +466,8 @@ function cutResultNote(
   t: ReturnType<typeof useTranslation>["t"],
 ): string | null {
   if (entry.kind !== "tool" || entry.outputComplete !== false) return null;
-  if (entry.fullOutputStatus === "kept" && entry.fullOutput) return null;
+  if (entry.fullOutputStatus === "kept" && entry.fullOutputChars !== null)
+    return null;
   if (entry.fullOutputStatus === "gone")
     return t(
       "conversation.trail.fullResultGone",
@@ -479,6 +480,7 @@ function cutResultNote(
 }
 
 function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
+  const { id: conversationId = "" } = useParams();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const toolPhrase = useToolLabel(entry.kind === "tool" ? entry.name : null, {
@@ -595,10 +597,18 @@ function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
             output={entry.output}
             error={entry.errorMessage}
             // Offered only when the logged copy is cut: a whole `output` needs no second copy.
-            fullOutput={
-              entry.outputComplete === false ? entry.fullOutput : null
+            fullOutputChars={
+              entry.outputComplete === false ? entry.fullOutputChars : null
             }
             fullOutputCut={entry.fullOutputCut}
+            loadFullOutput={async () => {
+              const { data, error } = await api.api.v1
+                .conversations({ id: conversationId })
+                ["tool-results"]({ lineId: entry.id })
+                .get();
+              if (error) throw error;
+              return data?.text ?? null;
+            }}
             outputNote={cutResultNote(entry, t)}
           />
         </div>

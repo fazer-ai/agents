@@ -7,7 +7,7 @@ import { contentToText } from "@/graph/message-text";
 import { SKIP_REPLY_TOOL, skipReplyReasonOf } from "@/graph/silence";
 import { measureText } from "@/graph/token-count";
 import { HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
-import { sanitizeErrorMessage } from "@/lib/redact";
+import { redactSecretKeys, sanitizeErrorMessage } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type DeclaredKeys, describeShape } from "@/modules/flowlog/shape";
 
@@ -242,8 +242,17 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       // The result whole, beside the cut `output`, when the agent keeps full turn detail.
       // Only when values are logged: the size axis never widens the PII one, so a turn that logs
       // shapes keeps no text anywhere.
+      // A structured result loses its credential-named keys first, as its log line does.
       ...(this.logValues && this.flow.fullDetailRetentionDays
-        ? { full: { kind: "tool_output" as const, text: resultText } }
+        ? {
+            full: {
+              kind: "tool_output" as const,
+              text:
+                typeof value === "string" || Array.isArray(value)
+                  ? resultText
+                  : (JSON.stringify(redactSecretKeys(value)) ?? ""),
+            },
+          }
         : {}),
     });
   }

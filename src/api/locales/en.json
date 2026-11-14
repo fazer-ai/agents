@@ -401,6 +401,7 @@
     "tenantSlugInUse": "This slug is already in use",
     "tenantTargetRequired": "A target tenant is required",
     "threadNotFound": "Thread not found.",
+    "toolCallNotFound": "Tool call not found in this conversation.",
     "toolConversationRefFieldReserved": "The field name conversation_ref is reserved for the conversation reference the agent creates. Give the field another name.",
     "toolConversationRefIntegrationInvalid": "The conversation reference has to be for a generic webhook integration of this workspace.",
     "toolConversationRefIntegrationRequired": "This tool sends the conversation reference (conversation_ref), so it has to name the generic webhook integration the reference is for.",

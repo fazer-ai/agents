@@ -16,7 +16,7 @@ import {
 } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
-import { TRUNCATED } from "@/lib/redact";
+import { DEPTH_MARKER, MAX_ARRAY, TRUNCATED } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
@@ -72,6 +72,7 @@ import {
   fullOutputStatus,
   OUTPUT_CUT_KEY,
   readFullDetails,
+  readFullDetailText,
 } from "@/modules/flowlog/full-detail";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
@@ -570,19 +571,33 @@ export interface ConversationDetail {
 
 // Whether a tool line's logged `output` is the whole result. A line written since the full detail
 // exists says so itself (`outputCut`, decided while the output was being cut). An older line is read
-// by its shape: a cut copy ends in the log's marker AND is shorter than the result it came from
+// by its shape: a cut string ends in the log's marker AND is shorter than the result it came from
 // (`resultSize`, measured before the cut), since a tool may cut its own response with the same marker
-// (an HTTP tool's `resultMaxChars`), and that text is whole as far as the model is concerned.
+// (an HTTP tool's `resultMaxChars`), and that text is whole as far as the model is concerned. A
+// structured output (an MCP result's content blocks) is cut when any string in it carries the marker,
+// a list holds exactly MAX_ARRAY items, or a level was collapsed.
 function isCompleteOutput(detail: Record<string, unknown> | null): boolean {
   const recorded = detail?.[OUTPUT_CUT_KEY];
   if (typeof recorded === "boolean") return !recorded;
   const output = detail?.output;
-  const resultSize = detail?.resultSize;
+  if (output != null && typeof output === "object") {
+    return !looksCut(output, 0);
+  }
   if (typeof output !== "string" || !output.endsWith(TRUNCATED)) return true;
-  const chars = (resultSize as { chars?: unknown } | null)?.chars;
+  const chars = (detail?.resultSize as { chars?: unknown } | null)?.chars;
   return !(
     typeof chars === "number" && chars > output.length - TRUNCATED.length
   );
+}
+
+function looksCut(value: unknown, depth: number): boolean {
+  if (typeof value === "string") {
+    return value.endsWith(TRUNCATED) || value === DEPTH_MARKER;
+  }
+  if (value == null || typeof value !== "object" || depth > 16) return false;
+  const items = Array.isArray(value) ? value : Object.values(value);
+  if (Array.isArray(value) && value.length >= MAX_ARRAY) return true;
+  return items.some((v) => looksCut(v, depth + 1));
 }
 
 // How many decision ticks the trail carries, newest first, on top of the 60 tool and proactive rows.
@@ -632,13 +647,14 @@ export interface ConversationTrailEntry {
   // tool → whether `output` is the WHOLE result (true) or the log's cut copy of a longer one (false).
   // null on every other row. A cut copy ends in `…[truncated]`, which no client should have to parse.
   outputComplete: boolean | null;
-  // tool → the whole result when the agent keeps full turn detail and it has not expired (docs/logs.md
-  // "Full turn detail"); null otherwise, `fullOutputStatus` saying why.
-  fullOutput: string | null;
-  // tool → true when `fullOutput` itself stopped at the kept-text ceiling (FULL_DETAIL_MAX_CHARS)
-  // because the result was longer still. null when there is no `fullOutput`.
+  // tool → the length of the whole result when the agent keeps full turn detail and it has not
+  // expired (docs/logs.md "Full turn detail"); null otherwise, `fullOutputStatus` saying why. The text
+  // itself is fetched per line (`getConversationToolResult`), so the trail stays small.
+  fullOutputChars: number | null;
+  // tool → true when the kept text itself stopped at its ceiling (FULL_DETAIL_MAX_CHARS) because the
+  // result was longer still. null when nothing is kept.
   fullOutputCut: boolean | null;
-  // tool → `kept` (fullOutput is the whole result), `gone` (it was kept and has expired), `not_kept`
+  // tool → `kept` (the whole result can be fetched), `gone` (it was kept and has expired), `not_kept`
   // (the agent was not keeping full detail, or not logging tool values, when the call ran). null on
   // every other row.
   fullOutputStatus: FullOutputStatus | null;
@@ -1122,6 +1138,43 @@ async function mirrorConsoleWrite(
 }
 
 // Metadata only — fast scoped DB read, NO network. The UI renders the shell from this immediately.
+export interface ConversationToolResult {
+  status: FullOutputStatus;
+  // The whole result the model received, when kept and not expired; null otherwise.
+  text: string | null;
+  // The kept text stopped at its ceiling (FULL_DETAIL_MAX_CHARS). null when there is no text.
+  cut: boolean | null;
+}
+
+// One tool call's kept whole result, for the conversation page's toggle. 404 for a line that is not
+// a tool call of this conversation in this tenant, rather than an answer about someone else's line.
+export async function getConversationToolResult(
+  ctx: TenantContext,
+  conversationId: bigint,
+  lineId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<ConversationToolResult> {
+  await loadConvRef(ctx, conversationId, base);
+  return runScopedOn(base, ctx, async (db) => {
+    const line = await db.executionLog.findFirst({
+      where: { id: lineId, conversationId, stage: "tool" },
+      select: { detail: true },
+    });
+    if (!line) {
+      throw new NotFoundError("tool call not found", "errors.toolCallNotFound");
+    }
+    const kept = await readFullDetailText(db, lineId);
+    return {
+      status: fullOutputStatus(
+        (line.detail ?? null) as Record<string, unknown> | null,
+        kept !== null,
+      ),
+      text: kept?.text ?? null,
+      cut: kept ? kept.clipped : null,
+    };
+  });
+}
+
 export async function getConversationDetail(
   ctx: TenantContext,
   id: bigint,
@@ -1615,7 +1668,7 @@ export async function getConversationDetail(
         args: detail?.args ?? null,
         output,
         outputComplete: isCompleteOutput(detail),
-        fullOutput: kept?.text ?? null,
+        fullOutputChars: kept?.chars ?? null,
         fullOutputCut: kept ? kept.clipped : null,
         fullOutputStatus: fullOutputStatus(detail, kept !== undefined),
         // The turn's answer, but only on a row that ASKED the question. The stamp is written by the
@@ -1666,7 +1719,7 @@ export async function getConversationDetail(
         args: null,
         output: null,
         outputComplete: null,
-        fullOutput: null,
+        fullOutputChars: null,
         fullOutputCut: null,
         fullOutputStatus: null,
         errorMessage: null,
@@ -1747,7 +1800,7 @@ export async function getConversationDetail(
       args: null,
       output: null,
       outputComplete: null,
-      fullOutput: null,
+      fullOutputChars: null,
       fullOutputCut: null,
       fullOutputStatus: null,
       errorMessage: null,

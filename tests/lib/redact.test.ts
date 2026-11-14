@@ -478,6 +478,22 @@ describe("a key glued to the preceding word", () => {
     expect(sanitizeErrorMessage(text)).toBe("‹redacted› ok");
   });
 
+  // The JWT shape is three segments of at least 10, 10 and 6 characters, ending on a word character,
+  // and a whole token ends where its signature does.
+  test("a JWT is exactly its three segments", () => {
+    const P = "eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5fQ";
+    for (const text of [
+      `a ${JWT_HEAD}.eyJzdWIi.signature ok`,
+      `a ${JWT_HEAD}.${P}.abc ok`,
+    ]) {
+      expect(sanitizeErrorMessage(text)).toBe(text);
+    }
+    expect(sanitizeErrorMessage(`a ${JWT}-- ok`)).toBe("a ‹redacted›-- ok");
+    expect(sanitizeErrorMessage(`a ${JWT}.moredata12 ok`)).toBe(
+      "a ‹redacted›.moredata12 ok",
+    );
+  });
+
   // A candidate refused by the shape check must not hide a real key that starts inside it.
   test("a refused candidate does not hide the key right behind it", () => {
     expect(sanitizeErrorMessage(`heyJ${JWT} ok`)).toBe("heyJ‹redacted› ok");

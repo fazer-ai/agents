@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
@@ -687,6 +687,23 @@ interface SyncedRow {
   ingestStranded: boolean;
 }
 
+// The documents a portal sync already holds, as the statement it runs, so a test can read the plan the
+// database gives it under the tenant policy (tests/modules/scoped-index-plans.test.ts).
+export function syncedDocumentsSql(knowledgeBaseId: bigint): Prisma.Sql {
+  return Prisma.sql`
+      SELECT d.id, d.external_id AS "externalId", d.title, d.source_url AS "sourceUrl",
+             md5(d.content) AS "contentMd5",
+             (d.status = 'PENDING' AND NOT EXISTS (
+               SELECT 1 FROM scheduler_jobs j
+                WHERE j.kind = 'RAG_INGEST' AND j.dedupe_key = k.dedupe_key
+                  AND j.status IN ('PENDING', 'CLAIMED', 'FAILED')
+             )) AS "ingestStranded"
+        FROM knowledge_documents d
+        -- The key beside the row and compared bare, as the follow-up sweep does (docs/tenancy.md).
+        CROSS JOIN LATERAL (SELECT 'doc:' || d.id AS dedupe_key OFFSET 0) k
+       WHERE d.knowledge_base_id = ${knowledgeBaseId} AND d.external_id IS NOT NULL`;
+}
+
 const md5 = (text: string) =>
   new Bun.CryptoHasher("md5").update(text).digest("hex");
 
@@ -739,20 +756,8 @@ export async function syncKnowledgeSource(
   const wanted = new Map(
     articles.filter((a) => !excluded.has(a.id)).map((a) => [String(a.id), a]),
   );
-  const existing = await runScopedOn(
-    base,
-    ctx,
-    (db) =>
-      db.$queryRaw<SyncedRow[]>`
-      SELECT d.id, d.external_id AS "externalId", d.title, d.source_url AS "sourceUrl",
-             md5(d.content) AS "contentMd5",
-             (d.status = 'PENDING' AND NOT EXISTS (
-               SELECT 1 FROM scheduler_jobs j
-                WHERE j.kind = 'RAG_INGEST' AND j.dedupe_key = 'doc:' || d.id
-                  AND j.status IN ('PENDING', 'CLAIMED', 'FAILED')
-             )) AS "ingestStranded"
-        FROM knowledge_documents d
-       WHERE d.knowledge_base_id = ${knowledgeBaseId} AND d.external_id IS NOT NULL`,
+  const existing = await runScopedOn(base, ctx, (db) =>
+    db.$queryRaw<SyncedRow[]>(syncedDocumentsSql(knowledgeBaseId)),
   );
   const have = new Map(existing.map((r) => [r.externalId, r]));
   const result: SyncResult = {

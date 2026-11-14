@@ -29,6 +29,8 @@ The whole multi-tenant isolation model is Postgres Row-Level Security, and **RLS
 
 Postgres must ship the `vector` extension. Use **`pgvector/pgvector:pg17`** (matches the validated isolation spike), not `postgres:17-alpine` — plain Postgres has no `vector` and `CREATE EXTENSION vector` in bootstrap fails.
 
+The tag follows PostgreSQL 17 minor releases, and it is left unpinned on purpose: minors carry the security fixes (17.12 fixed several CVEs in row-level security, which is what isolates tenants here), and a digest in the compose file would freeze an installation on the build it was first deployed with. The CI runs the suite against a pinned build of this same tag and moves the pin when the tag moves, so a minor that changes a plan the app depends on is caught there first. To pin anyway, use a digest and move it with each minor.
+
 ### 3. Deterministic provisioning, then migrate, then serve
 
 Boot ordering, one-shot per start and safe under restart:

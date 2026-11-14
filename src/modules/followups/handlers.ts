@@ -278,7 +278,7 @@ export function followUpSweepSelectionSql(args: {
                  FROM scheduler_jobs jd
                 WHERE jd.tenant_id = c.tenant_id
                   AND jd.kind = 'FOLLOWUP'
-                  AND jd.dedupe_key = 'followup:' || c.thread_id
+                  AND jd.dedupe_key = k.dedupe_key
                   AND jd.payload->>'episode' IS DISTINCT FROM
                         (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
              ) AS other_episode,
@@ -292,6 +292,13 @@ export function followUpSweepSelectionSql(args: {
       -- version a deferral is compared against below.
       LEFT JOIN business_hours h
         ON h.id = COALESCE(a.follow_up_hours_id, a.business_hours_id)
+      -- The dedupe key, built here beside the row and read bare by the lookups below: built inside a
+      -- lookup it is a leaky expression over an outer reference, which PostgreSQL 17.12 keeps above the
+      -- tenant policy as a Filter, and every candidate then walks scheduler_jobs (docs/tenancy.md).
+      -- OFFSET 0 keeps the planner from folding the expression back into them.
+      CROSS JOIN LATERAL (
+        SELECT 'followup:' || c.thread_id AS dedupe_key OFFSET 0
+      ) k
       WHERE c.tenant_id = ${tenantId}
         AND c.status = 'pending'
         -- NOTE: Bot-owned = anything but a human, mirroring shouldBotHandle: NULL (unassigned — Chatwoot
@@ -354,7 +361,7 @@ export function followUpSweepSelectionSql(args: {
             FROM scheduler_jobs j
            WHERE j.tenant_id = c.tenant_id
              AND j.kind = 'FOLLOWUP'
-             AND j.dedupe_key = 'followup:' || c.thread_id
+             AND j.dedupe_key = k.dedupe_key
              AND j.status = 'DEAD'
              AND CASE
                    WHEN j.payload->>'episode' IS NOT NULL THEN

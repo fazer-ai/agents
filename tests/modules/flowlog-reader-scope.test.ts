@@ -161,7 +161,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/utils/flowlog-order-type.test.ts": 4,
   "tests/graph/label-allowed-wiring.test.ts": 2,
   // NOTE: A turn a gate stopped writes no closing line, which only a read can show.
-  "tests/graph/nudge.test.ts": 9,
+  "tests/graph/nudge.test.ts": 10,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // NOTE: A withdrawn turn closes on no line.
   "tests/graph/proactive-breaker.test.ts": 1,
@@ -172,7 +172,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // of one conversation (the text reply is in none), `replyRecovered` and the `silenceUnexplained` warn
   // that must not fire on it, `silenceRetry` and the warn's detail, and the lines of a turn whose
   // recovered reply a takeover refused, a guardrail replaced, or that was delivered.
-  "tests/graph/runtime.test.ts": 44,
+  "tests/graph/runtime.test.ts": 45,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   "tests/graph/skip-reply-reason-logged.test.ts": 1,
@@ -252,6 +252,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/observe-job.test.ts": 2,
   "tests/modules/playground-fallback-log.test.ts": 1,
   "tests/modules/playground-guardrails.test.ts": 1,
+  "tests/modules/playground-hidden-notes.test.ts": 1,
   // NOTE: The `vision` stage line of the reengage turn is the only proof the attachment was opened: the reply
   // text cannot tell "read and summarised" from "made up".
   "tests/modules/reengage-vision.test.ts": 1,

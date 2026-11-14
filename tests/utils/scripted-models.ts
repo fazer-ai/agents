@@ -1103,6 +1103,9 @@ export class ScriptedSilenceModel {
       calls?: Array<{ name: string; args: Record<string, unknown> }>;
       // A call the provider could not parse: it lands in `invalid_tool_calls`, and no tool runs.
       invalid?: boolean;
+      // Text Anthropic hid before a call: the message comes back as the 5.5 models return it under
+      // `display: "updates"`, a signed `thinking` block carrying the note's summary, then the text.
+      note?: string;
     }>,
   ) {}
   private next(messages: BaseMessage[]): AIMessage {
@@ -1110,7 +1113,16 @@ export class ScriptedSilenceModel {
     const step = this.steps[this.seen.length - 1];
     if (!step) return new AIMessage("");
     return new AIMessage({
-      content: step.text,
+      content:
+        step.note === undefined
+          ? step.text
+          : [
+              { type: "thinking", thinking: step.note, signature: "sig" },
+              ...(step.text ? [{ type: "text", text: step.text }] : []),
+            ],
+      ...(step.note === undefined
+        ? {}
+        : { response_metadata: { model_provider: "anthropic" } }),
       invalid_tool_calls: step.invalid
         ? [
             {

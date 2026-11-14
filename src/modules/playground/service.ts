@@ -7,6 +7,10 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import {
+  hiddenNotesDetail,
+  hiddenNotesThisTurn,
+} from "@/graph/anthropic-progress-notes";
 import { getCheckpointer } from "@/graph/checkpointer";
 import {
   buildDetachedToolset,
@@ -1181,6 +1185,13 @@ async function runPlaygroundTurnOnce(
   // Same sentinel rule as the inbox's reactive path, so a reproduced silence token is not rendered.
   const draftedTurn = customerFacingReply(lastAssistantText(result.messages));
   const raw = draftedTurn.text;
+  const hiddenNotes = hiddenNotesThisTurn(result.messages as BaseMessage[]);
+  if (hiddenNotes.length > 0)
+    emitFlowEvent(flow, {
+      stage: "generate",
+      status: "ok",
+      detail: hiddenNotesDetail(hiddenNotes, loaded.logToolValues),
+    });
   // NOTE: the token must not stay in the THREAD either: the session is multi-turn on one thread and
   // the next turn would imitate it (runtime.ts rolls back the same way). Inline, since the playground
   // holds no claim on the thread. The TRACE keeps the raw token deliberately: it shows what the model

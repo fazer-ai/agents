@@ -1317,7 +1317,15 @@ export function replyWrittenThisTurn(messages: BaseMessage[]): string {
 function saidNothing(m: BaseMessage): boolean {
   const ai = m as AIMessage;
   if ((ai.tool_calls?.length ?? 0) > 0) return false;
-  return contentToText(ai.content).trim() === "";
+  return !saysSomething(contentToText(ai.content));
+}
+
+// Whether a final text carries anything a customer can read: a letter, a digit or an emoji. A dash or
+// an ellipsis alone is what a model writes when it believes the answer already went out, which on
+// the Anthropic models that return text written before a tool call as an empty thinking block is
+// exactly when the answer was lost.
+function saysSomething(text: string): boolean {
+  return /[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(text);
 }
 
 // Whether this turn already DECLARED silence, bounded at the last human message like
@@ -1361,5 +1369,5 @@ function silenceRetryOutcome(m: BaseMessage): SilenceRetryOutcome {
     return calls.some((c) => c.name === SKIP_REPLY_TOOL)
       ? "skip_reply"
       : "tools";
-  return contentToText(m.content).trim() ? "answered" : "empty";
+  return saysSomething(contentToText(m.content)) ? "answered" : "empty";
 }

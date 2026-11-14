@@ -335,3 +335,43 @@ describe("unexplained silence: one retry with both exits (issue #885)", () => {
     expect(retries).toEqual([{ outcome: "answered" }]);
   });
 });
+
+// Claude Sonnet 5.5 returns text written before a tool call as an empty thinking block, so the
+// answer is lost and the model closes the turn with a dash, believing it already answered.
+describe("an answer of bare punctuation says nothing (issue #1788)", () => {
+  test("a dash after tool calls is retried, and the retry's answer is the turn's", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "", calls: [{ name: "set_labels", args: {} }] },
+      { text: "—" },
+      { text: "Segue o link da página." },
+    ]);
+    const { retries, messages } = await run(model, {
+      retrySilence: () => true,
+    });
+    expect(model.seen).toHaveLength(3);
+    expect(carriesRetry(model.seen[2])).toBe(true);
+    expect(lastText(messages)).toBe("Segue o link da página.");
+    expect(retries).toEqual([{ outcome: "answered" }]);
+  });
+
+  test("punctuation on the retry too is reported as empty", async () => {
+    const model = new ScriptedSilenceModel([{ text: "—" }, { text: " ... " }]);
+    const { retries } = await run(model, { retrySilence: () => true });
+    expect(model.seen).toHaveLength(2);
+    expect(retries).toEqual([{ outcome: "empty" }]);
+  });
+
+  test("an emoji alone is an answer and is not retried", async () => {
+    const model = new ScriptedSilenceModel([{ text: "👍" }]);
+    const { retries } = await run(model, { retrySilence: () => true });
+    expect(model.seen).toHaveLength(1);
+    expect(retries).toEqual([]);
+  });
+
+  test("a number alone is an answer and is not retried", async () => {
+    const model = new ScriptedSilenceModel([{ text: "21h" }]);
+    const { retries } = await run(model, { retrySilence: () => true });
+    expect(model.seen).toHaveLength(1);
+    expect(retries).toEqual([]);
+  });
+});

@@ -1862,8 +1862,10 @@ export function BehaviorTab({
     savedObservability.fullDetailRetentionDays,
   );
   // The days field's text while it is typed: the form holds a number, and an intermediate value
-  // ("" or "1" on the way to "14") must not be written into it. Re-synced when the form's number
-  // changes from elsewhere (load, discard, the switch).
+  // ("" or "1" on the way to "14") must not be written into it. Re-synced whenever the form's
+  // block is replaced (load, discard, the switch, a valid keystroke): keyed on the object and not
+  // on the number, because a discard that puts back the same number must still clear a field left
+  // empty, or the field keeps blocking Save.
   const [retentionDraft, setRetentionDraft] = useState(
     String(observability.fullDetailRetentionDays ?? ""),
   );
@@ -1873,7 +1875,7 @@ export function BehaviorTab({
         ? d
         : String(observability.fullDetailRetentionDays ?? ""),
     );
-  }, [observability.fullDetailRetentionDays]);
+  }, [observability]);
   const formUntilMs = observability.fullDetailUntil?.getTime() ?? null;
   // The deadlines are TRIGGERS here, not reads: the body uses neither, and their changing is the
   // whole signal.

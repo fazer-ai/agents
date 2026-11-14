@@ -1294,6 +1294,8 @@ export async function runObserve(
     inboxId: conv?.inboxId ?? null,
     threadId,
     base,
+    // The observer's tool lines keep their full text like a reply's do, under the same setting.
+    fullDetailRetentionDays: cfg?.fullDetailRetentionDays ?? null,
   };
   // WHAT THE OBSERVATION WROTE, so the line can say it: Chatwoot keeps no history of a label
   // write. Collected from the tool, filtered to the operator's vocabulary (label-writes.ts),

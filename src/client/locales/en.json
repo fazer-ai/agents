@@ -870,6 +870,7 @@
       "result": "Result",
       "showCutResult": "Show the cut result",
       "showFullResult": "Show the whole result ({{chars}} characters)",
+      "showKeptResult": "Show the kept result (its first {{chars}} characters; the call returned more)",
       "snoozedReminderSent": "Snoozed reminder sent",
       "snoozedReminderSentN": "Snoozed reminder {{step}} sent",
       "tool": "Used a tool"

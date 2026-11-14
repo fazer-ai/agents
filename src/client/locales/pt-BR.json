@@ -904,6 +904,7 @@
       "result": "Resultado",
       "showCutResult": "Mostrar o resultado cortado",
       "showFullResult": "Mostrar o resultado inteiro ({{chars}} caracteres)",
+      "showKeptResult": "Mostrar o resultado guardado (os primeiros {{chars}} caracteres; a chamada devolveu mais)",
       "snoozedReminderSent": "Lembrete da conversa adiada enviado",
       "snoozedReminderSentN": "Lembrete {{step}} da conversa adiada enviado",
       "tool": "Usou uma ferramenta"

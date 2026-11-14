@@ -115,6 +115,20 @@ function redactSecretsInText(input: string): string {
 // The placeholder a credential-named key gets, CHARGED like any other value: an object's key count
 // is unbounded here, so a thousand `password`-ish fields would otherwise write a thousand placeholders
 // past an exhausted budget. Emitted whole rather than cut, because half of `‹redacted›` says nothing.
+// Asked of a walk that wants to know whether it dropped anything: `onCut` runs when a string is
+// shortened, an array loses items past MAX_ARRAY, or a level past MAX_DEPTH is collapsed. With `only`,
+// just the subtree under that top-level key reports, so a caller can ask about one field of a line.
+export interface CutTracker {
+  only?: string;
+  onCut: () => void;
+}
+
+// Whether `scrubbedClip(value, max)` would cut, measured the way it measures (on the repaired text).
+export function wouldClip(value: string, max: number): boolean {
+  if (max <= 0) return value.length > 0;
+  return makeStorable(clipText(value, sourceFor(value, max + 1))).length > max;
+}
+
 function redactedLeaf(budget?: { left: number }): string {
   if (!budget) return REDACTED;
   if (budget.left <= 0) return "";
@@ -127,8 +141,13 @@ export function redactSecretsDeep(
   depth = 0,
   maxString = MAX_STRING,
   budget?: { left: number },
+  cut?: CutTracker,
 ): unknown {
-  if (depth > MAX_DEPTH) return "‹…›";
+  const track = cut && cut.only === undefined ? cut : undefined;
+  if (depth > MAX_DEPTH) {
+    track?.onCut();
+    return "‹…›";
+  }
   if (value == null) return null;
   if (typeof value === "string") {
     // BOTH bounds apply, and the smaller wins. The budget alone would leave `maxString` dead
@@ -136,6 +155,7 @@ export function redactSecretsDeep(
     // ceiling stopped being consulted; `maxString` alone bounds no row. Repair, scrub and cut live
     // in `scrubbedClip` — this decides the LENGTH, that decides the order.
     const allowed = Math.min(maxString, budget ? budget.left : maxString);
+    if (track && wouldClip(value, allowed)) track.onCut();
     // NOTE: past exhaustion the leaf goes out EMPTY, marker and all, and this is the ONE place that
     // says so. `truncate` would emit `…[truncated]` BY ITSELF for every later field (keys are
     // unbounded), defeating the row bound; the marker on the string that spent the budget already
@@ -150,9 +170,10 @@ export function redactSecretsDeep(
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return value.toString();
   if (Array.isArray(value)) {
+    if (track && value.length > MAX_ARRAY) track.onCut();
     return value
       .slice(0, MAX_ARRAY)
-      .map((v) => redactSecretsDeep(v, depth + 1, maxString, budget));
+      .map((v) => redactSecretsDeep(v, depth + 1, maxString, budget, track));
   }
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
@@ -172,7 +193,16 @@ export function redactSecretsDeep(
       Object.defineProperty(out, key, {
         value: SECRET_KEY_RE.test(key)
           ? redactedLeaf(budget)
-          : redactSecretsDeep(v, depth + 1, maxString, budget),
+          : redactSecretsDeep(
+              v,
+              depth + 1,
+              maxString,
+              budget,
+              track ??
+                (cut && depth === 0 && key === cut.only
+                  ? { onCut: cut.onCut }
+                  : undefined),
+            ),
         writable: true,
         enumerable: true,
         configurable: true,

@@ -598,6 +598,7 @@ function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
             fullOutput={
               entry.outputComplete === false ? entry.fullOutput : null
             }
+            fullOutputCut={entry.fullOutputCut}
             outputNote={cutResultNote(entry, t)}
           />
         </div>

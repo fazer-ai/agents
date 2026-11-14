@@ -26,6 +26,7 @@ export function ToolCallDetails({
   output,
   error,
   fullOutput,
+  fullOutputCut,
   outputNote,
 }: {
   args?: unknown;
@@ -36,6 +37,8 @@ export function ToolCallDetails({
   // The whole result when the log kept it beside a cut `output`: offered behind a
   // toggle, since it can run to tens of thousands of characters.
   fullOutput?: string | null;
+  // The kept copy stopped at its own ceiling, so the toggle must not call it the whole result.
+  fullOutputCut?: boolean | null;
   // A sentence under the result saying it is cut and why the whole one is not here.
   outputNote?: string | null;
 }) {
@@ -77,11 +80,17 @@ export function ToolCallDetails({
             >
               {showFull
                 ? t("conversation.trail.showCutResult", "Show the cut result")
-                : t("conversation.trail.showFullResult", {
-                    defaultValue:
-                      "Show the whole result ({{chars}} characters)",
-                    chars: fullOutput.length.toLocaleString(),
-                  })}
+                : fullOutputCut
+                  ? t("conversation.trail.showKeptResult", {
+                      defaultValue:
+                        "Show the kept result (its first {{chars}} characters; the call returned more)",
+                      chars: fullOutput.length.toLocaleString(),
+                    })
+                  : t("conversation.trail.showFullResult", {
+                      defaultValue:
+                        "Show the whole result ({{chars}} characters)",
+                      chars: fullOutput.length.toLocaleString(),
+                    })}
             </button>
           )}
           {outputNote && (

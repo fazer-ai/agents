@@ -2229,6 +2229,7 @@ export async function runObserve(
         ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
       },
       errorMessage: msg,
+      full: { kind: "system_prompt", text: cfg.systemPromptAudit },
     });
     if (committed) return { outcome: "done" };
     return { outcome: "fail", error: `observe: ${msg}` };
@@ -2249,6 +2250,8 @@ export async function runObserve(
       labelsBefore: current === null ? null : current.length,
       ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
     },
+    // The observer's audited prompt, whole, when the agent keeps full turn detail.
+    full: { kind: "system_prompt", text: cfg.systemPromptAudit },
   });
   return { outcome: "done" };
 }

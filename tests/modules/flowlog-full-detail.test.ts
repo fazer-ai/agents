@@ -281,6 +281,28 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(entry?.fullOutput).not.toContain(secret);
   });
 
+  test("a token behind a tab inside a structured result is masked before it is serialized", async () => {
+    // JSON escapes the tab, and an escaped separator no longer matches the header pattern.
+    const token = "Q".repeat(32);
+    const value = { lote: "x".repeat(3_000), nota: `Bearer\t${token}` };
+    await toolCall(flow(agentA, 7), value);
+    const [entry] = await toolTrail();
+    expect(entry?.fullOutput).toContain("x".repeat(3_000));
+    expect(entry?.fullOutput).not.toContain(token);
+  });
+
+  test("a result with an image block keeps the block instead of an empty text that reads as whole", async () => {
+    const blocks = [
+      { type: "text", text: "foto do mapa de assentos" },
+      { type: "image", data: "iVBOR".repeat(1_000), mimeType: "image/png" },
+    ];
+    await toolCall(flow(agentA, 7), blocks);
+    const [entry] = await toolTrail();
+    expect(entry?.outputComplete).toBe(false);
+    expect(entry?.fullOutput).toContain("iVBOR".repeat(1_000));
+    expect(entry?.fullOutput).toContain("foto do mapa de assentos");
+  });
+
   test("a structured output logged before the write-time flag is read as cut by its shape", async () => {
     // Lines written before `outputCut` existed: fifty content blocks (the log's list cap) and a
     // block whose text carries the cut marker are cut; three short blocks are whole.

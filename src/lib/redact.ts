@@ -118,23 +118,28 @@ function redactSecretsInText(input: string): string {
 // The placeholder a credential-named key gets, CHARGED like any other value: an object's key count
 // is unbounded here, so a thousand `password`-ish fields would otherwise write a thousand placeholders
 // past an exhausted budget. Emitted whole rather than cut, because half of `‹redacted›` says nothing.
-// The KEY layer of `redactSecretsDeep` alone, with none of its size bounds: a credential-named key's
-// value becomes the placeholder, everything else is copied whole. For a structured value about to be
-// kept as text (the full turn detail), which the value layer (`scrubbedClip`) then scrubs, so the kept
-// copy is masked the same way as its cut log line without being cut like it.
-export function redactSecretKeys(value: unknown, depth = 0): unknown {
+// `redactSecretsDeep` with none of its size bounds: a credential-named key's value becomes the
+// placeholder and every string is repaired and scrubbed whole, so a structured value about to be kept as
+// text (the full turn detail) is masked like its cut log line without being cut like it. The strings are
+// scrubbed BEFORE serialization because JSON escapes a tab or a newline inside a token, and an escaped
+// separator no longer matches the value patterns.
+export function redactSecretsUnbounded(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return scrubbedClip(value, Number.MAX_SAFE_INTEGER, value.length);
+  }
   if (value == null || typeof value !== "object") return value;
   // A guard against a cyclic or absurdly deep value, far past anything a tool returns.
   if (depth > 64) return DEPTH_MARKER;
-  if (Array.isArray(value))
-    return value.map((v) => redactSecretKeys(v, depth + 1));
+  if (Array.isArray(value)) {
+    return value.map((v) => redactSecretsUnbounded(v, depth + 1));
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
     const key = makeStorable(k);
     Object.defineProperty(out, key, {
       value: SECRET_KEY_RE.test(key)
         ? REDACTED
-        : redactSecretKeys(v, depth + 1),
+        : redactSecretsUnbounded(v, depth + 1),
       writable: true,
       enumerable: true,
       configurable: true,

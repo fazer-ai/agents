@@ -303,11 +303,14 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(entry?.fullOutput).toContain("foto do mapa de assentos");
   });
 
-  test("a structured output logged before the write-time flag is read as cut by its shape", async () => {
+  test("an output logged before the write-time flag is read as cut by its shape", async () => {
     // Lines written before `outputCut` existed: fifty content blocks (the log's list cap) and a
     // block whose text carries the cut marker are cut; three short blocks are whole.
     const block = (text: string) => ({ type: "text", text });
-    const legacy = async (output: Prisma.InputJsonValue) =>
+    const legacy = async (
+      output: Prisma.InputJsonValue,
+      extra: Record<string, Prisma.InputJsonValue> = {},
+    ) =>
       suDb.executionLog.create({
         data: {
           tenantId,
@@ -318,14 +321,26 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
           level: "info",
           status: "ok",
           source: "inbox",
-          detail: { tool: "mcp__loja__estoque", output },
+          detail: { tool: "mcp__loja__estoque", output, ...extra },
         },
       });
     await legacy(Array.from({ length: 50 }, (_, i) => block(`b${i}`)));
     await legacy([block("a"), block("lote…[truncated]")]);
     await legacy([block("a"), block("b"), block("c")]);
+    // A string the tool cut itself (an HTTP tool's `resultMaxChars`) is as long as its result; one the
+    // log cut is shorter than the result it came from.
+    const own = "lote 2 esgotado…[truncated]";
+    await legacy(own, { resultSize: { chars: own.length } });
+    const logCut = `${"a".repeat(2_000)}…[truncated]`;
+    await legacy(logCut, { resultSize: { chars: 9_000 } });
     const entries = await toolTrail();
-    expect(entries.map((e) => e.outputComplete)).toEqual([false, false, true]);
+    expect(entries.map((e) => e.outputComplete)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      false,
+    ]);
   });
 
   test("a short result that ends in the log's own marker is whole, and long arguments do not make it cut", async () => {

@@ -98,8 +98,10 @@ function failureCause(value: unknown, logValues: boolean): string {
 // structured value is masked first, keys and string values, as its log line is.
 function keptText(value: unknown): string {
   if (typeof value === "string") return value;
+  // Each block is scrubbed before the join: joining can glue a token to the previous block's last
+  // word, and the value patterns need the boundary the join removed.
   if (Array.isArray(value) && value.every(isTextBlock)) {
-    return contentToText(value as MessageContent);
+    return contentToText(redactSecretsUnbounded(value) as MessageContent);
   }
   return JSON.stringify(redactSecretsUnbounded(value)) ?? "";
 }

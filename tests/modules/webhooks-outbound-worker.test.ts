@@ -324,14 +324,15 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const blockedSub = await suDb.webhookSubscription.create({
       data: {
         tenantId,
-        url: "http://169.254.169.254/latest/meta-data",
+        url: "https://169.254.169.254/latest/meta-data",
         events: ["conversion"],
         enabled: true,
       },
     });
     const id = await seedDelivery({ subscriptionId: blockedSub.id });
     const { fetchImpl, calls } = stubFetch(200);
-    // Real SSRF guard (not the passthrough): the metadata/loopback URL must be rejected.
+    // Real SSRF guard (not the passthrough). The URL is https so the protocol check passes and the
+    // refusal has to come from the blocked address range.
     await processOutboundBatch({ base: appDb, tenantId, fetchImpl });
     // NOTE: THIS delivery never reached fetch. Asserting on the total would make the test a
     // stopwatch: the retry test above leaves a PENDING row whose backoff is `Math.random() * 2000`,
@@ -347,6 +348,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const row = await readDelivery(id);
     expect(row.status).toBe("DEAD");
     expect(row.lastError).toContain("Blocked outbound URL");
+    expect(row.lastError).toContain("169.254.169.254 is in a blocked range");
   });
 
   test("reaps a stranded SENDING row and redelivers it", async () => {

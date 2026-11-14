@@ -16,6 +16,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { assertSettingsClosedValues } from "@/modules/agents/service";
 import { getConversationDetail } from "@/modules/conversations/service";
 import {
+  FULL_DETAIL_MAX_CHARS,
   fullDetailExpiry,
   KEPT_UNTIL_KEY,
   readAgentFullDetailUsage,
@@ -98,14 +99,14 @@ function flow(agentId: bigint, days: number | null): FlowContext {
 let run = 0;
 async function toolCall(
   f: FlowContext,
-  result: string,
-  opts: { logValues: boolean } = { logValues: true },
+  result: unknown,
+  opts: { logValues: boolean; args?: string } = { logValues: true },
 ): Promise<void> {
   const logger = new ToolFlowLogger(f, { logValues: opts.logValues });
   const runId = `run-${++run}`;
   logger.handleToolStart(
     {} as Serialized,
-    '{"evento":"show"}',
+    opts.args ?? '{"evento":"show"}',
     runId,
     undefined,
     undefined,
@@ -221,6 +222,7 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(entry?.fullOutputStatus).toBe("kept");
     expect(entry?.outputComplete).toBe(false);
     expect(entry?.fullOutput).toBe(text);
+    expect(entry?.fullOutputCut).toBe(false);
     // The summary row the Logs page lists is unchanged by the setting.
     // flowlog-scope: tenant-wide — each case starts from an emptied tenant and writes one tool line.
     const [line] = await flowLogRows(suDb, {
@@ -234,6 +236,42 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(output).toContain("INICIO-A");
     expect(output).not.toContain("FIM-A");
     expect(typeof detail[KEPT_UNTIL_KEY]).toBe("string");
+  });
+
+  test("a short result that ends in the log's own marker is whole, and long arguments do not make it cut", async () => {
+    // A tool that cut its own response (an HTTP tool's `resultMaxChars`) hands the model exactly this.
+    const text = "lote 2 esgotado…[truncated]";
+    await toolCall(flow(agentA, 7), text, {
+      logValues: true,
+      args: JSON.stringify({ evento: "x".repeat(5_000) }),
+    });
+    const [entry] = await toolTrail();
+    expect(entry?.output).toBe(text);
+    expect(entry?.outputComplete).toBe(true);
+  });
+
+  test("a result made of many content blocks, cut block by block, is offered whole", async () => {
+    // The shape an MCP tool returns: a list of text blocks, each short. The log keeps the first fifty.
+    const blocks = Array.from({ length: 60 }, (_, i) => ({
+      type: "text",
+      text: `bloco-${i} setor pista disponível`,
+    }));
+    await toolCall(flow(agentA, 7), blocks);
+    const [entry] = await toolTrail();
+    expect(entry?.outputComplete).toBe(false);
+    expect(entry?.fullOutputStatus).toBe("kept");
+    expect(entry?.fullOutput).toContain("bloco-59");
+    expect(entry?.output).not.toContain("bloco-59");
+  });
+
+  test("a result past the kept-text ceiling says the kept copy is not the whole either", async () => {
+    const text = bigResult("C", FULL_DETAIL_MAX_CHARS + 50_000);
+    await toolCall(flow(agentA, 7), text);
+    const [entry] = await toolTrail();
+    expect(entry?.fullOutputStatus).toBe("kept");
+    expect(entry?.fullOutputCut).toBe(true);
+    expect(entry?.fullOutput).toContain("INICIO-C");
+    expect(entry?.fullOutput).not.toContain("FIM-C");
   });
 
   test("an agent that keeps nothing writes nothing, and the trail says the cut copy is not the whole", async () => {

@@ -15,6 +15,7 @@ CREATE TABLE "full_detail_contents" (
     "hash" TEXT NOT NULL,
     "body" TEXT NOT NULL,
     "chars" INTEGER NOT NULL,
+    "clipped" BOOLEAN NOT NULL DEFAULT false,
     "expires_at" TIMESTAMP(3) NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 

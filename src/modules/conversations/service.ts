@@ -70,6 +70,7 @@ import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import {
   type FullOutputStatus,
   fullOutputStatus,
+  OUTPUT_CUT_KEY,
   readFullDetails,
 } from "@/modules/flowlog/full-detail";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
@@ -567,11 +568,16 @@ export interface ConversationDetail {
   usage: ConversationUsage;
 }
 
-// Whether a tool line's logged `output` is the whole result. A cut copy ends in the log's marker AND
-// is shorter than the result it came from (`resultSize`, measured before the cut): the marker alone
-// is not proof, since a tool may cut its own response with the same marker (an HTTP tool's
-// `resultMaxChars`), and that text is whole as far as the model is concerned.
-function isCompleteOutput(output: unknown, resultSize: unknown): boolean {
+// Whether a tool line's logged `output` is the whole result. A line written since the full detail
+// exists says so itself (`outputCut`, decided while the output was being cut). An older line is read
+// by its shape: a cut copy ends in the log's marker AND is shorter than the result it came from
+// (`resultSize`, measured before the cut), since a tool may cut its own response with the same marker
+// (an HTTP tool's `resultMaxChars`), and that text is whole as far as the model is concerned.
+function isCompleteOutput(detail: Record<string, unknown> | null): boolean {
+  const recorded = detail?.[OUTPUT_CUT_KEY];
+  if (typeof recorded === "boolean") return !recorded;
+  const output = detail?.output;
+  const resultSize = detail?.resultSize;
   if (typeof output !== "string" || !output.endsWith(TRUNCATED)) return true;
   const chars = (resultSize as { chars?: unknown } | null)?.chars;
   return !(
@@ -629,6 +635,9 @@ export interface ConversationTrailEntry {
   // tool → the whole result when the agent keeps full turn detail and it has not expired (docs/logs.md
   // "Full turn detail"); null otherwise, `fullOutputStatus` saying why.
   fullOutput: string | null;
+  // tool → true when `fullOutput` itself stopped at the kept-text ceiling (FULL_DETAIL_MAX_CHARS)
+  // because the result was longer still. null when there is no `fullOutput`.
+  fullOutputCut: boolean | null;
   // tool → `kept` (fullOutput is the whole result), `gone` (it was kept and has expired), `not_kept`
   // (the agent was not keeping full detail, or not logging tool values, when the call ran). null on
   // every other row.
@@ -1605,8 +1614,9 @@ export async function getConversationDetail(
         step: null,
         args: detail?.args ?? null,
         output,
-        outputComplete: isCompleteOutput(rawOutput, detail?.resultSize),
+        outputComplete: isCompleteOutput(detail),
         fullOutput: kept?.text ?? null,
+        fullOutputCut: kept ? kept.clipped : null,
         fullOutputStatus: fullOutputStatus(detail, kept !== undefined),
         // The turn's answer, but only on a row that ASKED the question. The stamp is written by the
         // silence tool's line and by no other, so a row without one keeps null: the fact is about
@@ -1657,6 +1667,7 @@ export async function getConversationDetail(
         output: null,
         outputComplete: null,
         fullOutput: null,
+        fullOutputCut: null,
         fullOutputStatus: null,
         errorMessage: null,
         turnDelivered: null,
@@ -1737,6 +1748,7 @@ export async function getConversationDetail(
       output: null,
       outputComplete: null,
       fullOutput: null,
+      fullOutputCut: null,
       fullOutputStatus: null,
       errorMessage: null,
       originRecorded: null,

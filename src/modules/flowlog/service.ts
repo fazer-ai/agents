@@ -21,6 +21,7 @@ import {
   type FullDetailCapture,
   fullDetailExpiry,
   KEPT_UNTIL_KEY,
+  OUTPUT_CUT_KEY,
   storeFullDetail,
 } from "./full-detail";
 import { trackFlowWrite } from "./scheduled";
@@ -128,6 +129,32 @@ export async function writeFlowEvent(
     ev.detail && keptUntil
       ? { ...ev.detail, [KEPT_UNTIL_KEY]: keptUntil.toISOString() }
       : ev.detail;
+  // Whether the stored `output` lost anything, decided while it is being cut: the conversation page
+  // offers the kept whole text only where the cut one is short, and the stored value alone cannot
+  // say (a result that itself ends in the marker, an array clipped item by item).
+  let outputCut = false;
+  const tracksOutput = !!detail && "output" in detail;
+  const storedDetail = detail
+    ? (redactSecretsDeep(
+        detail,
+        0,
+        ctx.fullDetail ? DEBUG_MAX_STRING : MAX_STRING,
+        // The raised ceiling comes with an aggregate budget, because a per-string cap
+        // bounds no ROW: `detail` is a tree and nothing here bounds an object's key
+        // count, so fifty leaves at 300k each would be a 15 MB row. The default path
+        // passes none and keeps the per-string behaviour every existing line has.
+        ctx.fullDetail ? { left: DEBUG_MAX_STRING } : undefined,
+        tracksOutput
+          ? {
+              only: "output",
+              onCut: () => {
+                outputCut = true;
+              },
+            }
+          : undefined,
+      ) as Record<string, unknown>)
+    : null;
+  if (storedDetail && tracksOutput) storedDetail[OUTPUT_CUT_KEY] = outputCut;
   let lineId: bigint | null = null;
   try {
     const wrote = await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
@@ -153,17 +180,8 @@ export async function writeFlowEvent(
           durationMs: ev.durationMs ?? undefined,
           source: ctx.source,
           anonymous: ctx.anonymous ?? false,
-          detail: detail
-            ? (redactSecretsDeep(
-                detail,
-                0,
-                ctx.fullDetail ? DEBUG_MAX_STRING : MAX_STRING,
-                // The raised ceiling comes with an aggregate budget, because a per-string cap
-                // bounds no ROW: `detail` is a tree and nothing here bounds an object's key
-                // count, so fifty leaves at 300k each would be a 15 MB row. The default path
-                // passes none and keeps the per-string behaviour every existing line has.
-                ctx.fullDetail ? { left: DEBUG_MAX_STRING } : undefined,
-              ) as Prisma.InputJsonValue)
+          detail: storedDetail
+            ? (storedDetail as Prisma.InputJsonValue)
             : Prisma.DbNull,
           // NOTE: `errorMessage` keeps its own 500-char cut, debug mode or not. That cut is not
           // the size policy `detail` is under — it is standing in for a scrub that does not

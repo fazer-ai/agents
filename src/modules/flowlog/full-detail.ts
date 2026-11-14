@@ -3,7 +3,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { NotFoundError } from "@/lib/errors";
-import { scrubbedClip } from "@/lib/redact";
+import { scrubbedClip, wouldClip } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readRetentionDays } from "./settings";
 
@@ -27,6 +27,10 @@ export const FULL_DETAIL_MAX_CHARS = 500_000;
 // The key the log line carries when its full text is kept: the instant it expires. It tells "never
 // kept" from "kept, and expired" once the text itself is swept, with no second table.
 export const KEPT_UNTIL_KEY = "fullDetailKeptUntil";
+
+// The key a line with an `output` carries: whether logging cut that output. Written when the line is
+// stored, since the stored value cannot tell on its own.
+export const OUTPUT_CUT_KEY = "outputCut";
 
 // What is stored: secrets redacted (the same patterns as every log line), characters Postgres refuses
 // repaired, and the length capped.
@@ -61,10 +65,11 @@ export async function storeFullDetail(
   },
 ): Promise<void> {
   const body = storableFullText(args.capture.text);
+  const clipped = wouldClip(args.capture.text, FULL_DETAIL_MAX_CHARS);
   const hash = contentHash(body);
   await db.$executeRaw`
-    INSERT INTO full_detail_contents (tenant_id, hash, body, chars, expires_at)
-    VALUES (${args.tenantId}, ${hash}, ${body}, ${body.length}, ${args.expiresAt})
+    INSERT INTO full_detail_contents (tenant_id, hash, body, chars, clipped, expires_at)
+    VALUES (${args.tenantId}, ${hash}, ${body}, ${body.length}, ${clipped}, ${args.expiresAt})
     ON CONFLICT (tenant_id, hash) DO UPDATE SET expires_at = EXCLUDED.expires_at
      WHERE full_detail_contents.expires_at < EXCLUDED.expires_at`;
   await db.fullDetailRef.create({
@@ -79,19 +84,26 @@ export async function storeFullDetail(
   });
 }
 
+export interface KeptFullDetail {
+  kind: FullDetailKind;
+  text: string;
+  // The text hit FULL_DETAIL_MAX_CHARS, so even this copy is not the whole of it.
+  clipped: boolean;
+}
+
 // The kept texts of these log lines that have not expired, by line id. A line with no entry kept
 // nothing, or kept something that is gone: its own `fullDetailKeptUntil` says which.
 export async function readFullDetails(
   db: ScopedDb,
   executionLogIds: bigint[],
   now: Date = new Date(),
-): Promise<Map<string, { kind: FullDetailKind; text: string }>> {
-  const out = new Map<string, { kind: FullDetailKind; text: string }>();
+): Promise<Map<string, KeptFullDetail>> {
+  const out = new Map<string, KeptFullDetail>();
   if (executionLogIds.length === 0) return out;
   const rows = await db.$queryRaw<
-    { execution_log_id: bigint; kind: string; body: string }[]
+    { execution_log_id: bigint; kind: string; body: string; clipped: boolean }[]
   >`
-    SELECT r.execution_log_id, r.kind, c.body
+    SELECT r.execution_log_id, r.kind, c.body, c.clipped
       FROM full_detail_refs r
       JOIN full_detail_contents c
         ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash
@@ -101,6 +113,7 @@ export async function readFullDetails(
     out.set(String(r.execution_log_id), {
       kind: r.kind as FullDetailKind,
       text: r.body,
+      clipped: r.clipped,
     });
   }
   return out;

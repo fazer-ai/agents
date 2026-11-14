@@ -93,6 +93,10 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { recordTurnDelivery } from "@/modules/turn-limit/service";
 import {
+  hiddenNotesDetail,
+  hiddenNotesThisTurn,
+} from "./anthropic-progress-notes";
+import {
   attendanceHasStarted,
   claimAttendanceBoundary,
   needsAttendanceStartProbe,
@@ -2764,6 +2768,13 @@ async function runAgentNudgeBody(
     // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
     // stray sentinel occurrence from a real reply so it can't leak into the customer message.
     const drafted = proactiveReply(lastAssistantText(result.messages));
+    const hiddenNotes = hiddenNotesThisTurn(result.messages as BaseMessage[]);
+    if (hiddenNotes.length > 0)
+      emitFlowEvent(flow, {
+        stage: "generate",
+        status: "ok",
+        detail: hiddenNotesDetail(hiddenNotes, cfg.logToolValues),
+      });
     // An approved document is owed to the customer whatever the agent wrote: a silence there would
     // keep the PDF the team just released.
     const silent = drafted.silent && !approved;

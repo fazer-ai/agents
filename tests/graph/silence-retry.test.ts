@@ -12,6 +12,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import {
   buildAgentGraph,
+  replyWrittenThisTurn,
   SILENCE_RETRY_MARK,
   type SilenceRetryInfo,
 } from "@/graph/graph";
@@ -333,5 +334,150 @@ describe("unexplained silence: one retry with both exits (issue #885)", () => {
     const { retries } = await run(model, { retrySilence: () => true });
     expect(model.seen).toHaveLength(2);
     expect(retries).toEqual([{ outcome: "answered" }]);
+  });
+});
+
+// A model that believes it already answered closes the turn with punctuation (`—`): nothing a
+// person can read, so it is the empty answer for the retry and for everything after it.
+describe("a final answer of bare punctuation is a silence", () => {
+  const NOTE =
+    "O curso Horta em Casa tem 5 módulos e 20 aulas, com certificado ao final, e a matrícula está no link que eu deixei acima.";
+
+  test("a `—` is asked again once, and the second answer is the turn's", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "—" },
+      { text: "Por nada! Bom evento." },
+    ]);
+    const { retries, messages } = await run(model, {
+      retrySilence: () => true,
+    });
+    expect(model.seen).toHaveLength(2);
+    expect(lastText(messages)).toBe("Por nada! Bom evento.");
+    expect(retries).toEqual([{ outcome: "answered" }]);
+  });
+
+  test("punctuation twice ends the turn empty, and the dash is not what the thread keeps", async () => {
+    const model = new ScriptedSilenceModel([{ text: "..." }, { text: "—" }]);
+    const { retries, messages } = await run(model, {
+      retrySilence: () => true,
+    });
+    expect(model.seen).toHaveLength(2);
+    expect(retries).toEqual([{ outcome: "empty" }]);
+    expect(lastText(messages)).toBe("");
+  });
+
+  test("an emoji alone is an answer, and is not retried", async () => {
+    const model = new ScriptedSilenceModel([{ text: "👍" }, { text: "x" }]);
+    const { retries, messages } = await run(model, {
+      retrySilence: () => true,
+    });
+    expect(model.seen).toHaveLength(1);
+    expect(retries).toEqual([]);
+    expect(lastText(messages)).toBe("👍");
+  });
+
+  test("with the retry off, a `—` is the empty answer the reply written earlier stands in for", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "7 dias.", calls: [{ name: "set_labels", args: {} }] },
+      { text: "—" },
+    ]);
+    const { messages } = await run(model);
+    expect(model.seen).toHaveLength(2);
+    expect(lastText(messages)).toBe("");
+    expect(replyWrittenThisTurn(messages)).toBe("7 dias.");
+  });
+
+  test("after a hidden note, the instruction says the earlier text never reached the customer", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "", note: NOTE, calls: [{ name: "set_labels", args: {} }] },
+      { text: "—" },
+      { text: "Aqui está o conteúdo: https://exemplo.com/matricula" },
+    ]);
+    const { retries, messages } = await run(model, {
+      retrySilence: () => true,
+    });
+    expect(model.seen).toHaveLength(3);
+    const said = contentToText(model.seen[2]?.at(-1)?.content ?? "");
+    expect(said).toContain(SILENCE_RETRY_MARK);
+    expect(said).toContain("não é entregue");
+    expect(said).toContain("por inteiro");
+    expect(said).toContain("skip_reply");
+    expect(retries).toEqual([{ outcome: "answered" }]);
+    expect(lastText(messages)).toBe(
+      "Aqui está o conteúdo: https://exemplo.com/matricula",
+    );
+  });
+
+  test("a preamble written before the hidden note does not stop the retry", async () => {
+    const model = new ScriptedSilenceModel([
+      {
+        text: "Vou buscar o conteúdo.",
+        calls: [{ name: "set_labels", args: {} }],
+      },
+      { text: "", note: NOTE, calls: [{ name: "set_labels", args: {} }] },
+      { text: "—" },
+      { text: "Aqui está o conteúdo." },
+    ]);
+    const { retries } = await run(model, { retrySilence: () => true });
+    expect(model.seen).toHaveLength(4);
+    expect(retries).toEqual([{ outcome: "answered" }]);
+  });
+
+  test("a turn with no hidden note keeps the ordinary instruction", async () => {
+    const model = new ScriptedSilenceModel([{ text: "—" }, { text: "Ok!" }]);
+    await run(model, { retrySilence: () => true });
+    const said = contentToText(model.seen[1]?.at(-1)?.content ?? "");
+    expect(said).toContain(SILENCE_RETRY_MARK);
+    expect(said).not.toContain("não é entregue");
+  });
+});
+
+describe("a bare-punctuation answer under the factual-grounding review", () => {
+  function reviewed(
+    steps: ConstructorParameters<typeof ScriptedSilenceModel>[0],
+    note: string | null,
+  ) {
+    const model = new ScriptedSilenceModel(steps);
+    const seenReplies: string[] = [];
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [noopTool, realSkipTool()],
+      recoversReply: () => true,
+      reviewReply: async (_turn, reply) => {
+        seenReplies.push(reply);
+        return seenReplies.length === 1 ? note : null;
+      },
+    });
+    return { model, seenReplies, graph };
+  }
+
+  test("after a reply written beside a call, the review reads that reply and not the dash", async () => {
+    const { seenReplies, graph } = reviewed(
+      [
+        { text: "7 dias.", calls: [{ name: "set_labels", args: {} }] },
+        { text: "—" },
+      ],
+      null,
+    );
+    await graph.invoke(
+      { messages: [new HumanMessage("qual o prazo?")] },
+      { configurable: { thread_id: "t-1788-review" } },
+    );
+    expect(seenReplies).toEqual(["7 dias."]);
+  });
+
+  test("a rewrite that comes back as a dash ends the turn empty", async () => {
+    const { graph } = reviewed(
+      [{ text: "São 30 dias." }, { text: "—" }],
+      "o prazo não consta na fonte",
+    );
+    const out = await graph.invoke(
+      { messages: [new HumanMessage("qual o prazo?")] },
+      { configurable: { thread_id: "t-1788-rewrite" } },
+    );
+    expect(lastText(out.messages as BaseMessage[])).toBe("");
   });
 });

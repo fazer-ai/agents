@@ -167,6 +167,7 @@ import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { LAST_MESSAGE_RULE } from "./anthropic-progress-notes";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
 import {
   type FallbackConfig,
@@ -2629,9 +2630,15 @@ export async function buildModelAndGraph(
   // namespaced tool names) so the agent understands what an `mcp__<server>__<tool>` call operates on.
   // Built from the assembled toolset metadata here so turn / nudge / playground all get it uniformly.
   const mcpContext = buildMcpContextSection(tools);
-  const systemPrompt = mcpContext
-    ? `${cfg.systemPrompt}\n\n${mcpContext}`
-    : cfg.systemPrompt;
+  // An Anthropic model is told where its reply has to be written (./anthropic-progress-notes). Last,
+  // and the same on every turn, so the cached prefix and the thinking bound to it hold.
+  const systemPrompt = [
+    cfg.systemPrompt,
+    mcpContext,
+    cfg.mc.provider === "anthropic" ? LAST_MESSAGE_RULE : null,
+  ]
+    .filter((s): s is string => Boolean(s))
+    .join("\n\n");
   return buildAgentGraph({
     model,
     systemPrompt,

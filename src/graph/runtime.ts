@@ -115,6 +115,10 @@ import {
   turnLimitSettingsUrl,
   turnLimitVerdict,
 } from "@/modules/turn-limit/service";
+import {
+  hiddenNotesDetail,
+  hiddenNotesThisTurn,
+} from "./anthropic-progress-notes";
 import { thinkingDroppedThisTurn } from "./anthropic-thinking-binding";
 import {
   attendanceHasStarted,
@@ -2346,6 +2350,13 @@ async function runTurnBody(
         stage: "generate",
         status: "ok",
         detail: { thinkingDropped },
+      });
+    const hiddenNotes = hiddenNotesThisTurn(result.messages as BaseMessage[]);
+    if (hiddenNotes.length > 0)
+      emitFlowEvent(flow, {
+        stage: "generate",
+        status: "ok",
+        detail: hiddenNotesDetail(hiddenNotes, loaded.logToolValues),
       });
     const inertTools = inertToolsFor(loaded);
     // Whether a refusal leaves the next turn a note about acts the customer was not told of. A

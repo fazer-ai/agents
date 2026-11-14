@@ -11,6 +11,7 @@ import {
   SKIP_REPLY_ACK,
   SKIP_REPLY_MARK,
   SKIP_REPLY_TOOL,
+  saysNothing,
   silenceWasChosen,
   skipReplyRan,
   withFollowupSilenceChannel,
@@ -640,4 +641,48 @@ describe("silenceWasChosen — the decision belongs to THIS turn", () => {
   test("no history at all is not a decision", () => {
     expect(silenceWasChosen([])).toBe(false);
   });
+});
+
+// A final answer with nothing a person could read is the empty answer. Emoji is a reply; the
+// characters that carry the Unicode `Emoji` property without being one (`#`, `*`, digits) are read
+// by what they are: `#` and `*` say nothing, a digit is an answer.
+describe("saysNothing", () => {
+  const nothing = [
+    "",
+    "   ",
+    "—",
+    "–",
+    "-",
+    "...",
+    "…",
+    ". . .",
+    "*",
+    "#",
+    "**",
+    "“”",
+    "—\n—",
+    "!?",
+  ];
+  const something = [
+    "👍",
+    "🌱",
+    "🇧🇷",
+    "#️⃣",
+    "1",
+    "2️⃣",
+    "ok",
+    "Sim",
+    "é",
+    "日本",
+    "— Sim",
+    "nº 5",
+  ];
+  for (const text of nothing)
+    test(`${JSON.stringify(text)} says nothing`, () => {
+      expect(saysNothing(text)).toBe(true);
+    });
+  for (const text of something)
+    test(`${JSON.stringify(text)} says something`, () => {
+      expect(saysNothing(text)).toBe(false);
+    });
 });

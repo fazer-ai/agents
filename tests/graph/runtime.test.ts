@@ -5440,6 +5440,126 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
   });
 
+  // The answer written before the last tool call came back hidden (a 5.5 model under `display:
+  // "updates"`), and the model closed with a dash because it believed it had answered.
+  async function hiddenNotesLine(threadConv: number) {
+    const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${threadConv}`,
+      },
+      select: { detail: true },
+    });
+    return (
+      rows
+        .map((r) => r.detail as Record<string, unknown> | null)
+        .find((d) => d?.hiddenNotes !== undefined) ?? null
+    );
+  }
+  const HIDDEN =
+    "O curso tem 5 módulos e 20 aulas, e a matrícula está no link que eu deixei acima.";
+
+  test("a dash after a hidden note is retried, and the customer gets the whole answer", async () => {
+    await seedConversation(17880, null);
+    const calls: Array<[string, number, string]> = [];
+    const model = new ScriptedSilenceModel([
+      {
+        text: "Vou buscar.",
+        calls: [{ name: "set_labels", args: { add: ["quente"] } }],
+      },
+      {
+        text: "",
+        note: HIDDEN,
+        calls: [{ name: "set_labels", args: { add: ["link-enviado"] } }],
+      },
+      { text: "—" },
+      { text: "São 5 módulos. Matrícula: https://exemplo.com/matricula" },
+    ]);
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 17880 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([
+      [
+        "sendMessage",
+        17880,
+        "São 5 módulos. Matrícula: https://exemplo.com/matricula",
+      ],
+    ]);
+    expect(await silenceRetryLine(17880)).toEqual({ silenceRetry: "answered" });
+    // The note is conversation content: by default only its size reaches the log.
+    expect(await hiddenNotesLine(17880)).toEqual({
+      hiddenNotes: 1,
+      hiddenNoteChars: HIDDEN.length,
+    });
+  });
+
+  test("with the retry off, a dash is never delivered, and the summary is logged only under logToolValues", async () => {
+    await seedConversation(17881, null);
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agent.id },
+      data: {
+        settings: {
+          split: { enabled: false },
+          limits: { retrySilence: false },
+          observability: { logToolValues: true },
+        },
+      },
+    });
+    try {
+      const calls: Array<[string, number, string]> = [];
+      const model = new ScriptedSilenceModel([
+        {
+          text: "",
+          note: HIDDEN,
+          calls: [{ name: "set_labels", args: { add: ["link-enviado"] } }],
+        },
+        { text: "—" },
+        { text: "não deveria ser perguntado" },
+      ]);
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 17881 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: makeResolveClient(calls),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(model.seen).toHaveLength(2);
+      expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+      expect(await unexplainedWarned(17881)).toBe(true);
+      expect(await hiddenNotesLine(17881)).toEqual({
+        hiddenNotes: 1,
+        hiddenNoteChars: HIDDEN.length,
+        hiddenNoteSummaries: [HIDDEN],
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: { settings: { split: { enabled: false } } },
+      });
+    }
+  });
+
   // A transfer that completed is a person owning the case: the model's silence after it is not the
   // customer waiting, and it is not asked again.
   test("a completed handoff is not a silence, and is not retried", async () => {

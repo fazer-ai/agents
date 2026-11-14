@@ -78,6 +78,7 @@ import {
   PromptCapturingModel,
   ResolveThenReplyModel,
   ScriptedCaptureModel,
+  ScriptedSilenceModel,
   SilentHandoffThenResolveModel,
 } from "../utils/scripted-models";
 import { settlesDuring, throwingModel } from "../utils/tool-logger-settled";
@@ -924,6 +925,49 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       messageId: 77001,
       integrationInstanceId: "4242",
     });
+  });
+
+  test("a follow-up that hid a note and closed with a dash sends nothing, and logs the note's size", async () => {
+    await seedConv(17882, null);
+    const s = stub();
+    const NOTE = "Separei o link de pagamento acima para você.";
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:17882`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        text: "Pedido 12 aguardando pagamento",
+        framing: "operator_event",
+      },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ScriptedSilenceModel([
+            { text: "", note: NOTE, calls: [{ name: "set_labels", args: {} }] },
+            { text: "—" },
+          ]) as unknown as BaseChatModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).not.toBe("messaged");
+    expect(s.messages).toEqual([]);
+    const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:17882`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows
+        .map((r) => r.detail as Record<string, unknown> | null)
+        .find((d) => d?.hiddenNotes !== undefined),
+    ).toEqual({ hiddenNotes: 1, hiddenNoteChars: NOTE.length });
   });
 
   test("an inactivity follow-up records its origin and message, and names no integration", async () => {

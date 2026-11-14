@@ -19,6 +19,16 @@ export const SKIP_REPLY_ACK = "Acknowledged: not replying this turn";
 // customer. `additional_kwargs` is out of reach of any response body; only `skipReplyTool` sets it.
 export const SKIP_REPLY_MARK = "fazer_skip_reply";
 
+// Whether a model's text has nothing a person could read: no letter, no digit and no emoji (`—`,
+// `...`, `-`, whitespace). An emoji alone is an answer. Emoji is `Extended_Pictographic`, flags
+// (regional indicators) and keycaps (U+20E3), never the `Emoji` property, which `#`, `*` and the
+// digits carry too.
+export function saysNothing(text: string): boolean {
+  return !/[\p{L}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}]|\u20E3/u.test(
+    text,
+  );
+}
+
 export interface CustomerFacingReply {
   // The model said nothing this turn. Callers post no text; what else the turn produced (a queued
   // image, a deferred resolve, a handoff line) is a separate question and still applies.

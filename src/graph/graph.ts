@@ -42,6 +42,7 @@ import {
   providerFailure,
 } from "@/lib/provider-failure";
 import type { PermitClass } from "@/lib/semaphore";
+import { hiddenNotesOf, hiddenNotesThisTurn } from "./anthropic-progress-notes";
 import {
   clientToolsNode,
   pendingClientCalls,
@@ -61,7 +62,12 @@ import {
   setAsideRevisionCalls,
   textOnly,
 } from "./revision-calls";
-import { customerFacingReply, SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
+import {
+  customerFacingReply,
+  SKIP_REPLY_TOOL,
+  saysNothing,
+  skipReplyRan,
+} from "./silence";
 import {
   type CallReport,
   fenceReporterOf,
@@ -849,8 +855,11 @@ export function buildAgentGraph({
     // Only the message that ends the turn, the one carrying no calls: a message still requesting
     // tools is not what the runtime posts, and a preamble beside an ordinary call is left alone (the
     // same line `silenceNarration` draws). `narration` covers the text beside the decision itself.
+    // A final answer with nothing to read (`—`) loses its text too, so every reader takes it for the
+    // empty answer it is (see `fillerOnly`).
     const silenced = (m: BaseMessage): BaseMessage =>
-      silentTurn && ((m as AIMessage).tool_calls?.length ?? 0) === 0
+      ((m as AIMessage).tool_calls?.length ?? 0) === 0 &&
+      (silentTurn || fillerOnly(m))
         ? withoutText(m)
         : m;
     // The decision sticks without ending the turn: `silentTurn` keeps the wrap-up suppressed,
@@ -1176,8 +1185,8 @@ export function buildAgentGraph({
     if (revision) return { messages: [await askRevision(revision)] };
 
     let response = await ask(messages);
-    // NOTE: the unexplained silence, asked once more. Only a final answer that says nothing: no text,
-    // no calls, in a turn that declared no silence (`calledSkipThisTurn` covers the round right after
+    // NOTE: the unexplained silence, asked once more. Only a final answer that says nothing: nothing
+    // to read (`saysNothing`), no calls, in a turn that declared no silence (`calledSkipThisTurn` covers the round right after
     // the decision too), whose reply the model did not already write beside a tool call (that one is
     // delivered as is), and not at the hard limit, where the model runs without the tools the
     // instruction names. The caller's predicate is asked last, at the moment it would run: it knows
@@ -1194,7 +1203,10 @@ export function buildAgentGraph({
     ) {
       silenceRetried = true;
       const canSkip = (tools ?? []).some((t) => t.name === SKIP_REPLY_TOOL);
-      const text = silenceRetryText(canSkip);
+      const text = silenceRetryText(
+        canSkip,
+        hiddenNotesThisTurn(history).length > 0,
+      );
       // It travels where the tool budget's wrap-up does, for the same reasons: after the history
       // as a system message where every destination keeps one there, inside the one system prompt
       // everywhere else, and in a human message never. The empty answer is NOT sent back: it said
@@ -1206,6 +1218,8 @@ export function buildAgentGraph({
       response = await ask(retried);
       onSilenceRetry?.({ outcome: silenceRetryOutcome(response) });
     }
+    // NOTE: from here on a `—` is the empty answer: the review below must not take it as a candidate.
+    if (fillerOnly(response)) response = withoutText(response);
     // The factual-grounding review's candidate, on a turn that answers somebody and did not decide
     // silence: the final text, or, when that is empty, the reply written beside an earlier call that
     // the runtime recovers and delivers (`replyWrittenThisTurn`). A revise note travels like the
@@ -1534,20 +1548,37 @@ export function replyWrittenThisTurn(messages: BaseMessage[]): string {
     const ai = m as AIMessage;
     if ((ai.tool_calls ?? []).some((c) => c.name === SKIP_REPLY_TOOL))
       return "";
-    if (!found) found = contentToText(ai.content).trim();
+    if (found) continue;
+    // A `—` beside a call is no reply to recover, and would stand in front of an earlier one.
+    const text = contentToText(ai.content).trim();
+    if (!saysNothing(text)) found = text;
+    // NOTE: a note the provider hid (./anthropic-progress-notes) is then the latest thing the model
+    // meant to say, and nothing can deliver it, so an earlier preamble ("vou buscar") is no reply.
+    else if (hiddenNotesOf(ai).length > 0) return "";
   }
   return found;
 }
 
 // The retry of an unexplained silence, the helpers the agent node asks.
 //
-// A final answer that says nothing: no text and no tool call. A call the provider could not parse
-// (`invalid_tool_calls`) counts as nothing too: no tool runs for it and the turn ends there, so the
-// customer is exactly as unanswered, and the retry is the model's one chance to act properly.
+// A final answer that says nothing: no letter, digit or emoji (`saysNothing`), and no tool call. A
+// call the provider could not parse (`invalid_tool_calls`) counts as nothing too: no tool runs for it
+// and the turn ends there, so the customer is exactly as unanswered, and the retry is the model's one
+// chance to act properly.
 function saidNothing(m: BaseMessage): boolean {
   const ai = m as AIMessage;
   if ((ai.tool_calls?.length ?? 0) > 0) return false;
-  return contentToText(ai.content).trim() === "";
+  return saysNothing(contentToText(ai.content));
+}
+
+// A final answer that wrote something with nothing to read in it (`—`, `...`): a model that believes
+// it already answered closes the turn this way. It is the empty answer for every reader: retried
+// like one, recovered over like one, and never delivered.
+function fillerOnly(m: BaseMessage): boolean {
+  const ai = m as AIMessage;
+  if ((ai.tool_calls?.length ?? 0) > 0) return false;
+  const text = contentToText(ai.content);
+  return text.trim() !== "" && saysNothing(text);
 }
 
 // Whether this turn already DECLARED silence, bounded at the last human message like
@@ -1575,7 +1606,11 @@ function calledSkipThisTurn(history: BaseMessage[]): boolean {
 // "answer" would turn the first group into replies nobody asked for, so it names the silence as an
 // equal exit and says what separates the two. Where `skip_reply` is not granted there is only one exit
 // to name, and a turn that stays empty after it ends empty.
-function silenceRetryText(canSkip: boolean): string {
+// After a hidden note (./anthropic-progress-notes) the model believes it already answered, so the
+// instruction says the earlier text never reached the customer and asks for the message in full.
+function silenceRetryText(canSkip: boolean, noteHidden: boolean): string {
+  if (noteHidden)
+    return `${SILENCE_RETRY_MARK}. O texto que você escreveu antes de chamar ferramentas não é entregue: o cliente ainda não recebeu nada neste turno. Escreva agora, por inteiro, a mensagem que ele deve receber.${canSkip ? " Se de fato não há nada a dizer (um agradecimento, um ok), chame `skip_reply` com o motivo." : ""}`;
   return canSkip
     ? `${SILENCE_RETRY_MARK} e sem \`skip_reply\`, e um turno assim deixa o cliente sem saber se foi atendido. Decida agora, uma coisa só: se a última mensagem do cliente pede ou espera algo de você, responda; se não há nada a dizer (um agradecimento, um ok, uma despedida), chame \`skip_reply\` com o motivo. Não escreva só para não ficar em silêncio.`
     : `${SILENCE_RETRY_MARK}. Decida agora: se a última mensagem do cliente pede ou espera algo de você, responda; se não há nada a dizer, encerre sem escrever nada.`;
@@ -1591,5 +1626,5 @@ function silenceRetryOutcome(m: BaseMessage): SilenceRetryOutcome {
     return calls.some((c) => c.name === SKIP_REPLY_TOOL)
       ? "skip_reply"
       : "tools";
-  return contentToText(m.content).trim() ? "answered" : "empty";
+  return saysNothing(contentToText(m.content)) ? "empty" : "answered";
 }

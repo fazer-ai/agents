@@ -47,20 +47,24 @@ function withDropBlock(body: Body): Body {
   };
 }
 
-function withBeta(headers: RequestInit["headers"]): Headers {
+/** The request's headers with `beta` added to the ones `anthropic-beta` already names. */
+export function addAnthropicBeta(
+  headers: RequestInit["headers"],
+  beta: string,
+): Headers {
   const out = new Headers(headers);
   const betas = (out.get("anthropic-beta") ?? "")
     .split(",")
     .map((b) => b.trim())
     .filter(Boolean);
-  if (!betas.includes(THINKING_BINDING_BETA)) betas.push(THINKING_BINDING_BETA);
+  if (!betas.includes(beta)) betas.push(beta);
   out.set("anthropic-beta", betas.join(","));
   return out;
 }
 
 const dropBlockInit = (init: RequestInit, body: Body): RequestInit => ({
   ...init,
-  headers: withBeta(init.headers),
+  headers: addAnthropicBeta(init.headers, THINKING_BINDING_BETA),
   body: JSON.stringify(withDropBlock(body)),
 });
 

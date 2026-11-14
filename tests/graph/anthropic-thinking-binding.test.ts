@@ -168,8 +168,10 @@ describe("a replayed thinking block bound to an older prefix", () => {
     expect(error).toBeUndefined();
     expect(requests).toHaveLength(2);
     expect(requests[1]?.beta?.split(",")).toContain(BINDING_BETA);
+    // NOTE: `display` is the progress-notes wrapper's, which this model also gets.
     expect(requests[1]?.body.thinking).toEqual({
       type: "adaptive",
+      display: "updates",
       block_binding: { prefix_mismatch_behavior: "drop_block" },
     });
     expect(thinkingDroppedThisTurn([reply as BaseMessage])).toBe(1);

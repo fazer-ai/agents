@@ -7,6 +7,7 @@ import {
   type ContactAuthCondition,
   type ContactAuthConversationType,
   type ContactAuthRule,
+  contactAuthRuleExcludes,
   phoneDigits,
 } from "./settings";
 
@@ -17,6 +18,8 @@ export const RULE_UNMET = "rule_unmet";
 export const RULE_CONVERSATION_TYPE = "rule_conversation_type";
 export const RULE_LABEL = "rule_label";
 export const RULE_NONE_MET = "rule_none_met";
+// An exclusion rule matched: the conversation is one this agent stays out of.
+export const RULE_EXCLUDED = "rule_excluded";
 
 const GROUP_IDENTIFIER_SUFFIX = "@g.us";
 
@@ -71,10 +74,8 @@ function failedReason(c: ContactAuthCondition, f: RuleFacts): string | null {
   }
 }
 
-export function evaluateContactAuthRule(
-  rule: ContactAuthRule,
-  f: RuleFacts,
-): RuleVerdict {
+// What the conditions say, before the rule's effect reads it.
+function matchVerdict(rule: ContactAuthRule, f: RuleFacts): RuleVerdict {
   if (rule.kind === "all") {
     for (const c of rule.conditions) {
       const reason = failedReason(c, f);
@@ -89,6 +90,18 @@ export function evaluateContactAuthRule(
   }
   const reason = failedReason(rule, f);
   return reason ? { outcome: "denied", reason } : { outcome: "allowed" };
+}
+
+// An exclusion inverts the match and nothing else: a condition with nothing to read is unmet, so a contact the list cannot compare is not on it, and is served.
+export function evaluateContactAuthRule(
+  rule: ContactAuthRule,
+  f: RuleFacts,
+): RuleVerdict {
+  const match = matchVerdict(rule, f);
+  if (!contactAuthRuleExcludes(rule)) return match;
+  return match.outcome === "allowed"
+    ? { outcome: "denied", reason: RULE_EXCLUDED }
+    : { outcome: "allowed" };
 }
 
 function conditionReadsConversation(c: ContactAuthCondition): boolean {

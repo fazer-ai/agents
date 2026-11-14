@@ -172,8 +172,7 @@ export function ContactAuthConditionFields({
   return null;
 }
 
-// The gate's conditions: ONE list, any kind per row, remove and add up to the cap. How they combine
-// ("all" / "any") is asked only from two rows on, since with one there is nothing to combine.
+// The gate's conditions: ONE list, any kind per row, remove and add up to the cap. How they combine ("all" / "any") is asked only from two rows on, since with one there is nothing to combine; what a match means is asked above the list, by the section.
 export function ContactAuthConditionList({
   form,
   onChange,
@@ -185,6 +184,7 @@ export function ContactAuthConditionList({
 }) {
   const { t } = useTranslation();
   const rows = form.ruleConditions;
+  const excludes = form.ruleEffect === "exclude";
   const setRow = (index: number, next: ContactAuthConditionForm) =>
     onChange({
       ...form,
@@ -194,10 +194,17 @@ export function ContactAuthConditionList({
     <div className="flex flex-col gap-3">
       {rows.length >= 2 && (
         <FormField
-          label={t(
-            "editor.contactAuthRuleMatch",
-            "Let a conversation through when it meets",
-          )}
+          label={
+            excludes
+              ? t(
+                  "editor.contactAuthRuleMatchExclude",
+                  "Leave a conversation out when it meets",
+                )
+              : t(
+                  "editor.contactAuthRuleMatch",
+                  "Let a conversation through when it meets",
+                )
+          }
         >
           <Select
             value={form.ruleMatch === "any" ? "any" : "all"}

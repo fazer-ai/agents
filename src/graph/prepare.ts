@@ -462,6 +462,10 @@ export interface AgentConfig {
   // expires on its own — see src/modules/flowlog/settings.ts). Read HERE, with the rest of the
   // agent's settings, so the emit path never pays a settings read per log line.
   fullDetail: boolean;
+  // How many days this agent keeps each turn's full detail (every tool result whole, the audited
+  // prompt whole) beside the cut log lines, or null when it keeps none
+  // (agent.settings.observability.fullDetailRetentionDays). Read here for the same reason.
+  fullDetailRetentionDays: number | null;
   // Whether a turn that called a tool leaves a private note naming them in the Chatwoot conversation
   // (agent.settings.conversationNotes.toolsUsed; "off" by default — src/modules/conversation-notes).
   toolsUsedNote: ConversationNoteFormat;
@@ -1210,6 +1214,7 @@ export async function loadAgentConfig(
     choiceCheckCredentialBaseUrl,
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
+    fullDetailRetentionDays: obs.fullDetailRetentionDays,
     toolsUsedNote: readConversationNotesConfig(effSettings).toolsUsed,
     turnErrors: readConversationNotesConfig(effSettings).errors,
   };

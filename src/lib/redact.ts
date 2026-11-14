@@ -1,4 +1,4 @@
-import { clipText, makeStorable } from "@/lib/text";
+import { clipText, makeStorable, OVERFLOW_PROBE_MARGIN } from "@/lib/text";
 
 // Non-throwing secret redaction for human-facing debug surfaces (the agent playground trace and
 // the conversation `lastError`): the REPLACE-and-continue cousin of n8n-export's `assertNoSecrets`,
@@ -35,10 +35,13 @@ const SECRET_KEY_RE =
   /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret|credential)/i;
 
 export const MAX_STRING = 2000;
-const MAX_ARRAY = 50;
+export const MAX_ARRAY = 50;
 const MAX_DEPTH = 6;
 
-const TRUNCATED = "…[truncated]";
+// What a level past MAX_DEPTH is stored as.
+export const DEPTH_MARKER = "‹…›";
+
+export const TRUNCATED = "…[truncated]";
 
 // Truncates a string to `max` chars, appending a visible marker so a reader knows it was cut.
 export function truncate(s: string, max = MAX_STRING): string {
@@ -115,6 +118,53 @@ function redactSecretsInText(input: string): string {
 // The placeholder a credential-named key gets, CHARGED like any other value: an object's key count
 // is unbounded here, so a thousand `password`-ish fields would otherwise write a thousand placeholders
 // past an exhausted budget. Emitted whole rather than cut, because half of `‹redacted›` says nothing.
+// `redactSecretsDeep` with none of its size bounds: a credential-named key's value becomes the
+// placeholder and every string is repaired and scrubbed whole, so a structured value about to be kept as
+// text (the full turn detail) is masked like its cut log line without being cut like it. The strings are
+// scrubbed BEFORE serialization because JSON escapes a tab or a newline inside a token, and an escaped
+// separator no longer matches the value patterns.
+export function redactSecretsUnbounded(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return scrubbedClip(value, Number.MAX_SAFE_INTEGER, value.length);
+  }
+  if (value == null || typeof value !== "object") return value;
+  // A guard against a cyclic or absurdly deep value, far past anything a tool returns.
+  if (depth > 64) return DEPTH_MARKER;
+  if (Array.isArray(value)) {
+    return value.map((v) => redactSecretsUnbounded(v, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    const key = makeStorable(k);
+    Object.defineProperty(out, key, {
+      value: SECRET_KEY_RE.test(key)
+        ? REDACTED
+        : redactSecretsUnbounded(v, depth + 1),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
+// Asked of a walk that wants to know whether it dropped anything: `onCut` runs when a string is
+// shortened, an array loses items past MAX_ARRAY, or a level past MAX_DEPTH is collapsed. With `only`,
+// just the subtree under that top-level key reports, so a caller can ask about one field of a line.
+export interface CutTracker {
+  only?: string;
+  onCut: () => void;
+}
+
+// Whether `scrubbedClip(value, max)` would cut, measured the way it measures (on the repaired text).
+// The probe reads OVERFLOW_PROBE_MARGIN past the cap, not one unit: a probe ending inside a surrogate
+// pair loses that half to `clipText` and would read a cut string as whole.
+export function wouldClip(value: string, max: number): boolean {
+  if (max <= 0) return value.length > 0;
+  const probe = sourceFor(value, max + OVERFLOW_PROBE_MARGIN);
+  return makeStorable(clipText(value, probe)).length > max;
+}
+
 function redactedLeaf(budget?: { left: number }): string {
   if (!budget) return REDACTED;
   if (budget.left <= 0) return "";
@@ -127,8 +177,13 @@ export function redactSecretsDeep(
   depth = 0,
   maxString = MAX_STRING,
   budget?: { left: number },
+  cut?: CutTracker,
 ): unknown {
-  if (depth > MAX_DEPTH) return "‹…›";
+  const track = cut && cut.only === undefined ? cut : undefined;
+  if (depth > MAX_DEPTH) {
+    track?.onCut();
+    return DEPTH_MARKER;
+  }
   if (value == null) return null;
   if (typeof value === "string") {
     // BOTH bounds apply, and the smaller wins. The budget alone would leave `maxString` dead
@@ -136,6 +191,7 @@ export function redactSecretsDeep(
     // ceiling stopped being consulted; `maxString` alone bounds no row. Repair, scrub and cut live
     // in `scrubbedClip` — this decides the LENGTH, that decides the order.
     const allowed = Math.min(maxString, budget ? budget.left : maxString);
+    if (track && wouldClip(value, allowed)) track.onCut();
     // NOTE: past exhaustion the leaf goes out EMPTY, marker and all, and this is the ONE place that
     // says so. `truncate` would emit `…[truncated]` BY ITSELF for every later field (keys are
     // unbounded), defeating the row bound; the marker on the string that spent the budget already
@@ -150,9 +206,10 @@ export function redactSecretsDeep(
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return value.toString();
   if (Array.isArray(value)) {
+    if (track && value.length > MAX_ARRAY) track.onCut();
     return value
       .slice(0, MAX_ARRAY)
-      .map((v) => redactSecretsDeep(v, depth + 1, maxString, budget));
+      .map((v) => redactSecretsDeep(v, depth + 1, maxString, budget, track));
   }
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
@@ -172,7 +229,16 @@ export function redactSecretsDeep(
       Object.defineProperty(out, key, {
         value: SECRET_KEY_RE.test(key)
           ? redactedLeaf(budget)
-          : redactSecretsDeep(v, depth + 1, maxString, budget),
+          : redactSecretsDeep(
+              v,
+              depth + 1,
+              maxString,
+              budget,
+              track ??
+                (cut && depth === 0 && key === cut.only
+                  ? { onCut: cut.onCut }
+                  : undefined),
+            ),
         writable: true,
         enumerable: true,
         configurable: true,

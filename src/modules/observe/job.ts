@@ -1294,6 +1294,8 @@ export async function runObserve(
     inboxId: conv?.inboxId ?? null,
     threadId,
     base,
+    // The observer's tool lines keep their full text like a reply's do, under the same setting.
+    fullDetailRetentionDays: cfg?.fullDetailRetentionDays ?? null,
   };
   // WHAT THE OBSERVATION WROTE, so the line can say it: Chatwoot keeps no history of a label
   // write. Collected from the tool, filtered to the operator's vocabulary (label-writes.ts),
@@ -1318,12 +1320,23 @@ export async function runObserve(
             model: decisions.model,
             engine: { engine: "decisions" },
           };
+  // Set once the model has been handed the prompt, so a tick that a fence then stops (superseded,
+  // retired) still keeps the prompt it sent when the agent keeps full turn detail.
+  let promptSent = false;
   const line = (
     status: "ok" | "error" | "skipped",
     detail: Record<string, unknown>,
     level: "info" | "warn" | "error" = status === "ok" ? "info" : "warn",
   ) =>
     emitFlowEvent(flow, {
+      ...(promptSent
+        ? {
+            full: {
+              kind: "system_prompt" as const,
+              text: cfg.systemPromptAudit,
+            },
+          }
+        : {}),
       stage: "observe",
       level,
       status,
@@ -2138,6 +2151,7 @@ export async function runObserve(
   // Both halves: the config's signal cancels the provider request, and `underSignal` guarantees
   // this function stops waiting whatever a link in the chain does with the signal.
   try {
+    promptSent = true;
     const result = await underSignal(
       graph.invoke(
         {
@@ -2227,6 +2241,7 @@ export async function runObserve(
         ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
       },
       errorMessage: msg,
+      full: { kind: "system_prompt", text: cfg.systemPromptAudit },
     });
     if (committed) return { outcome: "done" };
     return { outcome: "fail", error: `observe: ${msg}` };
@@ -2247,6 +2262,8 @@ export async function runObserve(
       labelsBefore: current === null ? null : current.length,
       ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
     },
+    // The observer's audited prompt, whole, when the agent keeps full turn detail.
+    full: { kind: "system_prompt", text: cfg.systemPromptAudit },
   });
   return { outcome: "done" };
 }

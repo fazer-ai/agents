@@ -17,6 +17,13 @@ import {
   rateSubjectOf,
   recoverySubjectOf,
 } from "./alerts";
+import {
+  type FullDetailCapture,
+  fullDetailExpiry,
+  KEPT_UNTIL_KEY,
+  OUTPUT_CUT_KEY,
+  storeFullDetail,
+} from "./full-detail";
 import { trackFlowWrite } from "./scheduled";
 import {
   type FlowLevel,
@@ -67,6 +74,10 @@ export interface FlowContext {
   // read, and this emit is on the hot path and fire-and-forget). Absent means off, which is what
   // every context that does not know an agent must be.
   fullDetail?: boolean;
+  // How many days this agent keeps a line's FULL text beside the cut one, or
+  // null/absent when it keeps none. Read with the agent's settings, like `fullDetail`; only a line
+  // whose event carries `full` writes anything (src/modules/flowlog/full-detail.ts).
+  fullDetailRetentionDays?: number | null;
 }
 
 export interface FlowEvent {
@@ -79,6 +90,9 @@ export interface FlowEvent {
   // Allowlisted ids/counts/enums only — never message text/PII. Redacted on write.
   detail?: Record<string, unknown>;
   errorMessage?: string;
+  // The whole text behind one of this line's cut strings (a tool's result, the audited prompt), kept
+  // only when the context's agent retains full detail. Never part of `detail`.
+  full?: FullDetailCapture;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -109,6 +123,39 @@ export async function writeFlowEvent(
   const base = ctx.base ?? basePrisma;
   const level: FlowLevel = ev.level ?? "info";
   let delivered = true;
+  const keepDays = ev.full ? (ctx.fullDetailRetentionDays ?? null) : null;
+  const keptUntil = keepDays ? fullDetailExpiry(keepDays) : null;
+  const detail =
+    ev.detail && keptUntil
+      ? { ...ev.detail, [KEPT_UNTIL_KEY]: keptUntil.toISOString() }
+      : ev.detail;
+  // Whether the stored `output` lost anything, decided while it is being cut: the conversation page
+  // offers the kept whole text only where the cut one is short, and the stored value alone cannot
+  // say (a result that itself ends in the marker, an array clipped item by item).
+  let outputCut = false;
+  const tracksOutput = !!detail && "output" in detail;
+  const storedDetail = detail
+    ? (redactSecretsDeep(
+        detail,
+        0,
+        ctx.fullDetail ? DEBUG_MAX_STRING : MAX_STRING,
+        // The raised ceiling comes with an aggregate budget, because a per-string cap
+        // bounds no ROW: `detail` is a tree and nothing here bounds an object's key
+        // count, so fifty leaves at 300k each would be a 15 MB row. The default path
+        // passes none and keeps the per-string behaviour every existing line has.
+        ctx.fullDetail ? { left: DEBUG_MAX_STRING } : undefined,
+        tracksOutput
+          ? {
+              only: "output",
+              onCut: () => {
+                outputCut = true;
+              },
+            }
+          : undefined,
+      ) as Record<string, unknown>)
+    : null;
+  if (storedDetail && tracksOutput) storedDetail[OUTPUT_CUT_KEY] = outputCut;
+  let lineId: bigint | null = null;
   try {
     const wrote = await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
       const once = opts.once;
@@ -116,7 +163,8 @@ export async function writeFlowEvent(
         await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${once.lockKey}, 0))`;
         if (await once.already(db)) return false;
       }
-      await db.executionLog.create({
+      const line = await db.executionLog.create({
+        select: { id: true },
         data: {
           tenantId: ctx.tenantId,
           turnId: ctx.turnId,
@@ -132,17 +180,8 @@ export async function writeFlowEvent(
           durationMs: ev.durationMs ?? undefined,
           source: ctx.source,
           anonymous: ctx.anonymous ?? false,
-          detail: ev.detail
-            ? (redactSecretsDeep(
-                ev.detail,
-                0,
-                ctx.fullDetail ? DEBUG_MAX_STRING : MAX_STRING,
-                // The raised ceiling comes with an aggregate budget, because a per-string cap
-                // bounds no ROW: `detail` is a tree and nothing here bounds an object's key
-                // count, so fifty leaves at 300k each would be a 15 MB row. The default path
-                // passes none and keeps the per-string behaviour every existing line has.
-                ctx.fullDetail ? { left: DEBUG_MAX_STRING } : undefined,
-              ) as Prisma.InputJsonValue)
+          detail: storedDetail
+            ? (storedDetail as Prisma.InputJsonValue)
             : Prisma.DbNull,
           // NOTE: `errorMessage` keeps its own 500-char cut, debug mode or not. That cut is not
           // the size policy `detail` is under — it is standing in for a scrub that does not
@@ -154,6 +193,7 @@ export async function writeFlowEvent(
             : undefined,
         },
       });
+      lineId = line.id;
       return true;
     });
     // NOTE: Already written by another writer: nothing new happened, so nothing alerts either.
@@ -161,6 +201,29 @@ export async function writeFlowEvent(
   } catch (err) {
     delivered = false;
     logger.warn({ err, turnId: ctx.turnId }, "flowlog emit failed");
+  }
+  // In its own transaction, after the line: the full text is the optional half, and a failure writing
+  // it must not cost the line every other reader depends on. A line whose text did not land reads as
+  // `gone` (its marker says it was meant to be kept), never as the whole thing.
+  if (lineId !== null && keptUntil && ev.full) {
+    const capture = ev.full;
+    const executionLogId = lineId;
+    try {
+      await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
+        storeFullDetail(db, {
+          tenantId: ctx.tenantId,
+          executionLogId,
+          agentId: ctx.agentId ?? null,
+          capture,
+          expiresAt: keptUntil,
+        }),
+      );
+    } catch (err) {
+      logger.warn(
+        { err, turnId: ctx.turnId },
+        "flowlog: could not keep a line's full detail",
+      );
+    }
   }
   // Alerting is warn/error, plus a cause alert at any level (a run the job retries against a
   // dead key is an `info`, and the key still needs a person), and only for a source with real users
@@ -210,6 +273,8 @@ export async function withFlowStage<T>(
     provider?: string | null;
     model?: string | null;
     detail?: Record<string, unknown>;
+    // The whole text behind a cut string of `detail`, kept when the agent retains full detail.
+    full?: FullDetailCapture;
     // Extra detail derived FROM the result, merged over `detail` on the success line, for a stage
     // whose interesting numbers only exist once it returned (how much the speech normalizer rewrote,
     // say). Same PII rule as `detail`: counts, ids and enums, never text. It runs on the hot path, so
@@ -255,6 +320,7 @@ export async function withFlowStage<T>(
       ...(meta.labelsOf?.() ?? {}),
       durationMs: Date.now() - start,
       detail,
+      ...(meta.full ? { full: meta.full } : {}),
     });
     return out;
   } catch (err) {
@@ -284,6 +350,7 @@ export async function withFlowStage<T>(
       durationMs: Date.now() - start,
       detail,
       errorMessage: sanitizeErrorMessage(err),
+      ...(meta.full ? { full: meta.full } : {}),
     });
     throw err;
   }

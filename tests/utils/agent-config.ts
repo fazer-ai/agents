@@ -131,6 +131,7 @@ export function makeConfig(
     choiceCheckCredentialBaseUrl: null,
     logToolValues: false,
     fullDetail: false,
+    fullDetailRetentionDays: null,
     toolsUsedNote: "off",
     turnErrors: "off",
     ...over,

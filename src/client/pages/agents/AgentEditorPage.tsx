@@ -2071,6 +2071,7 @@ function AgentEditor() {
         )
           ? f.observability.fullDetailUntil?.toISOString()
           : null,
+        fullDetailRetentionDays: f.observability.fullDetailRetentionDays,
       },
       memory: f.memory,
       modelFallback: f.modelFallback,

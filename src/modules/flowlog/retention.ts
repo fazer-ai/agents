@@ -97,6 +97,9 @@ async function deleteInBatches(
   batch: (rows: number) => Prisma.Sql,
   deadline: number,
   o: Required<SweepOptions>,
+  // Asked when a batch comes back short, for a table whose outer predicate can keep a picked row: a
+  // short batch then does not prove the table is empty.
+  rowsLeft?: Prisma.Sql,
 ): Promise<TableSweep> {
   let deleted = 0;
   let timeouts = 0;
@@ -114,7 +117,17 @@ async function deleteInBatches(
       continue;
     }
     deleted += n;
-    if (n < size) return { deleted, done: true, timeouts };
+    if (n < size) {
+      const more =
+        rowsLeft !== undefined &&
+        (
+          await runScopedOn(base, ctx, (db) =>
+            db.$queryRaw<{ more: boolean }[]>(rowsLeft),
+          )
+        )[0]?.more === true;
+      if (!more) return { deleted, done: true, timeouts };
+      continue;
+    }
     size = nextBatchSize(size, Date.now() - started, o.targetBatchMs);
     batchSizes.set(key, size);
     if (o.pauseMs > 0) await new Promise((r) => setTimeout(r, o.pauseMs));
@@ -187,6 +200,11 @@ export async function sweepFlowlog(
         SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
         AND expires_at < ${now}`,
   ];
+  // The texts' pass is the one whose outer predicate can keep a row the inner select picked (its
+  // expiry moved forward by a concurrent write), so a short batch there is re-asked before the table
+  // is called done.
+  const contentsLeft = Prisma.sql`
+    SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`;
   // A sweep is done when each table has come back within the window once, over as many passes as it
   // takes: a pass works only the tables the sweep has left, from the one the last pass stopped on. So
   // a table that spends the budget (a backlog, or a slow check) keeps neither the tables after it from
@@ -204,6 +222,7 @@ export async function sweepFlowlog(
       passes[i] as (rows: number) => Prisma.Sql,
       deadline,
       o,
+      i === passes.length - 1 ? contentsLeft : undefined,
     );
     deleted += r.deleted;
     timeouts += r.timeouts;

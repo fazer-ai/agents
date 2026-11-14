@@ -515,6 +515,50 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(linesAfter).toBe(linesBefore);
   });
 
+  test("a text kept alive by a concurrent write does not end the sweep with expired texts left", async () => {
+    // A write that moves a picked text's expiry forward makes the outer predicate keep it, so the
+    // batch comes back short with expired texts still behind it. The trigger plays that write: it
+    // moves the first text's expiry and keeps the row, exactly as the race would.
+    const past = new Date(Date.now() - 86_400_000);
+    for (const [i, body] of ["PROTEGIDO", "t1", "t2", "t3", "t4"].entries()) {
+      await suDb.$executeRaw`
+        INSERT INTO full_detail_contents (tenant_id, hash, body, chars, expires_at)
+        VALUES (${tenantId}, ${`h-${body}`}, ${body}, ${body.length},
+                ${new Date(past.getTime() + i * 1_000)})`;
+    }
+    await suDb.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION fd_keep_alive_1761() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.body = 'PROTEGIDO' THEN
+          UPDATE full_detail_contents SET expires_at = now() + interval '1 day' WHERE id = OLD.id;
+          RETURN NULL;
+        END IF;
+        RETURN OLD;
+      END $$ LANGUAGE plpgsql`);
+    await suDb.$executeRawUnsafe(`
+      CREATE TRIGGER fd_keep_alive_1761 BEFORE DELETE ON full_detail_contents
+        FOR EACH ROW EXECUTE FUNCTION fd_keep_alive_1761()`);
+    try {
+      forgetSweepBatchSizesForTest();
+      const r = await sweepFlowlog(appDb, tenantId, {
+        batchRows: 2,
+        targetBatchMs: 0,
+        pauseMs: 0,
+      });
+      expect(r.done).toBe(true);
+      const left = await suDb.$queryRaw<{ body: string }[]>`
+        SELECT body FROM full_detail_contents WHERE tenant_id = ${tenantId}`;
+      expect(left.map((x) => x.body)).toEqual(["PROTEGIDO"]);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS fd_keep_alive_1761 ON full_detail_contents",
+      );
+      await suDb.$executeRawUnsafe(
+        "DROP FUNCTION IF EXISTS fd_keep_alive_1761()",
+      );
+    }
+  });
+
   test("a kept result past its expiry reads as gone before the sweep has run", async () => {
     await toolCall(flow(agentA, 3), bigResult("E"));
     await suDb.$executeRaw`

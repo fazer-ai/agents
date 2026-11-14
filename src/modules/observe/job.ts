@@ -1320,12 +1320,23 @@ export async function runObserve(
             model: decisions.model,
             engine: { engine: "decisions" },
           };
+  // Set once the model has been handed the prompt, so a tick that a fence then stops (superseded,
+  // retired) still keeps the prompt it sent when the agent keeps full turn detail.
+  let promptSent = false;
   const line = (
     status: "ok" | "error" | "skipped",
     detail: Record<string, unknown>,
     level: "info" | "warn" | "error" = status === "ok" ? "info" : "warn",
   ) =>
     emitFlowEvent(flow, {
+      ...(promptSent
+        ? {
+            full: {
+              kind: "system_prompt" as const,
+              text: cfg.systemPromptAudit,
+            },
+          }
+        : {}),
       stage: "observe",
       level,
       status,
@@ -2140,6 +2151,7 @@ export async function runObserve(
   // Both halves: the config's signal cancels the provider request, and `underSignal` guarantees
   // this function stops waiting whatever a link in the chain does with the signal.
   try {
+    promptSent = true;
     const result = await underSignal(
       graph.invoke(
         {

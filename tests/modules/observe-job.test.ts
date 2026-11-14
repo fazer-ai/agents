@@ -3647,6 +3647,69 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
+  test("a run superseded after the model was asked still keeps the prompt it sent", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await suDb.$executeRaw`DELETE FROM full_detail_refs WHERE tenant_id = ${tenantId}`;
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          observability: { logToolValues: true, fullDetailRetentionDays: 7 },
+        },
+      },
+    });
+    try {
+      const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+      const job = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "OBSERVE",
+          dedupeKey: `sup-keep-${process.pid}`,
+          status: "CLAIMED",
+          claimSeq: 6,
+          runAt: new Date(),
+          payload: {},
+        },
+      });
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () =>
+            new LabellingModel(["cancelamento"], () =>
+              suDb.schedulerJob.update({
+                where: { id: job.id },
+                data: { claimSeq: 7 },
+              }),
+            ) as unknown as BaseChatModel,
+          claim: { jobId: job.id, claimSeq: 6 },
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      expect(detailOf(await observeLines(), 0).skipped).toBe("superseded");
+      await settleFlowEvents();
+      const kept = await suDb.$queryRaw<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM full_detail_refs
+         WHERE tenant_id = ${tenantId} AND kind = 'system_prompt'`;
+      expect(kept[0]?.n).toBe(1);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
   test("a superseded run acts on nothing", async () => {
     await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };

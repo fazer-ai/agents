@@ -21,14 +21,166 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/g, // GitHub tokens
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\b/g, // JWT
-  // NOTE: a JWT HEAD that runs to the end of the scanned window. The other shapes are a prefix plus
-  // a run, so a long enough piece still matches; a cut JWT is missing STRUCTURE (two dots and a last
-  // segment), which no scan margin restores, so it is recognised by its head. Anchored at the end,
-  // where a cut leaves it, so a mid-sentence base64 blob starting with `eyJ` is not redacted. The
-  // complete-token pattern above runs first.
-  /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)*$/g, // JWT truncated by a cut
+  // A JWT, whole or cut, is not a pattern here: `jwtSpans` finds it in linear time.
 ];
+
+// The same shapes GLUED to the word before them (`textosk-proj-…`), where the patterns above find no
+// boundary. The prefix alone is not enough there (`risk-admin-dashboard_settings_v2` is prose), so a
+// glued candidate is a credential only when its body also looks like one; `isSecret` judges group 1.
+// Every guard asks about the SET of characters, so a candidate starting inside a refused one (which
+// ends at the same place) is refused too, and a refusal skips the whole match: that keeps the pass
+// linear. The rules and the cost argument are in docs/logs.md.
+interface GluedShape {
+  re: RegExp;
+  isSecret: (body: string) => boolean;
+}
+
+const mixedCase = (b: string) =>
+  /[A-Z]/.test(b) && /[a-z]/.test(b) && /\d/.test(b);
+const letterAndDigit = (b: string) => /[A-Za-z]/.test(b) && /\d/.test(b);
+const always = () => true;
+
+// A JWT header is base64url of a JSON object, so it decodes to printable ASCII; an identifier that
+// happens to contain `eyJ` decodes to binary noise. (`eyJ` itself always decodes to `{"`, so the
+// prefix proves nothing and is not checked.) The first 64 characters are 48 bytes, far past chance
+// for noise, and reading no more keeps a retry cheap. Only whole 4-character groups are decoded,
+// because a cut can end the segment anywhere.
+function isJwtHeader(segment: string): boolean {
+  const n = Math.min(segment.length, 64);
+  const whole = segment.slice(0, n - (n % 4));
+  let decoded: string;
+  try {
+    decoded = atob(whole.replace(/-/g, "+").replace(/_/g, "/"));
+  } catch {
+    return false;
+  }
+  return /^[\x20-\x7e]*$/.test(decoded);
+}
+
+const GLUED = "(?<=\\w)";
+const GLUED_SECRET_SHAPES: GluedShape[] = [
+  {
+    re: new RegExp(`${GLUED}sk-([A-Za-z0-9]{16,})\\b`, "g"),
+    isSecret: mixedCase,
+  },
+  {
+    re: new RegExp(
+      `${GLUED}sk-(?:proj|svcacct|admin|None|ant-[a-z]+\\d*)-([A-Za-z0-9_-]{16,})`,
+      "g",
+    ),
+    isSecret: mixedCase,
+  },
+  {
+    re: new RegExp(`${GLUED}sk-or-v1-[0-9a-f]{32,}`, "g"),
+    isSecret: always,
+  },
+  {
+    re: new RegExp(
+      `${GLUED}(?:ghp|gho|ghs|github_pat)_([A-Za-z0-9_]{16,})\\b`,
+      "g",
+    ),
+    isSecret: mixedCase,
+  },
+  {
+    re: new RegExp(
+      `${GLUED}xox[baprs]-(?=[A-Za-z0-9-]{10})\\d+-\\d+-[A-Za-z0-9-]*\\b`,
+      "g",
+    ),
+    isSecret: always,
+  },
+  {
+    re: new RegExp(`${GLUED}AKIA([0-9A-Z]{16})\\b`, "g"),
+    isSecret: letterAndDigit,
+  },
+];
+
+// Where a span to redact is, as [start, end) of the input.
+type Span = [number, number];
+
+// The spans of every glued candidate its shape accepts.
+function gluedSpans(
+  input: string,
+  { re, isSecret }: GluedShape,
+  out: Span[],
+): void {
+  re.lastIndex = 0;
+  for (let m = re.exec(input); m; m = re.exec(input)) {
+    const end = m.index + m[0].length;
+    if (isSecret(m[1] ?? "")) out.push([m.index, end]);
+  }
+}
+
+const isWordCode = (c: number) =>
+  (c >= 48 && c <= 57) ||
+  (c >= 65 && c <= 90) ||
+  (c >= 97 && c <= 122) ||
+  c === 95;
+
+// Where a run of JWT segment characters (`[\w-]`, with `.` too when `dots`) that starts at `from` ends.
+function runEnd(input: string, from: number, dots: boolean): number {
+  let i = from;
+  for (; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    if (!(isWordCode(c) || c === 45 || (dots && c === 46))) break;
+  }
+  return i;
+}
+
+// Every JWT, whole or cut by the end of the window, at a boundary or glued to a word, in one linear
+// pass over the `eyJ` occurrences. A regex is not linear here: a candidate starts at every `eyJ`
+// behind a `-` or a word character, and a failing JWT pattern rescans the segment from each start,
+// and a cut head's `$` the rest of the text. The rules and the cost argument are in docs/logs.md.
+function jwtSpans(input: string, out: Span[]): void {
+  // The current header segment's end, and whether it opens a whole token ending at `tokenEnd`.
+  let segEnd = -1;
+  let tokenEnd = -1;
+  // Where the run of token characters holding the last cut-head candidate ends.
+  let tokenRunEnd = -1;
+  // The span found last, so a candidate it already covers is not taken again.
+  let coveredUntil = -1;
+  let coveredSeg = -1;
+  for (
+    let i = input.indexOf("eyJ");
+    i !== -1;
+    i = input.indexOf("eyJ", i + 1)
+  ) {
+    if (i >= segEnd) {
+      segEnd = runEnd(input, i, false);
+      tokenEnd = -1;
+      if (input[segEnd] === ".") {
+        const payloadEnd = runEnd(input, segEnd + 1, false);
+        if (payloadEnd - segEnd - 1 >= 10 && input[payloadEnd] === ".") {
+          // The signature ends on a word character, as `[\w-]{6,}\b` does.
+          let sigEnd = runEnd(input, payloadEnd + 1, false);
+          while (sigEnd > payloadEnd + 1 && input[sigEnd - 1] === "-") sigEnd--;
+          if (sigEnd - payloadEnd - 1 >= 6) tokenEnd = sigEnd;
+        }
+      }
+    }
+    // NOTE: Inside a token already taken, a segment that starts at a dot is that token's own payload
+    // or signature, and another start in the same header segment is the same token; a header behind a
+    // `-` or a word character inside a later segment is a token of its own and is still read.
+    if (i < coveredUntil && (input[i - 1] === "." || segEnd === coveredSeg)) {
+      continue;
+    }
+    if (segEnd - i < 13) continue;
+    const glued = i > 0 && isWordCode(input.charCodeAt(i - 1));
+    if (glued && !isJwtHeader(input.slice(i, Math.min(segEnd, i + 64)))) {
+      continue;
+    }
+    if (tokenEnd !== -1) {
+      out.push([i, tokenEnd]);
+      coveredUntil = Math.max(coveredUntil, tokenEnd);
+      coveredSeg = segEnd;
+      continue;
+    }
+    if (i >= tokenRunEnd) tokenRunEnd = runEnd(input, i, true);
+    if (tokenRunEnd === input.length) {
+      out.push([i, input.length]);
+      return;
+    }
+  }
+}
 
 // Object keys whose VALUE is a credential and must be dropped wholesale.
 const SECRET_KEY_RE =
@@ -97,13 +249,37 @@ export function scrubbedClip(
 
 // Scrubs concrete secret-shaped substrings from a string (the VALUE layer). Idempotent.
 //
-// Deliberately NOT exported: one pattern is anchored to the end of its input, so what this is
+// Deliberately NOT exported: the JWT scan reads the end of its input as a cut, so what this is
 // handed has to be a window someone chose on purpose. `scrubbedClip` is that someone, and it is
 // also the only order of repair/scrub/cut that does not leak.
 function redactSecretsInText(input: string): string {
-  let out = input;
-  for (const re of SECRET_VALUE_PATTERNS) out = out.replace(re, REDACTED);
-  return out;
+  // Every pattern is matched against the INPUT and the overlapping spans are merged, rather
+  // than replacing pattern by pattern: in sequence, one pattern takes the inside of another one's
+  // match and leaves the rest under every minimum (a key-shaped run inside a JWT signature would
+  // leave the header and the whole payload readable). Merged, the union goes.
+  const spans: Span[] = [];
+  for (const re of SECRET_VALUE_PATTERNS) {
+    for (const m of input.matchAll(re)) {
+      spans.push([m.index, m.index + m[0].length]);
+    }
+  }
+  for (const shape of GLUED_SECRET_SHAPES) gluedSpans(input, shape, spans);
+  jwtSpans(input, spans);
+  if (spans.length === 0) return input;
+  spans.sort((x, y) => x[0] - y[0]);
+  let out = "";
+  let from = 0;
+  let [start, end] = spans[0] as Span;
+  for (const [s, e] of spans) {
+    if (s < end) {
+      end = Math.max(end, e);
+      continue;
+    }
+    out += input.slice(from, start) + REDACTED;
+    from = end;
+    [start, end] = [s, e];
+  }
+  return out + input.slice(from, start) + REDACTED + input.slice(end);
 }
 
 // Recursively copies a value with secrets removed: credential-named keys dropped, secret-shaped

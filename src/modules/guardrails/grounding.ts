@@ -247,7 +247,7 @@ export const GROUNDING_SYSTEM_PROMPT = [
   "",
   'A call marked turn="earlier" was made in an earlier turn (turns_back says how many customer messages ago) and was not repeated now. One marked source="yes" is still a SOURCE: a reply that repeats, or contradicts, what it returned is judged against it like any other. One marked source="no" is context, not a source: it establishes what the system already did for this customer (a case opened, a note added, a transfer, a follow-up scheduled, a document issued), and never supports a fact about products, offers or rules.',
   "",
-  "A call of this turn that refused an action (nothing was opened, sent or changed) makes a reply saying that this action was done a contradiction. It does not undo what an earlier call completed: a reply saying the case an earlier call opened is with the team is supported by that call.",
+  "A call of this turn that refused an action (nothing was opened, added, sent or changed) makes a reply saying that this action was done a contradiction, even when an earlier call did the same kind of action: an earlier call supports only what it did, with what it carried then. The refusal does not undo what an earlier call completed: a reply saying the case an earlier call opened is with the team, or that what an earlier call added reached it, is supported by that call.",
   "",
   '<now> holds the current date and time where the customer is. "Today", "tomorrow", a weekday, or whether a time has already passed, computed from it, is arithmetic, not an unsupported claim. A message in <conversation_context> may open with the date and time it was sent, in brackets: a relative date in it counts from that day.',
   "",

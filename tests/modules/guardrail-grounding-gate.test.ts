@@ -510,16 +510,26 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
 
   // Turn by turn, the calls each one made, the customer asking and the agent answering; the last
   // answer is the reply under review. Call ids restart every turn, as a provider's `call_0` does.
-  type Call = [name: string, args: Record<string, unknown>, result: string];
+  type Call = [
+    name: string,
+    args: Record<string, unknown>,
+    result: string,
+    status?: "error",
+  ];
   function askedTurns(turns: Call[][]): BaseMessage[] {
     return turns.flatMap((calls, i) => [
       new HumanMessage(`Pergunta ${i + 1}`),
-      ...calls.flatMap(([name, args, result], j) => [
+      ...calls.flatMap(([name, args, result, status], j) => [
         new AIMessage({
           content: "",
           tool_calls: [{ name, args, id: `call_${j}` }],
         }),
-        new ToolMessage({ content: result, tool_call_id: `call_${j}`, name }),
+        new ToolMessage({
+          content: result,
+          tool_call_id: `call_${j}`,
+          name,
+          ...(status ? { status } : {}),
+        }),
       ]),
       new AIMessage(i === turns.length - 1 ? DRAFT : `Resposta ${i + 1}`),
     ]);
@@ -602,13 +612,26 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     const twoTools = await reviewWith(
       askedTurns([
         [
-          ["catalogo", AURORA, PAGE],
           ["agenda", AURORA, PAGE],
+          ["clima", AURORA, PAGE],
         ],
       ]),
       6,
     );
     expect(copies(twoTools.sent, "CATALOGO-A")).toBe(2);
+    // A repeat that errored with the same text is no source; the call that answered still is.
+    const errored = await reviewWith(
+      askedTurns([
+        [["catalogo", AURORA, PAGE]],
+        [["catalogo", AURORA, PAGE, "error"]],
+      ]),
+      6,
+    );
+    expect(copies(errored.sent, "CATALOGO-A")).toBe(2);
+    expect([errored.line?.sourced, errored.line?.earlierSources]).toEqual([
+      true,
+      1,
+    ]);
   });
 
   // The bug it catches: the ceiling counting every copy refused a review whose single result fits.

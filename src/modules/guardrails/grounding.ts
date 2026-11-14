@@ -153,7 +153,8 @@ export function earlierSourceCalls(
 // The calls as the reviewer reads them, each repeated call once: one with the same tool, the same
 // arguments (in any key order) and the same result as a later call, in an earlier turn or in this one,
 // is dropped, and the latest travels with its own turn marking, so a follow-up that asks the catalog
-// again sends its result once. A changed result, or other arguments, is evidence, so both travel.
+// again sends its result once. A changed result, or other arguments, is evidence, so both travel,
+// and so is a source whose repeat errored with the same text: the error is no source, the first is.
 export function withoutRepeatedCalls(
   calls: readonly GroundingToolCall[],
 ): GroundingToolCall[] {
@@ -161,7 +162,12 @@ export function withoutRepeatedCalls(
   const kept: GroundingToolCall[] = [];
   for (let i = calls.length - 1; i >= 0; i--) {
     const c = calls[i] as GroundingToolCall;
-    const key = JSON.stringify([c.name, sortedKeys(c.args), c.result]);
+    const key = JSON.stringify([
+      c.name,
+      sortedKeys(c.args),
+      c.result,
+      c.source,
+    ]);
     if (seen.has(key)) continue;
     seen.add(key);
     kept.push(c);

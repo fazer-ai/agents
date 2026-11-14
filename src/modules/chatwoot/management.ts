@@ -669,9 +669,12 @@ export async function verifyBaseUrlMove(
   const savedToken = readStoredToken(dep.adminToken);
   const token = newToken ?? savedToken;
   const fetchProfile = deps.fetchProfile ?? fetchChatwootProfile;
+  // A profile with its user id, or a refusal that says what answered. A success that is not a
+  // profile (an empty body, `null`, an object without an id) proves no installation either way.
   const probe = async (t: string) => {
+    let raw: unknown;
     try {
-      return await fetchProfile({ baseUrl, token: t });
+      raw = await fetchProfile({ baseUrl, token: t });
     } catch (err) {
       // NOTE: only a Chatwoot that has no row for the SAVED token says it is another installation.
       // A new token it refuses is a token error, and anything else is an address that did not answer.
@@ -679,14 +682,14 @@ export async function verifyBaseUrlMove(
         throw differentInstallationError();
       throw profileUnreachedError();
     }
+    const userId = profileUserId(raw);
+    if (userId === null) throw profileUnreachedError();
+    return { raw, userId };
   };
   const after = await probe(token);
-  const userAfter = profileUserId(after);
   const viaSaved = token === savedToken ? after : await probe(savedToken);
-  const anchor = profileUserId(viaSaved);
-  if (userAfter === null || anchor === null || userAfter !== anchor)
-    throw differentInstallationError();
-  const reachable = new Set(parseChatwootAccounts(after).map((a) => a.id));
+  if (after.userId !== viaSaved.userId) throw differentInstallationError();
+  const reachable = new Set(parseChatwootAccounts(after.raw).map((a) => a.id));
   if (dep.accountIds.some((id) => !reachable.has(id)))
     throw differentInstallationError();
   // No other tenant may hold one of these accounts through the new address.

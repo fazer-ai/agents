@@ -2565,6 +2565,25 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       ["saved token, a 500", () => json(500, {}), undefined, UNREACHED],
       ["saved token, no such route", () => json(404, {}), undefined, UNREACHED],
       [
+        "saved token, an empty 200",
+        () => new Response("", { status: 200 }),
+        undefined,
+        UNREACHED,
+      ],
+      [
+        "saved token, a 204",
+        () => new Response(null, { status: 204 }),
+        undefined,
+        UNREACHED,
+      ],
+      ["saved token, JSON null", () => json(200, null), undefined, UNREACHED],
+      [
+        "saved token, an object with no user id",
+        () => json(200, { accounts: connected }),
+        undefined,
+        UNREACHED,
+      ],
+      [
         "a new token Chatwoot does not know",
         (t) => (t === "ADMIN" ? profile() : unknownToken()),
         "NEW",
@@ -2582,6 +2601,12 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
           if (t === "NEW") return profile();
           throw new TypeError("fetch failed");
         },
+        "NEW",
+        UNREACHED,
+      ],
+      [
+        "a new token it knows, then an empty answer for the saved one",
+        (t) => (t === "NEW" ? profile() : new Response(null, { status: 204 })),
         "NEW",
         UNREACHED,
       ],

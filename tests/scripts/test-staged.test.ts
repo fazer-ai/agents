@@ -14,11 +14,13 @@ function write(path: string, body: string) {
   writeFileSync(join(repo, path), body);
 }
 
-function select(staged: string[]) {
+function select(staged: string[], extra: Record<string, string> = {}) {
   const out = Bun.spawnSync(["sh", "scripts/test-staged.sh"], {
     cwd: repo,
     env: {
       ...process.env,
+      TEST_STAGED_FULL: "",
+      ...extra,
       TEST_STAGED_LIST: "1",
       TEST_STAGED_FILES: staged.join("\n"),
     },
@@ -83,17 +85,25 @@ describe("test-staged", () => {
     expect(picked).not.toContain("tests/modules/db-backed.test.ts");
   });
 
-  test("a change to the database gate still runs the whole suite", () => {
-    expect(select(["tests/db-gate.ts"])).toContain(
+  // The whole suite is the CI gate: on a developer machine it competes with every other session.
+  test("a change to the database gate leaves the whole suite to CI", () => {
+    const out = select(["tests/db-gate.ts"]);
+
+    expect(out).toContain("the whole suite is the CI gate, not run here");
+    expect(out).not.toContain("tests/modules/db-backed.test.ts");
+  });
+
+  test("TEST_STAGED_FULL=1 still runs the whole suite on a database gate change", () => {
+    expect(select(["tests/db-gate.ts"], { TEST_STAGED_FULL: "1" })).toContain(
       "changes every test file: running the whole suite",
     );
   });
 
   // One process holding every test file outgrows a developer machine's memory; each worker holds
   // only its share.
-  test("the whole suite runs in parallel workers", () => {
-    expect(select(["prisma/schema.prisma"])).toContain(
-      "running the whole suite (bun test --parallel)",
-    );
+  test("the whole suite, when asked for, runs in parallel workers", () => {
+    expect(
+      select(["prisma/schema.prisma"], { TEST_STAGED_FULL: "1" }),
+    ).toContain("running the whole suite (bun test --parallel)");
   });
 });

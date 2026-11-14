@@ -9,10 +9,13 @@
 # picks most of the suite for a central module: 547 of about 950 files for
 # src/modules/split/service.ts, where this picks 97, most of them the sweeps.
 #
-# What no test file imports runs everything: the preloads, bunfig.toml, the dependencies and the
-# Prisma schema change every test file at once. That run uses parallel workers: one process holding
-# every test file grows past 8 GB, and each worker holds only its share. CI shards
-# instead, for the reason in .github/workflows/test.yml, but the hook only runs on a developer machine.
+# What no test file imports changes every test file at once: the preloads, bunfig.toml, the
+# dependencies and the Prisma schema. The commit does not run the whole suite for those: it is the CI
+# gate, CI shards it on machines built for it, and on a developer machine that runs several sessions
+# and worktrees at once it was the heaviest thing on the box (14/nov/2026: a pre-commit
+# `bun test --parallel` with ~17 workers and ~8 GB, 20 minutes in, with the Mac out of free memory).
+# TEST_STAGED_FULL=1 runs it here anyway, in parallel workers: one process holding every test file
+# grows past 8 GB, and each worker holds only its share.
 set -e
 
 staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
@@ -21,6 +24,10 @@ staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-
 full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
 if [ -n "$full" ]; then
   run="bun test --parallel"
+  if [ "$TEST_STAGED_FULL" != "1" ]; then
+    echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: the whole suite is the CI gate, not run here (TEST_STAGED_FULL=1 runs it: $run)"
+    exit 0
+  fi
   echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: running the whole suite ($run)"
   [ -n "$TEST_STAGED_LIST" ] && exit 0
   exec $run

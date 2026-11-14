@@ -436,10 +436,9 @@ const BARE_SLICES: Record<
   "src/graph/trace.ts": [4, "array + index"],
   // The queue of statement timeouts waiting to be stored, capped at a count of events.
   "src/lib/pool-stats.ts": [1, "array"],
-  // Three. The array bound of the size-capped walk; the text before a glued JWT head, cut at the
-  // `eyJ` the code found; and the whole 4-character groups of that header, an ASCII run decoded only
-  // to check its shape and never stored.
-  "src/lib/redact.ts": [3, "array + index"],
+  // Two. The array bound of the size-capped walk, and the whole 4-character groups of a glued JWT
+  // header, an ASCII run decoded only to check its shape and never stored.
+  "src/lib/redact.ts": [2, "array + ascii"],
   "src/lib/session-zone.ts": [2, "index"],
   "src/lib/ssrf.ts": [1, "index"],
   "src/lib/text.ts": [3, "the-cut"],

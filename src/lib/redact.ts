@@ -124,24 +124,25 @@ const GLUED_SECRET_SHAPES: GluedShape[] = [
   },
 ];
 
-// Replaces every glued candidate its shape accepts.
-function redactGlued(
+// Where a span to redact is, as [start, end) of the input.
+type Span = [number, number];
+
+// The spans of every glued candidate its shape accepts.
+function gluedSpans(
   input: string,
   { re, isSecret, monotone }: GluedShape,
-): string {
-  let out = "";
-  let from = 0;
+  out: Span[],
+): void {
   re.lastIndex = 0;
   for (let m = re.exec(input); m; m = re.exec(input)) {
+    const end = m.index + m[0].length;
     if (isSecret(m[1] ?? "")) {
-      out += input.slice(from, m.index) + REDACTED;
-      from = m.index + m[0].length;
-      re.lastIndex = from;
+      out.push([m.index, end]);
+      re.lastIndex = end;
     } else {
-      re.lastIndex = monotone ? m.index + m[0].length : m.index + 1;
+      re.lastIndex = monotone ? end : m.index + 1;
     }
   }
-  return out + input.slice(from);
 }
 
 const JWT_CHAR = /[A-Za-z0-9_.-]/;
@@ -151,7 +152,7 @@ const JWT_CHAR = /[A-Za-z0-9_.-]/;
 // end rather than by a `$`-anchored pattern, which would be tried at every start of a long run. In
 // it, the first `eyJ` with 10 header characters before any dot and a header that decodes is redacted
 // to the end. One at the start of the run is not glued, and the boundary pattern below takes it too.
-function redactGluedJwtHead(input: string): string {
+function gluedJwtHeadSpan(input: string, out: Span[]): void {
   let runStart = input.length;
   while (runStart > 0 && JWT_CHAR.test(input[runStart - 1] ?? "")) runStart--;
   let dot = -1;
@@ -167,10 +168,10 @@ function redactGluedJwtHead(input: string): string {
       if (dot === -1) dot = input.length;
     }
     if (dot - i >= 13 && isJwtHeader(input.slice(i, Math.min(dot, i + 64)))) {
-      return input.slice(0, i) + REDACTED;
+      out.push([i, input.length]);
+      return;
     }
   }
-  return input;
 }
 
 // Object keys whose VALUE is a credential and must be dropped wholesale.
@@ -244,13 +245,33 @@ export function scrubbedClip(
 // handed has to be a window someone chose on purpose. `scrubbedClip` is that someone, and it is
 // also the only order of repair/scrub/cut that does not leak.
 function redactSecretsInText(input: string): string {
-  let out = input;
-  // Glued shapes first: a glued JWT's payload segment starts with `eyJ` right after a dot, a
-  // boundary, so the patterns below would take the payload and signature and leave the header.
-  for (const shape of GLUED_SECRET_SHAPES) out = redactGlued(out, shape);
-  out = redactGluedJwtHead(out);
-  for (const re of SECRET_VALUE_PATTERNS) out = out.replace(re, REDACTED);
-  return out;
+  // Every pattern is matched against the INPUT and the overlapping spans are merged, rather than
+  // replacing pattern by pattern. Replacing in sequence lets one pattern take the inside of another
+  // one's match and leave the rest under every minimum: a key-shaped run inside a JWT signature,
+  // redacted first, left the header and the whole payload readable. Merged, the union goes.
+  const spans: Span[] = [];
+  for (const re of SECRET_VALUE_PATTERNS) {
+    for (const m of input.matchAll(re)) {
+      spans.push([m.index, m.index + m[0].length]);
+    }
+  }
+  for (const shape of GLUED_SECRET_SHAPES) gluedSpans(input, shape, spans);
+  gluedJwtHeadSpan(input, spans);
+  if (spans.length === 0) return input;
+  spans.sort((x, y) => x[0] - y[0]);
+  let out = "";
+  let from = 0;
+  let [start, end] = spans[0] as Span;
+  for (const [s, e] of spans) {
+    if (s < end) {
+      end = Math.max(end, e);
+      continue;
+    }
+    out += input.slice(from, start) + REDACTED;
+    from = end;
+    [start, end] = [s, e];
+  }
+  return out + input.slice(from, start) + REDACTED + input.slice(end);
 }
 
 // Recursively copies a value with secrets removed: credential-named keys dropped, secret-shaped

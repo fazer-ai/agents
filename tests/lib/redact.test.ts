@@ -463,6 +463,23 @@ describe("a key glued to the preceding word", () => {
     );
   });
 
+  // Two shapes can overlap, and redacting the inner one first left the outer one under every
+  // minimum: a key-shaped run inside a JWT signature used to leave the header and the payload.
+  test("a key-shaped run inside a JWT does not leave the rest of the JWT readable", () => {
+    const jwt = `${JWT_HEAD}.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5fQ.abcdsk-FAKEaaaaBBBBccccDDDD1234eeeeFFFFgggg`;
+    expect(sanitizeErrorMessage(`token ${jwt} ok`)).toBe("token ‹redacted› ok");
+    expect(sanitizeErrorMessage(`token=x${jwt} ok`)).toBe(
+      "token=x‹redacted› ok",
+    );
+  });
+
+  // The union, not the first match: a Slack-shaped run that ends inside an OpenAI key must not leave
+  // the key's tail behind.
+  test("overlapping matches are redacted as their union", () => {
+    const text = `xoxb-${"1234567890"}-sk-proj-FAKE_aaaa-BBBB_cccc-DDDD_1234 ok`;
+    expect(sanitizeErrorMessage(text)).toBe("‹redacted› ok");
+  });
+
   // A candidate refused by the shape check must not hide a real key that starts inside it.
   test("a refused candidate does not hide the key right behind it", () => {
     expect(sanitizeErrorMessage(`heyJ${JWT} ok`)).toBe("heyJ‹redacted› ok");

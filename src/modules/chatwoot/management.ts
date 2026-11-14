@@ -43,6 +43,7 @@ import {
   ChatwootApiError,
   type ChatwootClient,
   fetchChatwootProfile,
+  UNKNOWN_ACCESS_TOKEN,
 } from "./client";
 import { ensureDeliverySweep } from "./delivery-sweep";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
@@ -606,6 +607,25 @@ function profileUserId(raw: unknown): number | null {
       : null;
 }
 
+function profileUnreachedError(): AppError {
+  return new AppError(
+    "could not reach Chatwoot with the provided URL/token",
+    502,
+    "errors.chatwootProfileFailed",
+  );
+}
+
+// Chatwoot's own answer to a token it has no row for: 401 with `UNKNOWN_ACCESS_TOKEN` as the error,
+// from `authenticate_access_token!`. A 401 with any other body may come from a proxy or from a server that
+// is not Chatwoot at all, so it proves nothing about which installation the address reaches.
+function isUnknownTokenRefusal(err: unknown): boolean {
+  return (
+    err instanceof ChatwootApiError &&
+    err.status === 401 &&
+    err.reason === UNKNOWN_ACCESS_TOKEN
+  );
+}
+
 // Whether a new base URL is the same Chatwoot the connection already talks to, before anything is
 // written: the address passes the connection's SSRF guard, the SAVED token is accepted there (a token
 // is a secret of one installation, so this is what ties the two addresses; matching numeric ids are
@@ -649,25 +669,21 @@ export async function verifyBaseUrlMove(
   const savedToken = readStoredToken(dep.adminToken);
   const token = newToken ?? savedToken;
   const fetchProfile = deps.fetchProfile ?? fetchChatwootProfile;
-  const probe = async (url: string, t: string) => {
+  const probe = async (t: string) => {
     try {
-      return await fetchProfile({ baseUrl: url, token: t });
-    } catch {
-      return null;
+      return await fetchProfile({ baseUrl, token: t });
+    } catch (err) {
+      // NOTE: only a Chatwoot that has no row for the SAVED token says it is another installation.
+      // A new token it refuses is a token error, and anything else is an address that did not answer.
+      if (t === savedToken && isUnknownTokenRefusal(err))
+        throw differentInstallationError();
+      throw profileUnreachedError();
     }
   };
-  const after = await probe(baseUrl, token);
-  if (after === null) {
-    throw new AppError(
-      "could not reach Chatwoot with the provided URL/token",
-      502,
-      "errors.chatwootProfileFailed",
-    );
-  }
+  const after = await probe(token);
   const userAfter = profileUserId(after);
-  const viaSaved =
-    token === savedToken ? after : await probe(baseUrl, savedToken);
-  const anchor = viaSaved === null ? null : profileUserId(viaSaved);
+  const viaSaved = token === savedToken ? after : await probe(savedToken);
+  const anchor = profileUserId(viaSaved);
   if (userAfter === null || anchor === null || userAfter !== anchor)
     throw differentInstallationError();
   const reachable = new Set(parseChatwootAccounts(after).map((a) => a.id));

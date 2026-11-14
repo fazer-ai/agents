@@ -5,11 +5,17 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import { redactEndpoint } from "@/modules/audit/projection";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  fetchChatwootProfile,
+} from "@/modules/chatwoot/client";
+import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   assertAccountsClaimable,
   normalizeChatwootBaseUrl,
+  previewChatwootDeploymentUpdate,
   updateChatwootDeployment,
 } from "@/modules/chatwoot/management";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
@@ -2423,16 +2429,21 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
       id: 7,
       accounts: connected.slice(1),
     }));
+    const unknownToken = new ChatwootApiError(
+      401,
+      "GET /profile",
+      "Invalid Access Token",
+    );
     // The saved token is not accepted at the new address: nothing ties the two.
     const unproven = await refuse(async ({ token }) => {
       if (token === "NEW") return { id: 7, accounts: connected };
-      throw new Error("401");
+      throw unknownToken;
     }, "NEW");
     // Another installation with the same numbers: its own token answers as user 7 with the same
     // account ids, and the saved token is accepted only at the old address. Equal ids prove nothing.
     const lookalike = await refuse(async ({ baseUrl, token }) => {
       if (token === "NEW") return { id: 7, accounts: connected };
-      if (baseUrl === other) throw new Error("401");
+      if (baseUrl === other) throw unknownToken;
       return { id: 7, accounts: connected };
     }, "NEW");
     for (const e of [otherUser, missingAccount, unproven, lookalike]) {
@@ -2466,6 +2477,133 @@ describe.skipIf(!dbUp)("agent bot provisioning", () => {
     expect(keys.map((k) => k.serverKey).sort()).toEqual(
       instances.map((i) => i.serverKey).sort(),
     );
+  });
+
+  test("a move is answered by what the address said: a Chatwoot that does not know the saved token is another installation, anything else did not answer", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    const instances = await suDb.chatwootInstance.findMany({
+      where: { tenantId },
+    });
+    const connected = instances
+      .filter((i) => i.disconnectedAt === null)
+      .map((i) => ({ id: i.accountId, name: `A${i.accountId}` }));
+    const other = "https://93.184.216.34";
+    const json = (status: number, body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    // What Chatwoot's `authenticate_access_token!` renders for a token it has no row for.
+    const unknownToken = () => json(401, { error: "Invalid Access Token" });
+    const profile = () => json(200, { id: 7, accounts: connected });
+    type Answer = (token: string) => Response | Promise<Response>;
+    const through = (answer: Answer) => ({
+      fetchProfile: (p: { baseUrl: string; token: string }) =>
+        fetchChatwootProfile(p, {
+          assertSafe: async (url: string) => new URL(url),
+          fetchImpl: (async (_url: string, init?: RequestInit) =>
+            answer(
+              new Headers(init?.headers).get(CHATWOOT_AUTH_HEADER) ?? "",
+            )) as unknown as typeof fetch,
+        }),
+    });
+    const outcome = async (
+      answer: Answer,
+      adminToken?: string,
+      run: typeof updateChatwootDeployment = updateChatwootDeployment,
+    ) => {
+      const e = (await run(
+        ctx,
+        { baseUrl: other, ...(adminToken ? { adminToken } : {}) },
+        through(answer),
+        appDb,
+      ).catch((err: unknown) => err)) as {
+        statusCode?: number;
+        translationKey?: string;
+      };
+      return `${e.statusCode} ${e.translationKey}`;
+    };
+    const ANOTHER = "422 errors.chatwootDifferentInstallation";
+    const UNREACHED = "502 errors.chatwootProfileFailed";
+    const cases: [string, Answer, string | undefined, string][] = [
+      [
+        "saved token, Chatwoot does not know it",
+        unknownToken,
+        undefined,
+        ANOTHER,
+      ],
+      [
+        "saved token, a 401 that is not Chatwoot's",
+        () =>
+          new Response("<h1>401 Authorization Required</h1>", { status: 401 }),
+        undefined,
+        UNREACHED,
+      ],
+      [
+        "saved token, a 403 in the same words",
+        () => json(403, { error: "Invalid Access Token" }),
+        undefined,
+        UNREACHED,
+      ],
+      [
+        "saved token, a 401 naming another reason",
+        () => json(401, { error: "Unauthorized" }),
+        undefined,
+        UNREACHED,
+      ],
+      [
+        "saved token, nothing answers",
+        () => {
+          throw new TypeError("fetch failed");
+        },
+        undefined,
+        UNREACHED,
+      ],
+      ["saved token, a 500", () => json(500, {}), undefined, UNREACHED],
+      ["saved token, no such route", () => json(404, {}), undefined, UNREACHED],
+      [
+        "a new token Chatwoot does not know",
+        (t) => (t === "ADMIN" ? profile() : unknownToken()),
+        "NEW",
+        UNREACHED,
+      ],
+      [
+        "a new token it knows, the saved one it does not",
+        (t) => (t === "NEW" ? profile() : unknownToken()),
+        "NEW",
+        ANOTHER,
+      ],
+      [
+        "a new token it knows, then nothing answers for the saved one",
+        (t) => {
+          if (t === "NEW") return profile();
+          throw new TypeError("fetch failed");
+        },
+        "NEW",
+        UNREACHED,
+      ],
+    ];
+    const got: string[] = [];
+    for (const [name, answer, adminToken] of cases)
+      got.push(`${name}: ${await outcome(answer, adminToken)}`);
+    expect(got).toEqual(cases.map(([name, , , want]) => `${name}: ${want}`));
+    // The MCP preview asks the same question and answers the same way.
+    const preview = (async (c, input, deps, base) => {
+      await previewChatwootDeploymentUpdate(c, input, deps, base);
+      throw new Error("the preview accepted the move");
+    }) as typeof updateChatwootDeployment;
+    expect(await outcome(unknownToken, undefined, preview)).toBe(ANOTHER);
+    expect(await outcome(() => json(503, {}), undefined, preview)).toBe(
+      UNREACHED,
+    );
+    const after = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+    });
+    expect(after.baseUrl).toBe(dep.baseUrl);
+    expect(after.adminToken).toBe(dep.adminToken);
   });
 
   test("a bind that read the old webhook base and a connection edit that races it end on the base saved last", async () => {

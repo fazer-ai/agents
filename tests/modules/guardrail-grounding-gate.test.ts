@@ -477,7 +477,11 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
   async function reviewWith(
     messages: BaseMessage[],
     contextMessages: number,
-  ): Promise<{ sent: string; line: Record<string, unknown> | undefined }> {
+  ): Promise<{
+    system: string;
+    sent: string;
+    line: Record<string, unknown> | undefined;
+  }> {
     const r = reviewer(VIOLATED);
     const base = cfg("observe");
     const f = flow();
@@ -492,9 +496,13 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
       flow: f,
       makeModel: r.make,
     })?.review(messages);
-    const [, user] = (r.calls[0] ?? []) as BaseMessage[];
+    const [system, user] = (r.calls[0] ?? []) as BaseMessage[];
     const [line] = await lines(f.turnId);
-    return { sent: String(user?.content ?? ""), line };
+    return {
+      system: String(system?.content ?? ""),
+      sent: String(user?.content ?? ""),
+      line,
+    };
   }
 
   // The bug it catches: a reply repeating what a source returned 15 messages back was flagged as
@@ -521,6 +529,66 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect([line?.sourced, line?.earlierSources]).toEqual([false, 0]);
     expect(sent).toContain("(no earlier messages)");
     expect(sent).not.toContain("Rui");
+  });
+
+  // Turn 1 opens a case; turn 3 asks the same tool to add a note and it refuses, the case being open.
+  const OPENED = "Caso #5512 aberto; a equipe responde por e-mail.";
+  const REFUSED =
+    "Nothing was opened: a case is already open for this contact.";
+  function caseThenRefusal(refusedNow = true): BaseMessage[] {
+    return [
+      new HumanMessage("Quero o reembolso do pedido 4471."),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "abrir_caso", args: {}, id: "a1" }],
+      }),
+      new ToolMessage({
+        content: OPENED,
+        tool_call_id: "a1",
+        name: "abrir_caso",
+      }),
+      new AIMessage("Abri o caso #5512; a equipe responde por e-mail."),
+      new HumanMessage("Ok."),
+      new AIMessage("Mais alguma coisa?"),
+      new HumanMessage("Posso mandar a nota fiscal também?"),
+      ...(refusedNow
+        ? [
+            new AIMessage({
+              content: "",
+              tool_calls: [{ name: "abrir_caso", args: {}, id: "a2" }],
+            }),
+            new ToolMessage({
+              content: REFUSED,
+              tool_call_id: "a2",
+              name: "abrir_caso",
+            }),
+          ]
+        : []),
+      new AIMessage(
+        "Seu caso #5512 já está com a equipe; responda ao e-mail dele com a nota fiscal.",
+      ),
+    ];
+  }
+
+  // The bug it catches: the reviewer saw only this turn's refusal and flagged "the case is already with
+  // the team" as a contradiction, since the earlier call that opened it never reached it.
+  test("an earlier action's result travels beside this turn's refusal, marked as no source", async () => {
+    const { sent, line } = await reviewWith(caseThenRefusal(), 24);
+    const earlier =
+      '<tool_call name="abrir_caso" source="no" turn="earlier" turns_back="2">';
+    expect(sent).toContain(`${earlier}\narguments: {}\nresult:\n${OPENED}`);
+    expect(sent).toContain(
+      `<tool_call name="abrir_caso" source="no">\narguments: {}\nresult:\n${REFUSED}`,
+    );
+    expect(sent.indexOf(earlier)).toBeLessThan(sent.indexOf(REFUSED));
+    expect(line?.resultChars).toBe(OPENED.length + REFUSED.length);
+  });
+
+  test("an earlier call that is no source does not make the review sourced", async () => {
+    const { system, sent, line } = await reviewWith(caseThenRefusal(false), 24);
+    expect(sent).toContain(OPENED);
+    expect([line?.sourced, line?.earlierSources]).toEqual([false, 0]);
+    expect(system).toContain(GROUNDING_NO_SOURCE_PROMPT);
   });
 
   // The bug it catches: a customer who came back the next day had their earlier attendance, which the

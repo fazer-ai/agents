@@ -7,7 +7,7 @@ import {
 } from "@langchain/core/messages";
 import { memoryHeadMessage } from "@/graph/markers";
 import {
-  earlierSourceCalls,
+  earlierToolCalls,
   GROUNDING_MEMORY_MAX,
   GROUNDING_SYSTEM_PROMPT,
   groundingConversation,
@@ -98,12 +98,15 @@ function laterTurn() {
   ];
 }
 
-describe("earlierSourceCalls", () => {
-  test("a source an earlier turn in the window returned comes whole, marked with how far back", () => {
-    const calls = earlierSourceCalls(laterTurn(), ["catalogo"], 2);
-    expect(calls.map((c) => [c.name, c.result, c.turnsBack])).toEqual([
-      ["catalogo", PAGE, 1],
-    ]);
+describe("earlierToolCalls", () => {
+  test("every call an earlier turn in the window made comes whole, marked with how far back and whether it is a source", () => {
+    const calls = earlierToolCalls(laterTurn(), ["catalogo"], 2);
+    expect(calls.map((c) => [c.name, c.result, c.turnsBack, c.source])).toEqual(
+      [
+        ["catalogo", PAGE, 1, true],
+        ["clima", "Sol", 1, false],
+      ],
+    );
     const text = groundingUserMessage({
       conversation: [],
       calls,
@@ -111,6 +114,9 @@ describe("earlierSourceCalls", () => {
     });
     expect(text).toContain(
       '<tool_call name="catalogo" source="yes" turn="earlier" turns_back="1">',
+    );
+    expect(text).toContain(
+      '<tool_call name="clima" source="no" turn="earlier" turns_back="1">',
     );
   });
 
@@ -135,7 +141,7 @@ describe("earlierSourceCalls", () => {
       new HumanMessage("Confirma os dois?"),
     ];
     expect(
-      earlierSourceCalls(msgs, ["catalogo"], 10).map((c) => [
+      earlierToolCalls(msgs, ["catalogo"], 10).map((c) => [
         (c.args as { evento: string }).evento,
         c.result,
         c.turnsBack,
@@ -154,17 +160,17 @@ describe("earlierSourceCalls", () => {
       new HumanMessage("Tem certeza? Não era às 16h?"),
     ];
     expect(
-      earlierSourceCalls(msgs, ["catalogo"], 6).map((c) => c.turnsBack),
-    ).toEqual([2]);
+      earlierToolCalls(msgs, ["catalogo"], 6).map((c) => c.turnsBack),
+    ).toEqual([2, 2]);
   });
 
   test("a turn the window does not reach brings nothing, and neither does a window of 0", () => {
-    expect(earlierSourceCalls(laterTurn(), ["catalogo"], 1)).toEqual([]);
-    expect(earlierSourceCalls(laterTurn(), ["catalogo"], 0)).toEqual([]);
+    expect(earlierToolCalls(laterTurn(), ["catalogo"], 1)).toEqual([]);
+    expect(earlierToolCalls(laterTurn(), ["catalogo"], 0)).toEqual([]);
   });
 
   test("this turn's own calls are not earlier ones", () => {
-    expect(earlierSourceCalls(turn(), ["catalogo"], 6)).toEqual([]);
+    expect(earlierToolCalls(turn(), ["catalogo"], 6)).toEqual([]);
   });
 });
 

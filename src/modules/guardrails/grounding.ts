@@ -23,8 +23,8 @@ import type { GroundingReferenceDoc } from "./grounding-reference";
 import { topLevelObjects, type VerdictMode } from "./verdict";
 
 // The factual-grounding output check (docs/factual-grounding.md): a reviewer model reads the turn's
-// tool calls with their full results, the source results of the earlier turns still in the window it
-// reads, the recent conversation and the reply, and lists every claim in the reply that the results
+// tool calls with their full results, the calls of the earlier turns still in the window it reads
+// (the sources, and the actions as context), the recent conversation and the reply, and lists every claim in the reply that the results
 // do not support. Every reply is reviewed: one with no SOURCE result (a tool named by the operator
 // that returned something) in this turn or in that window is reviewed knowing that no source was
 // consulted, so any in-scope fact it states is unsupported.
@@ -117,12 +117,13 @@ export function groundingToolCalls(
   return toolCallsIn(messages.slice(start), sourceTools);
 }
 
-// The source calls of the earlier turns the reviewer's conversation window shows, each whole and
-// marked with how many turns back it was made. `messages` is the history before the turn, as
+// The calls of the earlier turns the reviewer's conversation window shows, each whole and marked with
+// how many turns back it was made. `messages` is the history before the turn, as
 // `groundingConversation` takes it. A turn counts when any of its messages is in the window, so the
-// calls behind the oldest reply shown come with it. Only sources travel: an earlier call that is not
-// one is no ground for this reply, and would only cost.
-export function earlierSourceCalls(
+// calls behind the oldest reply shown come with it. The calls that are no source travel too: they
+// are what the system already did for the customer (a case opened, a transfer), and without them a
+// refusal in this turn reads as if that never happened. They never make the review sourced.
+export function earlierToolCalls(
   messages: readonly BaseMessage[],
   sourceTools: readonly string[],
   limit: number,
@@ -143,9 +144,7 @@ export function earlierSourceCalls(
     (turns[turns.length - 1] as BaseMessage[]).push(m);
   }
   return turns.flatMap((t, i) =>
-    toolCallsIn(t, sourceTools, () => turns.length - 1 - i).filter(
-      (c) => c.source,
-    ),
+    toolCallsIn(t, sourceTools, () => turns.length - 1 - i),
   );
 }
 
@@ -244,9 +243,11 @@ const FENCES =
 const unfenced = (s: string) => s.replace(FENCES, "");
 
 export const GROUNDING_SYSTEM_PROMPT = [
-  'You are a fact-checking guardrail for a customer-service assistant. You receive, in one user message: the recent CONVERSATION (tagged <conversation_context>), every TOOL CALL the assistant made in this turn with its full result, plus the source calls it made in the earlier turns of that conversation (tagged <tool_results>; the calls marked source="yes" are the SOURCES), and the REPLY the assistant is about to send (tagged <reply>). Decide whether the REPLY states a fact that the tool results do not support.',
+  'You are a fact-checking guardrail for a customer-service assistant. You receive, in one user message: the recent CONVERSATION (tagged <conversation_context>), every TOOL CALL the assistant made in this turn with its full result, plus the calls it made in the earlier turns of that conversation (tagged <tool_results>; the calls marked source="yes" are the SOURCES), and the REPLY the assistant is about to send (tagged <reply>). Decide whether the REPLY states a fact that the tool results do not support.',
   "",
-  'A call marked turn="earlier" was made in an earlier turn (turns_back says how many customer messages ago) and was not repeated now. It is still a SOURCE: a reply that repeats, or contradicts, what it returned is judged against it like any other.',
+  'A call marked turn="earlier" was made in an earlier turn (turns_back says how many customer messages ago) and was not repeated now. One marked source="yes" is still a SOURCE: a reply that repeats, or contradicts, what it returned is judged against it like any other. One marked source="no" is context, not a source: it establishes what the system already did for this customer (a case opened, a note added, a transfer, a follow-up scheduled, a document issued), and never supports a fact about products, offers or rules.',
+  "",
+  "A call of this turn that refused an action (nothing was opened, added, sent or changed) makes a reply saying that this action was done a contradiction, even when an earlier call did the same kind of action: an earlier call supports only what it did, with what it carried then. The refusal does not undo what an earlier call completed: a reply saying the case an earlier call opened is with the team, or that what an earlier call added reached it, is supported by that call.",
   "",
   '<now> holds the current date and time where the customer is. "Today", "tomorrow", a weekday, or whether a time has already passed, computed from it, is arithmetic, not an unsupported claim. A message in <conversation_context> may open with the date and time it was sent, in brackets: a relative date in it counts from that day.',
   "",
@@ -269,7 +270,7 @@ export const GROUNDING_SYSTEM_PROMPT = [
   '- Questions to the customer, including a confirmation such as "did you mean X?": a question asserts nothing.',
   "- Addressing the customer by name, and facts the customer stated or showed in the conversation (including what was read from an image they sent), when the reply repeats them exactly (see violation 4).",
   "- General guidance about how the service or platform works, the same for every product or offer: where something is found in the customer's account (the orders area, the order details, the confirmation e-mail), how to sign in, activate the account or recover access, how to buy, use, transfer or return a purchase, how a product page and the purchase flow work (choosing among the options shown there; no outside link is needed), that purchases are made on the site or app and not in this chat, that prices, rules and conditions are set by the business or provider of the offer and cannot be changed in this conversation. Saying the customer can buy a given quantity, or buy for a given person, is not general guidance: it is availability and eligibility, in scope. General guidance becomes in scope when the SOURCES of this review address that very point and say something different or narrower.",
-  "- What the assistant itself does in this conversation (asking the customer for information, forwarding to the team, adding information to a request) and the state of this customer's request with the team (a case was opened, is already with the team, information was added to it, the team will answer in this chat or by the case's e-mail): these come from the system, not from the SOURCES. A claim about the outcome of that request (approved, refunded, a date for the answer) stays in scope.",
+  "- What the assistant itself does in this conversation (asking the customer for information, forwarding to the team, adding information to a request) and the state of this customer's request with the team (a case was opened, is already with the team, information was added to it, the team will answer in this chat or by the case's e-mail): these come from the system, not from the SOURCES. A claim about the outcome of that request (approved, refunded, a date for the answer) stays in scope. The exception is a call of this turn that refused the very action the reply says was done (nothing was added, nothing was opened): that claim is a contradiction, as said above.",
   "- Greetings and offers of further help.",
   "- When the tool results are ambiguous and a reasonable reading supports the reply.",
   "",
@@ -284,7 +285,7 @@ export const GROUNDING_SYSTEM_PROMPT = [
 export const GROUNDING_NO_SOURCE_PROMPT = [
   'No source was consulted for this reply: no call in <tool_results> is marked source="yes", in this turn or in the earlier turns shown (the block may hold other calls, or be empty).',
   "",
-  'So every in-scope fact the reply states is an unsupported claim (evidence: "nothing"), whether it sounds plausible or not: prices, dates, times, places, availability, quantities, what a product, plan or option includes, eligibility rules such as age limits or discounts, and conditions of sale. A non-source call shown in <tool_results> still supports what it states.',
+  'So every in-scope fact the reply states is an unsupported claim (evidence: "nothing"), whether it sounds plausible or not: prices, dates, times, places, availability, quantities, what a product, plan or option includes, eligibility rules such as age limits or discounts, and conditions of sale. A non-source call of this turn shown in <tool_results> still supports what it states; one marked turn="earlier" only establishes what the system did for this customer.',
   "",
   "In scope here means facts about a specific product, plan or offer, the kind a source would hold. Still not violations, exactly as above: general guidance about how the service or platform works (where something is found in the customer's account, how to sign in, how to open, download or transfer a purchase), greetings, offers of further help, questions to the customer, what the assistant itself does in this conversation and the state of the customer's request with the team, saying the information is not available or must be confirmed elsewhere, and facts the customer stated or showed in the conversation, when the reply repeats them exactly. A customer detail repeated wrong is still violation 4.",
 ].join("\n");

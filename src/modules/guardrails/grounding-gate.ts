@@ -24,7 +24,7 @@ import type {
   GuardrailReport,
 } from "./gate";
 import {
-  earlierSourceCalls,
+  earlierToolCalls,
   FACTUAL_GROUNDING_KEY,
   GROUNDING_REFERENCE_MAX,
   GROUNDING_SOURCE_WINDOW,
@@ -234,7 +234,7 @@ export function buildGroundingGate(
     // The whole thread the agent reads, earlier attendances included.
     const history = turn.slice(0, -1);
     // Earlier first, so the block reads in the order the calls were made. 0 reads only the turn.
-    const earlier = earlierSourceCalls(
+    const earlier = earlierToolCalls(
       history,
       fg.sourceTools,
       fg.contextMessages > 0
@@ -256,7 +256,7 @@ export function buildGroundingGate(
       sourced: groundingSourced(calls, reference.docs),
       sources: sourceNames,
       resultChars,
-      earlierSources: earlier.length,
+      earlierSources: earlier.filter((c) => c.source).length,
       referenceDocs: reference.count,
       referenceChars: reference.chars,
       ...(pass ? { pass } : {}),

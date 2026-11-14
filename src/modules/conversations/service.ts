@@ -16,6 +16,7 @@ import {
 } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
+import { TRUNCATED } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
@@ -66,6 +67,11 @@ import {
   getConversationUsage,
 } from "@/modules/conversations/usage";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import {
+  type FullOutputStatus,
+  fullOutputStatus,
+  readFullDetails,
+} from "@/modules/flowlog/full-detail";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
   isFollowUpLive,
@@ -561,6 +567,18 @@ export interface ConversationDetail {
   usage: ConversationUsage;
 }
 
+// Whether a tool line's logged `output` is the whole result. A cut copy ends in the log's marker AND
+// is shorter than the result it came from (`resultSize`, measured before the cut): the marker alone
+// is not proof, since a tool may cut its own response with the same marker (an HTTP tool's
+// `resultMaxChars`), and that text is whole as far as the model is concerned.
+function isCompleteOutput(output: unknown, resultSize: unknown): boolean {
+  if (typeof output !== "string" || !output.endsWith(TRUNCATED)) return true;
+  const chars = (resultSize as { chars?: unknown } | null)?.chars;
+  return !(
+    typeof chars === "number" && chars > output.length - TRUNCATED.length
+  );
+}
+
 // How many decision ticks the trail carries, newest first, on top of the 60 tool and proactive rows.
 export const DECISION_TRAIL_CAP = 60;
 
@@ -605,6 +623,16 @@ export interface ConversationTrailEntry {
   // string (the result text the model saw).
   args: unknown;
   output: string | null;
+  // tool → whether `output` is the WHOLE result (true) or the log's cut copy of a longer one (false).
+  // null on every other row. A cut copy ends in `…[truncated]`, which no client should have to parse.
+  outputComplete: boolean | null;
+  // tool → the whole result when the agent keeps full turn detail and it has not expired (docs/logs.md
+  // "Full turn detail"); null otherwise, `fullOutputStatus` saying why.
+  fullOutput: string | null;
+  // tool → `kept` (fullOutput is the whole result), `gone` (it was kept and has expired), `not_kept`
+  // (the agent was not keeping full detail, or not logging tool values, when the call ran). null on
+  // every other row.
+  fullOutputStatus: FullOutputStatus | null;
   // tool → the sanitized error message when the tool FAILED (status "error"), so the operator sees WHY
   // it failed inline instead of just a ✗. null on success and for follow-up/reminder rows.
   errorMessage: string | null;
@@ -1545,6 +1573,13 @@ export async function getConversationDetail(
     );
     for (const f of found) instanceNames.set(String(f.id), f.name);
   }
+  // The kept full results of the tool lines above, in one read.
+  const fullTexts = await runScopedOn(base, ctx, (db) =>
+    readFullDetails(
+      db,
+      trailRows.filter((r) => r.stage === "tool").map((r) => r.id),
+    ),
+  );
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
     const detail = (r.detail ?? null) as Record<string, unknown> | null;
@@ -1553,6 +1588,13 @@ export async function getConversationDetail(
     if (r.stage === "tool" && detail?.failedCalls !== undefined) continue;
     if (r.stage === "tool") {
       const rawOutput = detail?.output;
+      const output =
+        typeof rawOutput === "string"
+          ? rawOutput
+          : rawOutput != null
+            ? JSON.stringify(rawOutput)
+            : null;
+      const kept = fullTexts.get(String(r.id));
       trail.push({
         id: String(r.id),
         turnId: r.turnId,
@@ -1562,12 +1604,10 @@ export async function getConversationDetail(
         durationMs: r.durationMs,
         step: null,
         args: detail?.args ?? null,
-        output:
-          typeof rawOutput === "string"
-            ? rawOutput
-            : rawOutput != null
-              ? JSON.stringify(rawOutput)
-              : null,
+        output,
+        outputComplete: isCompleteOutput(rawOutput, detail?.resultSize),
+        fullOutput: kept?.text ?? null,
+        fullOutputStatus: fullOutputStatus(detail, kept !== undefined),
         // The turn's answer, but only on a row that ASKED the question. The stamp is written by the
         // silence tool's line and by no other, so a row without one keeps null: the fact is about
         // the turn, and the claim is the silence marker's alone to make.
@@ -1615,6 +1655,9 @@ export async function getConversationDetail(
         step: typeof detail.step === "number" ? detail.step : null,
         args: null,
         output: null,
+        outputComplete: null,
+        fullOutput: null,
+        fullOutputStatus: null,
         errorMessage: null,
         turnDelivered: null,
         decision: null,
@@ -1692,6 +1735,9 @@ export async function getConversationDetail(
       step: null,
       args: null,
       output: null,
+      outputComplete: null,
+      fullOutput: null,
+      fullOutputStatus: null,
       errorMessage: null,
       originRecorded: null,
       messageId: null,

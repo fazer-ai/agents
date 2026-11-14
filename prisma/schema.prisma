@@ -198,6 +198,8 @@ model Tenant {
   clientAppSecrets              ClientAppSecret[]
   dashboardLogFacts             DashboardLogFact[]
   dashboardLogFactsState        DashboardLogFactsState?
+  fullDetailContents            FullDetailContent[]
+  fullDetailRefs                FullDetailRef[]
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
   dashboardDataSources          DashboardDataSource[]
@@ -2961,6 +2963,52 @@ model ExecutionLog {
   @@index([tenantId, conversationId])
   @@index([tenantId, stage, createdAt])
   @@map("execution_logs")
+}
+
+// A turn's full detail, kept for the agent's `observability.fullDetailRetentionDays` (issue #1761,
+// docs/logs.md "Full turn detail"). The log line keeps its cut `detail`; the whole text lives here,
+// stored ONCE per tenant by its sha256 (the same catalog page fetched by many conversations on the
+// same day is one row) and pointed to by one `FullDetailRef` per log line. A content row expires at
+// the latest expiry of the lines that point to it, so both tables are swept by `expires_at` alone,
+// with no reference counting (src/modules/flowlog/retention.ts).
+model FullDetailContent {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  // sha256 of `body`, hex.
+  hash      String
+  // Secrets redacted, never cut below FULL_DETAIL_MAX_CHARS.
+  body      String
+  chars     Int
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, hash])
+  @@index([tenantId, expiresAt])
+  @@map("full_detail_contents")
+}
+
+// One log line's pointer to its full text. No foreign key to `execution_logs`: a cascade would add a
+// lookup per row to the busiest delete of the database, and a pointer whose line is gone is never
+// read and leaves at its own expiry, which is never past the line's (FLOWLOG_RETENTION_DAYS).
+model FullDetailRef {
+  id             BigInt   @id @default(autoincrement())
+  tenantId       BigInt   @map("tenant_id")
+  executionLogId BigInt   @map("execution_log_id")
+  agentId        BigInt?  @map("agent_id")
+  // tool_output | system_prompt
+  kind           String
+  contentHash    String   @map("content_hash")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, expiresAt])
+  @@index([tenantId, executionLogId])
+  @@index([tenantId, agentId, contentHash])
+  @@map("full_detail_refs")
 }
 
 // External alert sink (Discord / generic webhook) for execution-flow warnings/errors. `url` is an

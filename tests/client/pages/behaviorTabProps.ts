@@ -158,11 +158,13 @@ export function behaviorTabProps(
       logToolValues: false,
       fullDetail: false,
       fullDetailUntil: null,
+      fullDetailRetentionDays: null,
     },
     savedObservability: {
       logToolValues: false,
       fullDetail: false,
       fullDetailUntil: null,
+      fullDetailRetentionDays: null,
     },
     langfuseSendContent: false,
     setObservability: noop,

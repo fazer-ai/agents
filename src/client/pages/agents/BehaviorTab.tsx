@@ -61,6 +61,7 @@ import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { pickVoiceSample, type VoiceSamples } from "@/client/lib/voiceSample";
+import { formatters } from "@/client/pages/admin/database/format";
 import { MODEL_FALLBACK_TIMEOUT_DEFAULT_MS } from "@/graph/fallback-settings";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
@@ -74,7 +75,7 @@ import {
   type PromptRenderOpts,
 } from "@/graph/prompt";
 import { REPLY_AS_TEXT_TOOL } from "@/graph/tools/catalog";
-import type { NumberRange } from "@/lib/number-range";
+import { inRange, type NumberRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
@@ -83,6 +84,7 @@ import {
   delayRange,
   LIMITS_RANGES,
   MODEL_FALLBACK_RANGES,
+  OBSERVABILITY_RANGES,
   SERVICE_WINDOW_RANGES,
   SPLIT_RANGES,
   TTS_SPEAKABLE_RANGES,
@@ -106,6 +108,7 @@ import {
 import { debugModesFrom } from "@/modules/flowlog/debug-mode";
 import {
   FULL_DETAIL_ARM_HOURS,
+  FULL_DETAIL_RETENTION_DEFAULT_DAYS,
   isFullDetailWindowOpen,
   type ObservabilityConfig,
 } from "@/modules/flowlog/settings";
@@ -1637,6 +1640,45 @@ function FallbackTimeoutField({
   );
 }
 
+// What this agent's kept full turn detail is using, read again whenever the SAVED
+// retention changes, since only a save changes what the server keeps. Best-effort: a failed read
+// leaves the sentence out rather than showing a zero.
+function useFullDetailUsage(
+  agentId: string,
+  savedDays: number | null,
+): {
+  lines: number;
+  bytes: number;
+  effectiveDays: number | null;
+  logRetentionDays: number;
+} | null {
+  const [usage, setUsage] = useState<{
+    lines: number;
+    bytes: number;
+    effectiveDays: number | null;
+    logRetentionDays: number;
+  } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: savedDays is the refetch trigger, not an input
+  useEffect(() => {
+    if (!agentId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data } = await api.api.v1
+          .agents({ id: agentId })
+          ["full-detail-usage"].get();
+        if (!cancelled && data) setUsage(data);
+      } catch {
+        // NOTE: best-effort, see above.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, savedDays]);
+  return usage;
+}
+
 export function BehaviorTab({
   agentId,
   agentName,
@@ -1815,6 +1857,23 @@ export function BehaviorTab({
   // re-derived once, exactly when the window closes.
   const [judgedAt, setJudgedAt] = useState(() => serverNowDate());
   const savedUntilMs = savedObservability.fullDetailUntil?.getTime() ?? null;
+  const fullDetailUsage = useFullDetailUsage(
+    agentId,
+    savedObservability.fullDetailRetentionDays,
+  );
+  // The days field's text while it is typed: the form holds a number, and an intermediate value
+  // ("" or "1" on the way to "14") must not be written into it. Re-synced when the form's number
+  // changes from elsewhere (load, discard, the switch).
+  const [retentionDraft, setRetentionDraft] = useState(
+    String(observability.fullDetailRetentionDays ?? ""),
+  );
+  useEffect(() => {
+    setRetentionDraft((d) =>
+      Number(d) === observability.fullDetailRetentionDays && d.trim() !== ""
+        ? d
+        : String(observability.fullDetailRetentionDays ?? ""),
+    );
+  }, [observability.fullDetailRetentionDays]);
   const formUntilMs = observability.fullDetailUntil?.getTime() ?? null;
   // The deadlines are TRIGGERS here, not reads: the body uses neither, and their changing is the
   // whole signal.
@@ -4644,6 +4703,91 @@ export function BehaviorTab({
                     })
                 : null}
             </p>
+            <SwitchField
+              checked={observability.fullDetailRetentionDays !== null}
+              onCheckedChange={(v) =>
+                setObservability((o) => ({
+                  ...o,
+                  fullDetailRetentionDays: v
+                    ? FULL_DETAIL_RETENTION_DEFAULT_DAYS
+                    : null,
+                }))
+              }
+              label={t(
+                "editor.observabilityRetention",
+                "Keep each turn's full detail",
+              )}
+              help={t(
+                "editor.observabilityRetentionHelp",
+                "Log lines cut each tool result and the system prompt at 2,000 characters. Turn this on to also keep them whole for the days you choose, so a complaint that arrives days later can be checked against what the agent actually received. They show on the conversation page.\n\nTool results are kept only while “Log the values sent to tools” is on. Identical results are stored once, and the detail is deleted on its own when the days run out.",
+              )}
+            />
+            {observability.fullDetailRetentionDays !== null && (
+              <FormField
+                label={t("editor.observabilityRetentionDays", "Days to keep")}
+                description={
+                  fullDetailUsage
+                    ? t("editor.observabilityRetentionDaysHint", {
+                        defaultValue:
+                          "{{min}}-{{max}}. Never longer than the Logs retention ({{log}} days).",
+                        min: OBSERVABILITY_RANGES.fullDetailRetentionDays.min,
+                        max: OBSERVABILITY_RANGES.fullDetailRetentionDays.max,
+                        log: fullDetailUsage.logRetentionDays,
+                      })
+                    : t("editor.observabilityRetentionDaysRange", {
+                        defaultValue: "{{min}}-{{max}}.",
+                        min: OBSERVABILITY_RANGES.fullDetailRetentionDays.min,
+                        max: OBSERVABILITY_RANGES.fullDetailRetentionDays.max,
+                      })
+                }
+              >
+                <NumberInput
+                  range={OBSERVABILITY_RANGES.fullDetailRetentionDays}
+                  value={retentionDraft}
+                  onChange={(e) => {
+                    setRetentionDraft(e.target.value);
+                    const n = Number(e.target.value);
+                    if (
+                      e.target.value.trim() !== "" &&
+                      inRange(n, OBSERVABILITY_RANGES.fullDetailRetentionDays)
+                    )
+                      setObservability((o) => ({
+                        ...o,
+                        fullDetailRetentionDays: n,
+                      }));
+                  }}
+                  className="w-24 text-sm"
+                />
+              </FormField>
+            )}
+            {/* State, not help: what the SAVED setting is using now, which is how a retention meant
+                to stay on is watched (docs/ui.md, Where help goes). */}
+            {fullDetailUsage &&
+              (savedObservability.fullDetailRetentionDays !== null ||
+                fullDetailUsage.lines > 0) && (
+                <p className="text-text-secondary text-xs">
+                  {savedObservability.fullDetailRetentionDays !== null
+                    ? t("editor.observabilityRetentionUsage", {
+                        defaultValue:
+                          "Keeping {{days}} days. In use: {{size}} for {{count}} log lines.",
+                        days:
+                          fullDetailUsage.effectiveDays ??
+                          savedObservability.fullDetailRetentionDays,
+                        size: formatters(i18n.language).bytes(
+                          fullDetailUsage.bytes,
+                        ),
+                        count: fullDetailUsage.lines,
+                      })
+                    : t("editor.observabilityRetentionUsageOff", {
+                        defaultValue:
+                          "Off. Still in use until it expires: {{size}} for {{count}} log lines.",
+                        size: formatters(i18n.language).bytes(
+                          fullDetailUsage.bytes,
+                        ),
+                        count: fullDetailUsage.lines,
+                      })}
+                </p>
+              )}
           </Section>
 
           <Section

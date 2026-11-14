@@ -45,6 +45,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   },
   "GET /v1/agents/:id/config-health": { tool: "agent_config_health" },
   "GET /v1/agents/:id/call-floor": { tool: "agent_call_floor" },
+  "GET /v1/agents/:id/full-detail-usage": {
+    gap: "what one agent's kept full turn detail is using; the setting itself is on agent_settings_get",
+  },
   "POST /v1/agents/:id/call-floor": {
     none: "measures the console editor's unsaved tool set; an MCP client has no draft, it saves the grants and reads agent_call_floor",
   },

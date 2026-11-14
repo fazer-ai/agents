@@ -20,6 +20,7 @@ describe("observability form ↔ stored round trip", () => {
     expect(observabilityToStored(observabilityToForm(stored))).toEqual({
       logToolValues: true,
       fullDetailUntil: until,
+      fullDetailRetentionDays: null,
     });
   });
 
@@ -32,14 +33,24 @@ describe("observability form ↔ stored round trip", () => {
       observabilityToStored(observabilityToForm({})),
     ).sort();
     // `fullDetail` is derived, so it is read and never written; everything else is both.
-    expect(read).toEqual(["fullDetail", "fullDetailUntil", "logToolValues"]);
-    expect(written).toEqual(["fullDetailUntil", "logToolValues"]);
+    expect(read).toEqual([
+      "fullDetail",
+      "fullDetailRetentionDays",
+      "fullDetailUntil",
+      "logToolValues",
+    ]);
+    expect(written).toEqual([
+      "fullDetailRetentionDays",
+      "fullDetailUntil",
+      "logToolValues",
+    ]);
   });
 
   test("an empty bag round-trips to the defaults, not to nothing", () => {
     expect(observabilityToStored(observabilityToForm({}))).toEqual({
       logToolValues: false,
       fullDetailUntil: null,
+      fullDetailRetentionDays: null,
     });
   });
 

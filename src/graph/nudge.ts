@@ -835,6 +835,7 @@ async function runAgentNudgeBody(
     // debug mode reaches it the same way; left out, a follow-up's tool line would be cut at 2,000
     // while a reply's was not, with nothing in the settings saying so.
     fullDetail: cfg.fullDetail,
+    fullDetailRetentionDays: cfg.fullDetailRetentionDays,
   };
   // OUR SIDE SPOKE. A nudge claims no customer message, so the reply marks never see it, and a
   // conversation answered only by one would read as unanswered to `ourSideHasSpoken` (the follow-up

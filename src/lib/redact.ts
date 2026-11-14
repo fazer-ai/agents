@@ -38,7 +38,7 @@ export const MAX_STRING = 2000;
 const MAX_ARRAY = 50;
 const MAX_DEPTH = 6;
 
-const TRUNCATED = "…[truncated]";
+export const TRUNCATED = "…[truncated]";
 
 // Truncates a string to `max` chars, appending a visible marker so a reader knows it was cut.
 export function truncate(s: string, max = MAX_STRING): string {

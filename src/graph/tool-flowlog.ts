@@ -207,6 +207,10 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     this.starts.delete(runId);
     const failed = isErrorToolOutput(output);
     const value = toolOutputValue(output);
+    const resultText =
+      typeof value === "string" || Array.isArray(value)
+        ? contentToText(value as MessageContent)
+        : (JSON.stringify(value) ?? "");
     const retries = toolRetries(output);
     const cause = failed
       ? sanitizeErrorMessage(failureCause(value, this.logValues))
@@ -225,11 +229,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         output: this.describe(value, null),
         // Logged whatever `logToolValues` says: a size is not customer data, and it is what tells which
         // tool inflated a turn's input.
-        resultSize: measureText(
-          typeof value === "string" || Array.isArray(value)
-            ? contentToText(value as MessageContent)
-            : (JSON.stringify(value) ?? ""),
-        ),
+        resultSize: measureText(resultText),
         ...(retries !== undefined ? { retries } : {}),
         // NOTE: Asked HERE and not at handleToolStart, because a model may emit `skip_reply`
         // alongside the tool that speaks (the documented parallel batch), and ToolNode runs a batch
@@ -239,6 +239,12 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         ...this.handoffStamp(s.tool),
       },
       ...(failed ? { errorMessage: cause } : {}),
+      // The result whole, beside the cut `output`, when the agent keeps full turn detail.
+      // Only when values are logged: the size axis never widens the PII one, so a turn that logs
+      // shapes keeps no text anywhere.
+      ...(this.logValues && this.flow.fullDetailRetentionDays
+        ? { full: { kind: "tool_output" as const, text: resultText } }
+        : {}),
     });
   }
 

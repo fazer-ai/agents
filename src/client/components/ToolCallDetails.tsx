@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 // Shared monospace block for a tool call's arguments / result. Used by the conversation timeline's
@@ -25,14 +25,22 @@ export function ToolCallDetails({
   args,
   output,
   error,
+  fullOutput,
+  outputNote,
 }: {
   args?: unknown;
   output?: string | null;
   // The sanitized failure message when the tool errored. Rendered as a distinct red block so the
   // operator sees WHY it failed, not just that it did.
   error?: string | null;
+  // The whole result when the log kept it beside a cut `output`: offered behind a
+  // toggle, since it can run to tens of thousands of characters.
+  fullOutput?: string | null;
+  // A sentence under the result saying it is cut and why the whole one is not here.
+  outputNote?: string | null;
 }) {
   const { t } = useTranslation();
+  const [showFull, setShowFull] = useState(false);
   const showArgs = !isEmpty(args);
   const showOutput = !isEmpty(output);
   const showError = !isEmpty(error);
@@ -54,7 +62,31 @@ export function ToolCallDetails({
           <span className="text-text-muted text-[10px] font-medium tracking-wider uppercase">
             {t("conversation.trail.result", "Result")}
           </span>
-          <TracePre>{output}</TracePre>
+          {showFull && fullOutput ? (
+            <pre className="bg-bg-tertiary text-text-muted max-h-96 overflow-auto rounded px-2 py-1 text-xs whitespace-pre-wrap">
+              {fullOutput}
+            </pre>
+          ) : (
+            <TracePre>{output}</TracePre>
+          )}
+          {fullOutput && (
+            <button
+              type="button"
+              onClick={() => setShowFull((v) => !v)}
+              className="text-accent self-start text-xs hover:underline"
+            >
+              {showFull
+                ? t("conversation.trail.showCutResult", "Show the cut result")
+                : t("conversation.trail.showFullResult", {
+                    defaultValue:
+                      "Show the whole result ({{chars}} characters)",
+                    chars: fullOutput.length.toLocaleString(),
+                  })}
+            </button>
+          )}
+          {outputNote && (
+            <span className="text-text-muted text-xs">{outputNote}</span>
+          )}
         </div>
       )}
       {showError && (

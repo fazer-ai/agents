@@ -459,6 +459,25 @@ function TrailMarker({
   return <ActivityTrailMarker entry={entry} />;
 }
 
+// What a cut tool result says about the whole one, so the cut copy is never read as the whole thing
+// kept (no sentence, the toggle offers it), expired, or never kept.
+function cutResultNote(
+  entry: TrailEntry,
+  t: ReturnType<typeof useTranslation>["t"],
+): string | null {
+  if (entry.kind !== "tool" || entry.outputComplete !== false) return null;
+  if (entry.fullOutputStatus === "kept" && entry.fullOutput) return null;
+  if (entry.fullOutputStatus === "gone")
+    return t(
+      "conversation.trail.fullResultGone",
+      "This is the cut copy. The whole result was kept for this agent and has expired.",
+    );
+  return t(
+    "conversation.trail.fullResultNotKept",
+    "This is the cut copy. The whole result was not kept: this agent was not keeping full turn detail when the call ran.",
+  );
+}
+
 function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -575,6 +594,11 @@ function ActivityTrailMarker({ entry }: { entry: TrailEntry }) {
             args={entry.args}
             output={entry.output}
             error={entry.errorMessage}
+            // Offered only when the logged copy is cut: a whole `output` needs no second copy.
+            fullOutput={
+              entry.outputComplete === false ? entry.fullOutput : null
+            }
+            outputNote={cutResultNote(entry, t)}
           />
         </div>
       )}

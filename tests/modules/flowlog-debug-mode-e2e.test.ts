@@ -306,4 +306,36 @@ describe.skipIf(!dbUp)("the log debug mode, on a real turn", () => {
     expect(prompt).toContain("[truncated]");
     expect(prompt).not.toContain(TAIL);
   });
+
+  // The durable size axis, on the same real turn. The log line stays cut, and the whole
+  // audited prompt is kept beside it, still with the contact's value masked.
+  test("an agent that keeps full turn detail keeps the whole audited prompt beside the cut line", async () => {
+    const agent = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(agent.settings as Record<string, unknown>),
+          observability: { fullDetailRetentionDays: 7 },
+        },
+      },
+    });
+    const prompt = await runTurn(9706);
+    expect(prompt).toContain("[truncated]");
+    expect(prompt).not.toContain(TAIL);
+    let kept: { body: string }[] = [];
+    for (let i = 0; i < 200 && kept.length === 0; i++) {
+      kept = await suDb.$queryRaw<{ body: string }[]>`
+        SELECT c.body FROM full_detail_refs r
+          JOIN full_detail_contents c ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash
+         WHERE r.tenant_id = ${tenantId} AND r.kind = 'system_prompt'`;
+      if (kept.length === 0) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.body).toContain(TAIL);
+    expect(kept[0]?.body).not.toContain(NAME);
+  });
 });

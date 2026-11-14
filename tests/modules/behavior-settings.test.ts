@@ -189,6 +189,7 @@ describe("behavior-settings — observability", () => {
       logToolValues: false,
       fullDetail: false,
       fullDetailUntil: null,
+      fullDetailRetentionDays: null,
     });
   });
 
@@ -202,6 +203,7 @@ describe("behavior-settings — observability", () => {
     expect(next.observability).toEqual({
       logToolValues: true,
       fullDetailUntil: null,
+      fullDetailRetentionDays: null,
     });
     // The limits block was not named, so it is stored exactly as it was, defaults left unwritten.
     expect(next.limits).toEqual({ maxToolCalls: 7 });

@@ -954,6 +954,7 @@ async function runTurnBody(
     threadId,
     base,
     fullDetail: loaded.fullDetail,
+    fullDetailRetentionDays: loaded.fullDetailRetentionDays,
   };
   if (loaded.otherInboxesReport) {
     emitFlowEvent(flow, otherInboxesFlowEvent(loaded.otherInboxesReport));
@@ -2247,6 +2248,8 @@ async function runTurnBody(
         // NOTE: The resolved prompt of this turn is audited, since it is where the contact's data
         // entered (./prompt-audit.ts).
         detail: { systemPrompt: loaded.systemPromptAudit },
+        // NOTE: Whole, beside the cut copy above, when the agent keeps full turn detail.
+        full: { kind: "system_prompt", text: loaded.systemPromptAudit },
         labelsOf: () => answeredBy,
         ...(params.afterThrow
           ? {

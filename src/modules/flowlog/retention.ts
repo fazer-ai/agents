@@ -7,8 +7,8 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
-// Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries and the turn
-// limit's delivered turns). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
+// Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries, the turn
+// limit's delivered turns, and the agents' kept full turn detail). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
 // 24h (a reschedule does NOT consume an attempt). Deletes run RLS-scoped to the job's tenant, one
 // bounded batch per transaction, so each batch commits on its own and a pass that stops keeps what it
 // deleted. A pass runs for at most SWEEP_PASS_MS; a backlog it leaves is taken by the next run,
@@ -97,6 +97,9 @@ async function deleteInBatches(
   batch: (rows: number) => Prisma.Sql,
   deadline: number,
   o: Required<SweepOptions>,
+  // Asked when a batch comes back short, for a table whose outer predicate can keep a picked row: a
+  // short batch then does not prove the table is empty.
+  rowsLeft?: Prisma.Sql,
 ): Promise<TableSweep> {
   let deleted = 0;
   let timeouts = 0;
@@ -114,7 +117,17 @@ async function deleteInBatches(
       continue;
     }
     deleted += n;
-    if (n < size) return { deleted, done: true, timeouts };
+    if (n < size) {
+      const more =
+        rowsLeft !== undefined &&
+        (
+          await runScopedOn(base, ctx, (db) =>
+            db.$queryRaw<{ more: boolean }[]>(rowsLeft),
+          )
+        )[0]?.more === true;
+      if (!more) return { deleted, done: true, timeouts };
+      continue;
+    }
     size = nextBatchSize(size, Date.now() - started, o.targetBatchMs);
     batchSizes.set(key, size);
     if (o.pauseMs > 0) await new Promise((r) => setTimeout(r, o.pauseMs));
@@ -129,7 +142,7 @@ function ranOutOfTime(error: unknown): boolean {
   );
 }
 
-// One pass over the three tables. `done` is false when the deadline cut it short with rows left.
+// One pass over the five tables. `done` is false when the deadline cut it short with rows left.
 export async function sweepFlowlog(
   base: PrismaClient,
   tenantId: bigint,
@@ -146,6 +159,7 @@ export async function sweepFlowlog(
   const cutoff = new Date(
     Date.now() - config.flowlog.retentionDays * 86_400_000,
   );
+  const now = new Date();
   const turnCutoff = new Date(Date.now() - TURN_DELIVERY_RETENTION_MS);
   const proactiveCutoff = new Date(
     Date.now() - PROACTIVE_DELIVERY_RETENTION_MS,
@@ -171,7 +185,26 @@ export async function sweepFlowlog(
          WHERE (NOT proactive AND delivered_at < ${turnCutoff})
             OR delivered_at < ${proactiveCutoff}
          LIMIT ${rows}))`,
+    // NOTE: An agent's full turn detail leaves at the expiry each row was written with (the
+    // agent's own days, never past this cutoff), not at `FLOWLOG_RETENTION_DAYS`. Pointers first,
+    // then texts: a text's expiry is the latest of its pointers', so by the time it is due no pointer
+    // to it is left. Each is a range over its own `(tenant_id, expires_at)` index, never a join, and
+    // the outer predicate is repeated so a text whose expiry a concurrent write just moved forward
+    // is re-checked under its row lock and kept.
+    (rows) => Prisma.sql`
+      DELETE FROM full_detail_refs WHERE id = ANY(ARRAY(
+        SELECT id FROM full_detail_refs WHERE expires_at < ${now} LIMIT ${rows}))
+        AND expires_at < ${now}`,
+    (rows) => Prisma.sql`
+      DELETE FROM full_detail_contents WHERE id = ANY(ARRAY(
+        SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
+        AND expires_at < ${now}`,
   ];
+  // The texts' pass is the one whose outer predicate can keep a row the inner select picked (its
+  // expiry moved forward by a concurrent write), so a short batch there is re-asked before the table
+  // is called done.
+  const contentsLeft = Prisma.sql`
+    SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`;
   // A sweep is done when each table has come back within the window once, over as many passes as it
   // takes: a pass works only the tables the sweep has left, from the one the last pass stopped on. So
   // a table that spends the budget (a backlog, or a slow check) keeps neither the tables after it from
@@ -189,6 +222,7 @@ export async function sweepFlowlog(
       passes[i] as (rows: number) => Prisma.Sql,
       deadline,
       o,
+      i === passes.length - 1 ? contentsLeft : undefined,
     );
     deleted += r.deleted;
     timeouts += r.timeouts;

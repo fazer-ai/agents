@@ -15,6 +15,7 @@ import {
   LIMITS_RANGES,
   MODEL_FALLBACK_RANGES,
   MONITORING_RANGES,
+  OBSERVABILITY_RANGES,
   SERVICE_WINDOW_RANGES,
   SPLIT_RANGES,
   TTS_SPEAKABLE_RANGES,
@@ -874,6 +875,12 @@ const observability = z.looseObject({
     }, `an ISO instant with an offset, at most ${FULL_DETAIL_MAX_HOURS}h ahead`)
     .describe(
       `ISO instant the log debug mode ends, at most ${FULL_DETAIL_MAX_HOURS}h ahead; until then this agent's log detail is stored whole instead of cut at 2000 chars`,
+    ),
+  fullDetailRetentionDays: ranged(OBSERVABILITY_RANGES.fullDetailRetentionDays)
+    .nullable()
+    .optional()
+    .describe(
+      "days each turn's full tool results and prompt are kept (null = off)",
     ),
 });
 

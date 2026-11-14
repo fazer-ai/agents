@@ -1,3 +1,6 @@
+import { inRange } from "@/lib/number-range";
+import { OBSERVABILITY_RANGES } from "@/modules/agents/number-ranges";
+
 // Per-agent observability knobs, read from `agent.settings.observability` (Json, additive), like
 // readLimitsConfig / readDebounceConfig.
 //
@@ -19,6 +22,14 @@ export const FULL_DETAIL_MAX_HOURS = 24;
 // at no real cost.
 export const FULL_DETAIL_ARM_HOURS = FULL_DETAIL_MAX_HOURS / 2;
 
+// The durable counterpart of the debug window: how many days this agent's full turn
+// detail (each tool result whole, the audited system prompt whole) is kept beside the cut log lines,
+// in its own tables (`full-detail.ts`). Off unless set, in `OBSERVABILITY_RANGES` when set, and the
+// effective window is also never longer than `FLOWLOG_RETENTION_DAYS`: past it the log line the
+// detail hangs from is gone and nothing could read it.
+// What the console proposes when the switch is turned on.
+export const FULL_DETAIL_RETENTION_DEFAULT_DAYS = 14;
+
 export interface ObservabilityConfig {
   logToolValues: boolean;
   // The debug mode: while on, this agent's flow lines keep their `detail` strings whole instead of
@@ -29,6 +40,9 @@ export interface ObservabilityConfig {
   // not just the flag, and an operator who is told "on until 14:30" does not have to guess.
   // Null whenever the mode is off, whatever the reason (absent, malformed, or already past).
   fullDetailUntil: Date | null;
+  // How many days this agent keeps its full turn detail, or null when it keeps none (the default).
+  // Not a debug mode: it is meant to stay on, so it does not light the "recording more" warning.
+  fullDetailRetentionDays: number | null;
 }
 
 // The debug mode is stored as the INSTANT IT ENDS, not a boolean with an expiry: no state is on
@@ -43,6 +57,7 @@ export function readObservabilityConfig(
     logToolValues: false,
     fullDetail: false,
     fullDetailUntil: null,
+    fullDetailRetentionDays: null,
   };
   if (!settings || typeof settings !== "object") return def;
   const o = (settings as Record<string, unknown>).observability;
@@ -55,7 +70,20 @@ export function readObservabilityConfig(
       (o as Record<string, unknown>).logToolValues === "true",
     fullDetail: on,
     fullDetailUntil: on ? until : null,
+    fullDetailRetentionDays: readRetentionDays(
+      (o as Record<string, unknown>).fullDetailRetentionDays,
+    ),
   };
+}
+
+// A whole number of days inside the range, or null. Anything else reads as OFF: the bag arrives
+// unvalidated from the database and from imports, and keeping nothing is the side that cannot fill a
+// disk; the write boundary refuses such a value with its own sentence (settings-schema.ts).
+export function readRetentionDays(value: unknown): number | null {
+  return typeof value === "number" &&
+    inRange(value, OBSERVABILITY_RANGES.fullDetailRetentionDays)
+    ? value
+    : null;
 }
 
 // Whether a stored deadline is a window open right now; shared with `debugModesFrom` so the rule
@@ -81,6 +109,7 @@ export function isFullDetailWindowOpen(until: Date | null, now: Date): boolean {
 export interface StorableObservability {
   logToolValues: boolean;
   fullDetailUntil: string | null;
+  fullDetailRetentionDays: number | null;
 }
 
 export function storableObservability(
@@ -89,6 +118,7 @@ export function storableObservability(
   return {
     logToolValues: cfg.logToolValues,
     fullDetailUntil: cfg.fullDetailUntil?.toISOString() ?? null,
+    fullDetailRetentionDays: cfg.fullDetailRetentionDays,
   };
 }
 

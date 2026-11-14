@@ -8,6 +8,7 @@ import { runAgentNudge } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
@@ -139,6 +140,7 @@ const CONV_NUDGE = 1603;
 const CONV_NO_TOOL = 1604;
 const CONV_ACTIVITY = 1605;
 const CONV_NUDGE_ACTIVITY = 1606;
+const CONV_NUDGE_KEEP = 1607;
 
 describe.skipIf(!dbUp)("the tools-used note", () => {
   beforeAll(async () => {
@@ -179,10 +181,14 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
     const act = await agentWith("Atividade", {
       conversationNotes: { toolsUsed: "activity" },
     });
+    const keep = await agentWith("Guarda o turno", {
+      observability: { logToolValues: true, fullDetailRetentionDays: 7 },
+    });
     for (const [agent, botId] of [
       [on, 30],
       [off, 31],
       [act, 32],
+      [keep, 33],
     ] as const) {
       await suDb.chatwootAgentBot.create({
         data: {
@@ -204,6 +210,7 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
       [on, 64, CONV_NO_TOOL],
       [act, 65, CONV_ACTIVITY],
       [act, 66, CONV_NUDGE_ACTIVITY],
+      [keep, 67, CONV_NUDGE_KEEP],
     ] as const) {
       const inbox = await suDb.inbox.create({
         data: {
@@ -234,6 +241,8 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
   afterAll(async () => {
     if (tenantId) {
       for (const table of [
+        "full_detail_refs",
+        "full_detail_contents",
         "execution_logs",
         "llm_usage",
         "scheduler_jobs",
@@ -380,5 +389,30 @@ describe.skipIf(!dbUp)("the tools-used note", () => {
       messageType: "activity",
       activity: "tools",
     });
+  });
+
+  // The closing line of a proactive turn keeps the audited prompt whole when the agent keeps full
+  // turn detail, as a reply's `generate` line does.
+  test("a proactive turn of an agent that keeps full detail keeps its audited prompt", async () => {
+    const cw = chatwoot();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:${CONV_NUDGE_KEEP}`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new ScriptedModel(false) as never,
+        makeClient: cw.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    await settleFlowEvents();
+    const kept = await suDb.$queryRaw<{ body: string }[]>`
+      SELECT c.body FROM full_detail_refs r
+        JOIN full_detail_contents c ON c.tenant_id = r.tenant_id AND c.hash = r.content_hash
+       WHERE r.tenant_id = ${tenantId} AND r.kind = 'system_prompt'`;
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.body).toContain("Você é prestativa.");
   });
 });

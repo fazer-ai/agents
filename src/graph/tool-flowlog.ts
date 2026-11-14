@@ -7,7 +7,7 @@ import { contentToText } from "@/graph/message-text";
 import { SKIP_REPLY_TOOL, skipReplyReasonOf } from "@/graph/silence";
 import { measureText } from "@/graph/token-count";
 import { HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
-import { sanitizeErrorMessage } from "@/lib/redact";
+import { redactSecretsUnbounded, sanitizeErrorMessage } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type DeclaredKeys, describeShape } from "@/modules/flowlog/shape";
 
@@ -92,6 +92,30 @@ function failureCause(value: unknown, logValues: boolean): string {
 
 // A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure),
 // logged as a failure although the model got a friendly string. Thrown errors take handleToolError.
+// The text a tool result is kept as. Plain text and a list of text blocks as the model read them; any
+// other shape (an object, or content blocks that are not all text, such as an MCP image) as JSON, so a
+// block `contentToText` would drop is kept rather than leaving an empty text that reads as whole. A
+// structured value is masked first, keys and string values, as its log line is.
+function keptText(value: unknown): string {
+  if (typeof value === "string") return value;
+  // Each block is scrubbed before the join: joining can glue a token to the previous block's last
+  // word, and the value patterns need the boundary the join removed.
+  if (Array.isArray(value) && value.every(isTextBlock)) {
+    return contentToText(redactSecretsUnbounded(value) as MessageContent);
+  }
+  return JSON.stringify(redactSecretsUnbounded(value)) ?? "";
+}
+
+function isTextBlock(block: unknown): boolean {
+  if (typeof block === "string") return true;
+  return (
+    !!block &&
+    typeof block === "object" &&
+    (block as { type?: unknown }).type === "text" &&
+    typeof (block as { text?: unknown }).text === "string"
+  );
+}
+
 export function isErrorToolOutput(output: unknown): boolean {
   return (
     !!output &&
@@ -207,6 +231,10 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     this.starts.delete(runId);
     const failed = isErrorToolOutput(output);
     const value = toolOutputValue(output);
+    const resultText =
+      typeof value === "string" || Array.isArray(value)
+        ? contentToText(value as MessageContent)
+        : (JSON.stringify(value) ?? "");
     const retries = toolRetries(output);
     const cause = failed
       ? sanitizeErrorMessage(failureCause(value, this.logValues))
@@ -225,11 +253,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         output: this.describe(value, null),
         // Logged whatever `logToolValues` says: a size is not customer data, and it is what tells which
         // tool inflated a turn's input.
-        resultSize: measureText(
-          typeof value === "string" || Array.isArray(value)
-            ? contentToText(value as MessageContent)
-            : (JSON.stringify(value) ?? ""),
-        ),
+        resultSize: measureText(resultText),
         ...(retries !== undefined ? { retries } : {}),
         // NOTE: Asked HERE and not at handleToolStart, because a model may emit `skip_reply`
         // alongside the tool that speaks (the documented parallel batch), and ToolNode runs a batch
@@ -239,6 +263,12 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         ...this.handoffStamp(s.tool),
       },
       ...(failed ? { errorMessage: cause } : {}),
+      // The result whole, beside the cut `output`, when the agent keeps full turn detail.
+      // Only when values are logged: the size axis never widens the PII one, so a turn that logs
+      // shapes keeps no text anywhere.
+      ...(this.logValues && this.flow.fullDetailRetentionDays
+        ? { full: { kind: "tool_output" as const, text: keptText(value) } }
+        : {}),
     });
   }
 

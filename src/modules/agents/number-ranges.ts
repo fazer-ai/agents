@@ -131,6 +131,12 @@ export const GROUNDING_RANGES = {
 
 // A delay is a value and a unit, and what the runtime waits is capped at 30 days in minutes. The value's
 // range follows the unit, so 100000 days is refused instead of read as 30.
+export const OBSERVABILITY_RANGES = {
+  // Days an agent keeps its full turn detail. A quarter at most, so a forgotten
+  // setting is bounded; the effective window is also capped by FLOWLOG_RETENTION_DAYS.
+  fullDetailRetentionDays: intRange(1, 90),
+} as const;
+
 export const DELAY_MAX_MINUTES = 43_200;
 export type DelayUnit = "minutes" | "hours" | "days";
 export const DELAY_RANGES: Record<DelayUnit, NumberRange> = {

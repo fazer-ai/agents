@@ -33,6 +33,7 @@ import {
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
+import { readAgentFullDetailUsage } from "@/modules/flowlog/full-detail";
 import {
   GUARDRAIL_HEALTH_WINDOW_HOURS,
   guardrailHealthWindowStart,
@@ -531,6 +532,31 @@ export const agentsController = new Elysia({
       detail: doc(
         "Get agent configuration health",
         'The configuration warnings the agent editor shows, computed server-side over the SAVED agent: a feature switched on with no credential, a credential referenced but never filled, a credential the vault no longer holds, two settings that cancel each other out, and text past the cap its reader keeps. Each issue carries a `severity` — `blocking` (the agent does not answer, or answers without a protection whose switch reads "on"), `degraded` (it answers, and a feature that is on does not run) or `advisory` (nothing is off; the operator has a choice to make) — plus the same sentence the console shows, in the language of Accept-Language. `unchecked` names the live readings this call did not take (Chatwoot, guardrail health), because both of those fail as an empty result that reads exactly like a clean one — an empty `unchecked` is what makes a clean answer trustworthy. Shape: `{ agentId, agentName, healthy, counts, issues[], unchecked[] }`, where `healthy` is true when no blocking and no degraded issue is live.',
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // What the agent's kept full turn detail costs: the editor shows it beside the
+  // setting, since a retention meant to stay on is read by what it uses, not by a warning.
+  .get(
+    "/:id/full-detail-usage",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      ...(await readAgentFullDetailUsage(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      )),
+    }),
+    {
+      detail: doc(
+        "Get the agent's full-detail usage",
+        "What this agent keeps of its turns' full detail (`settings.observability.fullDetailRetentionDays`, every tool result and the audited system prompt whole, beside the log lines cut at 2,000 characters) and what that is using now. `retentionDays` is the setting (null = off), `effectiveDays` the days a line written now is kept (the setting, capped by `FLOWLOG_RETENTION_DAYS`), `lines` the log lines whose full text is still kept, and `bytes` what the distinct texts they point to take on disk, compressed. A text identical across lines is stored once, and one shared with another agent counts for both. Read the texts themselves on `GET /api/v1/conversations/:id` (`trail[].fullOutput`).",
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

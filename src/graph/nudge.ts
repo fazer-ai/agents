@@ -595,6 +595,9 @@ interface NudgeClosing {
   // The turn reached the model. Before that, a gate that stops the turn (stale, not owned, a refused
   // contact) ran nothing and owes no line, unless it left a message.
   generating: boolean;
+  // The audited prompt of the generation, set when the turn reaches the model: the closing line keeps
+  // it whole when the agent keeps full turn detail, whichever way the turn ended.
+  promptAudit: string | null;
   // Records a turn whose only customer-facing send was a tool's (an ack, a file), once, at the end.
   recordToolSpeech: () => Promise<void>;
   // Gives back the proactive limit's reservation when nothing reached the customer, after the tool
@@ -622,6 +625,7 @@ export async function runAgentNudge(
     sentIds: () => [],
     outcomeLine: null,
     generating: false,
+    promptAudit: null,
     recordToolSpeech: async () => {},
     releaseReservation: async () => {},
     toolsUsedNote: async () => {},
@@ -653,9 +657,18 @@ export async function runAgentNudge(
           turnMs: Math.round(performance.now() - turnStartedAt),
           ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
         },
+        ...promptCapture(closing),
       });
     }
   }
+}
+
+function promptCapture(closing: NudgeClosing): {
+  full?: { kind: "system_prompt"; text: string };
+} {
+  return closing.promptAudit === null
+    ? {}
+    : { full: { kind: "system_prompt", text: closing.promptAudit } };
 }
 
 async function runAgentNudgeBody(
@@ -835,6 +848,7 @@ async function runAgentNudgeBody(
     // debug mode reaches it the same way; left out, a follow-up's tool line would be cut at 2,000
     // while a reply's was not, with nothing in the settings saying so.
     fullDetail: cfg.fullDetail,
+    fullDetailRetentionDays: cfg.fullDetailRetentionDays,
   };
   // OUR SIDE SPOKE. A nudge claims no customer message, so the reply marks never see it, and a
   // conversation answered only by one would read as unanswered to `ourSideHasSpoken` (the follow-up
@@ -929,6 +943,7 @@ async function runAgentNudgeBody(
             ? { integrationInstanceId: params.nudge.integrationInstanceId }
             : {}),
         },
+        ...promptCapture(closing),
       });
     };
   };
@@ -2579,6 +2594,7 @@ async function runAgentNudgeBody(
         : [];
     const carriedHandback = handbackDeferred && owesHandbackNote(before);
     closing.generating = true;
+    closing.promptAudit = cfg.systemPromptAudit;
     result = await graph
       .invoke(
         {

@@ -39,6 +39,7 @@ import {
   getConversationDetail,
   getConversationMedia,
   getConversationMessages,
+  getConversationToolResult,
   handoffConversation,
   listConversationAgentOptions,
   listConversations,
@@ -58,6 +59,7 @@ import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.conversationNotFound', 'Conversation not found.')
+// translate('errors.toolCallNotFound', 'Tool call not found in this conversation.')
 // translate('errors.agentNotDecisionsObserver', 'Only an agent that observes with questions and rules can be tested on a conversation.')
 // translate('errors.reengageNoAgent', 'No agent is bound to the inbox of this conversation.')
 // translate('errors.returnNoResponder', 'No responder is bound to the inbox of this conversation.')
@@ -504,6 +506,37 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ...doc(
           "Get conversation",
           "Returns the conversation metadata shell by primary key, without the live message thread.",
+        ),
+        tags: ["Conversations"],
+      },
+      response: errors(400, 401, 404),
+    },
+  )
+  // One tool call's kept whole result, apart from the conversation above so its refresh stays small.
+  .get(
+    "/conversations/:id/tool-results/:lineId",
+    async ({ tenantContext, params }) =>
+      getConversationToolResult(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        requireDbId(params.lineId),
+      ),
+    {
+      requireAuth: true,
+      params: t.Object({
+        id: t.String({
+          description:
+            "Conversation primary key (BigInt serialized as a decimal string).",
+        }),
+        lineId: t.String({
+          description:
+            "The tool entry's `id` on the conversation's `trail[]` (its log line).",
+        }),
+      }),
+      detail: {
+        ...doc(
+          "Get a tool call's kept whole result",
+          "Returns the whole result the model received for one tool call of the conversation, when its agent keeps full turn detail (`settings.observability.fullDetailRetentionDays`) and it has not expired: `status` is `kept`, `gone` or `not_kept`, `text` the result, `cut` whether the kept text stopped at its 500,000-character ceiling.",
         ),
         tags: ["Conversations"],
       },

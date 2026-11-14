@@ -45,6 +45,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   },
   "GET /v1/agents/:id/config-health": { tool: "agent_config_health" },
   "GET /v1/agents/:id/call-floor": { tool: "agent_call_floor" },
+  "GET /v1/agents/:id/full-detail-usage": {
+    gap: "what one agent's kept full turn detail is using; the setting itself is on agent_settings_get",
+  },
   "POST /v1/agents/:id/call-floor": {
     none: "measures the console editor's unsaved tool set; an MCP client has no draft, it saves the grants and reads agent_call_floor",
   },
@@ -365,6 +368,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/conversations/chatwoot-link": { none: CHATWOOT_LINK },
   "GET /v1/conversations/:id": { tool: "conversation_get" },
   "GET /v1/conversations/:id/messages": { tool: "conversation_messages" },
+  "GET /v1/conversations/:id/tool-results/:lineId": {
+    gap: "one tool call's kept whole result, for the conversation page's toggle; conversation_get says whether it is kept and its length",
+  },
   "GET /v1/conversations/:id/media": { none: BINARY },
   "POST /v1/conversations/:id/handoff": { tool: "conversation_handoff" },
   "POST /v1/conversations/:id/return": { tool: "conversation_return" },

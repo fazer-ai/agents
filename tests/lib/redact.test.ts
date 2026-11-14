@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { redactSecretsDeep, sanitizeErrorMessage } from "@/lib/redact";
+import {
+  redactSecretsDeep,
+  redactSecretsUnbounded,
+  sanitizeErrorMessage,
+} from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 
 // REPAIRING A VALUE CAN RECONSTRUCT WHAT THE REDACTOR JUST FAILED TO MATCH. A NUL inside a token
@@ -369,10 +373,126 @@ describe("a key right after a percent-encoded separator is still a key", () => {
   test("prose after an encoded separator is left alone", () => {
     for (const text of [
       "%20risk-admin-dashboard_settings_v2",
-      "%2Chelpdesk-FAKEaaaaBBBBcccc1234",
+      "%2Chelpdesk-ticket-escalation-queue",
       "x%3Dsk-learn-and-numpy-together",
     ]) {
       expect(sanitizeErrorMessage(text)).toBe(text);
+    }
+  });
+});
+
+// A key glued to the word before it (`textosk-proj-…`, an echoed `id=abc123ghp_…`) has no word
+// boundary in front, and the boundary is what every value pattern anchored on, so it was stored as
+// is: in the 2,000-character log line, and for up to 90 days in a kept turn detail (#1802). Without
+// the boundary the prefix alone is not enough (`risk-admin-…`, `surveyJson…` are ordinary words),
+// so a glued candidate also has to LOOK like a credential: a random body, or a JWT header that
+// decodes to JSON.
+describe("a key glued to the preceding word", () => {
+  const JWT_HEAD = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+  const JWT = `${JWT_HEAD}.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5fQ.FAKEsig_aaaa-BBBB1234`;
+  const GLUED: Array<[string, string]> = [
+    ["OpenAI legacy", "sk-FAKEaaaaBBBBccccDDDD1234"],
+    ["OpenAI project", "sk-proj-FAKE_aaaa-BBBB_cccc-DDDD_1234"],
+    ["OpenAI admin", "sk-admin-FAKE_aaaa-BBBB_cccc-DDDD_1234"],
+    ["Anthropic API", "sk-ant-api03-FAKE_aaaa-BBBB_cccc-DDDD-1234"],
+    ["OpenRouter", "sk-or-v1-0123456789abcdef0123456789abcdef"],
+    ["GitHub", "ghp_FAKEaaaaBBBBccccDDDD1234eeeeFFFF"],
+    ["GitHub fine-grained", "github_pat_11FAKEaaaa0BBBBcccc_DDDD1234"],
+    ["Slack", `xoxb-${"1234567890"}-${"0987654321"}-FAKEaaaaBBBB`],
+    ["AWS", "AKIAFAKE1234ABCD5678"],
+    ["JWT", JWT],
+  ];
+
+  test.each(GLUED)(
+    "a %s key after a letter, a digit or an underscore is redacted",
+    (_label, key) => {
+      for (const before of ["texto", "123", "_"]) {
+        const text = `${before}${key} fim`;
+        expect(sanitizeErrorMessage(text)).toBe(`${before}‹redacted› fim`);
+        expect((redactSecretsDeep({ v: text }) as { v: string }).v).toBe(
+          `${before}‹redacted› fim`,
+        );
+      }
+    },
+  );
+
+  test.each(GLUED)(
+    "a glued %s key deep in a kept turn detail is redacted",
+    (_label, key) => {
+      const text = `${"word ".repeat(1000)}result=ok${key}`;
+      const out = redactSecretsUnbounded({ r: [{ text }] }) as {
+        r: Array<{ text: string }>;
+      };
+      expect(out.r[0]?.text).toBe(`${"word ".repeat(1000)}result=ok‹redacted›`);
+    },
+  );
+
+  // The cut leaves a JWT without its last two segments, so only the head is left to recognise, and
+  // a glued head has neither the boundary nor the structure: the decoded header is what is left.
+  test("a glued JWT cut by the 2,000-character line is not stored by its head", () => {
+    const head = `${"h".repeat(1990)}token`;
+    const out = redactSecretsDeep({ v: `${head}${JWT}` }) as { v: string };
+    expect(out.v).not.toContain("eyJ");
+    expect(out.v.startsWith(`${head}‹`)).toBe(true);
+  });
+
+  // A header longer than the scan margin is cut mid-segment, and an unpadded base64 run whose
+  // length is one past a multiple of four does not decode at all: the check reads whole groups.
+  test("a glued JWT with a long header, cut inside the header, is still recognised", () => {
+    const header = btoa(`{"alg":"HS256","typ":"JWT","kid":"${"k".repeat(80)}"}`)
+      .replace(/=+$/, "")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_");
+    const head = `${"h".repeat(1990)}token`;
+    // 2,000 + the 64-character margin - 1,995 = 69 characters of header in the window: 4k + 1.
+    const out = redactSecretsDeep({
+      v: `${head}${header}.payloadpayload.signature`,
+    }) as {
+      v: string;
+    };
+    expect(out.v).not.toContain("eyJ");
+    expect(out.v.startsWith(`${head}‹`)).toBe(true);
+  });
+
+  // A tool that cut its own result can end it anywhere in the header, and an unpadded base64 run one
+  // past a multiple of four does not decode: the check reads whole groups.
+  test("a glued JWT head that ends the text mid-header is redacted", () => {
+    const text = `result=ok${JWT_HEAD.slice(0, 33)}`;
+    expect((redactSecretsUnbounded({ t: text }) as { t: string }).t).toBe(
+      "result=ok‹redacted›",
+    );
+  });
+
+  // A candidate refused by the shape check must not hide a real key that starts inside it.
+  test("a refused candidate does not hide the key right behind it", () => {
+    expect(sanitizeErrorMessage(`heyJ${JWT} ok`)).toBe("heyJ‹redacted› ok");
+    expect(sanitizeErrorMessage(`heyJ${JWT_HEAD}`)).toBe("heyJ‹redacted›");
+  });
+
+  test("the encoded-separator case is now a key, not prose", () => {
+    const text = "%2Chelpdesk-FAKEaaaaBBBBcccc1234";
+    expect(sanitizeErrorMessage(text)).toBe("%2Chelpde‹redacted›");
+  });
+
+  test("ordinary words that hold a key prefix are left alone", () => {
+    for (const text of [
+      "open risk-admin-dashboard_settings_v2 and risk-proj-management-overview",
+      "the task-internationalization effort and risk-institutionalization review",
+      "a risk-ant-colony-behaviour_simulation run",
+      "call surveyJsonExportSettings",
+      "read surveyJsonExportSettings.defaultConfig.values twice",
+      "the monkeyJumpedOverTheLazyFence twice",
+      "the tokeneyJhbGci",
+      "open risk-admin-DashboardSettingsPanel and risk-admin-DASHBOARD_V2_SETTINGS",
+      "THE SLOVAKIANPARLIAMENTVOTES",
+      "botxoxb-handler-v2-and-friends ok",
+      "a risk-or-v1-and-v2-comparison-notes page",
+      "my_ghp_settings_and_more_options",
+    ]) {
+      expect(sanitizeErrorMessage(text)).toBe(text);
+      expect((redactSecretsUnbounded({ t: text }) as { t: string }).t).toBe(
+        text,
+      );
     }
   });
 });

@@ -30,6 +30,149 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)*$/g, // JWT truncated by a cut
 ];
 
+// The same shapes GLUED to the word before them (`textosk-proj-…`, `id=abc123ghp_…`), where the
+// patterns above find no boundary (#1802). Dropping the boundary alone would redact ordinary words
+// (`risk-admin-dashboard_settings_v2`, `surveyJson…`), so a glued candidate is a credential only when
+// it also looks like one: a random body carries upper case, lower case and a digit (the all-caps AWS
+// alphabet: a letter and a digit), an OpenRouter body is hex and a Slack token opens on its numeric
+// ids (both written into the pattern), and a JWT's first segment decodes to a JSON header.
+//
+// NOTE: The cost is linear, and that is a property each entry keeps, not luck. A glued candidate can
+// start at every position of a word, so a guard that refuses and retries one character later would
+// rescan the same run once per start: on a 100,000-character tool result, about a second. The body
+// guards ask about the SET of characters, and a candidate starting inside a refused one ends where it
+// ends (the same greedy run), so its body is a substring and is refused too: a refusal skips the whole
+// match. The JWT guard is not monotone (`heyJ` + a JWT), so it retries, and its pattern is bounded.
+interface GluedShape {
+  re: RegExp;
+  isSecret: (body: string) => boolean;
+  // Whether a refusal may skip the whole match (see the NOTE above).
+  monotone: boolean;
+}
+
+const mixedCase = (b: string) =>
+  /[A-Z]/.test(b) && /[a-z]/.test(b) && /\d/.test(b);
+const letterAndDigit = (b: string) => /[A-Za-z]/.test(b) && /\d/.test(b);
+const always = () => true;
+
+// A JWT header is base64url of a JSON object, so it decodes to printable ASCII; an identifier that
+// happens to contain `eyJ` decodes to binary noise. (`eyJ` itself always decodes to `{"`, so the
+// prefix proves nothing and is not checked.) The first 64 characters are 48 bytes, far past chance
+// for noise, and reading no more keeps a retry cheap. Only whole 4-character groups are decoded,
+// because a cut can end the segment anywhere.
+function isJwtHeader(segment: string): boolean {
+  const n = Math.min(segment.length, 64);
+  const whole = segment.slice(0, n - (n % 4));
+  let decoded: string;
+  try {
+    decoded = atob(whole.replace(/-/g, "+").replace(/_/g, "/"));
+  } catch {
+    return false;
+  }
+  return /^[\x20-\x7e]*$/.test(decoded);
+}
+
+const GLUED = "(?<=\\w)";
+const GLUED_SECRET_SHAPES: GluedShape[] = [
+  {
+    re: new RegExp(`${GLUED}sk-([A-Za-z0-9]{16,})\\b`, "g"),
+    isSecret: mixedCase,
+    monotone: true,
+  },
+  {
+    re: new RegExp(
+      `${GLUED}sk-(?:proj|svcacct|admin|None|ant-[a-z]+\\d*)-([A-Za-z0-9_-]{16,})`,
+      "g",
+    ),
+    isSecret: mixedCase,
+    monotone: true,
+  },
+  {
+    re: new RegExp(`${GLUED}sk-or-v1-[0-9a-f]{32,}`, "g"),
+    isSecret: always,
+    monotone: true,
+  },
+  {
+    re: new RegExp(
+      `${GLUED}(?:ghp|gho|ghs|github_pat)_([A-Za-z0-9_]{16,})\\b`,
+      "g",
+    ),
+    isSecret: mixedCase,
+    monotone: true,
+  },
+  {
+    re: new RegExp(
+      `${GLUED}xox[baprs]-(?=[A-Za-z0-9-]{10})\\d+-\\d+-[A-Za-z0-9-]*\\b`,
+      "g",
+    ),
+    isSecret: always,
+    monotone: true,
+  },
+  {
+    re: new RegExp(`${GLUED}AKIA([0-9A-Z]{16})\\b`, "g"),
+    isSecret: letterAndDigit,
+    monotone: true,
+  },
+  // Bounded header: a refused start is retried, and an unbounded run would be rescanned per start.
+  {
+    re: new RegExp(
+      `${GLUED}(eyJ[A-Za-z0-9_-]{10,4096})\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{6,}\\b`,
+      "g",
+    ),
+    isSecret: isJwtHeader,
+    monotone: false,
+  },
+];
+
+// Replaces every glued candidate its shape accepts.
+function redactGlued(
+  input: string,
+  { re, isSecret, monotone }: GluedShape,
+): string {
+  let out = "";
+  let from = 0;
+  re.lastIndex = 0;
+  for (let m = re.exec(input); m; m = re.exec(input)) {
+    if (isSecret(m[1] ?? "")) {
+      out += input.slice(from, m.index) + REDACTED;
+      from = m.index + m[0].length;
+      re.lastIndex = from;
+    } else {
+      re.lastIndex = monotone ? m.index + m[0].length : m.index + 1;
+    }
+  }
+  return out + input.slice(from);
+}
+
+const JWT_CHAR = /[A-Za-z0-9_.-]/;
+
+// The cut-JWT head of SECRET_VALUE_PATTERNS, glued: a JWT whose head runs to the END of the window.
+// Only the run of token characters at the end can hold one, so it is found by walking back from the
+// end rather than by a `$`-anchored pattern, which would be tried at every start of a long run. In
+// it, the first `eyJ` with 10 header characters before any dot and a header that decodes is redacted
+// to the end. One at the start of the run is not glued, and the boundary pattern below takes it too.
+function redactGluedJwtHead(input: string): string {
+  let runStart = input.length;
+  while (runStart > 0 && JWT_CHAR.test(input[runStart - 1] ?? "")) runStart--;
+  let dot = -1;
+  for (
+    let i = input.indexOf("eyJ", runStart);
+    i !== -1;
+    i = input.indexOf("eyJ", i + 1)
+  ) {
+    // The next dot is found once per segment, not once per candidate: a run of `eyJeyJ…` would
+    // otherwise rescan the segment for each of them.
+    if (dot !== input.length && dot < i) {
+      dot = input.indexOf(".", i);
+      if (dot === -1) dot = input.length;
+    }
+    if (dot - i >= 13 && isJwtHeader(input.slice(i, Math.min(dot, i + 64)))) {
+      return input.slice(0, i) + REDACTED;
+    }
+  }
+  return input;
+}
+
 // Object keys whose VALUE is a credential and must be dropped wholesale.
 const SECRET_KEY_RE =
   /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret|credential)/i;
@@ -102,6 +245,10 @@ export function scrubbedClip(
 // also the only order of repair/scrub/cut that does not leak.
 function redactSecretsInText(input: string): string {
   let out = input;
+  // Glued shapes first: a glued JWT's payload segment starts with `eyJ` right after a dot, a
+  // boundary, so the patterns below would take the payload and signature and leave the header.
+  for (const shape of GLUED_SECRET_SHAPES) out = redactGlued(out, shape);
+  out = redactGluedJwtHead(out);
   for (const re of SECRET_VALUE_PATTERNS) out = out.replace(re, REDACTED);
   return out;
 }

@@ -508,6 +508,124 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect([far.line?.sourced, far.line?.earlierSources]).toEqual([false, 0]);
   });
 
+  // Turn by turn, the calls each one made, the customer asking and the agent answering; the last
+  // answer is the reply under review. Call ids restart every turn, as a provider's `call_0` does.
+  type Call = [name: string, args: Record<string, unknown>, result: string];
+  function askedTurns(turns: Call[][]): BaseMessage[] {
+    return turns.flatMap((calls, i) => [
+      new HumanMessage(`Pergunta ${i + 1}`),
+      ...calls.flatMap(([name, args, result], j) => [
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name, args, id: `call_${j}` }],
+        }),
+        new ToolMessage({ content: result, tool_call_id: `call_${j}`, name }),
+      ]),
+      new AIMessage(i === turns.length - 1 ? DRAFT : `Resposta ${i + 1}`),
+    ]);
+  }
+  const AURORA = { evento: "aurora", filtros: [{ setor: "pista", lote: 1 }] };
+  const PAGE = "CATALOGO-A Aurora: portões 18h, pista no lote 1.";
+  const CHANGED = "CATALOGO-B Aurora: portões 18h, pista no lote 2.";
+  const copies = (sent: string, mark: string) => sent.split(mark).length - 1;
+
+  // The bug it catches: a source asked again on each follow-up reached the reviewer once per turn, as
+  // an earlier source of every previous turn and again as this turn's call, so a review's input grew
+  // with every question while what it judged against did not.
+  test("a source asked again with the same arguments and result travels once, as the latest call", async () => {
+    const asked: Call = ["catalogo", AURORA, PAGE];
+    const fourth = await reviewWith(
+      askedTurns([[asked], [asked], [], [asked]]),
+      6,
+    );
+    expect(copies(fourth.sent, "CATALOGO-A")).toBe(1);
+    expect(fourth.sent).not.toContain('turn="earlier"');
+    expect([fourth.line?.earlierSources, fourth.line?.resultChars]).toEqual([
+      0,
+      PAGE.length,
+    ]);
+    const third = await reviewWith(askedTurns([[asked], [asked], []]), 6);
+    expect(copies(third.sent, "CATALOGO-A")).toBe(1);
+    expect(third.sent).toContain('turn="earlier" turns_back="1"');
+    expect([third.line?.earlierSources, third.line?.resultChars]).toEqual([
+      1,
+      PAGE.length,
+    ]);
+    // The same arguments written in another key order, twice in one turn, are still one call.
+    const reordered: Call = [
+      "catalogo",
+      { filtros: [{ lote: 1, setor: "pista" }], evento: "aurora" },
+      PAGE,
+    ];
+    const twice = await reviewWith(askedTurns([[asked, reordered]]), 6);
+    expect(copies(twice.sent, "CATALOGO-A")).toBe(1);
+    expect(twice.line?.resultChars).toBe(PAGE.length);
+  });
+
+  // The bug it catches: a dedupe keyed on the tool and its arguments alone drops the evidence that the
+  // catalog changed between turns, or that another event was asked about.
+  test("the same arguments with a changed result, other arguments or another tool are evidence and travel", async () => {
+    const changed = await reviewWith(
+      askedTurns([
+        [["catalogo", AURORA, PAGE]],
+        [["catalogo", AURORA, CHANGED]],
+        [],
+        [["catalogo", AURORA, PAGE]],
+      ]),
+      6,
+    );
+    expect([
+      copies(changed.sent, "CATALOGO-A"),
+      copies(changed.sent, "CATALOGO-B"),
+    ]).toEqual([1, 1]);
+    expect(changed.sent).toContain('turn="earlier" turns_back="2"');
+    // In the order the calls were made: the earlier result first.
+    expect(changed.sent.indexOf("CATALOGO-B")).toBeLessThan(
+      changed.sent.indexOf("CATALOGO-A"),
+    );
+    expect([changed.line?.earlierSources, changed.line?.resultChars]).toEqual([
+      1,
+      PAGE.length + CHANGED.length,
+    ]);
+    const other = await reviewWith(
+      askedTurns([
+        [["catalogo", AURORA, PAGE]],
+        [["catalogo", { ...AURORA, evento: "boreal" }, PAGE]],
+        [],
+        [["catalogo", AURORA, PAGE]],
+      ]),
+      6,
+    );
+    expect(copies(other.sent, "CATALOGO-A")).toBe(2);
+    expect(other.line?.earlierSources).toBe(1);
+    // Another tool answering the same arguments with the same text is another call.
+    const twoTools = await reviewWith(
+      askedTurns([
+        [
+          ["catalogo", AURORA, PAGE],
+          ["agenda", AURORA, PAGE],
+        ],
+      ]),
+      6,
+    );
+    expect(copies(twoTools.sent, "CATALOGO-A")).toBe(2);
+  });
+
+  // The bug it catches: the ceiling counting every copy refused a review whose single result fits.
+  test("the ceiling measures what travels: a result asked three times that fits once is reviewed", async () => {
+    const big: Call = [
+      "catalogo",
+      AURORA,
+      `CATALOGO-A ${"x".repeat(GROUNDING_SOURCES_MAX / 2)}`,
+    ];
+    const { line } = await reviewWith(askedTurns([[big], [big], [], [big]]), 6);
+    expect(line?.outcome).toBeUndefined();
+    expect(line).toMatchObject({
+      verdict: "violated",
+      resultChars: big[2].length,
+    });
+  });
+
   test("with contextMessages at 0 the reviewer reads the turn alone: no conversation, no earlier source, no memory", async () => {
     const { sent, line } = await reviewWith(
       [

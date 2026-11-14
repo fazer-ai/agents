@@ -86,8 +86,9 @@ export interface GroundingReviewInput {
 // they sent, which is how a reply that repeats what a customer's print shows counts as grounded, so the
 // bound is wide; the tool results are never cut.
 export const GROUNDING_MESSAGE_MAX = 8000;
-// Above this many characters of tool output in one turn the review does not run (and says so):
-// cutting a result is exactly what makes a verdict about it meaningless.
+// Above this many characters of tool results sent to the reviewer, a repeated call counted once, the
+// review does not run (and says so): cutting a result is exactly what makes a verdict about it
+// meaningless.
 export const GROUNDING_SOURCES_MAX = 400_000;
 // Above this many characters of reference documents the review does not run either: the block is
 // sent whole on every review, so a base that outgrows it is a configuration to fix, not to cut.
@@ -148,6 +149,36 @@ export function earlierSourceCalls(
     ),
   );
 }
+
+// The calls as the reviewer reads them, each repeated call once: one with the same tool, the same
+// arguments (in any key order) and the same result as a later call, in an earlier turn or in this one,
+// is dropped, and the latest travels with its own turn marking, so a follow-up that asks the catalog
+// again sends its result once. A changed result, or other arguments, is evidence, so both travel.
+export function withoutRepeatedCalls(
+  calls: readonly GroundingToolCall[],
+): GroundingToolCall[] {
+  const seen = new Set<string>();
+  const kept: GroundingToolCall[] = [];
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const c = calls[i] as GroundingToolCall;
+    const key = JSON.stringify([c.name, sortedKeys(c.args), c.result]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(c);
+  }
+  return kept.reverse();
+}
+
+const sortedKeys = (v: unknown): unknown =>
+  Array.isArray(v)
+    ? v.map(sortedKeys)
+    : v && typeof v === "object"
+      ? Object.fromEntries(
+          Object.keys(v)
+            .sort()
+            .map((k) => [k, sortedKeys((v as Record<string, unknown>)[k])]),
+        )
+      : v;
 
 // The history up to and including the customer message the turn answers.
 function beforeTurn(messages: readonly BaseMessage[]): readonly BaseMessage[] {

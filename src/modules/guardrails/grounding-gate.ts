@@ -37,6 +37,7 @@ import {
   groundingToolCalls,
   reviewGrounding,
   reviseNote,
+  withoutRepeatedCalls,
 } from "./grounding";
 import {
   type GroundingReference,
@@ -233,15 +234,19 @@ export function buildGroundingGate(
     if (p.signal?.aborted) return null;
     // The whole thread the agent reads, earlier attendances included.
     const history = turn.slice(0, -1);
-    // Earlier first, so the block reads in the order the calls were made. 0 reads only the turn.
-    const earlier = earlierSourceCalls(
-      history,
-      fg.sourceTools,
-      fg.contextMessages > 0
-        ? Math.max(fg.contextMessages, GROUNDING_SOURCE_WINDOW)
-        : 0,
-    );
-    const calls = [...earlier, ...groundingToolCalls(turn, fg.sourceTools)];
+    // Earlier first, so the block reads in the order the calls were made. 0 reads only the turn. A call
+    // repeated later travels once, as the latest, so the size, the ceiling and `earlierSources` count
+    // what the reviewer reads.
+    const calls = withoutRepeatedCalls([
+      ...earlierSourceCalls(
+        history,
+        fg.sourceTools,
+        fg.contextMessages > 0
+          ? Math.max(fg.contextMessages, GROUNDING_SOURCE_WINDOW)
+          : 0,
+      ),
+      ...groundingToolCalls(turn, fg.sourceTools),
+    ]);
     // Reviewed with or without a source: a reply that states an in-scope fact having consulted
     // nothing is the case that costs most when it goes out unchecked. With none, the reviewer is told
     // so and judges every in-scope fact as unsupported.
@@ -256,7 +261,7 @@ export function buildGroundingGate(
       sourced: groundingSourced(calls, reference.docs),
       sources: sourceNames,
       resultChars,
-      earlierSources: earlier.length,
+      earlierSources: calls.filter((c) => c.turnsBack).length,
       referenceDocs: reference.count,
       referenceChars: reference.chars,
       ...(pass ? { pass } : {}),

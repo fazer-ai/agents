@@ -95,6 +95,7 @@ describe("test-staged", () => {
       "tests/db-gate.ts changes every test file: the whole suite is left to CI",
     );
     expect(out).not.toContain("tests/modules/db-backed.test.ts");
+    expect(out).not.toContain("bun test --parallel");
     expect(out).toContain("tests/modules/sweep.test.ts");
   });
 

@@ -32,7 +32,7 @@ if [ -n "$full" ]; then
     [ -n "$TEST_STAGED_LIST" ] && exit 0
     exec $run
   fi
-  echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: the whole suite is left to CI, running only the staged tests, the importers of the rest of the change and the sweeps (TEST_STAGED_FULL=1 runs it: $run)"
+  echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: the whole suite is left to CI, running only the staged tests, the importers of the rest of the change and the sweeps (TEST_STAGED_FULL=1 runs it here, in parallel workers)"
 fi
 
 picked=""

@@ -382,11 +382,9 @@ describe("a key right after a percent-encoded separator is still a key", () => {
 });
 
 // A key glued to the word before it (`textosk-proj-…`, an echoed `id=abc123ghp_…`) has no word
-// boundary in front, and the boundary is what every value pattern anchored on, so it was stored as
-// is: in the 2,000-character log line, and for up to 90 days in a kept turn detail (#1802). Without
-// the boundary the prefix alone is not enough (`risk-admin-…`, `surveyJson…` are ordinary words),
-// so a glued candidate also has to LOOK like a credential: a random body, or a JWT header that
-// decodes to JSON.
+// boundary in front, and a kept turn detail stores the whole tool result for up to 90 days. Without
+// the boundary the prefix alone is not enough (`risk-admin-…`, `surveyJson…` are ordinary words), so a
+// glued candidate also has to LOOK like a credential: a random body, or a JWT header that decodes.
 describe("a key glued to the preceding word", () => {
   const JWT_HEAD = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
   const JWT = `${JWT_HEAD}.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5fQ.FAKEsig_aaaa-BBBB1234`;
@@ -463,8 +461,8 @@ describe("a key glued to the preceding word", () => {
     );
   });
 
-  // Two shapes can overlap, and redacting the inner one first left the outer one under every
-  // minimum: a key-shaped run inside a JWT signature used to leave the header and the payload.
+  // Two shapes can overlap, and redacting the inner one first would leave the outer one under every
+  // minimum: a key-shaped run inside a JWT signature would leave the header and the payload.
   test("a key-shaped run inside a JWT does not leave the rest of the JWT readable", () => {
     const jwt = `${JWT_HEAD}.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjo5OTk5fQ.abcdsk-FAKEaaaaBBBBccccDDDD1234eeeeFFFFgggg`;
     expect(sanitizeErrorMessage(`token ${jwt} ok`)).toBe("token ‹redacted› ok");

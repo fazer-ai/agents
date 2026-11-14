@@ -25,28 +25,20 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   // NOTE: a JWT HEAD that runs to the end of the scanned window. The other shapes are a prefix plus
   // a run, so a long enough piece still matches; a cut JWT is missing STRUCTURE (two dots and a last
   // segment), which no scan margin restores, so it is recognised by its head. Anchored at the end,
-  // where a cut leaves it, so a mid-sentence base64 blob starting with `eyJ` is not redacted. The
-  // complete-token pattern above runs first.
+  // where a cut leaves it, so a mid-sentence base64 blob starting with `eyJ` is not redacted. A token
+  // both patterns match is one span (see `redactSecretsInText`).
   /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)*$/g, // JWT truncated by a cut
 ];
 
-// The same shapes GLUED to the word before them (`textosk-proj-…`, `id=abc123ghp_…`), where the
-// patterns above find no boundary (#1802). Dropping the boundary alone would redact ordinary words
-// (`risk-admin-dashboard_settings_v2`, `surveyJson…`), so a glued candidate is a credential only when
-// it also looks like one: a random body carries upper case, lower case and a digit (the all-caps AWS
-// alphabet: a letter and a digit), an OpenRouter body is hex and a Slack token opens on its numeric
-// ids (both written into the pattern), and a JWT's first segment decodes to a JSON header.
-//
-// NOTE: The cost is linear, and that is a property each entry keeps, not luck. A glued candidate can
-// start at every position of a word, so a guard that refuses and retries one character later would
-// rescan the same run once per start: on a 100,000-character tool result, about a second. The body
-// guards ask about the SET of characters, and a candidate starting inside a refused one ends where it
-// ends (the same greedy run), so its body is a substring and is refused too: a refusal skips the whole
-// match. The JWT guard is not monotone (`heyJ` + a JWT), so it retries, and its pattern is bounded.
+// The same shapes GLUED to the word before them (`textosk-proj-…`), where the patterns above find no
+// boundary. The prefix alone is not enough there (`risk-admin-dashboard_settings_v2` is prose), so a
+// glued candidate is a credential only when its body also looks like one; `isSecret` judges group 1.
+// Each entry keeps the pass linear: a body guard that asks about the SET of characters is `monotone`,
+// and a refusal skips the whole match. The rules and the cost argument are in docs/logs.md.
 interface GluedShape {
   re: RegExp;
   isSecret: (body: string) => boolean;
-  // Whether a refusal may skip the whole match (see the NOTE above).
+  // Whether a refusal may skip the whole match: a candidate starting inside it has a substring body.
   monotone: boolean;
 }
 
@@ -161,7 +153,7 @@ function gluedJwtHeadSpan(input: string, out: Span[]): void {
     i !== -1;
     i = input.indexOf("eyJ", i + 1)
   ) {
-    // The next dot is found once per segment, not once per candidate: a run of `eyJeyJ…` would
+    // NOTE: The next dot is found once per segment, not once per candidate: a run of `eyJeyJ…` would
     // otherwise rescan the segment for each of them.
     if (dot !== input.length && dot < i) {
       dot = input.indexOf(".", i);
@@ -245,10 +237,10 @@ export function scrubbedClip(
 // handed has to be a window someone chose on purpose. `scrubbedClip` is that someone, and it is
 // also the only order of repair/scrub/cut that does not leak.
 function redactSecretsInText(input: string): string {
-  // Every pattern is matched against the INPUT and the overlapping spans are merged, rather than
-  // replacing pattern by pattern. Replacing in sequence lets one pattern take the inside of another
-  // one's match and leave the rest under every minimum: a key-shaped run inside a JWT signature,
-  // redacted first, left the header and the whole payload readable. Merged, the union goes.
+  // Every pattern is matched against the INPUT and the overlapping spans are merged, rather
+  // than replacing pattern by pattern: in sequence, one pattern takes the inside of another one's
+  // match and leaves the rest under every minimum (a key-shaped run inside a JWT signature would
+  // leave the header and the whole payload readable). Merged, the union goes.
   const spans: Span[] = [];
   for (const re of SECRET_VALUE_PATTERNS) {
     for (const m of input.matchAll(re)) {

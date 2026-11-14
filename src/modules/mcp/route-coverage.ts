@@ -368,6 +368,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/conversations/chatwoot-link": { none: CHATWOOT_LINK },
   "GET /v1/conversations/:id": { tool: "conversation_get" },
   "GET /v1/conversations/:id/messages": { tool: "conversation_messages" },
+  "GET /v1/conversations/:id/tool-results/:lineId": {
+    gap: "one tool call's kept whole result, for the conversation page's toggle; conversation_get says whether it is kept and its length",
+  },
   "GET /v1/conversations/:id/media": { none: BINARY },
   "POST /v1/conversations/:id/handoff": { tool: "conversation_handoff" },
   "POST /v1/conversations/:id/return": { tool: "conversation_return" },

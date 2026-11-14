@@ -8,13 +8,16 @@ import {
 } from "bun:test";
 import type { Serialized } from "@langchain/core/load/serializable";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { MAX_STRING } from "@/lib/redact";
 import type { TenantContext } from "@/lib/tenancy";
 import { assertSettingsClosedValues } from "@/modules/agents/service";
-import { getConversationDetail } from "@/modules/conversations/service";
+import {
+  getConversationDetail,
+  getConversationToolResult,
+} from "@/modules/conversations/service";
 import {
   FULL_DETAIL_MAX_CHARS,
   fullDetailExpiry,
@@ -117,9 +120,24 @@ async function toolCall(
   await settleFlowEvents();
 }
 
+// The tool entries of the conversation's trail, each with the whole result its own route serves
+// (the trail carries only the length, so the page fetches the text when it is asked for).
 async function toolTrail() {
   const d = await getConversationDetail(ctx(), convId, appDb);
-  return d.trail.filter((e) => e.kind === "tool");
+  const tools = d.trail.filter((e) => e.kind === "tool");
+  return Promise.all(
+    tools.map(async (e) => {
+      const r = await getConversationToolResult(
+        ctx(),
+        convId,
+        BigInt(e.id),
+        appDb,
+      );
+      expect<string | null>(r.status).toBe(e.fullOutputStatus);
+      expect(e.fullOutputChars).toBe(r.text === null ? null : r.text.length);
+      return { ...e, fullOutput: r.text };
+    }),
+  );
 }
 
 async function count(table: "full_detail_refs" | "full_detail_contents") {
@@ -236,6 +254,56 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(output).toContain("INICIO-A");
     expect(output).not.toContain("FIM-A");
     expect(typeof detail[KEPT_UNTIL_KEY]).toBe("string");
+  });
+
+  test("the trail carries no kept text, and one call's result is not served under another conversation", async () => {
+    await toolCall(flow(agentA, 7), bigResult("T"));
+    const d = await getConversationDetail(ctx(), convId, appDb);
+    expect(JSON.stringify(d.trail)).not.toContain("FIM-T");
+    const [entry] = d.trail.filter((e) => e.kind === "tool");
+    await expect(
+      getConversationToolResult(
+        ctx(),
+        convId + 999_999n,
+        BigInt(entry?.id ?? "0"),
+        appDb,
+      ),
+    ).rejects.toThrow();
+  });
+
+  test("a structured result keeps its credential-named keys masked in the kept copy", async () => {
+    // Assembled here so the file carries no credential-shaped literal of its own.
+    const secret = ["senha", "comum", "123"].join("-");
+    const value = { lote: "x".repeat(3_000), ["pass" + "word"]: secret };
+    await toolCall(flow(agentA, 7), value);
+    const [entry] = await toolTrail();
+    expect(entry?.fullOutput).toContain("x".repeat(3_000));
+    expect(entry?.fullOutput).not.toContain(secret);
+  });
+
+  test("a structured output logged before the write-time flag is read as cut by its shape", async () => {
+    // Lines written before `outputCut` existed: fifty content blocks (the log's list cap) and a
+    // block whose text carries the cut marker are cut; three short blocks are whole.
+    const block = (text: string) => ({ type: "text", text });
+    const legacy = async (output: Prisma.InputJsonValue) =>
+      suDb.executionLog.create({
+        data: {
+          tenantId,
+          turnId: crypto.randomUUID(),
+          conversationId: convId,
+          agentId: agentA,
+          stage: "tool",
+          level: "info",
+          status: "ok",
+          source: "inbox",
+          detail: { tool: "mcp__loja__estoque", output },
+        },
+      });
+    await legacy(Array.from({ length: 50 }, (_, i) => block(`b${i}`)));
+    await legacy([block("a"), block("lote…[truncated]")]);
+    await legacy([block("a"), block("b"), block("c")]);
+    const entries = await toolTrail();
+    expect(entries.map((e) => e.outputComplete)).toEqual([false, false, true]);
   });
 
   test("a short result that ends in the log's own marker is whole, and long arguments do not make it cut", async () => {

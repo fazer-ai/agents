@@ -2,6 +2,8 @@ set -e
 
 # Local quality gate: the static checks the PR CI runs (i18n, lint of the staged files, type-check,
 # OpenAPI; scripts/check-staged.sh) and the tests closest to the commit (scripts/test-staged.sh). The
-# whole suite and the whole-tree lint are the CI gate.
+# whole suite and the whole-tree lint are the CI gate, and only CI's: a path that changes every test
+# file (a migration, package.json, tests/setup.ts) does not run the suite here; test-staged.sh says so
+# and runs only the staged tests, the ones that name or import the rest of the change, and the sweeps.
 sh scripts/check-staged.sh
 sh scripts/test-staged.sh

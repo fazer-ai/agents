@@ -86,11 +86,31 @@ describe("test-staged", () => {
   });
 
   // The whole suite is the CI gate: on a developer machine it competes with every other session.
-  test("a change to the database gate leaves the whole suite to CI", () => {
+  // A hook that ran it again (or the ~500 importers of the database gate) would time UI tests out;
+  // dropping the staged test or the sweeps with it would let the commit skip the test it touched.
+  test("a change to the database gate leaves the whole suite and its importers to CI", () => {
     const out = select(["tests/db-gate.ts"]);
 
-    expect(out).toContain("the whole suite is the CI gate, not run here");
+    expect(out).toContain(
+      "tests/db-gate.ts changes every test file: the whole suite is left to CI",
+    );
     expect(out).not.toContain("tests/modules/db-backed.test.ts");
+    expect(out).toContain("tests/modules/sweep.test.ts");
+  });
+
+  test("next to a path left to CI, the staged tests and the rest of the change still run", () => {
+    const out = select([
+      "prisma/schema.prisma",
+      "app/a/service.ts",
+      "tests/modules/db-backed.test.ts",
+    ]);
+
+    expect(out).toContain(
+      "prisma/schema.prisma changes every test file: the whole suite is left to CI",
+    );
+    expect(out).toContain("tests/modules/db-backed.test.ts");
+    expect(out).toContain("tests/modules/a-service.test.ts");
+    expect(out).toContain("tests/modules/sweep.test.ts");
   });
 
   test("TEST_STAGED_FULL=1 still runs the whole suite on a database gate change", () => {

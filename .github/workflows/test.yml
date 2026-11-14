@@ -67,10 +67,7 @@ jobs:
       !cancelled()
       && needs.changes.outputs.code == 'true'
       && needs.already-tested.outputs.skip != 'true'
-    # Only the two private copies (this master, agents-pro) run on Blacksmith: $0.004/min against
-    # GitHub's $0.006, and the same shard finishes ~30% sooner (measured 10/2026). The public agents
-    # repo, and any fork of it, keeps GitHub's runners, free for public repos and always available.
-    runs-on: ${{ contains(fromJSON('["fazer-ai/agents-master", "fazer-ai/agents-pro"]'), github.repository) && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
 
     strategy:
       # Every shard runs: one red shard must not cancel the other three, or the report names one

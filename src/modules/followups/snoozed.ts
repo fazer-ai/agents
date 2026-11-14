@@ -135,7 +135,7 @@ export function snoozedSweepSelectionSql(
                  FROM scheduler_jobs jf
                 WHERE jf.tenant_id = c.tenant_id
                   AND jf.kind = 'SNOOZED_FOLLOWUP'
-                  AND jf.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
+                  AND jf.dedupe_key = k.dedupe_key
                   AND jf.status IN ('DONE', 'DEAD')
              ) AS finished,
              -- A row still waiting to run (PENDING, or FAILED and backing off) carries state of the
@@ -145,7 +145,7 @@ export function snoozedSweepSelectionSql(
                  FROM scheduler_jobs jw
                 WHERE jw.tenant_id = c.tenant_id
                   AND jw.kind = 'SNOOZED_FOLLOWUP'
-                  AND jw.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
+                  AND jw.dedupe_key = k.dedupe_key
                   AND jw.status IN ('PENDING', 'FAILED')
              ) AS waiting
         FROM conversations c
@@ -154,6 +154,13 @@ export function snoozedSweepSelectionSql(
         -- The schedule the handler reads (follow-up hours, else business hours), for its version.
         LEFT JOIN business_hours h
           ON h.id = COALESCE(a.follow_up_hours_id, a.business_hours_id)
+        -- The dedupe key, built here beside the row and read bare by the lookups below: built inside a
+        -- lookup it is a leaky expression over an outer reference, which PostgreSQL 17.12 keeps above the
+        -- tenant policy as a Filter, and every candidate then walks scheduler_jobs (docs/tenancy.md).
+        -- OFFSET 0 keeps the planner from folding the expression back into them.
+        CROSS JOIN LATERAL (
+          SELECT ${SNOOZED_DEDUPE_PREFIX} || c.thread_id AS dedupe_key OFFSET 0
+        ) k
        WHERE c.tenant_id = ${tenantId}
          AND c.status = 'snoozed'
          AND c.assignee_type = 'User'
@@ -170,7 +177,7 @@ export function snoozedSweepSelectionSql(
              FROM scheduler_jobs j
             WHERE j.tenant_id = c.tenant_id
               AND j.kind = 'SNOOZED_FOLLOWUP'
-              AND j.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
+              AND j.dedupe_key = k.dedupe_key
               AND (
                 -- A run in flight is left alone. Otherwise the watermark is the last run's START
                 -- (its live read comes after the claim), kept in run_started_at because a run

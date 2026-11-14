@@ -4,6 +4,7 @@ import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn } from "@/lib/tenancy";
 import { followUpSweepSelectionSql } from "@/modules/followups/handlers";
 import { snoozedSweepSelectionSql } from "@/modules/followups/snoozed";
+import { syncedDocumentsSql } from "@/modules/rag/source";
 import { dbProbeFailed } from "@/tests/db-gate";
 
 // Under the tenant policy an enum predicate never reaches an index (enum equality is not LEAKPROOF,
@@ -12,6 +13,8 @@ import { dbProbeFailed } from "@/tests/db-gate";
 // the app role with the tenant set: every read of scheduler_jobs is an index scan whose condition
 // binds the index's leading columns through dedupe_key. With only the unique index, `kind` is the
 // column the condition skips, and without the OFFSET 0 fence the planner hashes the whole tenant.
+// On PostgreSQL 17.12 a key built from the outer row inside the lookup is a Filter too (docs/tenancy.md),
+// so each statement computes the key beside the outer row and the lookup compares it bare.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -120,7 +123,7 @@ async function expectDedupeLookups(plan: PlanNode): Promise<void> {
 }
 
 describe.skipIf(!dbUp)(
-  "the follow-up sweep selections reach their index under the tenant policy",
+  "the dedupe lookups on scheduler_jobs reach their index under the tenant policy",
   () => {
     beforeAll(async () => {
       const t = await suDb.tenant.create({
@@ -172,6 +175,11 @@ describe.skipIf(!dbUp)(
           now,
         }),
       );
+      await expectDedupeLookups(plan);
+    });
+
+    test("the portal sync's read of its documents", async () => {
+      const plan = await planOf(syncedDocumentsSql(1n));
       await expectDedupeLookups(plan);
     });
   },

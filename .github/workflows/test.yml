@@ -114,10 +114,10 @@ jobs:
     # buys the same wall clock by adding runners instead of dividing one.
     services:
       postgres:
-        # Pinned to the Postgres 17.11 build: from 17.12 on, the follow-up sweep's dedupe lookups on
-        # scheduler_jobs plan as a Seq Scan and tests/modules/scoped-index-plans.test.ts fails. The
-        # planner side is #1779; move this pin only together with that answer.
-        image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+        # Pinned to one build of the tag deployments pull (`pg17`, here 17.12), so the suite measures the
+        # planner they run: a minor can change a plan tests/modules/scoped-index-plans.test.ts reads. Move
+        # it forward when the tag moves, in every workflow at once (tests/tooling/postgres-image-pin.test.ts).
+        image: pgvector/pgvector:pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
         env:
           POSTGRES_PASSWORD: postgres
         ports:

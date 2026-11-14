@@ -471,6 +471,27 @@ describe("a bare-punctuation answer under the factual-grounding review", () => {
     expect(seenReplies).toEqual(["7 dias."]);
   });
 
+  test("the draft a revise takes out is the reply the recovery chose, not a later dash", async () => {
+    const { graph } = reviewed(
+      [
+        { text: "Abre às 16h.", calls: [{ name: "set_labels", args: {} }] },
+        { text: "—", calls: [{ name: "set_labels", args: {} }] },
+        { text: "" },
+        { text: "Abre às 18h." },
+      ],
+      "o horário não consta na fonte",
+    );
+    const out = await graph.invoke(
+      { messages: [new HumanMessage("que horas abre?")] },
+      { configurable: { thread_id: "t-1788-draft" } },
+    );
+    const said = (out.messages as BaseMessage[]).map((m) =>
+      contentToText(m.content),
+    );
+    expect(said.some((t) => t.includes("16h"))).toBe(false);
+    expect(lastText(out.messages as BaseMessage[])).toBe("Abre às 18h.");
+  });
+
   test("a rewrite that comes back as a dash ends the turn empty", async () => {
     const { graph, revised } = reviewed(
       [{ text: "São 30 dias." }, { text: "—" }],

@@ -638,13 +638,8 @@ function textlessCopy(ai: AIMessage, id: string): AIMessage {
 // The reply `replyWrittenThisTurn` would recover, taken out of the thread once a factual-grounding
 // revise replaced it, so the refused draft is neither delivered nor read by the next turn as said.
 function recoveredDraftRemoved(messages: BaseMessage[]): BaseMessage[] {
-  for (let i = messages.length - 2; i >= 0; i--) {
-    const m = messages[i];
-    if (!m || m.getType() === "human") return [];
-    if (m.getType() !== "ai" || !contentToText(m.content).trim()) continue;
-    return typeof m.id === "string" ? [textlessCopy(m as AIMessage, m.id)] : [];
-  }
-  return [];
+  const m = recoveredReplyMessage(messages);
+  return m && typeof m.id === "string" ? [textlessCopy(m, m.id)] : [];
 }
 
 // Providers whose adapter re-serializes their own non-text blocks. `@langchain/openai` filters an
@@ -1538,7 +1533,14 @@ export function lastAssistantText(messages: BaseMessage[]): string {
 // never overridden, and it is read from the CALL, since a refused `skip_reply` still meant silence.
 // The LAST earlier text wins: it is the latest thing the model meant to say.
 export function replyWrittenThisTurn(messages: BaseMessage[]): string {
-  let found = "";
+  const m = recoveredReplyMessage(messages);
+  return m ? contentToText(m.content).trim() : "";
+}
+
+// The message whose text `replyWrittenThisTurn` recovers, the one place that choice is made, so the
+// draft a revise takes out is the same message the recovery would have delivered.
+function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
+  let found: AIMessage | null = null;
   for (let i = messages.length - 2; i >= 0; i--) {
     const m = messages[i];
     if (!m) continue;
@@ -1546,14 +1548,13 @@ export function replyWrittenThisTurn(messages: BaseMessage[]): string {
     if (m.getType() !== "ai") continue;
     const ai = m as AIMessage;
     if ((ai.tool_calls ?? []).some((c) => c.name === SKIP_REPLY_TOOL))
-      return "";
+      return null;
     if (found) continue;
-    // A `—` beside a call is no reply to recover, and would stand in front of an earlier one.
-    const text = contentToText(ai.content).trim();
-    if (!saysNothing(text)) found = text;
+    // NOTE: a `—` beside a call is no reply to recover, and would stand in front of an earlier one.
+    if (!saysNothing(contentToText(ai.content))) found = ai;
     // NOTE: a note the provider hid (./anthropic-progress-notes) is then the latest thing the model
     // meant to say, and nothing can deliver it, so an earlier preamble ("vou buscar") is no reply.
-    else if (hiddenNotesOf(ai).length > 0) return "";
+    else if (hiddenNotesOf(ai).length > 0) return null;
   }
   return found;
 }

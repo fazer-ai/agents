@@ -14,12 +14,15 @@ import {
 } from "@/modules/webhooks/outbound/signing";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { dbProbeFailed } from "@/tests/db-gate";
+import { outboundUrl } from "../utils/outbound";
 
 // ── integration (real DB) ──
 // Uses the non-superuser app role for processOutboundBatch (realistic RLS: the claim runs
 // under asSuperAdmin, i.e. the fleet role; outcomes under the tenant scope) and the superuser
 // client for fixtures/teardown. Network is stubbed (fetchImpl) and SSRF is bypassed
-// (assertSafe) except where a test exercises the real guard.
+// (assertSafe) except where a test exercises the real guard. That test claims every due row of the
+// tenant, including a retry left behind by an earlier test, so the fixture subscriptions sit on an
+// IP literal (`outboundUrl`) that the real guard passes without asking the resolver.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -95,7 +98,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const signed = await suDb.webhookSubscription.create({
       data: {
         tenantId,
-        url: "https://example.com/signed",
+        url: outboundUrl("/signed"),
         secretRef: `vault:${whSecret.id}`,
         events: ["conversion"],
         enabled: true,
@@ -105,7 +108,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const unsigned = await suDb.webhookSubscription.create({
       data: {
         tenantId,
-        url: "https://example.com/unsigned",
+        url: outboundUrl("/unsigned"),
         events: ["conversion"],
         enabled: true,
       },
@@ -114,7 +117,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const disabled = await suDb.webhookSubscription.create({
       data: {
         tenantId,
-        url: "https://example.com/disabled",
+        url: outboundUrl("/disabled"),
         events: ["conversion"],
         enabled: false,
       },
@@ -321,19 +324,20 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const blockedSub = await suDb.webhookSubscription.create({
       data: {
         tenantId,
-        url: "http://169.254.169.254/latest/meta-data",
+        url: "https://169.254.169.254/latest/meta-data",
         events: ["conversion"],
         enabled: true,
       },
     });
     const id = await seedDelivery({ subscriptionId: blockedSub.id });
     const { fetchImpl, calls } = stubFetch(200);
-    // Real SSRF guard (not the passthrough): the metadata/loopback URL must be rejected.
+    // Real SSRF guard (not the passthrough). The URL is https so the protocol check passes and the
+    // refusal has to come from the blocked address range.
     await processOutboundBatch({ base: appDb, tenantId, fetchImpl });
     // NOTE: THIS delivery never reached fetch. Asserting on the total would make the test a
     // stopwatch: the retry test above leaves a PENDING row whose backoff is `Math.random() * 2000`,
     // so once more than that elapses before this line the batch legitimately claims it too, and the
-    // count stops being about the blocked URL. Same shape as the disabled-subscription test below.
+    // count stops being about the blocked URL. Same shape as the disabled-subscription test above.
     expect(
       calls.some(
         (c) =>
@@ -344,6 +348,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const row = await readDelivery(id);
     expect(row.status).toBe("DEAD");
     expect(row.lastError).toContain("Blocked outbound URL");
+    expect(row.lastError).toContain("169.254.169.254 is in a blocked range");
   });
 
   test("reaps a stranded SENDING row and redelivers it", async () => {

@@ -1372,7 +1372,7 @@ describe("a day past the cutoff the sweep has not reached yet", () => {
         .map((tr) =>
           [...tr.querySelectorAll("th, td")].map((c) => c.textContent),
         )
-        .find((cells) => cells[0]?.includes(day.slice(8)) ?? false);
+        .find((cells) => cells[0] === day);
     await waitFor(() => {
       expect(has("no data · 5 days")).toBe(true);
     });

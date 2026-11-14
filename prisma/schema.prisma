@@ -2979,8 +2979,6 @@ model FullDetailContent {
   // Secrets redacted, never cut below FULL_DETAIL_MAX_CHARS.
   body      String
   chars     Int
-  // The text was longer than FULL_DETAIL_MAX_CHARS and `body` is its first part.
-  clipped   Boolean  @default(false)
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -3002,6 +3000,9 @@ model FullDetailRef {
   // tool_output | system_prompt
   kind           String
   contentHash    String   @map("content_hash")
+  // This line's text was longer than FULL_DETAIL_MAX_CHARS and the content is its first part. On the
+  // pointer, not the content: two texts can store the same body and only one of them be cut.
+  clipped        Boolean  @default(false)
   expiresAt      DateTime @map("expires_at")
   createdAt      DateTime @default(now()) @map("created_at")
 

@@ -250,6 +250,15 @@ describe.skipIf(!dbUp)("full turn detail kept per agent", () => {
     expect(entry?.outputComplete).toBe(true);
   });
 
+  test("a result cut right before an emoji still reads as cut", async () => {
+    // The overflow probe must not end inside the surrogate pair, or the cut copy reads as whole.
+    const text = `${"a".repeat(MAX_STRING)}😀 resto do resultado`;
+    await toolCall(flow(agentA, 7), text);
+    const [entry] = await toolTrail();
+    expect(entry?.outputComplete).toBe(false);
+    expect(entry?.fullOutput).toBe(text);
+  });
+
   test("a result made of many content blocks, cut block by block, is offered whole", async () => {
     // The shape an MCP tool returns: a list of text blocks, each short. The log keeps the first fifty.
     const blocks = Array.from({ length: 60 }, (_, i) => ({

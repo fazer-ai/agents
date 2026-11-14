@@ -1,4 +1,4 @@
-import { clipText, makeStorable } from "@/lib/text";
+import { clipText, makeStorable, OVERFLOW_PROBE_MARGIN } from "@/lib/text";
 
 // Non-throwing secret redaction for human-facing debug surfaces (the agent playground trace and
 // the conversation `lastError`): the REPLACE-and-continue cousin of n8n-export's `assertNoSecrets`,
@@ -124,9 +124,12 @@ export interface CutTracker {
 }
 
 // Whether `scrubbedClip(value, max)` would cut, measured the way it measures (on the repaired text).
+// The probe reads OVERFLOW_PROBE_MARGIN past the cap, not one unit: a probe ending inside a surrogate
+// pair loses that half to `clipText` and would read a cut string as whole.
 export function wouldClip(value: string, max: number): boolean {
   if (max <= 0) return value.length > 0;
-  return makeStorable(clipText(value, sourceFor(value, max + 1))).length > max;
+  const probe = sourceFor(value, max + OVERFLOW_PROBE_MARGIN);
+  return makeStorable(clipText(value, probe)).length > max;
 }
 
 function redactedLeaf(budget?: { left: number }): string {

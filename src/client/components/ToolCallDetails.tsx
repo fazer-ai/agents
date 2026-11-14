@@ -45,7 +45,9 @@ export function ToolCallDetails({
   const { t } = useTranslation();
   const [showFull, setShowFull] = useState(false);
   const showArgs = !isEmpty(args);
-  const showOutput = !isEmpty(output);
+  // The section stays when the logged copy came out empty (the row's budget spent on the arguments)
+  // but a kept whole result or a note about it exists: those are the only way to the result then.
+  const showOutput = !isEmpty(output) || !!fullOutput || !!outputNote;
   const showError = !isEmpty(error);
   if (!showArgs && !showOutput && !showError) return null;
   return (
@@ -70,7 +72,7 @@ export function ToolCallDetails({
               {fullOutput}
             </pre>
           ) : (
-            <TracePre>{output}</TracePre>
+            !isEmpty(output) && <TracePre>{output}</TracePre>
           )}
           {fullOutput && (
             <button

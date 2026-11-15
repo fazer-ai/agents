@@ -24,7 +24,7 @@ import type {
   GuardrailReport,
 } from "./gate";
 import {
-  earlierSourceCalls,
+  earlierToolCalls,
   FACTUAL_GROUNDING_KEY,
   GROUNDING_REFERENCE_MAX,
   GROUNDING_SOURCE_WINDOW,
@@ -238,7 +238,7 @@ export function buildGroundingGate(
     // repeated later travels once, as the latest, so the size, the ceiling and `earlierSources` count
     // what the reviewer reads.
     const calls = withoutRepeatedCalls([
-      ...earlierSourceCalls(
+      ...earlierToolCalls(
         history,
         fg.sourceTools,
         fg.contextMessages > 0
@@ -261,7 +261,7 @@ export function buildGroundingGate(
       sourced: groundingSourced(calls, reference.docs),
       sources: sourceNames,
       resultChars,
-      earlierSources: calls.filter((c) => c.turnsBack).length,
+      earlierSources: calls.filter((c) => c.turnsBack && c.source).length,
       referenceDocs: reference.count,
       referenceChars: reference.chars,
       ...(pass ? { pass } : {}),

@@ -14,6 +14,7 @@ import {
   listAlertChannels,
   updateAlertChannel,
 } from "@/modules/flowlog/channels";
+import { ALERT_EVENTS } from "@/modules/flowlog/events";
 import { SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 
 // Alert channel CRUD (external sinks for execution-flow warnings/errors). TENANT_ADMIN; RLS-scoped.
@@ -24,6 +25,7 @@ import { SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 // translate('errors.alertChannelNotFound', 'Alert channel not found')
 // translate('errors.noUpdatableFields', 'No updatable fields provided')
 // translate('errors.alertChannelUnknownAgent', 'Unknown agent: {{id}}')
+// translate('errors.unknownAlertEvent', 'Unknown alert event: {{event}}')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -38,12 +40,16 @@ export const alertChannelsController = new Elysia({
   .use(tenancyPlugin)
   .get(
     "/stages",
-    () => ({ instance: instanceIdentity, stages: SELECTABLE_STAGES }),
+    () => ({
+      instance: instanceIdentity,
+      stages: SELECTABLE_STAGES,
+      events: ALERT_EVENTS,
+    }),
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
-        "List flow stages",
-        "Returns the closed execution-flow stage vocabulary that an alert channel can filter on.",
+        "List flow stages and alert events",
+        "Returns the closed execution-flow stage vocabulary and the alert events an alert channel can leave out.",
       ),
       response: errors(401, 403),
     },
@@ -104,6 +110,13 @@ export const alertChannelsController = new Elysia({
           t.Array(t.String(), {
             description:
               "Flow stages to filter on, from GET /stages; empty matches all stages.",
+          }),
+        ),
+        excludeEvents: t.Optional(
+          t.Array(t.String(), {
+            maxItems: 100,
+            description:
+              "Alert events to leave out, from GET /stages (`events`); empty leaves none out. A line of any of them is not alerted here and stays in the log; a line of none of them is never left out by this list.",
           }),
         ),
         excludeAgentIds: t.Optional(
@@ -185,6 +198,13 @@ export const alertChannelsController = new Elysia({
           t.Array(t.String(), {
             description:
               "New flow stages to filter on, from GET /stages; empty matches all stages.",
+          }),
+        ),
+        excludeEvents: t.Optional(
+          t.Array(t.String(), {
+            maxItems: 100,
+            description:
+              "Replaces the alert events to leave out; [] leaves none out. Omitted keeps the stored list.",
           }),
         ),
         excludeAgentIds: t.Optional(

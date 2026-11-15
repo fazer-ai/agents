@@ -4,6 +4,7 @@ import { USAGE_SOURCES } from "@/graph/usage-sources";
 import { isTransientProviderStatus } from "@/lib/provider-failure";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import type { AlertEvent } from "./events";
 import type { FlowContext, FlowEvent } from "./service";
 import {
   ALERT_DELIVERY_UNIT,
@@ -14,7 +15,7 @@ import {
 } from "./stages";
 
 // Alert fan-out for a warn/error execution-flow event. Called fire-and-forget from emitFlowEvent
-// (real traffic only). Matches enabled channels by minLevel + stage allowlist, then COALESCES: a
+// (real traffic only). Matches enabled channels by minLevel, stage allowlist and left-out events, then COALESCES: a
 // pending delivery for the same (channel, stage, level) is bumped (count++) instead of inserting a
 // new one — the anti-flood guard. The alert worker drains these on a debounced window so the count
 // accumulates before the single POST. The ledger row carries NO PII (only stage/level/summary).
@@ -276,6 +277,7 @@ export async function dispatchAlertsForEvent(
   await deliverAlert(ctx, base, {
     stage: ev.stage,
     selector: selectorOf(ev.stage, ev.detail),
+    events: alertEventsOf(ev),
     // A cause alert is at least a `warn` on the row: the line can be an `info` (a run the job will
     // retry against a dead key), and what the operator reads is that something needs fixing.
     level: causeKey !== null && ev.level === "info" ? "warn" : ev.level,
@@ -301,6 +303,8 @@ interface AlertToDeliver {
   // What a channel's stage list is matched against (./stages.ts `selectorOf`), when it is not the
   // stage itself: an observed guardrail trip is written as `guardrail` and selected apart.
   selector?: string;
+  // What a channel's left-out events are matched against (./events.ts).
+  events: readonly AlertEvent[];
   level: FlowLevel;
   // The rank the channel's `minLevel` is compared with; a cause skips that comparison.
   rank: number;
@@ -327,6 +331,7 @@ async function deliverAlert(
         id: true,
         minLevel: true,
         stages: true,
+        excludeEvents: true,
         excludeAgentIds: true,
       },
     });
@@ -339,6 +344,9 @@ async function deliverAlert(
       // stage allowlist (empty = all stages).
       if (ch.stages.length > 0 && !ch.stages.includes(alert.selector ?? stage))
         continue;
+      // NOTE: Asked before the coalescing below, so a line this channel leaves out never bumps the
+      // count or keeps the body of a delivery another line opened here.
+      if (alert.events.some((e) => ch.excludeEvents.includes(e))) continue;
       // NOTE: Agents this channel leaves out. A line with no agent is never excluded: the list
       // names agents, and an unrouted or tenant-wide line belongs to none of them.
       if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))
@@ -414,6 +422,27 @@ const RATE_STAGES: ReadonlySet<string> = new Set([
   "normalize",
   "embed",
 ]);
+
+// The events a line is of (./events.ts). A provider failure is a failure class, or a fallback that
+// could not take the turn, on a stage that calls a model (the observing agent's tick included); the
+// same class on `split` or `tool` is the operator's or Chatwoot's endpoint, not a provider.
+export function alertEventsOf(ev: FlowEvent): AlertEvent[] {
+  const detail = ev.detail ?? {};
+  const has = (key: string) =>
+    detail[key] !== undefined && detail[key] !== null && detail[key] !== false;
+  const events: AlertEvent[] = [];
+  if (has("toolLimitHit")) events.push("tool_limit");
+  if (has("fallbackReason")) events.push("model_fallback");
+  if (
+    (RATE_STAGES.has(ev.stage) || ev.stage === "observe") &&
+    (has("failure") || has("fallbackUnavailable"))
+  )
+    events.push("provider_failure");
+  if (has("retriedEmptyResponse")) events.push("empty_response");
+  if (has("silenceUnexplained") || has("silenceTokenSuppressed"))
+    events.push("no_reply");
+  return events;
+}
 
 // Every `failure` word that counts toward a provider's rate: `timeout`, and each `HTTP <nnn>` the
 // shared set calls the endpoint's momentary state. Enumerated once, so the count is a plain `IN`.
@@ -531,6 +560,7 @@ export async function dispatchRateAlert(
     );
   await deliverAlert(ctx, base, {
     stage: subject.stage,
+    events: ["provider_failure"],
     level: "warn",
     rank: LEVEL_RANK.warn as number,
     summary: summaryOf(failures),
@@ -659,6 +689,8 @@ export async function dispatchRecoveryRateAlert(
     `[delivery] ${n} stranded deliveries were recovered in ${minutes} min`;
   await deliverAlert(ctx, base, {
     stage: "delivery",
+    // NOTE: A recovered delivery is no event the list names, so no channel leaves it out by event.
+    events: [],
     level: "warn",
     rank: LEVEL_RANK.warn as number,
     summary: summaryOf(recovered),

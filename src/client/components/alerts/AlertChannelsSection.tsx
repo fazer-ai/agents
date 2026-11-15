@@ -24,9 +24,10 @@ import {
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
-import { flowStageLabel } from "@/client/lib/flowLabels";
+import { alertEventLabel, flowStageLabel } from "@/client/lib/flowLabels";
 import { cn, formatDate } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { ALERT_EVENTS, isAlertEvent } from "@/modules/flowlog/events";
 import { SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 
 // Alert channel manager (external sinks for execution-flow warnings/errors). Lives on the Webhooks
@@ -82,6 +83,8 @@ function AlertChannelModal({
   // Agents whose lines never alert here. Sent whole on every save: the server accepts an id the
   // channel already held even when its agent is gone, so an untouched list always saves.
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  // Events this channel leaves out; every event is received until it is unchecked here.
+  const [leftOut, setLeftOut] = useState<Set<string>>(new Set());
   const [agentOptions, setAgentOptions] = useState<AgentOption[] | null>(null);
   const [agentsFailed, setAgentsFailed] = useState(false);
   const [secretRef, setSecretRef] = useState("");
@@ -124,6 +127,7 @@ function AlertChannelModal({
     // null there as "clear it", so a blank field here unsigns the channel on a save that meant to
     // change the name. The URL above CAN start blank because the PATCH omits it when it is.
     setExcluded(new Set(ch?.excludeAgentIds ?? []));
+    setLeftOut(new Set(ch?.excludeEvents ?? []));
     setAgentOptions(null);
     setAgentsFailed(false);
     void loadAgentOptions().then((opts) => {
@@ -143,6 +147,16 @@ function AlertChannelModal({
       else next.add(s);
       return next;
     });
+
+  const toggleEvent = (e: string) =>
+    setLeftOut((prev) => {
+      const next = new Set(prev);
+      if (next.has(e)) next.delete(e);
+      else next.add(e);
+      return next;
+    });
+  // A left-out event the vocabulary no longer lists: shown unchecked, so the operator can drop it.
+  const staleEvents = [...leftOut].filter((e) => !isAlertEvent(e));
 
   const toggleExcluded = (id: string) =>
     setExcluded((prev) => {
@@ -185,6 +199,7 @@ function AlertChannelModal({
       type,
       minLevel,
       stages: allStagesChecked ? [] : [...stages],
+      excludeEvents: [...leftOut],
       excludeAgentIds: [...excluded],
       enabled,
     };
@@ -218,6 +233,7 @@ function AlertChannelModal({
           type,
           minLevel,
           stages: stagesArr,
+          excludeEvents: [...leftOut],
           excludeAgentIds: [...excluded],
           enabled,
         };
@@ -234,6 +250,7 @@ function AlertChannelModal({
             url: url.trim(),
             minLevel,
             stages: stagesArr,
+            excludeEvents: [...leftOut],
             excludeAgentIds: [...excluded],
             secretRef: ref,
             enabled,
@@ -413,6 +430,40 @@ function AlertChannelModal({
                   )}
                 >
                   {flowStageLabel(s, t)}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend className={labelCls}>{t("alerts.events", "Events")}</legend>
+          <p className="text-text-muted mb-2 text-xs">
+            {t(
+              "alerts.eventsHint",
+              "Uncheck an event to stop it alerting here. A warning that is none of these follows only the stages above. Left-out lines still appear in Logs.",
+            )}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {[...ALERT_EVENTS, ...staleEvents].map((e) => {
+              const checked = !leftOut.has(e);
+              return (
+                <button
+                  key={e}
+                  type="button"
+                  disabled={loading}
+                  aria-pressed={checked}
+                  onClick={() => toggleEvent(e)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    {
+                      "border-accent bg-accent-soft text-text-primary": checked,
+                      "border-border text-text-secondary hover:bg-bg-hover":
+                        !checked,
+                    },
+                  )}
+                >
+                  {alertEventLabel(e, t)}
                 </button>
               );
             })}
@@ -826,6 +877,12 @@ export function AlertChannelsSection() {
                   {ch.stages.length > 0
                     ? ch.stages.map((s) => flowStageLabel(s, t)).join(", ")
                     : t("alerts.allStages", "All stages")}
+                  {ch.excludeEvents.length > 0 &&
+                    ` · ${t("alerts.leftOutEvents", "Except: {{events}}", {
+                      events: ch.excludeEvents
+                        .map((e) => alertEventLabel(e, t))
+                        .join(", "),
+                    })}`}
                   {ch.excludeAgentIds.length > 0 && " · "}
                   {ch.excludeAgentIds.length > 0 &&
                     t("alerts.excludedCount", "{{count}} agents excluded", {

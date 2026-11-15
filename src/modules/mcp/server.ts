@@ -1165,7 +1165,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "alert_stage_list",
       {
         description:
-          "List the execution-flow stage and level vocabularies an alert channel can filter on.",
+          "List the stage, level and event vocabularies an alert channel filters on.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await alertStageList(eff)),
@@ -2687,6 +2687,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url_ref: z.string().optional(),
           min_level: z.enum(["info", "warn", "error"]).optional(),
           stages: z.array(z.string()).optional(),
+          exclude_events: z.array(z.string()).max(100).optional(),
           exclude_agent_ids: z.array(z.string()).max(200).optional(),
           secret_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
@@ -2701,6 +2702,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url_ref?: string;
           min_level?: "info" | "warn" | "error";
           stages?: string[];
+          exclude_events?: string[];
           exclude_agent_ids?: string[];
           secret_ref?: string | null;
           enabled?: boolean;
@@ -2725,6 +2727,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url_ref: z.string().optional(),
           min_level: z.enum(["info", "warn", "error"]).optional(),
           stages: z.array(z.string()).optional(),
+          exclude_events: z.array(z.string()).max(100).optional(),
           exclude_agent_ids: z.array(z.string()).max(200).optional(),
           secret_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
@@ -2740,6 +2743,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url_ref?: string;
           min_level?: "info" | "warn" | "error";
           stages?: string[];
+          exclude_events?: string[];
           exclude_agent_ids?: string[];
           secret_ref?: string | null;
           enabled?: boolean;

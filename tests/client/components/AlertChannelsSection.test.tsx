@@ -53,6 +53,7 @@ function channel(over: Record<string, unknown> = {}) {
     enabled: true,
     minLevel: "error",
     stages: [],
+    excludeEvents: [] as string[],
     excludeAgentIds: [] as string[],
     hasSecret: true,
     secretRef: "vault:7",
@@ -540,5 +541,58 @@ describe("AlertChannelsSection", () => {
   test("the list says how many agents a channel leaves out", async () => {
     const text = await listShows({ excludeAgentIds: ["11", "12"] });
     expect(text).toMatch(/2 (agents excluded|agentes excluídos)/);
+  });
+
+  // ── events ──
+  //
+  // NOTE: every event is checked until the channel leaves it out, and every save sends the whole
+  // left-out list, so an untouched save keeps it.
+  const eventChip = (name: RegExp) =>
+    screen.getByRole("button", { name, hidden: true });
+  const TOOL_LIMIT =
+    /^(Tool-call limit reached|Limite de chamadas de ferramenta atingido)$/;
+
+  test("every event starts checked, and unchecking the tool limit sends it as left out", async () => {
+    await openEditor();
+    expect(eventChip(TOOL_LIMIT).getAttribute("aria-pressed")).toBe("true");
+    expect(
+      eventChip(/^(AI provider failure|Falha do provedor de IA)$/).getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+    fireEvent.click(eventChip(TOOL_LIMIT));
+    expect(eventChip(TOOL_LIMIT).getAttribute("aria-pressed")).toBe("false");
+    const body = await save();
+    expect(body.excludeEvents).toEqual(["tool_limit"]);
+  });
+
+  test("an untouched save keeps the stored list", async () => {
+    channels = [channel({ excludeEvents: ["tool_limit", "no_reply"] })];
+    await openEditor();
+    expect(eventChip(TOOL_LIMIT).getAttribute("aria-pressed")).toBe("false");
+    expect((await save()).excludeEvents).toEqual(["tool_limit", "no_reply"]);
+  });
+
+  test("checking a left-out event again takes it back", async () => {
+    channels = [channel({ excludeEvents: ["tool_limit", "no_reply"] })];
+    await openEditor();
+    fireEvent.click(eventChip(TOOL_LIMIT));
+    expect((await save()).excludeEvents).toEqual(["no_reply"]);
+  });
+
+  test("a stored event the vocabulary no longer lists is shown unchecked and can be dropped", async () => {
+    channels = [channel({ excludeEvents: ["retired_event"] })];
+    await openEditor();
+    const stale = eventChip(/^retired_event$/);
+    expect(stale.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(stale);
+    expect((await save()).excludeEvents).toEqual([]);
+  });
+
+  test("the list names the events a channel leaves out", async () => {
+    const text = await listShows({ excludeEvents: ["tool_limit"] });
+    expect(text).toMatch(
+      /(Except|Exceto): (Tool-call limit reached|Limite de chamadas de ferramenta atingido)/,
+    );
   });
 });

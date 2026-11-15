@@ -106,7 +106,6 @@ function decode(data: Uint8Array, opts: StreamFitOptions): Rgba {
   const acTables: Array<HuffmanNode | undefined> = [];
   let frame: Frame | null = null;
   let output: Output | null = null;
-  let scans = 0;
   let resetInterval = 0;
 
   if (readUint16() !== 0xffd8) throw new Declined();
@@ -114,7 +113,6 @@ function decode(data: Uint8Array, opts: StreamFitOptions): Rgba {
     if (offset + 2 > data.length) throw new Error("unexpected end of file");
     const marker = readUint16();
     if (marker === 0xffd9) break;
-    if (marker === 0xff00) continue;
     if ((marker >= 0xffe0 && marker <= 0xffef) || marker === 0xfffe) {
       const length = readUint16();
       const end = Math.min(data.length, offset + length - 2);
@@ -159,9 +157,6 @@ function decode(data: Uint8Array, opts: StreamFitOptions): Rgba {
     } else if (marker === 0xffdd) {
       readUint16();
       resetInterval = readUint16();
-    } else if (marker === 0xffdc) {
-      readUint16();
-      readUint16();
     } else if (marker === 0xffda) {
       if (frame === null) throw new Declined();
       readUint16();
@@ -183,7 +178,6 @@ function decode(data: Uint8Array, opts: StreamFitOptions): Rgba {
           !frame.progressive && components.length === frame.components.length;
         output = openOutput(frame, streams, quantizationTables, opts);
       } else if (output.mode === "stream") throw new Declined();
-      scans++;
       offset += decodeScan(
         data,
         offset,
@@ -195,11 +189,9 @@ function decode(data: Uint8Array, opts: StreamFitOptions): Rgba {
         approximation >> 4,
         approximation & 15,
       );
-    } else if (marker === 0xffff) {
-      if (data[offset] !== 0xff) offset--;
     } else throw new Declined();
   }
-  if (frame === null || output === null || scans === 0) throw new Declined();
+  if (frame === null || output === null) throw new Declined();
   if (output.mode === "full")
     for (const c of frame.components) {
       const table = quantizationTables[c.quantizationId];
@@ -379,7 +371,6 @@ function decodeScan(
   successive: number,
 ): number {
   const frame = out.frame;
-  const scratch = new Int32Array(64);
   let offset = start;
   let bitsData = 0;
   let bitsCount = 0;
@@ -532,7 +523,7 @@ function decodeScan(
   };
 
   // Where block (row, col) of `c` lives, or false for a block jpeg-js has no storage for.
-  let target: Coefficients = scratch;
+  let target: Coefficients = new Int32Array(0);
   let targetOffset = 0;
   const locate = (
     c: Component,
@@ -548,11 +539,6 @@ function decodeScan(
     const band = Math.floor(blockRow / c.bandRows);
     if (band < out.band)
       throw new Error(`jpeg block row ${blockRow} arrived after its band`);
-    if (band >= out.bands) {
-      target = scratch;
-      targetOffset = 0;
-      return true;
-    }
     while (out.band < band) {
       emitBand(out, out.band);
       out.band++;
@@ -636,9 +622,7 @@ function emitBand(out: Output, band: number): void {
     const lineWidth = c.blocksPerLine * 8;
     const table = c.quantization as Int32Array;
     for (let r = 0; r < c.bandRows; r++) {
-      const blockRow = band * c.bandRows + r;
-      if (blockRow >= c.blocksPerColumn) continue;
-      const source = out.mode === "full" ? blockRow : r;
+      const source = out.mode === "full" ? band * c.bandRows + r : r;
       for (let col = 0; col < c.blocksPerLine; col++)
         quantizeAndInverse(
           c.coefficients,

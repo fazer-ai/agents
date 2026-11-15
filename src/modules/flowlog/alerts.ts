@@ -444,8 +444,8 @@ export function alertEventsOf(ev: FlowEvent): AlertEvent[] {
     RATE_STAGES.has(ev.stage) ||
     (ev.stage === "observe" &&
       (!has("failed") || OBSERVE_PROVIDER_CALLS.has(String(detail.failed))));
-  // NOTE: The vision line written when a retry it announced never ran carries no failure class, since
-  // the attempt's own line already counted it toward the provider's rate; `unread` on an error is that
+  // The vision line written when a retry it announced never ran carries no failure class, since the
+  // attempt's own line already counted it toward the provider's rate; `unread` on an error is that
   // outcome (vision/service.ts `extractWithRetry`).
   const visionGaveUp =
     ev.stage === "vision" && ev.status === "error" && has("unread");

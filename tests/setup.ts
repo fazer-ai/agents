@@ -35,7 +35,7 @@ import { TEST_TIMEOUT_MS } from "./utils/timeouts";
 // returns the moment its condition holds, a test timeout only elapses on a hang); only the report
 // of a real failure gets slower. NOT the answer for a window a test's own SETUP must fit inside,
 // paid on every run: see the overflow-drain test in tests/modules/contact-auth-grant.test.ts, which
-// holds the clock still instead, and the per-test cost note in tests/tooling/stale-base-guard.test.ts.
+// holds the clock still instead.
 jest.setTimeout(TEST_TIMEOUT_MS);
 configure({ asyncUtilTimeout: 5_000 });
 

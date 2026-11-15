@@ -10,7 +10,7 @@ import { codeOnly, withoutComments } from "../utils/source-text";
 // sequence (`burnSchedulerJobId`, tests/utils/scheduler.ts) or one it cannot reach.
 
 // Not in tests/tooling/: that directory is dropped from both derived repos
-// (tooling/derivation/manifest.ts) while these fixtures ship to all three, and a master-only sweep
+// (tooling/derivation/derivation.config.ts) while these fixtures ship to all three, and a master-only sweep
 // cannot fail the public repo's CI, where a contributor's fixture arrives.
 const ROOT = join(import.meta.dir, "..");
 

@@ -20,16 +20,17 @@ async function droppedBy(): Promise<{
 }> {
   const fullOnly = new Set<string>();
   const masterOnly = new Set<string>();
-  const manifestPath = "tooling/derivation/manifest.ts";
-  if (!existsSync(manifestPath)) return { fullOnly, masterOnly };
-  const { MANIFEST } = await import(`${process.cwd()}/${manifestPath}`);
+  const configPath = "tooling/derivation/derivation.config.ts";
+  if (!existsSync(configPath)) return { fullOnly, masterOnly };
+  const { default: config } = await import(`${process.cwd()}/${configPath}`);
+  const { pro, free } = config.editions;
   const within = (drops: string[], path: string) =>
     drops.some((d) => path === d || path.startsWith(`${d}/`));
-  const paired: Array<{ free: string }> = MANIFEST.free.pairedFiles ?? [];
+  const variants: Array<{ by: { free?: string } }> = config.variants ?? [];
   for (const path of await sweptFiles()) {
-    const inPro = within(MANIFEST.pro.drop, path);
+    const inPro = within(pro.drop, path);
     const inFree =
-      within(MANIFEST.free.drop, path) || paired.some((p) => p.free === path);
+      within(free.drop, path) || variants.some((v) => v.by.free === path);
     if (inPro && inFree) masterOnly.add(path);
     else if (inFree) fullOnly.add(path);
   }

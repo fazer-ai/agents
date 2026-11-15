@@ -423,9 +423,16 @@ const RATE_STAGES: ReadonlySet<string> = new Set([
   "embed",
 ]);
 
-// The events a line is of (./events.ts). A provider failure is a failure class, or a fallback that
-// could not take the turn, on a stage that calls a model (the observing agent's tick included); the
-// same class on `split` or `tool` is the operator's or Chatwoot's endpoint, not a provider.
+// The calls of an `observe` tick that reach a provider: the model's and the classification API's. Its
+// other failures (the trigger state's write, the decided actions) are this instance's own.
+const OBSERVE_PROVIDER_CALLS: ReadonlySet<string> = new Set([
+  "model_call",
+  "decision_call",
+]);
+
+// The events a line is of (./events.ts). A provider failure is a failure class (the fallback's own
+// included), or a fallback that could not take the turn, on a call to a model; the same class on
+// `split` or `tool` is Chatwoot or the operator's endpoint, not a provider.
 export function alertEventsOf(ev: FlowEvent): AlertEvent[] {
   const detail = ev.detail ?? {};
   const has = (key: string) =>
@@ -433,9 +440,13 @@ export function alertEventsOf(ev: FlowEvent): AlertEvent[] {
   const events: AlertEvent[] = [];
   if (has("toolLimitHit")) events.push("tool_limit");
   if (has("fallbackReason")) events.push("model_fallback");
+  const callsAModel =
+    RATE_STAGES.has(ev.stage) ||
+    (ev.stage === "observe" &&
+      (!has("failed") || OBSERVE_PROVIDER_CALLS.has(String(detail.failed))));
   if (
-    (RATE_STAGES.has(ev.stage) || ev.stage === "observe") &&
-    (has("failure") || has("fallbackUnavailable"))
+    callsAModel &&
+    (has("failure") || has("fallbackFailure") || has("fallbackUnavailable"))
   )
     events.push("provider_failure");
   if (has("retriedEmptyResponse")) events.push("empty_response");

@@ -62,6 +62,41 @@ describe("alertEventsOf", () => {
     ).toEqual(["provider_failure"]);
   });
 
+  test("a fallback that failed too is a provider failure on the line that carries it", () => {
+    expect(
+      alertEventsOf({
+        stage: "generate",
+        level: "error",
+        status: "error",
+        detail: { fallbackFailure: "HTTP 503" },
+        errorMessage: "both providers failed",
+      }),
+    ).toEqual(["provider_failure"]);
+  });
+
+  test("on `observe`, only the model's and the classification API's calls are a provider's", () => {
+    for (const failed of ["model_call", "decision_call"]) {
+      expect(
+        alertEventsOf({
+          stage: "observe",
+          level: "error",
+          status: "error",
+          detail: { failed, failure: "HTTP 503" },
+        }),
+      ).toEqual(["provider_failure"]);
+    }
+    for (const failed of ["trigger_state", "decision_actions"]) {
+      expect(
+        alertEventsOf({
+          stage: "observe",
+          level: "error",
+          status: "error",
+          detail: { failed, failure: "provider error" },
+        }),
+      ).toEqual([]);
+    }
+  });
+
   test("the same failure class on a stage that calls no model is no provider failure", () => {
     for (const stage of ["split", "tool"] as const) {
       expect(

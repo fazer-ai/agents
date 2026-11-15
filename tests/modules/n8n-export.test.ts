@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import type { TenantContext } from "@/lib/tenancy";
 import { sanitizeErrorMessage } from "@/lib/redact";
+import type { TenantContext } from "@/lib/tenancy";
 import {
   assertNoSecrets,
   assertNoSecretsInCode,
@@ -53,7 +53,10 @@ describe("a key glued to the preceding word", () => {
     ["GitHub", ["ghp_", FAKE_TOKEN, FAKE_TOKEN].join("")],
     ["Slack", ["xoxb-", "1234567890-", "0987654321-", FAKE_TOKEN].join("")],
     ["AWS", ["AKIA", "FAKE1234ABCD5678"].join("")],
-    ["JWT", [JWT_HEAD, "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "FAKEsig_1234"].join(".")],
+    [
+      "JWT",
+      [JWT_HEAD, "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "FAKEsig_1234"].join("."),
+    ],
     ["Bearer", ["Bearer ", FAKE_TOKEN].join("")],
   ];
 
@@ -61,9 +64,9 @@ describe("a key glued to the preceding word", () => {
     for (const before of ["texto", "123", "_"]) {
       const text = `${before}${key} fim`;
       expect(() => assertNoSecrets({ note: text })).toThrow(SecretLeakError);
-      expect(() => assertNoSecretsInCode(`const t = "${text}";`, "$.code")).toThrow(
-        SecretLeakError,
-      );
+      expect(() =>
+        assertNoSecretsInCode(`const t = "${text}";`, "$.code"),
+      ).toThrow(SecretLeakError);
     }
   });
 
@@ -101,7 +104,9 @@ describe("a key glued to the preceding word", () => {
   // The end of a whole value is not a cut, so a JWT header there is metadata, not a token.
   test("a JWT header at the end of a value is exported", () => {
     expect(() => assertNoSecrets({ note: `config ${JWT_HEAD}` })).not.toThrow();
-    expect(() => assertNoSecrets({ note: `config=x${JWT_HEAD}` })).not.toThrow();
+    expect(() =>
+      assertNoSecrets({ note: `config=x${JWT_HEAD}` }),
+    ).not.toThrow();
   });
 });
 

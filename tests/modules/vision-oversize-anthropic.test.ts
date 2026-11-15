@@ -182,7 +182,8 @@ function grayPhoto(width: number, height: number): Buffer {
   const run = [0x28, 0xa2, 0x8a];
   for (let i = 0; i < scan; i++) out[head.length + i] = run[i % 3] as number;
   const pad = scan * 8 - bits;
-  if (pad > 0) out[head.length + scan - 1] |= (1 << pad) - 1;
+  const last = head.length + scan - 1;
+  if (pad > 0) out[last] = (out[last] ?? 0) | ((1 << pad) - 1);
   out[out.length - 2] = 0xff;
   out[out.length - 1] = 0xd9;
   return out;

@@ -2,6 +2,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   test,
@@ -267,8 +268,11 @@ function stubClient(bytes: Buffer, contentType = "image/jpeg") {
 }
 
 describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
-  // Every test here decodes megapixels, and the heap a decode leaves behind is still held when the
-  // next one starts unless it is collected: the file's peak is then the sum, not the largest test.
+  // Every test here decodes megapixels, and garbage left behind (by setup, by the test before) is
+  // still held when a decode starts unless it is collected: the peak is then a sum, not one decode.
+  beforeEach(() => {
+    Bun.gc(true);
+  });
   afterEach(() => {
     Bun.gc(true);
   });

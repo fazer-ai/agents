@@ -36,5 +36,5 @@
     "noPropertyAccessFromIndexSignature": false
   },
 
-  "exclude": ["dist", "node_modules", "tmp", "workers", "tooling/cli"]
+  "exclude": ["dist", "node_modules", "tmp", "workers", "tooling/cli", "tooling/derivation"]
 }

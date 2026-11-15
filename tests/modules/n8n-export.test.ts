@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   assertNoSecrets,
+  assertNoSecretsInCode,
   buildToolWorkflow,
   SecretLeakError,
 } from "@/modules/n8n-export/n8n";
@@ -31,11 +33,80 @@ describe("assertNoSecrets: a key right after a percent-encoded separator", () =>
   test("prose after an encoded separator is accepted", () => {
     for (const text of [
       "%20risk-admin-dashboard_settings_v2",
-      "%2Chelpdesk-FAKEaaaaBBBBcccc1234",
+      "%2Chelpdesk-ticket-escalation-queue",
       "x%3Dsk-learn-and-numpy-together",
     ]) {
       expect(() => assertNoSecrets({ u: text })).not.toThrow();
     }
+  });
+});
+
+// The export refuses by the redaction's own shapes, so a key glued to the word before it
+// (`textosk-proj-…`), which the logs scrub, cannot leave in an export either.
+describe("a key glued to the preceding word", () => {
+  const JWT_HEAD = ["eyJhbGciOiJIUzI1NiIs", "InR5cCI6IkpXVCJ9"].join("");
+  const KEYS: Array<[string, string]> = [
+    ["OpenAI legacy", ["sk-", FAKE_TOKEN, FAKE_TOKEN].join("")],
+    ["OpenAI project", ["sk-proj-", FAKE_TOKEN, "_", FAKE_TOKEN].join("")],
+    ["Anthropic", ["sk-ant-api03-", FAKE_TOKEN, "-", FAKE_TOKEN].join("")],
+    ["OpenRouter", ["sk-or-v1-", "0123456789abcdef".repeat(2)].join("")],
+    ["GitHub", ["ghp_", FAKE_TOKEN, FAKE_TOKEN].join("")],
+    ["Slack", ["xoxb-", "1234567890-", "0987654321-", FAKE_TOKEN].join("")],
+    ["AWS", ["AKIA", "FAKE1234ABCD5678"].join("")],
+    [
+      "JWT",
+      [JWT_HEAD, "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "FAKEsig_1234"].join("."),
+    ],
+    ["Bearer", ["Bearer ", FAKE_TOKEN].join("")],
+  ];
+
+  test.each(KEYS)("a glued %s key is refused", (_label, key) => {
+    for (const before of ["texto", "123", "_"]) {
+      const text = `${before}${key} fim`;
+      expect(() => assertNoSecrets({ note: text })).toThrow(SecretLeakError);
+      expect(() =>
+        assertNoSecretsInCode(`const t = "${text}";`, "$.code"),
+      ).toThrow(SecretLeakError);
+    }
+  });
+
+  test("the export refuses exactly what the logs scrub", () => {
+    const texts = [
+      ...KEYS.map(([, key]) => `x${key} fim`),
+      "open risk-admin-dashboard_settings_v2 and task-internationalization",
+      "read surveyJsonExportSettings.defaultConfig.values twice",
+      "%2Chelpdesk-FAKEaaaaBBBBcccc1234",
+    ];
+    for (const text of texts) {
+      const scrubbed = sanitizeErrorMessage(text) !== text;
+      let refused = false;
+      try {
+        assertNoSecrets({ note: text });
+      } catch (e) {
+        refused = e instanceof SecretLeakError;
+      }
+      expect({ text, refused }).toEqual({ text, refused: scrubbed });
+    }
+  });
+
+  test("ordinary words that hold a key prefix are exported", () => {
+    for (const text of [
+      "open risk-admin-dashboard_settings_v2 and risk-proj-management-overview",
+      "the task-internationalization effort and risk-institutionalization review",
+      "read surveyJsonExportSettings.defaultConfig.values twice",
+      "THE SLOVAKIANPARLIAMENTVOTES",
+    ]) {
+      expect(() => assertNoSecrets({ note: text })).not.toThrow();
+      expect(() => assertNoSecretsInCode(`// ${text}`, "$.code")).not.toThrow();
+    }
+  });
+
+  // The end of a whole value is not a cut, so a JWT header there is metadata, not a token.
+  test("a JWT header at the end of a value is exported", () => {
+    expect(() => assertNoSecrets({ note: `config ${JWT_HEAD}` })).not.toThrow();
+    expect(() =>
+      assertNoSecrets({ note: `config=x${JWT_HEAD}` }),
+    ).not.toThrow();
   });
 });
 
@@ -76,7 +147,7 @@ describe("assertNoSecrets (value scan)", () => {
   test("catches a secret embedded in a URL", () => {
     expect(() =>
       assertNoSecrets({
-        url: "https://api.x.com?access_token=ABCD1234EFGH5678",
+        url: `https://api.x.com?access_token=${FAKE_TOKEN}`,
       }),
     ).toThrow(SecretLeakError);
   });

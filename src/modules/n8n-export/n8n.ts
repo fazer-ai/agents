@@ -1,4 +1,5 @@
 import { AppError } from "@/lib/errors";
+import { holdsSecretShape } from "@/lib/redact";
 
 // n8n workflow export (pure). The security-critical invariant (hardened spec): a generated
 // workflow must NEVER carry a secret. We enforce this with BOTH halves of belt-and-suspenders:
@@ -15,22 +16,9 @@ export class SecretLeakError extends AppError {
   }
 }
 
-// High-confidence secret shapes. Deliberately NOT matching our own `{{secret}}` vault placeholder
-// (that is a reference, not a secret) — only concrete token material.
-const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /\b(?:bearer|basic)\s+[A-Za-z0-9\-._~+/]{8,}=*/i, // Authorization header material
-  // `sk-` starts at a word boundary, or right after a percent-encoded byte (`api_key%3Dsk-…` in an
-  // echoed URL ends the separator on a word character, so `\b` alone would miss it).
-  /(?:\b|(?<=%[0-9A-Fa-f]{2}))sk-[A-Za-z0-9]{16,}\b/, // OpenAI-style keys (legacy)
-  // Prefixed provider keys (OpenAI project/service-account/admin, Anthropic, OpenRouter): the body
-  // is base64url, so it carries `-` and `_`. Only behind a known prefix, so hyphenated prose
-  // after `sk-` is left alone.
-  /(?:\b|(?<=%[0-9A-Fa-f]{2}))sk-(?:proj|svcacct|admin|None|or-v1|ant-[a-z]+\d*)-[A-Za-z0-9_-]{16,}/,
-  /\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{16,}\b/, // GitHub tokens
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, // Slack tokens
-  /\bAKIA[0-9A-Z]{16}\b/, // AWS access key id
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\b/, // JWT
-];
+// The secret VALUE shapes are the redaction's (`holdsSecretShape`, src/lib/redact.ts), so a key
+// the logs scrub is a key the export refuses, glued to the word before it included. None of them
+// matches our own `{{secret}}` vault placeholder: that is a reference, not token material.
 
 // A key=value / "key": "value" pair where the KEY names a credential AND the VALUE is concrete
 // (not our {{...}} placeholder, not empty).
@@ -44,9 +32,7 @@ function isPlaceholder(value: string): boolean {
 
 function scanString(value: string, where: string): void {
   if (isPlaceholder(value)) return;
-  for (const re of SECRET_VALUE_PATTERNS) {
-    if (re.test(value)) throw new SecretLeakError(where);
-  }
+  if (holdsSecretShape(value)) throw new SecretLeakError(where);
   if (SECRET_KV_PATTERN.test(value)) throw new SecretLeakError(where);
 }
 
@@ -86,9 +72,7 @@ function templateHoldsSecret(code: string): boolean {
 
 export function assertNoSecretsInCode(code: string, where: string): void {
   if (isPlaceholder(code)) return;
-  for (const re of SECRET_VALUE_PATTERNS) {
-    if (re.test(code)) throw new SecretLeakError(where);
-  }
+  if (holdsSecretShape(code)) throw new SecretLeakError(where);
   if (SECRET_KV_IN_CODE_PATTERN.test(code)) throw new SecretLeakError(where);
   if (templateHoldsSecret(code)) throw new SecretLeakError(where);
 }

@@ -72,7 +72,7 @@ read, so a malformed bag can never break the webhook.
 | Field                   | Default | Meaning                                                             |
 | ----------------------- | ------- | ------------------------------------------------------------------- |
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
-| `rule`                  | `null`  | A local verdict (see [Deciding locally](#deciding-locally-rule)): a list, an attribute, the conversation type, a label, or `all` / `any` of those. With a rule the endpoint is called only under `askEndpointAfterRule`. |
+| `rule`                  | `null`  | A local verdict (see [Deciding locally](#deciding-locally-rule)): a list, an attribute, the conversation type, a label, or `all` / `any` of those, serving what matches or, with `effect: "exclude"`, everything except it ([Excluding](#excluding-effect-exclude)). With a rule the endpoint is called only under `askEndpointAfterRule`. |
 | `askEndpointAfterRule`  | `false` | With a rule set, hand what the rule allows to the endpoint for the final verdict (see [Two stages](#two-stages-rule-then-endpoint)). Strict boolean: anything else keeps the rule alone, so a url left behind from before a rule was set stays unused. |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
@@ -128,12 +128,7 @@ The type and the labels come from the mirror (`Conversation.conversationType`, `
 - **Exact digits, never a suffix.** `11 98888-7777` without the country code does not match
   `+55 11 98888-7777`. A suffix match is the one where a short entry quietly admits every number
   ending the same way. Entries are 8 to 15 digits; the list holds 1 to 500 entries in total.
-- **Identity.** A plain `allowlist` compares the phone and the identifier, so a contact with neither
-  is `no_identity`, and one with only an email is refused as not listed. Every other rule, a
-  combination included, does not ask about identity at all and is decided before that check: a
-  widget visitor with no phone on a conversation an operator marked, or a WhatsApp group (whose
-  contact has no phone and no email), is exactly what those conditions are for. A list inside a
-  combination is just unmet for a contact with neither.
+- **Identity.** A plain `allowlist` that serves compares the phone and the identifier, so a contact with neither is `no_identity`, and one with only an email is refused as not listed. An exclusion list does not ask (see [Excluding](#excluding-effect-exclude)). Every other rule, a combination included, does not ask about identity at all and is decided before that check: a widget visitor with no phone on a conversation an operator marked, or a WhatsApp group (whose contact has no phone and no email), is exactly what those conditions are for. A list inside a combination is just unmet for a contact with neither.
 - **Refused, not repaired.** A malformed rule is refused at the write (REST, MCP, create, import)
   with `errors.invalidContactAuthRule`, one bad entry refusing the whole list. The reader drops one
   stored some other way, and an enabled gate with neither a rule nor a `url` is the fail-closed
@@ -149,12 +144,24 @@ The type and the labels come from the mirror (`Conversation.conversationType`, `
   reads as "a change the row does not show" (`AUDIT_MARKER_KEYS`, `src/lib/audit/markers.ts`), so a
   swap that keeps the counts still renders as an edit. An identifier with a line break is refused,
   since the editor holds the list one entry per line.
-- **The refusal says which condition.** The flow line carries our code, never the value compared:
-  `rule_not_listed` (list), `rule_unmet` (attribute), `rule_conversation_type`, `rule_label`. An
-  `all` reports the first condition that failed; an `any` that matched nothing reports
-  `rule_none_met`. The operator note names the agent's rule instead of the external check.
+- **The refusal says which condition.** The flow line carries our code, never the value compared: `rule_not_listed` (list), `rule_unmet` (attribute), `rule_conversation_type`, `rule_label`. An `all` reports the first condition that failed; an `any` that matched nothing reports `rule_none_met`; an exclusion that matched reports `rule_excluded`. The operator note names the agent's rule instead of the external check.
 - **The audit trail keeps a list's shape inside a combination too.** Each `allowlist` condition is
   recorded as its kind and counts, exactly as a plain list is.
+
+## Excluding (`effect: "exclude"`)
+
+Every condition names who PASSES, and the shape most front-desk agents need is the other one: answer the whole inbox except a known few, such as the staff who write to a reception number to book for a client. `effect: "exclude"` on the rule inverts what a match means: the agent serves every conversation the conditions do not match, and refuses the ones they do. It works for every kind and for `all` / `any` (out when every condition holds / when any does).
+
+```json
+{ "kind": "allowlist", "phones": ["+55 11 98888-7777"], "effect": "exclude" }
+```
+
+- **On the rule, never beside it.** Every write replaces the rule whole (the editor sends the block, and a REST or MCP patch replaces `rule` as one value, an atomic field in `mergeBehaviorSettings`), so a new list cannot inherit an inversion written for the old one, and clearing the rule clears the effect. It is refused on a condition inside a combination, since one condition inverted alone is a different rule from the one the editor shows.
+- **`serve` is the default and is stored as no key**, so every rule stored before the field reads and audits the same. Any other value refuses the whole rule at the write (`errors.invalidContactAuthRule`), and the reader drops it, which leaves an enabled gate on the fail-closed `not_configured`: guessing would turn an exclusion list into the only people served, or a pilot list into the only people refused.
+- **Nothing to compare is not on the list.** A condition with nothing to read is unmet, so a contact with no phone and no identifier, or only an email, is served by an exclusion list. The plain allowlist's `no_identity` does not apply: there is nothing to verify about a contact the list cannot name. Phones compare by digits, exactly as above.
+- **The refusal is the gate's refusal.** A match goes down the same path as any denial: the `denyMessage`, the handoff, the operator note. The quiet refusal below (no message, note off, handoff on) is the setup for leaving the excluded conversations to the team. On a monitoring agent the excluded conversations are simply not observed.
+- **Two stages.** An excluded contact is refused at the rule and never reaches the endpoint; one the rule lets through goes to the endpoint under `askEndpointAfterRule` as usual.
+- **The audit trail records the effect**, beside a list's shape, so turning a list into an exclusion is a change the row shows.
 
 ## Two stages (rule, then endpoint)
 
@@ -283,11 +290,7 @@ that does not run unless a later allow re-arms it (see "Asked once per arm").
 
 The editor shows the gate as two parts, whatever the stored shape:
 
-- **Conditions**: one list of zero or more conditions of any kind (conversation type, label, phones
-  or identifiers, attribute). How they combine ("all" / "any") is asked only from two rows on. One
-  row saves as that plain condition and two or more as `all` / `any`; an `all` / `any` of one, which
-  the API accepts and means the same, loads as a list of one and saves back as the plain condition.
-  An empty list saves `rule: null`.
+- **Conditions**: one list of zero or more conditions of any kind (conversation type, label, phones or identifiers, attribute). Above the list, two cards under "This agent serves" ("This agent observes" on a monitoring agent) say what a match means: "Only who meets the conditions" (the default) or "Everyone, except who meets the conditions", saved as the rule's `effect`. Both are on screen whenever the gate is on, before the first condition. With the gate off, the section says in a line that the agent answers every contact. How they combine ("all" / "any") is asked only from two rows on. One row saves as that plain condition and two or more as `all` / `any`; an `all` / `any` of one, which the API accepts and means the same, loads as a list of one and saves back as the plain condition. An empty list saves `rule: null`.
 - **External endpoint**: one switch, saved as `askEndpointAfterRule`. With conditions it is asked
   after them, about what they let through; with none it decides alone (`rule: null` and the url).
   Off, its fields are hidden and the url is kept, unused.

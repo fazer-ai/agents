@@ -337,7 +337,11 @@ function redactContactAuthRule(
         ),
       };
     } else if (r.kind === "allowlist") {
-      (block as Record<string, unknown>).rule = shapeOf(r);
+      // NOTE: the effect is kept beside the shape, so turning a list into an exclusion is a change the row shows rather than a save with nothing in it.
+      (block as Record<string, unknown>).rule = {
+        ...shapeOf(r),
+        ...(r.effect === undefined ? {} : { effect: r.effect }),
+      };
     }
   }
 }

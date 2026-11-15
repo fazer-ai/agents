@@ -109,6 +109,7 @@ import {
 } from "@/modules/contact-auth/observer";
 import {
   RULE_CONVERSATION_TYPE,
+  RULE_EXCLUDED,
   RULE_LABEL,
   RULE_NONE_MET,
   RULE_NOT_LISTED,
@@ -2545,6 +2546,8 @@ const RULE_NOTE_LINES: Record<string, string> = {
     "🔒 Conversa fora da regra do agente: a conversa não tem a etiqueta exigida.",
   [RULE_NONE_MET]:
     "🔒 Conversa fora da regra do agente: nenhuma das condições da regra foi atendida.",
+  [RULE_EXCLUDED]:
+    "🔒 Conversa excluída pela regra do agente: o contato ou a conversa está entre os que este agente não atende.",
 };
 
 export function contactAuthNoteText(

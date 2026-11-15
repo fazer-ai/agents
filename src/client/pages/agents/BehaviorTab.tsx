@@ -22,6 +22,8 @@ import {
   Square,
   StickyNote,
   Trash2,
+  UserCheck,
+  UserMinus,
   UserRoundCheck,
   Volume2,
 } from "lucide-react";
@@ -29,6 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  ChoiceCards,
   ComboBox,
   type ComboItem,
   CredentialPicker,
@@ -3834,14 +3837,82 @@ export function BehaviorTab({
                     )
               }
             />
+            {!contactAuth.enabled && (
+              <p className="text-text-muted text-xs">
+                {watcher
+                  ? t(
+                      "editor.contactAuthOffWatcher",
+                      "Off: this agent observes every conversation on its inboxes.",
+                    )
+                  : t(
+                      "editor.contactAuthOff",
+                      "Off: this agent answers every contact on its inboxes.",
+                    )}
+              </p>
+            )}
             {contactAuth.enabled && (
               <>
+                <FormField
+                  group
+                  label={
+                    watcher
+                      ? t(
+                          "editor.contactAuthRuleEffectWatcher",
+                          "This agent observes",
+                        )
+                      : t("editor.contactAuthRuleEffect", "This agent serves")
+                  }
+                >
+                  <ChoiceCards
+                    value={
+                      contactAuth.ruleEffect === "exclude" ? "exclude" : "serve"
+                    }
+                    onChange={(v) =>
+                      setContactAuth({ ...contactAuth, ruleEffect: v })
+                    }
+                    aria-label={
+                      watcher
+                        ? t(
+                            "editor.contactAuthRuleEffectWatcher",
+                            "This agent observes",
+                          )
+                        : t("editor.contactAuthRuleEffect", "This agent serves")
+                    }
+                    className="sm:grid-cols-2"
+                    options={[
+                      {
+                        value: "serve",
+                        icon: UserCheck,
+                        title: t(
+                          "editor.contactAuthRuleEffectServeTitle",
+                          "Only who meets the conditions",
+                        ),
+                        hint: t(
+                          "editor.contactAuthRuleEffectServeHint",
+                          "Everyone else is refused.",
+                        ),
+                      },
+                      {
+                        value: "exclude",
+                        icon: UserMinus,
+                        title: t(
+                          "editor.contactAuthRuleEffectExcludeTitle",
+                          "Everyone, except who meets the conditions",
+                        ),
+                        hint: t(
+                          "editor.contactAuthRuleEffectExcludeHint",
+                          "To leave a few contacts out, like the team's own numbers.",
+                        ),
+                      },
+                    ]}
+                  />
+                </FormField>
                 <FormField
                   group
                   label={t("editor.contactAuthConditions", "Conditions")}
                   help={t(
                     "editor.contactAuthConditionsHelp",
-                    "Decided here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list of phones or identifiers, an attribute), with no service to host and no cost. Checked on every message, so an edit takes effect on the next one.",
+                    "Decided here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list of phones or identifiers, an attribute), with no service to host and no cost.\n\nThey can name who the agent serves, or who it stays out of (for example the team's own numbers). Checked on every message, so an edit takes effect on the next one.",
                   )}
                 >
                   <ContactAuthConditionList

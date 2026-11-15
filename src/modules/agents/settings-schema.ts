@@ -596,25 +596,31 @@ const availability = z.looseObject({
 
 // The local rule, asked before `url` (which is then called only under `askEndpointAfterRule`). One
 // flat union: a nested one publishes an `anyOf` wrapper per level and refuses the same values.
+// `effect` is declared on every top-level shape because the MCP argument parse drops a key the shape does not name, and a dropped `exclude` would store the opposite rule.
+const contactAuthRuleEffect = z.enum(["serve", "exclude"]).optional();
 const contactAuthConditions = [
   z.object({
     kind: z.literal("allowlist"),
     phones: z.array(z.string()).optional(),
     identifiers: z.array(z.string()).optional(),
+    effect: contactAuthRuleEffect,
   }),
   z.object({
     kind: z.literal("attribute"),
     scope: z.enum(["conversation", "contact"]),
     key: nonBlank("must not be blank"),
     equals: nonBlank("must not be blank").optional(),
+    effect: contactAuthRuleEffect,
   }),
   z.object({
     kind: z.literal("conversation_type"),
     type: z.enum(["group", "individual"]),
+    effect: contactAuthRuleEffect,
   }),
   z.object({
     kind: z.literal("label"),
     label: nonBlank("must not be blank"),
+    effect: contactAuthRuleEffect,
   }),
 ] as const;
 
@@ -635,12 +641,13 @@ const contactAuthRule = z
           ]),
         }),
       ),
+      effect: contactAuthRuleEffect,
     }),
     z.null(),
   ])
   .optional()
   .describe(
-    "allowlist 1-500 entries; all/any 1-10 conditions, one level; null clears",
+    "allowlist 1-500 entries; all/any 1-10 conditions, one level; effect exclude inverts the rule; null clears",
   );
 
 // The descriptions carry only what a caller cannot read off the shape: clamps, refusals, and what

@@ -128,7 +128,7 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.decisionArgSourceType', 'Rule {{rule}}: the field that fills `{{arg}}` is not of the type `{{tool}}` takes for it.')
 // translate('errors.decisionToolUnknown', 'Rule {{rule}}: there is no tool named `{{tool}}`.')
 // translate('errors.contactFieldNotInContext', 'A contact field the agent may update must also be in its context: {{fields}}.')
-// translate('errors.invalidContactAuthRule', 'The contact authorization rule is invalid: a list needs 1 to 500 entries, phones with 8 to 15 digits (country code included) and identifiers up to 200 characters; an attribute rule needs a scope and a key; a conversation type is group or individual; a label is not empty; all or any holds 1 to 10 of those, never another all or any.')
+// translate('errors.invalidContactAuthRule', 'The contact authorization rule is invalid: a list needs 1 to 500 entries, phones with 8 to 15 digits (country code included) and identifiers up to 200 characters; an attribute rule needs a scope and a key; a conversation type is group or individual; a label is not empty; all or any holds 1 to 10 of those, never another all or any; the effect, on the rule only, is serve or exclude.')
 // translate('errors.retiredLabelSetting', '`settings.{{key}}` was retired: say which labels exist and which exclude each other in the `set_labels` usage guidance.')
 // translate('errors.tooManyProtectedLabels', '`Labels off limits` takes at most {{max}} labels.')
 // translate('errors.tooManyAllowedLabels', '`Labels it may add` takes at most {{max}} labels.')

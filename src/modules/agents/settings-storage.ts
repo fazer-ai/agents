@@ -23,6 +23,8 @@ export function withStoredContactAuthRule(settings: unknown): unknown {
     return settings;
   }
   let rule: Record<string, unknown> = { ...raw, ...read };
+  // NOTE: `serve` is the default and is stored as no key, so an explicit one and an omitted one are one stored value.
+  if (read.effect === undefined) delete rule.effect;
   if ("conditions" in read && Array.isArray(raw.conditions)) {
     const conditions = raw.conditions as unknown[];
     rule = {

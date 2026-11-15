@@ -36,6 +36,7 @@ import {
   type ContactAuthConfig,
   type ContactAuthRule,
   contactAuthHasEndpointStage,
+  contactAuthRuleExcludes,
 } from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
 
@@ -121,7 +122,7 @@ function bagOf(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export { RULE_NOT_LISTED, RULE_UNMET } from "./rule";
+export { RULE_EXCLUDED, RULE_NOT_LISTED, RULE_UNMET } from "./rule";
 
 const NO_CONVERSATION_FACTS = {
   conversationType: null,
@@ -159,11 +160,7 @@ async function ruleFacts(
   };
 }
 
-// The rule stage's verdict, the one place it is decided. Only a plain allowlist waits for the identity
-// check: every other rule reads facts a contact with no phone or email still has (a group, a label, a
-// marked conversation), which is the whole point of reading them. No grant is read, written or
-// dropped: a rule reads our own rows every message, and a stored verdict would only make an edit take
-// effect late.
+// The rule stage's verdict, the one place it is decided. Only a plain allowlist that SERVES waits for the identity check: every other rule reads facts a contact with no phone or email still has (a group, a label, a marked conversation), which is the whole point of reading them, and an exclusion list has nothing to verify about a contact it cannot compare: that contact is not on it. No grant is read, written or dropped: a rule reads our own rows every message, and a stored verdict would only make an edit take effect late.
 async function ruleVerdict(
   rule: ContactAuthRule,
   at: {
@@ -187,7 +184,12 @@ async function ruleVerdict(
     );
   }
   // NOTE: The Chatwoot contact id alone is NOT identity, for the list as for the endpoint.
-  if (!at.phone && !at.email && !at.identifier) {
+  if (
+    !contactAuthRuleExcludes(rule) &&
+    !at.phone &&
+    !at.email &&
+    !at.identifier
+  ) {
     return { outcome: "no_identity", reason: "no_identifiers" };
   }
   // The list compares the phone and the identifier. A contact that has only an email has something

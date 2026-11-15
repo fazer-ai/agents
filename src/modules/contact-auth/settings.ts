@@ -36,12 +36,17 @@ export type ContactAuthCondition =
   // The conversation carries this label, stored lowercased as Chatwoot stores label titles.
   | { kind: "label"; label: string };
 
+// What a match means. `serve` (the default, stored as no key) serves only what matches; `exclude` serves everything EXCEPT what matches, for an agent that answers a whole inbox but must stay out of a known few (the staff writing to a reception number). It belongs to the rule and not beside it: every write replaces the rule whole, so a new list can never inherit an inversion meant for the old.
+export type ContactAuthRuleEffect = "serve" | "exclude";
+
 // One level only: a combination holds plain conditions, never another combination, so every rule
-// the API accepts is a rule the editor can show and save back unchanged.
-export type ContactAuthRule =
+// the API accepts is a rule the editor can show and save back unchanged. `effect` sits on the rule,
+// never on a condition inside a combination.
+export type ContactAuthRule = (
   | ContactAuthCondition
   | { kind: "all"; conditions: ContactAuthCondition[] }
-  | { kind: "any"; conditions: ContactAuthCondition[] };
+  | { kind: "any"; conditions: ContactAuthCondition[] }
+) & { effect?: "exclude" };
 
 export type ContactAuthConversationType = "group" | "individual";
 
@@ -139,9 +144,17 @@ function listEntries(c: ContactAuthCondition): number {
   return c.kind === "allowlist" ? c.phones.length + c.identifiers.length : 0;
 }
 
+// Strict both ways: a value that is neither reads the whole rule as absent, since guessing would either turn an exclusion list into the only people served or a pilot list into the only people refused.
+function parseEffect(v: unknown): ContactAuthRuleEffect | null {
+  if (v === undefined || v === null || v === "serve") return "serve";
+  return v === "exclude" ? "exclude" : null;
+}
+
 export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
+  const effect = parseEffect(r.effect);
+  if (!effect) return null;
   let rule: ContactAuthRule | null;
   if (r.kind === "all" || r.kind === "any") {
     const list = r.conditions;
@@ -155,7 +168,9 @@ export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
     const conditions: ContactAuthCondition[] = [];
     for (const item of list) {
       const c = parseCondition(item);
-      if (!c) return null;
+      if (!c || (item as Record<string, unknown>).effect !== undefined) {
+        return null;
+      }
       conditions.push(c);
     }
     rule =
@@ -172,7 +187,12 @@ export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
     rule.kind === "all" || rule.kind === "any"
       ? rule.conditions.reduce((n, c) => n + listEntries(c), 0)
       : listEntries(rule);
-  return listed > CONTACT_AUTH_ALLOWLIST_MAX ? null : rule;
+  if (listed > CONTACT_AUTH_ALLOWLIST_MAX) return null;
+  return effect === "exclude" ? { ...rule, effect } : rule;
+}
+
+export function contactAuthRuleExcludes(rule: ContactAuthRule): boolean {
+  return rule.effect === "exclude";
 }
 
 // The write boundary's question: is there a rule that the reader would drop? Absent and null are not

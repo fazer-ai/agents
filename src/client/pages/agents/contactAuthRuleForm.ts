@@ -25,6 +25,8 @@ export interface ContactAuthConditionForm {
 // condition is a list of one, so the editor has no separate picker per kind; "all" / "any" matters
 // (and is shown) only from two conditions on. An empty list is no rule.
 export interface ContactAuthRuleForm {
+  // "serve" | "exclude": whether the agent serves only what matches, or everything except it.
+  ruleEffect: string;
   // "all" | "any".
   ruleMatch: string;
   ruleConditions: ContactAuthConditionForm[];
@@ -42,6 +44,7 @@ export const EMPTY_CONTACT_AUTH_CONDITION_FORM: ContactAuthConditionForm = {
 };
 
 export const EMPTY_CONTACT_AUTH_RULE_FORM: ContactAuthRuleForm = {
+  ruleEffect: "serve",
   ruleMatch: "all",
   ruleConditions: [],
 };
@@ -92,13 +95,19 @@ function conditionForm(c: ContactAuthCondition): ContactAuthConditionForm {
 export function readContactAuthRuleForm(raw: unknown): ContactAuthRuleForm {
   const rule = parseContactAuthRule(raw);
   if (!rule) return { ...EMPTY_CONTACT_AUTH_RULE_FORM, ruleConditions: [] };
+  const ruleEffect = rule.effect === "exclude" ? "exclude" : "serve";
   if (rule.kind === "all" || rule.kind === "any") {
     return {
+      ruleEffect,
       ruleMatch: rule.kind,
       ruleConditions: rule.conditions.map(conditionForm),
     };
   }
-  return { ruleMatch: "all", ruleConditions: [conditionForm(rule)] };
+  return {
+    ruleEffect,
+    ruleMatch: "all",
+    ruleConditions: [conditionForm(rule)],
+  };
 }
 
 // Whether the editor's endpoint switch reads as on for a stored gate. With conditions, it is the
@@ -169,12 +178,16 @@ export function contactAuthRulePayload(
   const rows = f.ruleConditions;
   if (rows.length === 0) return null;
   const [only] = rows;
+  const effect = f.ruleEffect === "exclude" ? { effect: "exclude" } : {};
   // NOTE: An unknown row kind is kept as an empty object rather than dropped, so the parse refuses
   // the whole rule instead of quietly losing a condition.
-  if (rows.length === 1 && only) return conditionPayload(only) ?? {};
+  if (rows.length === 1 && only) {
+    return { ...(conditionPayload(only) ?? {}), ...effect };
+  }
   return {
     kind: f.ruleMatch === "any" ? "any" : "all",
     conditions: rows.map((c) => conditionPayload(c) ?? {}),
+    ...effect,
   };
 }
 

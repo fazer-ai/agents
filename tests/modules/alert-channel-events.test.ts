@@ -21,6 +21,9 @@ import {
   alertChannelCreate,
   alertChannelUpdate,
 } from "@/modules/mcp/write-webhooks";
+import { VisionError, type VisionProvider } from "@/modules/vision/providers";
+import { VISION_TOTAL_BUDGET_MS } from "@/modules/vision/retry";
+import { extractWithRetry } from "@/modules/vision/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
@@ -280,6 +283,50 @@ describe.skipIf(!dbUp)("alert channel left-out events", () => {
     expect(await ledger(noProvider2.id)).toEqual([]);
     expect((await ledger(all2.id)).map((d) => d.causeKey)).toEqual([
       "rate:vision:openai",
+    ]);
+  });
+
+  test("a vision read that gave up after a retry it announced is a provider failure", async () => {
+    await reset();
+    const noProvider = await channel({ excludeEvents: ["provider_failure"] });
+    const all = await channel({});
+    let clock = 0;
+    const provider = {
+      defaultModel: "m",
+      extract: async () => {
+        throw new VisionError("gemini", 503);
+      },
+    } as VisionProvider;
+    // NOTE: The wait oversleeps the budget, so the retry the first line announced never runs and the
+    // outcome is the line `extractWithRetry` writes after the loop.
+    await expect(
+      extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: {
+          bytes: new ArrayBuffer(4),
+          mimeType: "image/png",
+          kind: "image",
+          prompt: "Descreva.",
+          model: "m",
+          apiKey: "k",
+          baseURL: null,
+          fetchImpl: fetch,
+        },
+        flow: flow("events-vision-gave-up"),
+        now: () => clock,
+        sleep: async () => {
+          clock += VISION_TOTAL_BUDGET_MS - 1_000;
+        },
+      }),
+    ).rejects.toThrow("vision gemini failed with 503");
+    expect(await ledger(noProvider.id)).toEqual([]);
+    expect((await ledger(all.id)).map((d) => [d.stage, d.summary])).toEqual([
+      [
+        "vision",
+        "[vision via gemini] vision gemini failed with 503 (image left unread)",
+      ],
     ]);
   });
 

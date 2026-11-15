@@ -97,6 +97,18 @@ describe("alertEventsOf", () => {
     }
   });
 
+  test("the vision line of a retry that never ran is a provider failure without a failure class", () => {
+    expect(
+      alertEventsOf({
+        stage: "vision",
+        level: "warn",
+        status: "error",
+        detail: { kind: "image", attempt: 1, unread: "image" },
+        errorMessage: "vision gemini failed with 503",
+      }),
+    ).toEqual(["provider_failure"]);
+  });
+
   test("the same failure class on a stage that calls no model is no provider failure", () => {
     for (const stage of ["split", "tool"] as const) {
       expect(

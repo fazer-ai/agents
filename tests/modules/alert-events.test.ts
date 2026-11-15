@@ -111,15 +111,15 @@ describe("alertEventsOf", () => {
     }
   });
 
-  test("an empty response retried, and a turn that ended without a reply", () => {
+  test("a turn that ended without a reply, and a retried empty response is no event", () => {
     expect(
       alertEventsOf({
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         detail: { retriedEmptyResponse: 1, willRetry: true },
       }),
-    ).toEqual(["empty_response"]);
+    ).toEqual([]);
     expect(
       alertEventsOf({
         stage: "generate",
@@ -187,7 +187,6 @@ describe("the vocabulary", () => {
       "tool_limit",
       "model_fallback",
       "provider_failure",
-      "empty_response",
       "no_reply",
     ]);
     expect(isAlertEvent("tool_limit")).toBe(true);

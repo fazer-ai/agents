@@ -449,7 +449,6 @@ export function alertEventsOf(ev: FlowEvent): AlertEvent[] {
     (has("failure") || has("fallbackFailure") || has("fallbackUnavailable"))
   )
     events.push("provider_failure");
-  if (has("retriedEmptyResponse")) events.push("empty_response");
   if (has("silenceUnexplained") || has("silenceTokenSuppressed"))
     events.push("no_reply");
   return events;

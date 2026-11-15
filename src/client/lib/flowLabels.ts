@@ -466,8 +466,6 @@ export function alertEventLabel(event: string, t: TFunction): string {
       );
     case "provider_failure":
       return t("alerts.event.provider_failure", "AI provider failure");
-    case "empty_response":
-      return t("alerts.event.empty_response", "Empty model response, retried");
     case "no_reply":
       return t("alerts.event.no_reply", "Turn ended without a reply");
     default:

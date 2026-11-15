@@ -4,13 +4,13 @@
 //
 // Only what the stage list cannot already tell apart is an event. A dead letter, a guardrail trip, a
 // channel error and a capacity wait are stages of their own, so they are filtered there; a provider
-// failure is an event because it happens on every stage that calls a model. A line that is none of
-// these events is never left out by this list.
+// failure is an event because it happens on every stage that calls a model. A retried empty response
+// is no event: its line is `info` and never alerts, and the turn it fails is a provider failure. A line
+// that is none of these events is never left out by this list.
 export const ALERT_EVENTS = [
   "tool_limit",
   "model_fallback",
   "provider_failure",
-  "empty_response",
   "no_reply",
 ] as const;
 export type AlertEvent = (typeof ALERT_EVENTS)[number];

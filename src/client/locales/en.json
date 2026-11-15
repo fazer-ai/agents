@@ -150,7 +150,6 @@
     "emptyDescription": "Add a Discord or webhook channel to be paged when a step fails.",
     "emptyTitle": "No alert channels",
     "event": {
-      "empty_response": "Empty model response, retried",
       "model_fallback": "Answered by the fallback provider",
       "no_reply": "Turn ended without a reply",
       "provider_failure": "AI provider failure",

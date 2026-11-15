@@ -152,7 +152,6 @@
     "emptyDescription": "Adicione um canal Discord ou webhook para ser avisado quando uma etapa falhar.",
     "emptyTitle": "Nenhum canal de alerta",
     "event": {
-      "empty_response": "Resposta vazia do modelo, tentada de novo",
       "model_fallback": "Respondido pelo provedor reserva",
       "no_reply": "Turno terminou sem resposta",
       "provider_failure": "Falha do provedor de IA",

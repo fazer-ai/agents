@@ -13,7 +13,14 @@ import {
   readJpegOrientation,
 } from "./dimensions";
 import { decodeGridFitted, type HeicFrame, withHeicFrames } from "./heic";
-import { encodeJpeg, fitRgba, orientRgba, rasterToJpeg } from "./raster";
+import { decodeJpegFitted } from "./jpeg-stream";
+import {
+  encodeJpeg,
+  fitRgba,
+  orientRgba,
+  type Rgba,
+  rasterToJpeg,
+} from "./raster";
 
 // Thrown for every refusal a conversion can make, so the caller has one thing to catch and one
 // message to put on the operator's line. A conversion that fails is NOT the same as an extraction
@@ -72,7 +79,20 @@ export type ConvertOptions = {
   // Stands in for `./heic`'s frame opener, so the battery can drive the refusal paths without a
   // fixture for each and can watch the decoder being released.
   readonly withFrames?: typeof withHeicFrames;
+  // Stands in for jpeg-js's whole-image decode, so the battery can tell which decoder a file took:
+  // the two give the same bytes, and only memory, which a test cannot watch cheaply, tells them apart.
+  readonly decodeWholeJpeg?: WholeJpegDecode;
 };
+
+export type WholeJpegDecode = (
+  data: Uint8Array,
+  opts: {
+    useTArray: true;
+    formatAsRGBA: true;
+    maxResolutionInMP: number;
+    maxMemoryUsageInMB: number;
+  },
+) => Rgba;
 
 // The long edge every vision provider downscales to on its standard tier anyway (OpenAI and
 // Anthropic both 1568 px), so handing over more is paying to ship bytes the vendor discards. It is
@@ -327,16 +347,24 @@ async function jpegFit(
     throw new MediaSourceMismatchError("declared as jpeg but is not one");
   const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
   const pixels = headerPixels(bytes, "image/jpeg", cap);
-  // jpeg-js enforces its own ceilings too: resolution from the cap, memory from the header (above).
-  const raw = jpeg.decode(new Uint8Array(bytes), {
-    useTArray: true,
-    formatAsRGBA: true,
-    maxResolutionInMP: Math.ceil(cap / 1_000_000),
-    maxMemoryUsageInMB: jpegMemoryBudgetMB(bytes, pixels),
-  });
+  const data = new Uint8Array(bytes);
+  // A photo over the edge is decoded a band at a time straight into its fitted size (jpeg-stream.ts:
+  // the same bytes jpeg-js would give, at a fraction of the memory). What that decoder does not
+  // cover, and anything already within the edge, goes through jpeg-js, which enforces its own
+  // ceilings too: resolution from the cap, memory from the header (above).
   // Opaque by construction, so there is nothing to flatten: fit, then turn upright, then encode.
   // The turn runs on the fitted raster so its copy is of 1568 px and not of the original.
-  const fitted = fitRgba(raw, MAX_OUTPUT_EDGE);
+  const fitted =
+    decodeJpegFitted(data, { maxEdge: MAX_OUTPUT_EDGE, maxPixels: cap }) ??
+    fitRgba(
+      (opts.decodeWholeJpeg ?? jpeg.decode)(data, {
+        useTArray: true,
+        formatAsRGBA: true,
+        maxResolutionInMP: Math.ceil(cap / 1_000_000),
+        maxMemoryUsageInMB: jpegMemoryBudgetMB(bytes, pixels),
+      }),
+      MAX_OUTPUT_EDGE,
+    );
   return encodeJpeg(
     orientRgba(fitted, readJpegOrientation(bytes)),
     JPEG_QUALITY,

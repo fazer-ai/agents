@@ -2,7 +2,7 @@ import { clipText, makeStorable, OVERFLOW_PROBE_MARGIN } from "@/lib/text";
 
 // Non-throwing secret redaction for human-facing debug surfaces (the agent playground trace and
 // the conversation `lastError`): the REPLACE-and-continue cousin of n8n-export's `assertNoSecrets`,
-// which THROWS as an export backstop. Two layers: values under credential-named KEYS are dropped
+// which THROWS as an export backstop on the same value shapes (`holdsSecretShape`). Two layers: values under credential-named KEYS are dropped
 // wholesale, and secret-shaped VALUE substrings are scrubbed in place. The playground trace never
 // carries a RESOLVED credential (those go only into request headers), so this is defense-in-depth.
 
@@ -126,11 +126,11 @@ function runEnd(input: string, from: number, dots: boolean): number {
   return i;
 }
 
-// Every JWT, whole or cut by the end of the window, at a boundary or glued to a word, in one linear
+// Every JWT, whole or (with `endIsCut`) cut by the end of the window, at a boundary or glued, in one linear
 // pass over the `eyJ` occurrences. A regex is not linear here: a candidate starts at every `eyJ`
 // behind a `-` or a word character, and a failing JWT pattern rescans the segment from each start,
 // and a cut head's `$` the rest of the text. The rules and the cost argument are in docs/logs.md.
-function jwtSpans(input: string, out: Span[]): void {
+function jwtSpans(input: string, out: Span[], endIsCut: boolean): void {
   // The current header segment's end, and whether it opens a whole token ending at `tokenEnd`.
   let segEnd = -1;
   let tokenEnd = -1;
@@ -175,7 +175,7 @@ function jwtSpans(input: string, out: Span[]): void {
       continue;
     }
     if (i >= tokenRunEnd) tokenRunEnd = runEnd(input, i, true);
-    if (tokenRunEnd === input.length) {
+    if (endIsCut && tokenRunEnd === input.length) {
       out.push([i, input.length]);
       return;
     }
@@ -247,6 +247,27 @@ export function scrubbedClip(
     : scanned;
 }
 
+// Where every secret-shaped value in `input` is, unmerged. `endIsCut` says the end of the input is
+// where a cut left it, which is what lets a JWT be recognised by its head alone.
+function secretSpans(input: string, endIsCut: boolean): Span[] {
+  const spans: Span[] = [];
+  for (const re of SECRET_VALUE_PATTERNS) {
+    for (const m of input.matchAll(re)) {
+      spans.push([m.index, m.index + m[0].length]);
+    }
+  }
+  for (const shape of GLUED_SECRET_SHAPES) gluedSpans(input, shape, spans);
+  jwtSpans(input, spans, endIsCut);
+  return spans;
+}
+
+// Whether a WHOLE value holds a secret-shaped substring, by the same shapes the redaction scrubs:
+// the export backstop (`assertNoSecrets`) refuses on this instead of keeping a copy of its own.
+// A whole value was not cut, so a JWT head at its end is not a token.
+export function holdsSecretShape(value: string): boolean {
+  return secretSpans(value, false).length > 0;
+}
+
 // Scrubs concrete secret-shaped substrings from a string (the VALUE layer). Idempotent.
 //
 // Deliberately NOT exported: the JWT scan reads the end of its input as a cut, so what this is
@@ -257,14 +278,7 @@ function redactSecretsInText(input: string): string {
   // than replacing pattern by pattern: in sequence, one pattern takes the inside of another one's
   // match and leaves the rest under every minimum (a key-shaped run inside a JWT signature would
   // leave the header and the whole payload readable). Merged, the union goes.
-  const spans: Span[] = [];
-  for (const re of SECRET_VALUE_PATTERNS) {
-    for (const m of input.matchAll(re)) {
-      spans.push([m.index, m.index + m[0].length]);
-    }
-  }
-  for (const shape of GLUED_SECRET_SHAPES) gluedSpans(input, shape, spans);
-  jwtSpans(input, spans);
+  const spans = secretSpans(input, true);
   if (spans.length === 0) return input;
   spans.sort((x, y) => x[0] - y[0]);
   let out = "";

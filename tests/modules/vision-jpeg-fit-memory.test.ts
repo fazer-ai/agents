@@ -52,12 +52,15 @@ function blankPhoto(width: number, height: number): Uint8Array {
 
 // The point of the decoder, measured where it can be: in a child process of its own, so the peak is
 // the conversion's and not the test runner's. Measured here: 74 MB, against 377 MB for jpeg-js
-// decoding the same file whole (a phone photo in colour costs about twice that).
+// decoding the same file whole (a phone photo in colour costs about twice that). On Linux the peak
+// is VmHWM: getrusage's maxrss survives exec, so a child of a 5 GB test runner reports 5 GB.
 test("a 31 MP photo is fitted without ever being held whole", () => {
   const script = [
     `const { runMediaConverter } = await import(${JSON.stringify(CONVERT)});`,
     `const out = await runMediaConverter("jpeg-fit", await Bun.stdin.arrayBuffer());`,
-    "console.log(JSON.stringify({ bytes: out.byteLength, peakKB: process.resourceUsage().maxRSS }));",
+    `const { existsSync, readFileSync } = await import("node:fs");`,
+    `const hwm = existsSync("/proc/self/status") ? readFileSync("/proc/self/status", "utf8").match(/VmHWM:\\s+(\\d+) kB/)?.[1] : undefined;`,
+    "console.log(JSON.stringify({ bytes: out.byteLength, peakKB: hwm === undefined ? process.resourceUsage().maxRSS : Number(hwm) }));",
   ].join("\n");
   const child = Bun.spawnSync({
     cmd: [process.execPath, "-e", script],

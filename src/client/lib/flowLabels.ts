@@ -453,3 +453,22 @@ export function toolResultSizeLabel(
     tokens: n.format(tokens),
   });
 }
+
+// The alert events (src/modules/flowlog/events.ts), named for the channel editor.
+export function alertEventLabel(event: string, t: TFunction): string {
+  switch (event) {
+    case "tool_limit":
+      return t("alerts.event.tool_limit", "Tool-call limit reached");
+    case "model_fallback":
+      return t(
+        "alerts.event.model_fallback",
+        "Answered by the fallback provider",
+      );
+    case "provider_failure":
+      return t("alerts.event.provider_failure", "AI provider failure");
+    case "no_reply":
+      return t("alerts.event.no_reply", "Turn ended without a reply");
+    default:
+      return event;
+  }
+}

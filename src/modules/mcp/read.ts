@@ -57,6 +57,7 @@ import {
   listExperiments,
 } from "@/modules/experiments/service";
 import { listAlertChannels } from "@/modules/flowlog/channels";
+import { ALERT_EVENTS } from "@/modules/flowlog/events";
 import { exportExecutionLogs } from "@/modules/flowlog/export";
 import { listExecutionLogs } from "@/modules/flowlog/read";
 import { parseIsoInstant } from "@/modules/flowlog/settings";
@@ -807,7 +808,11 @@ export async function alertStageList(
 ): Promise<WriteResult> {
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  return ok({ stages: [...SELECTABLE_STAGES], levels: [...FLOW_LEVELS] });
+  return ok({
+    stages: [...SELECTABLE_STAGES],
+    levels: [...FLOW_LEVELS],
+    events: [...ALERT_EVENTS],
+  });
 }
 
 // ── business hours ──

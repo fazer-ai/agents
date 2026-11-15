@@ -223,8 +223,9 @@ describe("MCP tool descriptions", () => {
   // tree with the same principal (34_042 and 72_115; 72_207 with the critical list, `criticalSubjects`,
   // on occurrences_set; 73_140 with `guardrails.factualGrounding`; 73_254 with its reference bases;
   // 73_442 with the rewrite's `reviseWithTools` and `reviseMaxToolCalls`; 73_502 with the cap's range up
-  // to `limits.maxToolCalls`; 73_684 with `observability.fullDetailRetentionDays`; 73_987 with the contact gate rule's `effect`).
-  const totals = { desc: 34_050, schema: 73_990 };
+  // to `limits.maxToolCalls`; 73_684 with `observability.fullDetailRetentionDays`; 73_987 with the contact gate rule's `effect`;
+  // 74_137 with `exclude_events` on the alert channel writes).
+  const totals = { desc: 34_050, schema: 74_140 };
 
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema

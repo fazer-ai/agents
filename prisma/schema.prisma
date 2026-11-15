@@ -3165,6 +3165,9 @@ model AlertChannel {
   minLevel        String   @default("error") @map("min_level")
   // Stage allowlist; empty = all stages.
   stages          String[] @default([])
+  // Events this channel leaves out inside its stages and level (src/modules/flowlog/events.ts); empty
+  // = none. A line that is none of the events is never left out by it.
+  excludeEvents   String[] @default([]) @map("exclude_events")
   // Agents whose lines never alert on this channel (issue #843), e.g. an evaluation battery's test
   // agents beside production on one instance. Their lines stay in the flow log, which the battery
   // reads; only this channel's dispatch skips them. No FK: an id whose agent is deleted matches

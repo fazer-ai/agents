@@ -16,6 +16,7 @@ import {
   signingStateFor,
   vaultRefStates,
 } from "@/modules/vault/service";
+import { isAlertEvent } from "./events";
 import { FLOW_LEVELS, SELECTABLE_STAGES } from "./stages";
 
 // CRUD for AlertChannel (external alert sinks for execution-flow warnings/errors). Mirrors the
@@ -38,6 +39,8 @@ export interface AlertChannelDto {
   enabled: boolean;
   minLevel: string;
   stages: string[];
+  // Events this channel leaves out inside its stages and level (./events.ts); empty = none.
+  excludeEvents: string[];
   // Agents whose lines this channel never alerts on, as decimal strings. Stored as written: an id
   // whose agent was deleted since stays until the channel is saved without it, and matches nothing.
   excludeAgentIds: string[];
@@ -73,6 +76,7 @@ const SELECT = {
   enabled: true,
   minLevel: true,
   stages: true,
+  excludeEvents: true,
   excludeAgentIds: true,
   secretRef: true,
   createdAt: true,
@@ -115,6 +119,7 @@ function toDto(
     enabled: boolean;
     minLevel: string;
     stages: string[];
+    excludeEvents: string[];
     excludeAgentIds: bigint[];
     secretRef: string | null;
     createdAt: Date;
@@ -131,6 +136,7 @@ function toDto(
     enabled: row.enabled,
     minLevel: row.minLevel,
     stages: row.stages,
+    excludeEvents: row.excludeEvents,
     excludeAgentIds: row.excludeAgentIds.map(String),
     hasSecret: row.secretRef !== null,
     secretRef: readable,
@@ -157,6 +163,7 @@ function auditProjection(row: {
   enabled: boolean;
   minLevel: string;
   stages: string[];
+  excludeEvents: string[];
   excludeAgentIds: bigint[];
   secretRef: string | null;
 }) {
@@ -166,6 +173,7 @@ function auditProjection(row: {
     urlMasked: maskUrl(row.url),
     minLevel: row.minLevel,
     stages: row.stages,
+    excludeEvents: row.excludeEvents,
     excludeAgentIds: row.excludeAgentIds.map(String),
     enabled: row.enabled,
     secretRef: readableVaultRef(row.secretRef),
@@ -207,6 +215,29 @@ function assertStages(stages: string[]): string[] {
       seen.add(s);
       out.push(s);
     }
+  }
+  return out;
+}
+
+// The left-out events as stored: deduplicated, in first-seen order, every entry from the vocabulary.
+// An entry the channel already holds (`kept`) passes even if the vocabulary has since dropped it, so
+// a later save of the channel does not fail on an event nobody can pick any more.
+export function assertAlertEvents(
+  events: readonly string[],
+  kept: readonly string[] = [],
+): string[] {
+  const out: string[] = [];
+  for (const e of events) {
+    if (!isAlertEvent(e) && !kept.includes(e)) {
+      throw new AppError(
+        `unknown alert event: ${e}`,
+        400,
+        "errors.unknownAlertEvent",
+        { event: e },
+        "excludeEvents",
+      );
+    }
+    if (!out.includes(e)) out.push(e);
   }
   return out;
 }
@@ -304,6 +335,7 @@ export const alertChannelCreateSchema = z
     url: z.string().min(1).max(2048),
     minLevel: z.enum(FLOW_LEVELS).optional(),
     stages: z.array(z.string()).optional(),
+    excludeEvents: z.array(z.string()).max(100).optional(),
     excludeAgentIds: z.array(z.string()).max(200).optional(),
     secretRef: z.string().min(1).max(128).nullish(),
     enabled: z.boolean().optional(),
@@ -336,6 +368,7 @@ export async function createAlertChannel(
     url: parsed.url,
     stages: parsed.stages ?? [],
   })) as string[];
+  const excludeEvents = assertAlertEvents(parsed.excludeEvents ?? []);
   const row = await runScopedOn(base, ctx, async (db) => {
     // Checked in the transaction the row is written in, so an agent deleted between the check and
     // the insert is not stored as a fresh exclusion.
@@ -354,6 +387,7 @@ export async function createAlertChannel(
         url: encryptJson(parsed.url),
         minLevel: parsed.minLevel ?? "error",
         stages,
+        excludeEvents,
         excludeAgentIds,
         secretRef,
         enabled: parsed.enabled ?? true,
@@ -377,6 +411,7 @@ export const alertChannelUpdateSchema = z
     url: z.string().min(1).max(2048).optional(),
     minLevel: z.enum(FLOW_LEVELS).optional(),
     stages: z.array(z.string()).optional(),
+    excludeEvents: z.array(z.string()).max(100).optional(),
     excludeAgentIds: z.array(z.string()).max(200).optional(),
     secretRef: z.string().min(1).max(128).nullish(),
     enabled: z.boolean().optional(),
@@ -402,12 +437,18 @@ export async function updateAlertChannel(
   if (parsed.url !== undefined) data.url = encryptJson(parsed.url);
   if (parsed.minLevel !== undefined) data.minLevel = parsed.minLevel;
   if (stages !== undefined) data.stages = stages;
-  // excludeAgentIds is checked inside the transaction below, against the row it replaces.
+  // excludeAgentIds and excludeEvents are checked inside the transaction below, against the row
+  // they replace.
   const excludeAgentIds = parsed.excludeAgentIds;
+  const excludeEvents = parsed.excludeEvents;
   // secretRef: undefined = leave; null = clear; string = set.
   if (parsed.secretRef !== undefined) data.secretRef = parsed.secretRef;
   if (parsed.enabled !== undefined) data.enabled = parsed.enabled;
-  if (Object.keys(data).length === 0 && excludeAgentIds === undefined) {
+  if (
+    Object.keys(data).length === 0 &&
+    excludeAgentIds === undefined &&
+    excludeEvents === undefined
+  ) {
     throw new AppError(
       "no updatable fields provided",
       400,
@@ -431,7 +472,14 @@ export async function updateAlertChannel(
       where: { id },
       select: SELECT,
     });
-    // Skipped for a missing row, so a foreign id still answers 404 below and not "unknown agent".
+    // Skipped for a missing row, so a foreign id still answers 404 below and not a refusal. The
+    // events first: they are the pure question, asked in the same order by the MCP preview.
+    if (excludeEvents !== undefined && current) {
+      data.excludeEvents = assertAlertEvents(
+        excludeEvents,
+        current.excludeEvents,
+      );
+    }
     if (excludeAgentIds !== undefined && current) {
       data.excludeAgentIds = await checkExcludedAgents(
         db,

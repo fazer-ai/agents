@@ -418,6 +418,7 @@
     "tooManyAllowedLabels": "`Labels it may add` takes at most {{max}} labels.",
     "tooManyProtectedLabels": "`Labels off limits` takes at most {{max}} labels.",
     "unauthorized": "Unauthorized",
+    "unknownAlertEvent": "Unknown alert event: {{event}}",
     "unknownDeliveryStatus": "Unknown delivery status: {{status}}",
     "unknownFlowStage": "Unknown flow stage: {{stage}}",
     "unknownInstanceSignal": "Unknown instance signal: {{signal}}",

@@ -190,6 +190,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // must write no line the alerting path would itself route, and the tenant is minutes old, so the zero
   // and the one have to come off the same query.
   "tests/modules/alert-channel-exclude-agents.test.ts": 1,
+  "tests/modules/alert-channel-events.test.ts": 1,
   "tests/modules/alert-channel-test.test.ts": 2,
   "tests/modules/channel-failure.test.ts": 1,
   // NOTE: The line a playground turn that failed unhandled leaves, read by the turn's own id.

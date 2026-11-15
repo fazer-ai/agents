@@ -9,6 +9,7 @@ import { redactEndpoint } from "@/modules/audit/projection";
 import { sendAlertChannelTest } from "@/modules/flowlog/channel-test";
 import {
   assertAlertChannelWritable,
+  assertAlertEvents,
   assertExcludedAgents,
   createAlertChannel,
   deleteAlertChannel,
@@ -350,6 +351,7 @@ export interface AlertChannelCreateArgs {
   url_ref?: string;
   min_level?: "info" | "warn" | "error";
   stages?: string[];
+  exclude_events?: string[];
   exclude_agent_ids?: string[];
   secret_ref?: string | null;
   enabled?: boolean;
@@ -388,6 +390,7 @@ export async function alertChannelCreate(
         url: urlValue.value,
         stages: args.stages ?? [],
       });
+      assertAlertEvents(args.exclude_events ?? []);
       // the agent ids are answered the same way the apply answers them, so a typo fails here
       await assertExcludedAgents(ctx, args.exclude_agent_ids ?? [], base);
     } catch (e) {
@@ -405,6 +408,7 @@ export async function alertChannelCreate(
           : { urlMasked: redactEndpoint(urlValue.value) }),
         minLevel: args.min_level ?? "error",
         stages: args.stages ?? [],
+        excludeEvents: args.exclude_events ?? [],
         excludeAgentIds: args.exclude_agent_ids ?? [],
         secretRef: args.secret_ref ?? null,
         enabled: args.enabled ?? true,
@@ -422,6 +426,7 @@ export async function alertChannelCreate(
         url: url.value,
         minLevel: args.min_level,
         stages: args.stages,
+        excludeEvents: args.exclude_events,
         excludeAgentIds: args.exclude_agent_ids,
         secretRef,
         enabled: args.enabled,
@@ -442,6 +447,7 @@ export interface AlertChannelUpdateArgs {
   url_ref?: string;
   min_level?: "info" | "warn" | "error";
   stages?: string[];
+  exclude_events?: string[];
   exclude_agent_ids?: string[];
   secret_ref?: string | null;
   enabled?: boolean;
@@ -454,6 +460,7 @@ interface AlertChannelPatch {
   url?: string;
   minLevel?: "info" | "warn" | "error";
   stages?: string[];
+  excludeEvents?: string[];
   excludeAgentIds?: string[];
   secretRef?: string | null;
   enabled?: boolean;
@@ -491,6 +498,8 @@ export async function alertChannelUpdate(
   if (args.type !== undefined) nonSecret.type = args.type;
   if (args.min_level !== undefined) nonSecret.minLevel = args.min_level;
   if (args.stages !== undefined) nonSecret.stages = args.stages;
+  if (args.exclude_events !== undefined)
+    nonSecret.excludeEvents = args.exclude_events;
   if (args.exclude_agent_ids !== undefined)
     nonSecret.excludeAgentIds = args.exclude_agent_ids;
   if (args.enabled !== undefined) nonSecret.enabled = args.enabled;
@@ -523,6 +532,9 @@ export async function alertChannelUpdate(
         url: urlValue,
         stages: nonSecret.stages,
       });
+      // Against the channel as listed, as the apply asks it against the row it locks.
+      if (nonSecret.excludeEvents !== undefined)
+        assertAlertEvents(nonSecret.excludeEvents, current.excludeEvents);
       if (nonSecret.excludeAgentIds !== undefined) {
         await assertExcludedAgents(
           ctx,

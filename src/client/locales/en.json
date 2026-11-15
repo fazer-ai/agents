@@ -149,6 +149,15 @@
     "editTitle": "Edit alert channel",
     "emptyDescription": "Add a Discord or webhook channel to be paged when a step fails.",
     "emptyTitle": "No alert channels",
+    "event": {
+      "model_fallback": "Answered by the fallback provider",
+      "no_reply": "Turn ended without a reply",
+      "provider_failure": "AI provider failure",
+      "tool_limit": "Tool-call limit reached"
+    },
+    "events": "Events",
+    "eventsHint": "Uncheck an event to stop it alerting here. A warning that is none of these follows only the stages above. Left-out lines still appear in Logs.",
+    "eventsInert": "The dimmed events only ever come as warnings, so with Errors only they never reach this channel. They count again with Warnings and errors.",
     "excludeAgents": "Agents that never alert here",
     "excludeAgentsEmpty": "No agents yet.",
     "excludeAgentsHint": "Their warnings and errors still appear in Logs; only this channel skips them. Use it for test agents that share the instance with production.",
@@ -156,6 +165,7 @@
     "excludedCount_one": "{{count}} agent excluded",
     "excludedCount_other": "{{count}} agents excluded",
     "excludedDeletedAgent": "Deleted agent #{{id}}",
+    "leftOutEvents": "Except: {{events}}",
     "minLevel": {
       "error": "Errors only",
       "warn": "Warnings and errors"

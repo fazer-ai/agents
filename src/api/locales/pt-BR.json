@@ -418,6 +418,7 @@
     "tooManyAllowedLabels": "`Etiquetas que pode acrescentar` aceita no máximo {{max}} etiquetas.",
     "tooManyProtectedLabels": "`Etiquetas fora do alcance` aceita no máximo {{max}} etiquetas.",
     "unauthorized": "Não autorizado",
+    "unknownAlertEvent": "Evento de alerta desconhecido: {{event}}",
     "unknownDeliveryStatus": "Status de entrega desconhecido: {{status}}",
     "unknownFlowStage": "Etapa de fluxo desconhecida: {{stage}}",
     "unknownInstanceSignal": "Sinal de instância desconhecido: {{signal}}",

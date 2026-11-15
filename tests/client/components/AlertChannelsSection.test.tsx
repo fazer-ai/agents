@@ -553,6 +553,7 @@ describe("AlertChannelsSection", () => {
     /^(Tool-call limit reached|Limite de chamadas de ferramenta atingido)$/;
 
   test("every event starts checked, and unchecking the tool limit sends it as left out", async () => {
+    channels = [channel({ minLevel: "warn" })];
     await openEditor();
     expect(eventChip(TOOL_LIMIT).getAttribute("aria-pressed")).toBe("true");
     expect(
@@ -574,7 +575,9 @@ describe("AlertChannelsSection", () => {
   });
 
   test("checking a left-out event again takes it back", async () => {
-    channels = [channel({ excludeEvents: ["tool_limit", "no_reply"] })];
+    channels = [
+      channel({ minLevel: "warn", excludeEvents: ["tool_limit", "no_reply"] }),
+    ];
     await openEditor();
     fireEvent.click(eventChip(TOOL_LIMIT));
     expect((await save()).excludeEvents).toEqual(["no_reply"]);
@@ -587,6 +590,44 @@ describe("AlertChannelsSection", () => {
     expect(stale.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(stale);
     expect((await save()).excludeEvents).toEqual([]);
+  });
+
+  test("on errors only, the warn-only events are held as saved and say why; the fallback stays open", async () => {
+    channels = [channel({ minLevel: "error", excludeEvents: ["tool_limit"] })];
+    await openEditor();
+    const tool = eventChip(TOOL_LIMIT) as HTMLButtonElement;
+    const noReply = eventChip(
+      /^(Turn ended without a reply|Turno terminou sem resposta)$/,
+    ) as HTMLButtonElement;
+    const fallback = eventChip(
+      /^(Answered by the fallback provider|Respondido pelo provedor reserva)$/,
+    ) as HTMLButtonElement;
+    expect(tool.disabled).toBe(true);
+    expect(noReply.disabled).toBe(true);
+    expect(fallback.disabled).toBe(false);
+    expect(tool.getAttribute("aria-pressed")).toBe("false");
+    expect(
+      document.getElementById(tool.getAttribute("aria-describedby") ?? "")
+        ?.textContent,
+    ).toMatch(/Errors only|Apenas erros/);
+    fireEvent.click(tool);
+    expect((await save()).excludeEvents).toEqual(["tool_limit"]);
+  });
+
+  test("switching the level to warnings opens the held events again", async () => {
+    channels = [channel({ minLevel: "error" })];
+    await openEditor();
+    expect((eventChip(TOOL_LIMIT) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(
+      screen.getByRole("combobox", {
+        name: /Minimum level|Nível mínimo/,
+        hidden: true,
+      }),
+      { target: { value: "warn" } },
+    );
+    expect((eventChip(TOOL_LIMIT) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(eventChip(TOOL_LIMIT));
+    expect((await save()).excludeEvents).toEqual(["tool_limit"]);
   });
 
   test("the list names the events a channel leaves out", async () => {

@@ -27,7 +27,11 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 import { alertEventLabel, flowStageLabel } from "@/client/lib/flowLabels";
 import { cn, formatDate } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
-import { ALERT_EVENTS, isAlertEvent } from "@/modules/flowlog/events";
+import {
+  ALERT_EVENTS,
+  isAlertEvent,
+  WARN_ONLY_EVENTS,
+} from "@/modules/flowlog/events";
 import { SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 
 // Alert channel manager (external sinks for execution-flow warnings/errors). Lives on the Webhooks
@@ -157,6 +161,10 @@ function AlertChannelModal({
     });
   // A left-out event the vocabulary no longer lists: shown unchecked, so the operator can drop it.
   const staleEvents = [...leftOut].filter((e) => !isAlertEvent(e));
+  // On errors only, the warn-only events never reach the channel: their chips are held as they are
+  // (a saved choice is kept for when the level goes back to warnings) and say why.
+  const inertEvents: readonly string[] =
+    minLevel === "error" ? WARN_ONLY_EVENTS : [];
 
   const toggleExcluded = (id: string) =>
     setExcluded((prev) => {
@@ -447,19 +455,22 @@ function AlertChannelModal({
           <div className="flex flex-wrap gap-1.5">
             {[...ALERT_EVENTS, ...staleEvents].map((e) => {
               const checked = !leftOut.has(e);
+              const inert = inertEvents.includes(e);
               return (
                 <button
                   key={e}
                   type="button"
-                  disabled={loading}
+                  disabled={loading || inert}
                   aria-pressed={checked}
+                  aria-describedby={inert ? "ac-events-inert" : undefined}
                   onClick={() => toggleEvent(e)}
                   className={cn(
                     "rounded-full border px-2.5 py-1 text-xs transition-colors",
                     {
                       "border-accent bg-accent-soft text-text-primary": checked,
-                      "border-border text-text-secondary hover:bg-bg-hover":
-                        !checked,
+                      "border-border text-text-secondary": !checked,
+                      "hover:bg-bg-hover": !checked && !inert,
+                      "cursor-not-allowed opacity-50": inert,
                     },
                   )}
                 >
@@ -468,6 +479,14 @@ function AlertChannelModal({
               );
             })}
           </div>
+          {inertEvents.length > 0 && (
+            <p id="ac-events-inert" className="text-text-muted mt-2 text-xs">
+              {t(
+                "alerts.eventsInert",
+                "The dimmed events only ever come as warnings, so with Errors only they never reach this channel. They count again with Warnings and errors.",
+              )}
+            </p>
+          )}
         </fieldset>
 
         <fieldset>

@@ -159,6 +159,7 @@
     },
     "events": "Eventos",
     "eventsHint": "Desmarque um evento para ele deixar de alertar aqui. Um aviso que não é nenhum destes segue só as etapas acima. O que fica de fora continua em Logs.",
+    "eventsInert": "Os eventos esmaecidos só saem como aviso, então com Apenas erros eles nunca chegam a este canal. Voltam a valer com Avisos e erros.",
     "excludeAgents": "Agentes que nunca alertam aqui",
     "excludeAgentsEmpty": "Nenhum agente ainda.",
     "excludeAgentsHint": "Os avisos e erros deles continuam em Logs; só este canal deixa de alertar. Use para agentes de teste que dividem a instância com os de produção.",

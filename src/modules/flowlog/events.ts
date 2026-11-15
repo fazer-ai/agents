@@ -13,6 +13,14 @@ export const ALERT_EVENTS = [
 ] as const;
 export type AlertEvent = (typeof ALERT_EVENTS)[number];
 
+// The events whose every line is a `warn` and never a cause: a channel set to errors only receives none
+// of them, so leaving them out there changes nothing. `model_fallback` is not one, since a fallback
+// that took the turn from a primary's account failure is a cause, which passes the level.
+export const WARN_ONLY_EVENTS: readonly AlertEvent[] = [
+  "tool_limit",
+  "no_reply",
+];
+
 export function isAlertEvent(e: string): e is AlertEvent {
   return (ALERT_EVENTS as readonly string[]).includes(e);
 }

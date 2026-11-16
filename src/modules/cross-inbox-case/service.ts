@@ -348,11 +348,13 @@ export interface CaseInbox {
   contactId: number | null;
 }
 
-// THE CASE A CONTACT IS WAITING ON, open or pending in the destination inbox, other than the
-// conversation being asked about. Read two ways, because a case can sit on another contact (the
-// address belonged to someone else and nothing was merged): the attribute this conversation got when
-// it opened the case, and the contact's own conversations. Null ⇒ none. Throws when a read fails or
-// when a full page of the listing may hide the case.
+// THE CASE A CONTACT IS WAITING ON, open, pending or snoozed in the destination inbox, other than
+// the conversation being asked about. Snoozed counts: a team snoozes a case while it waits for the
+// customer to send something on it, so the case is still being worked. Read two ways, because a
+// case can sit on another contact (the address belonged to someone else and nothing was merged):
+// the attribute this conversation got when it opened the case, and the contact's own
+// conversations. Null ⇒ none. Throws when a read fails or when a full page of the listing may hide
+// the case.
 export async function openCaseFor(
   client: Pick<CaseClient, "getConversation" | "listContactConversations">,
   conversationId: number,
@@ -360,7 +362,7 @@ export async function openCaseFor(
 ): Promise<number | null> {
   const waiting = (inboxId: unknown, status: unknown) =>
     Number(inboxId) === where.targetInboxId &&
-    (status === "open" || status === "pending");
+    (status === "open" || status === "pending" || status === "snoozed");
   const conv = await client.getConversation(conversationId);
   const known = numberAttr(conv, where.caseAttributeKey);
   if (known !== null && known !== conversationId) {

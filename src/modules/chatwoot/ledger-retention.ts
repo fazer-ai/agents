@@ -33,13 +33,13 @@ export function ledgerRetentionCutoffs(now = Date.now()): {
 }
 
 // One batch of the retention pass (src/modules/flowlog/retention.ts): up to `rows` settled rows past
-// their cutoff, never a row still owed an attempt. The range runs on `(tenant_id, received_at)`, so the
-// tenant is named here and not left to the policy, which under the fleet role names none, and the
-// cutoffs are compared as timestamps: that comparison is leakproof and reaches the index under RLS,
-// the status filter is not and is applied to what the range returns. The settlement is a second clock,
-// because the jobs that read a row are armed when it settles, not when it arrived: after a long outage
-// the stranded sweep settles a row days old and arms a takeover or reply recovery that has no age
-// ceiling, and the reconcile dates the rows it writes by the message.
+// their cutoff, never a row still owed an attempt. The range runs on `(tenant_id, received_at)` with the
+// tenant named here, since under the fleet role the policy names none, and timestamps are leakproof and
+// reach the index under RLS while the status filter is applied to what the range returns. Settlement
+// is a second clock because the stranded sweep settles a days-old row after an outage and arms a
+// recovery with no age ceiling, and the reconcile dates its rows by the message. A row whose takeover
+// or reply recovery is PENDING or CLAIMED stays at any age: that job reads it by id and, finding none,
+// ends `not-owed` unrepaired (keys of `takeoverRecoveryDedupeKey`, `humanReplyRecoveryDedupeKey`).
 export function ledgerRetentionBatch(
   tenantId: bigint,
   rows: number,
@@ -47,11 +47,17 @@ export function ledgerRetentionBatch(
 ): Prisma.Sql {
   return Prisma.sql`
     DELETE FROM chatwoot_webhook_deliveries WHERE id = ANY(ARRAY(
-      SELECT id FROM chatwoot_webhook_deliveries
+      SELECT d.id FROM chatwoot_webhook_deliveries d
        WHERE tenant_id = ${tenantId} AND received_at < ${cutoffs.processed}
          AND ((status = 'PROCESSED'
                AND COALESCE(processed_at, received_at) < ${cutoffs.processed})
            OR (status = 'DEAD'
                AND COALESCE(processed_at, received_at) < ${cutoffs.dead}))
+         AND NOT EXISTS (
+               SELECT 1 FROM scheduler_jobs j
+                WHERE j.tenant_id = ${tenantId}
+                  AND j.dedupe_key IN ('takeover-recovery:' || d.id,
+                                       'human-reply-recovery:' || d.id)
+                  AND j.status IN ('PENDING', 'CLAIMED'))
        LIMIT ${rows}))`;
 }

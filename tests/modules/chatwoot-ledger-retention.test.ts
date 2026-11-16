@@ -16,6 +16,8 @@ import {
   ledgerRetentionCutoffs,
 } from "@/modules/chatwoot/ledger-retention";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { armHumanReplyRecovery } from "@/modules/chatwoot/recover-human-reply";
+import { armTakeoverRecovery } from "@/modules/chatwoot/recover-takeover";
 import { recordAndProcessChatwootDelivery } from "@/modules/chatwoot/webhook";
 import {
   forgetSweepBatchSizesForTest,
@@ -127,15 +129,27 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     registerFlowlogRetentionHandler();
   });
 
+  // The scenarios below place a DEAD row between the ledger's window and the flow log's, so the flow
+  // log's is pinned past the ledger's instead of read from whatever the environment sets.
+  const configuredFlowlogDays = config.flowlog.retentionDays;
+
   beforeEach(async () => {
+    config.flowlog.retentionDays = 30;
     forgetSweepBatchSizesForTest();
     setSweepOptionsForTest({});
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { tenantId: { in: [tenantId, otherTenantId] } },
     });
+    await suDb.schedulerJob.deleteMany({
+      where: {
+        tenantId,
+        kind: { in: ["TAKEOVER_RECOVERY", "HUMAN_REPLY_RECOVERY"] },
+      },
+    });
   });
 
   afterAll(async () => {
+    config.flowlog.retentionDays = configuredFlowlogDays;
     setSweepOptionsForTest({});
     await suDb.$executeRawUnsafe(
       `DROP TRIGGER IF EXISTS ${trig} ON chatwoot_webhook_deliveries`,
@@ -216,6 +230,56 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
       orderBy: { deliveryId: "asc" },
     });
     expect(kept.map((k) => k.status)).toEqual(["PENDING", "PROCESSING"]);
+  });
+
+  test("a settled row whose takeover or reply recovery is still pending or claimed stays past every window", async () => {
+    const old = config.flowlog.retentionDays * DAY + DAY;
+    const ids: Record<string, bigint> = {};
+    for (const [name, status] of [
+      ["takeoverPending", "PROCESSED"],
+      ["replyClaimed", "PROCESSED"],
+      ["deadReplyPending", "DEAD"],
+      ["takeoverDone", "PROCESSED"],
+      ["replyFailed", "PROCESSED"],
+      ["noJob", "PROCESSED"],
+    ] as const)
+      ids[name] = await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId: name,
+        status,
+        receivedAt: ago(old),
+        processedAt: ago(old),
+      });
+    const id = (name: string) => ids[name] as bigint;
+    await armTakeoverRecovery(tenantId, id("takeoverPending"), appDb);
+    await armHumanReplyRecovery(tenantId, id("replyClaimed"), appDb);
+    await armHumanReplyRecovery(tenantId, id("deadReplyPending"), appDb);
+    await armTakeoverRecovery(tenantId, id("takeoverDone"), appDb);
+    await armHumanReplyRecovery(tenantId, id("replyFailed"), appDb);
+    const settle = async (kind: string, name: string, status: string) =>
+      suDb.$executeRawUnsafe(
+        `UPDATE scheduler_jobs SET status = '${status}' WHERE tenant_id = ${tenantId} AND kind = '${kind}' AND payload->>'deliveryRowId' = '${id(name)}'`,
+      );
+    expect(
+      await settle("HUMAN_REPLY_RECOVERY", "replyClaimed", "CLAIMED"),
+    ).toBe(1);
+    expect(await settle("TAKEOVER_RECOVERY", "takeoverDone", "DONE")).toBe(1);
+    expect(await settle("HUMAN_REPLY_RECOVERY", "replyFailed", "FAILED")).toBe(
+      1,
+    );
+
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual(
+      ["deadReplyPending", "replyClaimed", "takeoverPending"].sort(),
+    );
+
+    // Once the recovery has run, the row is an ordinary settled one again.
+    await settle("TAKEOVER_RECOVERY", "takeoverPending", "DONE");
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual(
+      ["deadReplyPending", "replyClaimed"].sort(),
+    );
   });
 
   test("a Chatwoot retry of a delivery inside the window is still recognised after the pass", async () => {

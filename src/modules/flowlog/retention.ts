@@ -4,12 +4,17 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  ledgerRetentionBatch,
+  ledgerRetentionCutoffs,
+} from "@/modules/chatwoot/ledger-retention";
 import { expiredDoneJobs } from "@/modules/scheduler/done-retention";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
 // Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries, the turn
-// limit's delivered turns, the agents' kept full turn detail, and the scheduler's finished jobs). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
+// limit's delivered turns, the settled Chatwoot delivery ledger, the agents' kept full turn detail,
+// and the scheduler's finished jobs). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
 // 24h (a reschedule does NOT consume an attempt). Deletes run RLS-scoped to the job's tenant, one
 // bounded batch per transaction, so each batch commits on its own and a pass that stops keeps what it
 // deleted. A pass runs for at most SWEEP_PASS_MS; a backlog it leaves is taken by the next run,
@@ -166,6 +171,7 @@ export async function sweepFlowlog(
   const proactiveCutoff = new Date(
     Date.now() - PROACTIVE_DELIVERY_RETENTION_MS,
   );
+  const ledger = ledgerRetentionCutoffs();
   // `id = ANY(ARRAY(...))`, never `id IN (...)`: the array is computed once, and the delete walks the
   // primary key. Planned as a semi join, the IN form rescanned the tenant's rows once per row picked:
   // 29 s for a batch of 100 over 700k expired rows, measured under RLS.
@@ -187,6 +193,7 @@ export async function sweepFlowlog(
          WHERE (NOT proactive AND delivered_at < ${turnCutoff})
             OR delivered_at < ${proactiveCutoff}
          LIMIT ${rows}))`,
+    (rows) => ledgerRetentionBatch(tenantId, rows, ledger),
     // NOTE: An agent's full turn detail leaves at the expiry each row was written with (the
     // agent's own days, never past this cutoff), not at `FLOWLOG_RETENTION_DAYS`. Pointers first,
     // then texts: a text's expiry is the latest of its pointers', so by the time it is due no pointer

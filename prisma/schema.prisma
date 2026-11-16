@@ -709,7 +709,10 @@ model ChatwootWebhookDelivery {
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
 
   @@unique([chatwootInstanceId, deliveryId])
-  @@index([tenantId])
+  // The retention pass's range: settled rows by receipt. Full, not partial on the settled statuses,
+  // because under RLS an enum comparison is not leakproof and the planner cannot prove such a
+  // predicate (see 20261116140000). It also serves every read the bare tenant index served.
+  @@index([tenantId, receivedAt])
   // Serves the other half of the same contract: a turn retiring the rows of the messages it just ran
   // over. ACCOUNT FIRST, because that is how the write is keyed — display ids and message ids are
   // numbered per Chatwoot account, so a conversation id alone matches rows on every account a tenant

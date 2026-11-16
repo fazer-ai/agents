@@ -326,12 +326,10 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
 
 // How long a DONE row is kept before the retention pass deletes it (src/modules/flowlog/retention.ts),
 // or null to keep it for good. A DONE row with no failure budget left on it (`attempts = 0`) reads
-// the same as no row to every arm but `once`: `new-work` and `same-work` both write a fresh PENDING
-// row with zero attempts, and no reader but the arm itself asks for a DONE row by key. What reads one
-// in the meantime is work still settling on it (a claim being finished, the observer's refusal mark
-// against an allow still in flight), which is minutes. A week leaves that and a week of support
-// questions inside the window. The `once` kinds keep theirs: their DONE row is the dedupe. DEAD rows
-// are never deleted (docs/scheduler.md).
+// the same as no row to every arm but `once`. What else reads a DONE row by key is work settling on
+// it (a claim being finished, the observer's refusal and resolve marks), which is minutes; the week
+// adds room for support questions. Kept for good: the `once` kinds, whose DONE row is the dedupe, and
+// a kind whose DONE row is a sweep's watermark. DEAD rows are never deleted (docs/scheduler.md).
 const DONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const JOB_DONE_RETENTION_MS: Record<SchedulerJobKind, number | null> = {
   FOLLOWUP: DONE_RETENTION_MS,
@@ -369,7 +367,9 @@ export const JOB_DONE_RETENTION_MS: Record<SchedulerJobKind, number | null> = {
   CLIENT_ANON_SWEEP: DONE_RETENTION_MS,
   DOCUMENT_APPROVAL_EXPIRY: DONE_RETENTION_MS,
   DOCUMENT_APPROVAL_OUTCOME: DONE_RETENTION_MS,
-  SNOOZED_FOLLOWUP: DONE_RETENTION_MS,
+  // The snoozed sweep's watermark: the last run's start, which keeps an unchanged conversation out of
+  // the next pass (`snoozedSweepSelectionSql`). One row per conversation.
+  SNOOZED_FOLLOWUP: null,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the

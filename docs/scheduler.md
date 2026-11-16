@@ -15,7 +15,8 @@ The flow-log retention sweep (`FLOWLOG_SWEEP`, [`logs.md`](logs.md) § Retention
 | Kinds | DONE kept for | Why |
 | --- | --- | --- |
 | `MEDIA_TEXT_FALLBACK`, `INBOUND_REDISPATCH`, `SUGGESTION_REVIEW` | forever | Armed `once`: the DONE row is the dedupe. Deleted, a redelivered webhook would send the text again, the sweep would arm the same redispatch again, a decided suggestion would be reviewed again. |
-| every other kind | 7 days | A DONE row with `attempts = 0` reads the same as no row to a `new-work` or `same-work` arm (both write a fresh PENDING row with zero attempts). What reads a DONE row by key in the meantime is work still settling on it: a claim being finished, the observer's refusal mark (`retireRefusedObserve`) against an allow still in flight, an appointment's cancellation stamp against a send already claimed. That is minutes; the week is for support questions about a job. |
+| `SNOOZED_FOLLOWUP` | forever | The snoozed sweep's watermark: a conversation whose last event is older than its row's last run start stays out of the next pass (`snoozedSweepSelectionSql`). Deleted, every conversation still snoozed after a week would be armed again with nothing new, and each run reads Chatwoot live before finding nothing to do. One row per conversation. |
+| every other kind | 7 days | A DONE row with `attempts = 0` reads the same as no row to a `new-work` or `same-work` arm (both write a fresh PENDING row with zero attempts). What reads a DONE row by key in the meantime is work still settling on it: a claim being finished, the observer's refusal mark (`retireRefusedObserve`) against an allow still in flight, the four Chatwoot deliveries of one resolve against the observer's `resolveMark` (Chatwoot retries a webhook five times, polynomially, so minutes), an appointment's cancellation stamp against a send already claimed. That is minutes; the week is for support questions about a job. |
 
 Not deleted, whatever their age:
 

@@ -215,13 +215,26 @@ describe("applyResolveLabels with an open case", () => {
     expect((await apply(cw)).outcome).toBe("held");
   });
 
-  test("a resolved or snoozed case, or one in another inbox, does not hold", async () => {
+  // A team snoozes a case while it waits for the customer to send something on it: the case is
+  // still being worked, and it gets its own survey when it is resolved.
+  test("a snoozed case holds too", async () => {
+    const cw = fakeChatwoot({
+      catalog: ["resolvido-pela-ia"],
+      contactConversations: [{ id: 82, inboxId: 9, status: "snoozed" }],
+    });
+    const out = await apply(cw);
+    expect(out.outcome).toBe("held");
+    expect(out.heldBy).toBe(82);
+    expect(cw.calls.map((c) => c[0])).not.toContain("setConversationLabels");
+  });
+
+  test("a resolved case, or one in another inbox, does not hold", async () => {
     const cw = fakeChatwoot({
       catalog: ["resolvido-pela-ia"],
       contactConversations: [
         { id: 80, inboxId: 9, status: "resolved" },
         { id: 81, inboxId: 4, status: "open" },
-        { id: 82, inboxId: 9, status: "snoozed" },
+        { id: 83, inboxId: 4, status: "snoozed" },
       ],
     });
     expect((await apply(cw)).outcome).toBe("written");
@@ -248,6 +261,24 @@ describe("applyResolveLabels with an open case", () => {
           custom_attributes: { case_conversation_id: 90 },
         },
         90: { id: 90, inbox_id: 9, status: "open" },
+      },
+    });
+    const out = await apply(cw);
+    expect(out.outcome).toBe("held");
+    expect(out.heldBy).toBe(90);
+  });
+
+  test("a snoozed case found by its attribute holds", async () => {
+    const cw = fakeChatwoot({
+      catalog: ["resolvido-pela-ia"],
+      conversations: {
+        7: {
+          id: 7,
+          inbox_id: 1,
+          status: "open",
+          custom_attributes: { case_conversation_id: 90 },
+        },
+        90: { id: 90, inbox_id: 9, status: "snoozed" },
       },
     });
     const out = await apply(cw);

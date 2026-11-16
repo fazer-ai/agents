@@ -48,17 +48,27 @@ export function ledgerRetentionBatch(
   return Prisma.sql`
     DELETE FROM chatwoot_webhook_deliveries WHERE id = ANY(ARRAY(
       SELECT d.id FROM chatwoot_webhook_deliveries d
-       WHERE tenant_id = ${tenantId} AND received_at < ${cutoffs.processed}
-         AND ((status = 'PROCESSED'
-               AND COALESCE(processed_at, received_at) < ${cutoffs.processed})
-           OR (status = 'DEAD'
-               AND COALESCE(processed_at, received_at) < ${cutoffs.dead}))
+        -- The recovery keys, built beside the row and compared bare below: built inside the lookup
+        -- they are a leaky expression over an outer reference, which PostgreSQL 17.12 keeps above the
+        -- tenant policy as a Filter (docs/tenancy.md). OFFSET 0 keeps them from folding back in.
+        CROSS JOIN LATERAL (
+          SELECT 'delivery-recovery:' || d.id AS delivery,
+                 'takeover-recovery:' || d.id AS takeover,
+                 'human-reply-recovery:' || d.id AS reply
+          OFFSET 0
+        ) k
+       WHERE d.tenant_id = ${tenantId} AND d.received_at < ${cutoffs.processed}
+         AND ((d.status = 'PROCESSED'
+               AND COALESCE(d.processed_at, d.received_at) < ${cutoffs.processed})
+           OR (d.status = 'DEAD'
+               AND COALESCE(d.processed_at, d.received_at) < ${cutoffs.dead}))
          AND NOT EXISTS (
                SELECT 1 FROM scheduler_jobs j
                 WHERE j.tenant_id = ${tenantId}
-                  AND j.dedupe_key IN ('delivery-recovery:' || d.id,
-                                       'takeover-recovery:' || d.id,
-                                       'human-reply-recovery:' || d.id)
-                  AND j.status IN ('PENDING', 'CLAIMED'))
+                  AND j.dedupe_key IN (k.delivery, k.takeover, k.reply)
+                  AND j.status IN ('PENDING', 'CLAIMED')
+               -- A probe per row by key, never an anti join: under the policy the status filter does
+               -- not narrow the estimate, and joined the lookup reaches the index by tenant alone.
+               OFFSET 0)
        LIMIT ${rows}))`;
 }

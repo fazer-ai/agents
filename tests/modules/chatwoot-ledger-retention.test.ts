@@ -479,6 +479,11 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
         "chatwoot_webhook_deliveries_tenant_id_received_at_idx",
       );
       expect(plan).toMatch(/Index Cond: \(\(tenant_id = .*received_at </);
+      // The recovery lookup reaches the job keys too: built inside it from the outer row, a key is a
+      // Filter under the tenant policy on PostgreSQL 17.12, and every row then walks the tenant's jobs.
+      expect(plan).toMatch(
+        /Index Scan using scheduler_jobs_\w+ on scheduler_jobs j[^\n]*\n\s*Index Cond: \(\(tenant_id = [^\n]*dedupe_key = ANY/,
+      );
     }
   });
 });

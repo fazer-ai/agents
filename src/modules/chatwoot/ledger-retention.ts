@@ -36,60 +36,135 @@ export function ledgerRetentionCutoffs(now = Date.now()): {
   };
 }
 
-// One batch of the retention pass (src/modules/flowlog/retention.ts): up to `rows` settled rows past
-// their cutoff, never a row still owed an attempt. The range runs on `(tenant_id, received_at)` with the
-// tenant named here, since under the fleet role the policy names none, and timestamps are leakproof and
-// reach the index under RLS while the status filter is applied to what the range returns. Settlement
-// is a second clock because the stranded sweep settles a days-old row after an outage and arms a
-// recovery with no age ceiling, and the reconcile dates its rows by the message. A row that a live job
-// still reads stays at any age: its delivery, takeover or reply recovery (the `*RecoveryDedupeKey`
-// keys), which ends unrepaired without it, or an ingest fallback of its message, which counts it.
-export function ledgerRetentionBatch(
+// Where a tenant's pass stands in its range: the last row a page examined, in `(received_at, id)`
+// order. In process, so a restart begins again from the oldest row, which costs pages, not rows.
+export type LedgerCursor = { at: Date; id: bigint } | null;
+const cursors = new Map<string, NonNullable<LedgerCursor>>();
+
+/** Test-only: forget where each tenant's pass stands. */
+export function forgetLedgerCursorsForTest(): void {
+  cursors.clear();
+}
+
+// One page of the retention pass (src/modules/flowlog/retention.ts): the next `rows` rows of the
+// tenant's range past the cutoff, in `(received_at, id)` order after `after`, of which the settled ones
+// no live job still reads are deleted. The page bounds the rows EXAMINED, so a range of rows the pass
+// must keep is walked a page at a time instead of in one statement. The range runs on
+// `(tenant_id, received_at)` with the tenant named, timestamps and bigint compare leakproof under RLS.
+// A row a live job still reads stays: its delivery, takeover or reply recovery by the row's key, the
+// deliveries of a message its ingest fallback counts, and the siblings a reply recovery's coverage
+// question reads (docs/chatwoot.md, "Ledger retention").
+export function ledgerRetentionPage(
   tenantId: bigint,
   rows: number,
   cutoffs: { processed: Date; dead: Date },
+  after: LedgerCursor,
 ): Prisma.Sql {
+  const from = after
+    ? Prisma.sql`AND d.received_at >= ${after.at}
+          AND (d.received_at > ${after.at} OR d.id > ${after.id})`
+    : Prisma.empty;
   return Prisma.sql`
-    DELETE FROM chatwoot_webhook_deliveries WHERE id = ANY(ARRAY(
-      -- The messages an ingest fallback still waiting will count settled deliveries of
-      -- (fallbackCovered in src/graph/ingest-job.ts), read once per batch by the key prefix, which is
-      -- leakproof and reaches the index under the policy. Compared as text, so a payload no fallback
-      -- could parse costs its rows nothing rather than failing the batch.
-      WITH fallbacks AS MATERIALIZED (
-        SELECT j.payload->>'instanceId' AS instance_id,
-               j.payload->>'conversationId' AS conversation_id,
-               j.payload->>'messageId' AS message_id
-          FROM scheduler_jobs j
-         WHERE j.tenant_id = ${tenantId}
-           AND starts_with(j.dedupe_key, 'ingest-fallback:')
-           AND j.status IN ('PENDING', 'CLAIMED'))
-      SELECT d.id FROM chatwoot_webhook_deliveries d
-        -- The recovery keys, built beside the row and compared bare below: built inside the lookup
-        -- they are a leaky expression over an outer reference, which PostgreSQL 17.12 keeps above the
-        -- tenant policy as a Filter (docs/tenancy.md). OFFSET 0 keeps them from folding back in.
-        CROSS JOIN LATERAL (
-          SELECT 'delivery-recovery:' || d.id AS delivery,
-                 'takeover-recovery:' || d.id AS takeover,
-                 'human-reply-recovery:' || d.id AS reply
-          OFFSET 0
-        ) k
+    WITH page AS MATERIALIZED (
+      SELECT d.id, d.received_at, d.status::text AS status, d.processed_at,
+             d.chatwoot_instance_id, d.conversation_id, d.inbound_message_id,
+             d.human_reply_message_id
+        FROM chatwoot_webhook_deliveries d
        WHERE d.tenant_id = ${tenantId} AND d.received_at < ${cutoffs.processed}
-         AND ((d.status = 'PROCESSED'
-               AND COALESCE(d.processed_at, d.received_at) < ${cutoffs.processed})
-           OR (d.status = 'DEAD'
-               AND COALESCE(d.processed_at, d.received_at) < ${cutoffs.dead}))
-         AND NOT EXISTS (
-               SELECT 1 FROM scheduler_jobs j
-                WHERE j.tenant_id = ${tenantId}
-                  AND j.dedupe_key IN (k.delivery, k.takeover, k.reply)
-                  AND j.status IN ('PENDING', 'CLAIMED')
-               -- A probe per row by key, never an anti join: under the policy the status filter does
-               -- not narrow the estimate, and joined the lookup reaches the index by tenant alone.
-               OFFSET 0)
-         AND NOT EXISTS (
-               SELECT 1 FROM fallbacks f
-                WHERE f.instance_id = d.chatwoot_instance_id::text
-                  AND f.conversation_id = d.conversation_id::text
-                  AND f.message_id = d.inbound_message_id::text)
-       LIMIT ${rows}))`;
+         ${from}
+       ORDER BY d.received_at, d.id
+       LIMIT ${rows}),
+    -- The live ingest fallbacks and reply recoveries, read once per page by key prefix (starts_with is
+    -- leakproof and a range on the key index under the policy). Payload fields compare as text, so one
+    -- no job could parse holds nothing rather than failing the page.
+    fallbacks AS MATERIALIZED (
+      SELECT j.payload->>'instanceId' AS instance_id,
+             j.payload->>'conversationId' AS conversation_id,
+             j.payload->>'messageId' AS message_id
+        FROM scheduler_jobs j
+       WHERE j.tenant_id = ${tenantId}
+         AND starts_with(j.dedupe_key, 'ingest-fallback:')
+         AND j.status IN ('PENDING', 'CLAIMED')),
+    replies AS MATERIALIZED (
+      SELECT CASE WHEN j.payload->>'deliveryRowId' ~ '^[0-9]{1,18}$'
+                  THEN (j.payload->>'deliveryRowId')::bigint END AS row_id
+        FROM scheduler_jobs j
+       WHERE j.tenant_id = ${tenantId}
+         AND starts_with(j.dedupe_key, 'human-reply-recovery:')
+         AND j.status IN ('PENDING', 'CLAIMED')),
+    -- Each recovery's own row by primary key, one probe per live job.
+    replied AS MATERIALIZED (
+      SELECT r.chatwoot_instance_id, r.conversation_id, r.human_reply_message_id
+        FROM replies x
+        CROSS JOIN LATERAL (
+          SELECT r.chatwoot_instance_id, r.conversation_id, r.human_reply_message_id
+            FROM chatwoot_webhook_deliveries r
+           WHERE r.tenant_id = ${tenantId} AND r.id = x.row_id
+             AND r.human_reply_message_id IS NOT NULL
+          OFFSET 0) r),
+    gone AS (
+      DELETE FROM chatwoot_webhook_deliveries WHERE id = ANY(ARRAY(
+        SELECT p.id FROM page p
+          -- The recovery keys, built beside the row and compared bare below: built inside the lookup
+          -- they are a leaky expression over an outer reference, which PostgreSQL 17.12 keeps above
+          -- the tenant policy as a Filter (docs/tenancy.md). OFFSET 0 keeps them from folding back in.
+          CROSS JOIN LATERAL (
+            SELECT 'delivery-recovery:' || p.id AS delivery,
+                   'takeover-recovery:' || p.id AS takeover,
+                   'human-reply-recovery:' || p.id AS reply
+            OFFSET 0
+          ) k
+         WHERE ((p.status = 'PROCESSED'
+                 AND COALESCE(p.processed_at, p.received_at) < ${cutoffs.processed})
+             OR (p.status = 'DEAD'
+                 AND COALESCE(p.processed_at, p.received_at) < ${cutoffs.dead}))
+           AND NOT EXISTS (
+                 SELECT 1 FROM scheduler_jobs j
+                  WHERE j.tenant_id = ${tenantId}
+                    AND j.dedupe_key IN (k.delivery, k.takeover, k.reply)
+                    AND j.status IN ('PENDING', 'CLAIMED')
+                 -- A probe per row by key, never an anti join: under the policy the status filter
+                 -- does not narrow the estimate, and joined the lookup reaches the index by tenant alone.
+                 OFFSET 0)
+           AND NOT EXISTS (
+                 SELECT 1 FROM fallbacks f
+                  WHERE f.instance_id = p.chatwoot_instance_id::text
+                    AND f.conversation_id = p.conversation_id::text
+                    AND f.message_id = p.inbound_message_id::text)
+           AND NOT EXISTS (
+                 SELECT 1 FROM replied h
+                  WHERE h.chatwoot_instance_id = p.chatwoot_instance_id
+                    AND h.conversation_id = p.conversation_id
+                    AND h.human_reply_message_id = p.human_reply_message_id)))
+      RETURNING 1)
+    SELECT (SELECT count(*) FROM page)::int AS examined,
+           (SELECT count(*) FROM gone)::int AS deleted,
+           l.received_at AS "lastAt", l.id AS "lastId"
+      FROM (SELECT 1) one
+      LEFT JOIN LATERAL (
+        SELECT received_at, id FROM page ORDER BY received_at DESC, id DESC LIMIT 1) l ON true`;
+}
+
+// Runs one page from where the tenant's pass stands, and moves it on: past the page when the page was
+// full, back to the start when the range ran out, so the next sweep walks it again from the oldest.
+export async function ledgerRetentionStep(
+  db: { $queryRaw: (sql: Prisma.Sql) => Promise<unknown> },
+  tenantId: bigint,
+  rows: number,
+  cutoffs: { processed: Date; dead: Date },
+): Promise<{ examined: number; deleted: number }> {
+  const key = String(tenantId);
+  const [r] = (await db.$queryRaw(
+    ledgerRetentionPage(tenantId, rows, cutoffs, cursors.get(key) ?? null),
+  )) as {
+    examined: number;
+    deleted: number;
+    lastAt: Date | null;
+    lastId: bigint | null;
+  }[];
+  if (!r) throw new Error("ledger retention: the page returned no row");
+  if (r.examined < rows || r.lastAt === null || r.lastId === null)
+    cursors.delete(key);
+  else cursors.set(key, { at: r.lastAt, id: r.lastId });
+  return { examined: r.examined, deleted: r.deleted };
 }

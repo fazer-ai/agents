@@ -5,8 +5,8 @@ import config from "@/config";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
-  ledgerRetentionBatch,
   ledgerRetentionCutoffs,
+  ledgerRetentionStep,
 } from "@/modules/chatwoot/ledger-retention";
 import { expiredDoneJobs } from "@/modules/scheduler/done-retention";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -86,21 +86,35 @@ export function nextBatchSize(
   );
 }
 
+// One batch of a table: how many rows it examined, which decides whether the table is done, and how
+// many of them it deleted. For a plain delete the two are the same number.
+type Step = (
+  db: Prisma.TransactionClient,
+  rows: number,
+) => Promise<{ examined: number; deleted: number }>;
+
+function deleteStep(batch: (rows: number) => Prisma.Sql): Step {
+  return async (db, rows) => {
+    const n = await db.$executeRaw(batch(rows));
+    return { examined: n, deleted: n };
+  };
+}
+
 interface TableSweep {
   deleted: number;
   done: boolean;
   timeouts: number;
 }
 
-// Deletes, one transaction per batch, the rows `batch(n)` picks up to n at a time, until a batch comes
-// back short (done) or the pass deadline passes (not done). A batch that runs out of time (statement
+// Deletes, one transaction per batch, the rows `step(n)` examines up to n at a time, until a batch
+// examines fewer than n (done) or the pass deadline passes (not done). A batch that runs out of time (statement
 // timeout, lock timeout, or the transaction outliving its budget) is retried at half the size, down to
 // SWEEP_MIN_BATCH_ROWS, in this pass if time is left and in the next one otherwise.
 async function deleteInBatches(
   base: PrismaClient,
   ctx: TenantContext,
   key: string,
-  batch: (rows: number) => Prisma.Sql,
+  step: Step,
   deadline: number,
   o: Required<SweepOptions>,
   // Asked when a batch comes back short, for a table whose outer predicate can keep a picked row: a
@@ -114,7 +128,9 @@ async function deleteInBatches(
     let n: number;
     const started = Date.now();
     try {
-      n = await runScopedOn(base, ctx, (db) => db.$executeRaw(batch(size)));
+      const r = await runScopedOn(base, ctx, (db) => step(db, size));
+      n = r.examined;
+      deleted += r.deleted;
     } catch (error) {
       if (!ranOutOfTime(error) || size <= SWEEP_MIN_BATCH_ROWS) throw error;
       timeouts++;
@@ -122,7 +138,6 @@ async function deleteInBatches(
       batchSizes.set(key, size);
       continue;
     }
-    deleted += n;
     if (n < size) {
       const more =
         rowsLeft !== undefined &&
@@ -181,6 +196,7 @@ export async function sweepFlowlog(
   const passes: (
     | ((rows: number) => Prisma.Sql)
     | { batch: (rows: number) => Prisma.Sql; rowsLeft: Prisma.Sql }
+    | { step: Step }
   )[] = [
     (rows) => Prisma.sql`
       DELETE FROM execution_logs WHERE id = ANY(ARRAY(
@@ -199,7 +215,9 @@ export async function sweepFlowlog(
          WHERE (NOT proactive AND delivered_at < ${turnCutoff})
             OR delivered_at < ${proactiveCutoff}
          LIMIT ${rows}))`,
-    (rows) => ledgerRetentionBatch(tenantId, rows, ledger),
+    {
+      step: (db, rows) => ledgerRetentionStep(db, tenantId, rows, ledger),
+    },
     // NOTE: An agent's full turn detail leaves at the expiry each row was written with (the
     // agent's own days, never past this cutoff), not at `FLOWLOG_RETENTION_DAYS`. Pointers first,
     // then texts: a text's expiry is the latest of its pointers', so by the time it is due no pointer
@@ -243,10 +261,14 @@ export async function sweepFlowlog(
       base,
       ctx,
       `${tenantId}:${i}`,
-      typeof pass === "function" ? pass : pass.batch,
+      typeof pass === "function"
+        ? deleteStep(pass)
+        : "step" in pass
+          ? pass.step
+          : deleteStep(pass.batch),
       deadline,
       o,
-      typeof pass === "function" ? undefined : pass.rowsLeft,
+      typeof pass === "function" || "step" in pass ? undefined : pass.rowsLeft,
     );
     deleted += r.deleted;
     timeouts += r.timeouts;

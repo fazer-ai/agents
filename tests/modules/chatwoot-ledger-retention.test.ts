@@ -12,9 +12,11 @@ import config from "@/config";
 import { armIngest } from "@/graph/ingest-job";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy";
 import {
+  forgetLedgerCursorsForTest,
   LEDGER_RETENTION_MS,
-  ledgerRetentionBatch,
   ledgerRetentionCutoffs,
+  ledgerRetentionPage,
+  ledgerRetentionStep,
 } from "@/modules/chatwoot/ledger-retention";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { armDeliveryRecovery } from "@/modules/chatwoot/recover-delivery";
@@ -138,6 +140,7 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
   beforeEach(async () => {
     config.flowlog.retentionDays = 30;
     forgetSweepBatchSizesForTest();
+    forgetLedgerCursorsForTest();
     setSweepOptionsForTest({});
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { tenantId: { in: [tenantId, otherTenantId] } },
@@ -356,6 +359,83 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     expect(await idsOf(tenantId)).toEqual(["waitedOn", "waitedOnUpdate"]);
   });
 
+  test("a range the pass must keep is walked a page at a time, and what lies past it and the tables after it are still swept", async () => {
+    const held = 1_500;
+    const old = config.flowlog.retentionDays * DAY + 2 * DAY;
+    // A colleague's reply whose recovery is still pending: its own row is held by the job's key, and
+    // every sibling delivery of the same reply is held for the coverage question the recovery asks.
+    const replyRow = await insertRow({
+      tenant: tenantId,
+      instance: instanceId,
+      deliveryId: "reply-own",
+      status: "PROCESSED",
+      receivedAt: ago(old),
+      processedAt: ago(old),
+    });
+    await suDb.$executeRaw`
+      UPDATE chatwoot_webhook_deliveries
+         SET conversation_id = 5201, human_reply_message_id = 9201
+       WHERE id = ${replyRow}`;
+    await suDb.$executeRaw`
+      INSERT INTO chatwoot_webhook_deliveries
+        (tenant_id, chatwoot_instance_id, delivery_id, event, status, received_at, processed_at,
+         conversation_id, human_reply_message_id)
+      SELECT ${tenantId}, ${instanceId}, 'held-' || g, 'message_created', 'PROCESSED',
+             ${ago(old)}, ${ago(old)}, 5201, 9201
+        FROM generate_series(1, ${held}) g`;
+    await armHumanReplyRecovery(tenantId, replyRow, appDb);
+    // Newer than every held row, still past the window: reached only once the held range is walked.
+    for (const name of ["pastA", "pastB"])
+      await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId: name,
+        status: "PROCESSED",
+        receivedAt: ago(LEDGER_RETENTION_MS + DAY),
+        processedAt: ago(LEDGER_RETENTION_MS + DAY),
+      });
+
+    const cutoffs = ledgerRetentionCutoffs();
+    const first = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) => ledgerRetentionStep(db, tenantId, 100, cutoffs),
+    );
+    expect(first).toEqual({ examined: 100, deleted: 0 });
+
+    // A finished job past its window, in the table the sweep takes after the ledger.
+    await suDb.$executeRaw`
+      INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, status, run_at, created_at, updated_at)
+      VALUES (${tenantId}, 'DEBOUNCE', ${`ledger-r-done-${process.pid}`}, 'DONE',
+              ${ago(400 * DAY)}, ${ago(400 * DAY)}, ${ago(400 * DAY)})`;
+    // Short passes of small pages: each ends on its own time with the range part walked, and the next
+    // takes it up from there, never from the oldest row again.
+    let passes = 0;
+    let done = false;
+    while (!done && passes < 100) {
+      done = (
+        await sweepFlowlog(appDb, tenantId, {
+          batchRows: 100,
+          targetBatchMs: 0,
+          passMs: 25,
+          pauseMs: 0,
+        })
+      ).done;
+      passes++;
+    }
+    expect(done).toBe(true);
+    expect(passes).toBeGreaterThan(1);
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: `ledger-r-done-${process.pid}` },
+      }),
+    ).toBe(0);
+    const left = await idsOf(tenantId);
+    expect(left).toHaveLength(held + 1);
+    expect(left).not.toContain("pastA");
+    expect(left).not.toContain("pastB");
+  });
+
   test("a Chatwoot retry of a delivery inside the window is still recognised after the pass", async () => {
     const deliveryId = `ledger-dedup-${process.pid}`;
     const rowId = await insertRow({
@@ -509,8 +589,7 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
   });
 
   test("a batch is a range over (tenant_id, received_at) under the tenant scope and under the fleet role", async () => {
-    const sql = ledgerRetentionBatch(tenantId, 1000, ledgerRetentionCutoffs());
-    const explain = Prisma.sql`EXPLAIN ${sql}`;
+    const cutoffs = ledgerRetentionCutoffs();
     const plans: string[] = [];
     // With sequential scans priced out, the plan shows whether the range CAN reach the index:
     // a predicate the RLS barrier holds back would leave the index usable only as a filter.
@@ -519,8 +598,14 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
       $queryRaw: PrismaClient["$queryRaw"];
     }) => {
       await db.$executeRaw`SELECT set_config('enable_seqscan', 'off', true)`;
-      const rows = await db.$queryRaw<{ "QUERY PLAN": string }[]>(explain);
-      plans.push(rows.map((r) => r["QUERY PLAN"]).join("\n"));
+      // From the start of the range, and from a cursor part way along it.
+      for (const after of [null, { at: cutoffs.dead, id: 1n }]) {
+        const page = ledgerRetentionPage(tenantId, 1000, cutoffs, after);
+        const rows = await db.$queryRaw<{ "QUERY PLAN": string }[]>(
+          Prisma.sql`EXPLAIN ${page}`,
+        );
+        plans.push(rows.map((r) => r["QUERY PLAN"]).join("\n"));
+      }
     };
     await runScopedOn(
       appDb,
@@ -528,7 +613,7 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
       read,
     );
     await asSuperAdminOn(appDb, read);
-    expect(plans).toHaveLength(2);
+    expect(plans).toHaveLength(4);
     for (const plan of plans) {
       expect(plan).toContain(
         "chatwoot_webhook_deliveries_tenant_id_received_at_idx",

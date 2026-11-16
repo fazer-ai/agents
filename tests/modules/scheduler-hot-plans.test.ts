@@ -5,8 +5,8 @@ import { pendingFallbacksSql, waitingFallbacksSql } from "@/graph/ingest-job";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy";
 import { threadRemindersSql } from "@/modules/appointments/reminder-keys";
 import {
-  ledgerRetentionBatch,
   ledgerRetentionCutoffs,
+  ledgerRetentionPage,
 } from "@/modules/chatwoot/ledger-retention";
 import {
   cancelPendingByPrefixSql,
@@ -211,10 +211,11 @@ describe.skipIf(!dbUp)(
     });
 
     test("the ledger retention's job lookups, under the tenant policy and as the fleet", async () => {
-      const sql = ledgerRetentionBatch(
+      const sql = ledgerRetentionPage(
         tenantId,
         1000,
         ledgerRetentionCutoffs(),
+        null,
       );
       for (const reads of [await asTenant(sql), await asFleet(sql)]) {
         expect(reads.length).toBeGreaterThan(0);

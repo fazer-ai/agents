@@ -1533,19 +1533,23 @@ describe("appointmentBooked, when a record-only reschedule cannot clean up", () 
   // and then `$transaction`, and both are stubs.
   function fakeBase(seen: string[], storedStart: Date | null) {
     const tx = {
-      $executeRaw: async () => 0,
+      // The tenant scope's own statements succeed; the retire of the reminders' rows fails.
+      $executeRaw: async (q: unknown) => {
+        const text =
+          (q as { sql?: string }).sql ??
+          (Array.isArray(q) ? (q as string[]).join("") : "");
+        if (text.includes("scheduler_jobs")) {
+          seen.push("retire");
+          throw new Error("scheduler unavailable");
+        }
+        return 0;
+      },
       appointment: {
         findUnique: async () =>
           storedStart ? { startAt: storedStart, cancelledAt: null } : null,
         upsert: async () => {
           seen.push("record");
           return {};
-        },
-      },
-      schedulerJob: {
-        updateMany: async () => {
-          seen.push("retire");
-          throw new Error("scheduler unavailable");
         },
       },
     };

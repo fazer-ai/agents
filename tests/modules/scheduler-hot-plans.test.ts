@@ -5,9 +5,13 @@ import { pendingFallbacksSql, waitingFallbacksSql } from "@/graph/ingest-job";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy";
 import { threadRemindersSql } from "@/modules/appointments/reminder-keys";
 import {
+  cancelPendingByPrefixSql,
+  cancelPendingJobsByPrefixUpToMessage,
   claimSql,
   laneFilter,
   reapSql,
+  revokeDeleteByPrefixSql,
+  revokeRetireByPrefixSql,
   trafficOrder,
 } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
@@ -200,6 +204,61 @@ describe.skipIf(!dbUp)(
           expect([BY_KEY, PENDING]).toContain(n["Index Name"] as string);
         expect(reads.map((n) => n["Index Name"])).toContain(BY_KEY);
       }
+    });
+
+    test("the prefix cancels and the reset's revoke, under the tenant policy", async () => {
+      for (const sql of [
+        cancelPendingByPrefixSql("APPOINTMENT_REMINDER", "reminder:e:"),
+        cancelPendingByPrefixSql("OBSERVE", "observe:t", 5),
+        revokeDeleteByPrefixSql("INGEST_MESSAGE", "ingest:t:"),
+        revokeDeleteByPrefixSql("INGEST_MESSAGE", "ingest:t:", 5),
+        revokeRetireByPrefixSql("DEBOUNCE", "debounce:"),
+      ]) {
+        const reads = (await asTenant(sql)).filter(
+          (n) => n["Node Type"] !== "ModifyTable",
+        );
+        expect(reads.length).toBeGreaterThan(0);
+        for (const n of reads)
+          expect([BY_KEY, PENDING]).toContain(n["Index Name"] as string);
+        expect(reads.map((n) => n["Index Name"])).toContain(BY_KEY);
+      }
+    });
+
+    test("the episode-fenced cancel takes only a numeric atMessageId at or below the bound", async () => {
+      await suDb.$executeRaw`
+        INSERT INTO scheduler_jobs
+          (tenant_id, kind, dedupe_key, payload, status, run_at, created_at, updated_at)
+        VALUES
+          (${tenantId}, 'OBSERVE', 'observe:eq:below', '{"atMessageId":3}', 'PENDING', now(), now(), now()),
+          (${tenantId}, 'OBSERVE', 'observe:eq:at', '{"atMessageId":5}', 'PENDING', now(), now(), now()),
+          (${tenantId}, 'OBSERVE', 'observe:eq:above', '{"atMessageId":9}', 'PENDING', now(), now(), now()),
+          (${tenantId}, 'OBSERVE', 'observe:eq:none', '{}', 'PENDING', now(), now(), now()),
+          (${tenantId}, 'OBSERVE', 'observe:eq:text', '{"atMessageId":"x"}', 'PENDING', now(), now(), now()),
+          (${tenantId}, 'OBSERVE', 'observe:eq:done', '{"atMessageId":1}', 'DONE', now(), now(), now()),
+          (${tenantId}, 'OBSERVE', 'observe:eqx', '{"atMessageId":1}', 'PENDING', now(), now(), now())`;
+      expect(
+        await cancelPendingJobsByPrefixUpToMessage(
+          tenantId,
+          "OBSERVE",
+          "observe:eq:",
+          5,
+          appDb,
+        ),
+      ).toBe(2);
+      const rows = await suDb.$queryRaw<
+        { dedupe_key: string; status: string }[]
+      >`SELECT dedupe_key, status::text FROM scheduler_jobs
+         WHERE tenant_id = ${tenantId} AND starts_with(dedupe_key, 'observe:eq')
+         ORDER BY dedupe_key`;
+      expect(rows).toEqual([
+        { dedupe_key: "observe:eq:above", status: "PENDING" },
+        { dedupe_key: "observe:eq:at", status: "DONE" },
+        { dedupe_key: "observe:eq:below", status: "DONE" },
+        { dedupe_key: "observe:eq:done", status: "DONE" },
+        { dedupe_key: "observe:eq:none", status: "PENDING" },
+        { dedupe_key: "observe:eq:text", status: "PENDING" },
+        { dedupe_key: "observe:eqx", status: "PENDING" },
+      ]);
     });
 
     test("the prefix reads answer what the Prisma reads they replace answered", async () => {

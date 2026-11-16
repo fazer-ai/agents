@@ -36,5 +36,6 @@ The claims and the reaper run as the fleet; the prefix reads run under the tenan
 | the reaper (`reapSql`) | fleet | `scheduler_jobs_claimed_idx`, `(claimed_at) WHERE status = 'CLAIMED'` | 6k buffers per call |
 | the turn barrier's fallback reads (`pendingFallbacksSql`, `waitingFallbacksSql`) | tenant | `scheduler_jobs_tenant_id_dedupe_key_pattern_idx`, `(tenant_id, dedupe_key text_pattern_ops)`, through `starts_with` (`dedupeKeyStartsWith`) | 15k buffers and 73 ms per call, 70k calls |
 | a conversation's pending reminders (`threadRemindersSql`) | tenant | the same key index, by the `reminder:` key root | 16k buffers and 121 ms per call |
+| the prefix cancels (`cancelPendingByPrefixSql`: an appointment's reminders, the observer's rows at `/reset`) and the reset's revoke (`revokeDeleteByPrefixSql`, `revokeRetireByPrefixSql`) | tenant | the same key index | a Seq Scan over every row of the tenant |
 
 `starts_with` is leakproof and Postgres turns it into a range over a byte-ordered index, so it reaches the key index where Prisma's `startsWith` (a `LIKE`) cannot. The key index replaces the old `(tenant_id, dedupe_key)` one: `text_pattern_ops` carries `=` too, so the correlated lookups by key that index served are served by this one. `tests/modules/scheduler-hot-plans.test.ts` reads the plan of each read under its own role, on a table of finished rows.

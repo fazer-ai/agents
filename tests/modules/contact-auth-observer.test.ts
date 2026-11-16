@@ -21,6 +21,7 @@ import {
   observerRuleVerdict,
 } from "@/modules/contact-auth/observer";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
+import { sweepFlowlog } from "@/modules/flowlog/retention";
 import {
   armObserve,
   retireRefusedObserve,
@@ -575,6 +576,40 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       base: appDb,
     });
     expect(await runnableObserveRows(27)).toHaveLength(1);
+  });
+
+  // A refusal recorded on a finished row whose last write is older than the retention window is a
+  // fresh write: the retention pass keeps it, and the older allow still in flight arms nothing.
+  test("a refusal left on an old finished observation survives the retention pass and still fences an older allow", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(28, "individual");
+    const old = new Date(Date.now() - 30 * 86_400_000);
+    await suDb.$executeRaw`
+      UPDATE scheduler_jobs SET status = 'DONE', attempts = 0, updated_at = ${old}
+       WHERE tenant_id = ${tenantId} AND kind = 'OBSERVE' AND payload->>'conversationId' = '28'`;
+    const allowAskedAt = Date.now() - 1_000;
+    await retireRefusedObserve({
+      tenantId,
+      instanceId,
+      conversationId: 28,
+      agentId: observerId,
+      askedAt: Date.now(),
+      base: appDb,
+    });
+    await sweepFlowlog(appDb, tenantId);
+    expect(
+      await armObserve({
+        tenantId,
+        instanceId,
+        conversationId: 28,
+        agentId: observerId,
+        reason: "burst",
+        cfg: readMonitoringConfig({}),
+        gateAskedAt: allowAskedAt,
+        base: appDb,
+      }),
+    ).toBe("off");
+    expect(await runnableObserveRows(28)).toEqual([]);
   });
 
   // An arm that cannot read the gate (the database failing under it) on a gate that asks an

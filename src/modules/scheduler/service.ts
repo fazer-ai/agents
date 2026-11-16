@@ -523,7 +523,9 @@ export async function retireUnlessAllowedLaterOn(
       UPDATE scheduler_jobs
          SET payload = payload || jsonb_build_object(
                ${p.refusedField}::text,
-               GREATEST(COALESCE((payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint))
+               GREATEST(COALESCE((payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint)),
+             -- NOTE: the retention pass ages a DONE row by updated_at, and this mark is a fresh write.
+             updated_at = now()
        WHERE tenant_id = ${p.tenantId}
          AND kind = ${p.kind}::"SchedulerJobKind"
          AND dedupe_key = ${p.dedupeKey}`;

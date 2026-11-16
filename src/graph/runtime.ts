@@ -852,13 +852,32 @@ export async function runLoadedTurn(
     decided = claim.won;
     return decided;
   };
-  return runTurnBody({ ...params, claimBeforeSend });
+  // The closing line of a completed transfer, asked only after the ordinary claim lost: the same
+  // burst, claimed past the silences (a dispensal, a moved mark) that the hand-over itself caused, and
+  // still refused by any claim another turn holds. Memoized, so one turn sends one line.
+  let transferDecided: boolean | null = null;
+  const claimForTransfer = async (): Promise<boolean> => {
+    if (transferDecided !== null) return transferDecided;
+    const claim = await claimReplyBurst({
+      tenantId: params.tenantId,
+      conversationDbId: target.conversationDbId,
+      toMessageId: target.toMessageId,
+      maxHandledAllowed: target.maxHandledAllowed,
+      messageIds: target.messageIds,
+      initiatedBy: "transfer",
+      base,
+    });
+    transferDecided = claim.won;
+    return transferDecided;
+  };
+  return runTurnBody({ ...params, claimBeforeSend, claimForTransfer });
 }
 
 // `RunLoadedTurnParams` plus the claim gate the wrapper above built. Not on the public type because
 // no caller may supply it; absent (the playground, no triggering message), it answers yes.
 type RunTurnBodyParams = RunLoadedTurnParams & {
   claimBeforeSend?: () => Promise<boolean>;
+  claimForTransfer?: () => Promise<boolean>;
 };
 
 // Whether a read receipt on this channel can reach anything. Unknown counts as WhatsApp: the
@@ -906,6 +925,14 @@ async function runTurnBody(
     const won = await askClaim();
     if (won) sendClaimed = true;
     return won;
+  };
+  // The claim for the closing line of a transfer this turn completed, asked only once it landed.
+  // Once the conversation is a person's no later turn speaks for the burst, so a claim lost to the
+  // silence the hand-over caused (a gate exit's dispensal, a mark moved past it) is asked again past
+  // it. Another turn's claim still refuses it. See docs/graph.md, "The reply claim".
+  const claimTransferLine = async (): Promise<boolean> => {
+    if (await claimBeforeSend()) return true;
+    return (await params.claimForTransfer?.()) ?? false;
   };
   // Applied before anything reads the config, so the model, the output guardrail and the
   // audited row all see the same prompt.
@@ -1499,6 +1526,7 @@ async function runTurnBody(
     voiceReply: boolean | null,
     // NOTE: False when the text is the operator's (a guardrail's template or hand-over message).
     modelText = true,
+    claim: () => Promise<boolean> = claimBeforeSend,
   ): Promise<ReplyDelivery | "stale" | "superseded"> => {
     const asked = shouldReplyWithAudio(
       loaded.ttsConfig.mode,
@@ -1553,7 +1581,7 @@ async function runTurnBody(
         // NOTE: Asked again after the normalizer's model call and the synthesis.
         if (await writeCalledOff()) return "stale";
         if (tts) {
-          if (!(await claimBeforeSend())) return "superseded";
+          if (!(await claim())) return "superseded";
           // One reply: the voice note and the text that follows it share the key.
           const replyKey = crypto.randomUUID();
           const sent = await client.sendAudioMessage(
@@ -1635,7 +1663,7 @@ async function runTurnBody(
       : null;
     // NOTE: Asked again for the text path, reached directly or after a failed TTS attempt.
     if (await writeCalledOff()) return "stale";
-    if (!(await claimBeforeSend())) return "superseded";
+    if (!(await claim())) return "superseded";
     const balloons = await deliverReply(
       client,
       conversationId,
@@ -1732,6 +1760,7 @@ async function runTurnBody(
         screened,
         await currentVoiceReply(),
         !byOperator,
+        claimTransferLine,
       );
       // NOTE: This line leaves before the later gates, so a called-off run stops here; the transfer
       // stays done. A partial send is not raised (the delivery is best-effort), and "superseded"
@@ -2131,7 +2160,7 @@ async function runTurnBody(
           return "empty";
         }
         if (inReply === null) return "blocked";
-        if (!(await claimBeforeSend())) return "superseded";
+        if (!(await claimTransferLine())) return "superseded";
         await client.sendMessage(conversationId, inReply);
         deliveredBalloons = 1;
         return "posted";
@@ -2571,6 +2600,8 @@ async function runTurnBody(
         (screened ? await runGuardrail("output", screened) : null);
       // Whether what goes out below is the operator's text standing in for the reply.
       let replyByOperator = false;
+      // The claim the reply's send takes: the transfer's own after a hand-over verdict.
+      let replyClaim = claimBeforeSend;
       // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns
       // "blocked" without a later ask.
       if (await writeCalledOff()) return refused(standDown());
@@ -2599,6 +2630,7 @@ async function runTurnBody(
             return refused("empty");
           }
           reply = replacement ?? "";
+          replyClaim = claimTransferLine;
         } else {
           if (replacement === null) return refused("blocked");
           reply = replacement;
@@ -2831,6 +2863,7 @@ async function runTurnBody(
         reply,
         recheck.voiceReply,
         !replyByOperator,
+        replyClaim,
       );
       // NOTE: Another turn holds the claim; the memoized gate means no attachment went out either.
       if (delivered === "superseded") return refused("superseded");

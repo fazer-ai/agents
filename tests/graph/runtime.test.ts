@@ -4227,6 +4227,118 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
+  // The newer message's gate exit, which finds the conversation `open` and dispenses the span up to
+  // it, lands while this turn is between the transfer and its closing line. A transfer gets no later
+  // turn to speak for it, so the line must go out with the claim lost; a plain reply must not, and
+  // neither may the line when another turn holds the claim, since that turn speaks for the burst.
+  for (const [handsOff, lostTo, conv] of [
+    [true, "gate-exit", 9814],
+    [true, "gate-exit-per-message", 9817],
+    [false, "gate-exit", 9815],
+    [true, "another-turn", 9816],
+    [true, "another-turn-then-gate-exit", 9818],
+  ] as const) {
+    const byAnotherTurn = lostTo.startsWith("another-turn");
+    const label = !handsOff
+      ? "a newer message's gate exit under the turn still stops a plain reply"
+      : byAnotherTurn
+        ? `another turn's claim under the turn still stops the transfer's closing line${lostTo === "another-turn" ? "" : ", with a gate exit's dispensal over it"}`
+        : `a newer message's gate exit under the turn still lets the transfer's closing line out (${lostTo === "gate-exit" ? "scalar mark" : "per-message rows"})`;
+    test(label, async () => {
+      await seedConversation(conv, null);
+      const { id: convDbId } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { id: true },
+      });
+      // NOTE: Above a floor the gate exit's range answers as `dispensed`; with none, the moved mark
+      // answers first, as `handled`.
+      if (lostTo === "gate-exit-per-message") {
+        await suDb.conversation.update({
+          where: { id: convDbId },
+          data: { replyClaimFloorMessageId: 0 },
+        });
+      }
+      const sent: string[] = [];
+      const client = {
+        sendMessage: async (_c: number, t: string) => {
+          sent.push(t);
+          return {};
+        },
+        toggleStatus: async () => ({}),
+        sendPrivateNote: async () => ({}),
+      } as unknown as ChatwootClient;
+      const newerMessageGateExit = async () => {
+        if (byAnotherTurn) {
+          await claimReplyBurst({
+            tenantId,
+            conversationDbId: convDbId,
+            toMessageId: 2,
+            maxHandledAllowed: null,
+            messageIds: [1, 2],
+            initiatedBy: "automatic",
+            base: appDb,
+          });
+        }
+        if (lostTo !== "another-turn") {
+          await advanceHandledWatermark({
+            tenantId,
+            conversationDbId: convDbId,
+            toMessageId: 3,
+            dispensed: { kind: "range", afterMessageId: null },
+            base: appDb,
+          });
+        }
+      };
+      class RacedModel {
+        async invoke() {
+          return new AIMessage("Vou verificar.");
+        }
+        bindTools(_t: unknown) {
+          let n = 0;
+          return {
+            async invoke() {
+              n++;
+              if (handsOff && n === 1)
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "handoff_to_human",
+                      args: {
+                        customerMessage:
+                          "Procure atendimento de emergência ou ligue 192.",
+                        reason: "Sintoma de emergência",
+                      },
+                      id: "h1",
+                    },
+                  ],
+                });
+              await newerMessageGateExit();
+              return new AIMessage(handsOff ? "" : "Vou verificar.");
+            },
+          };
+        }
+      }
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: conv }),
+        base: appDb,
+        deps: {
+          makeModel: () => new RacedModel() as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(sent).toEqual(
+        handsOff && !byAnotherTurn
+          ? ["Procure atendimento de emergência ou ligue 192."]
+          : [],
+      );
+    });
+  }
+
   for (const [label, handoffArgs] of [
     ["with no message", { customerMessage: "", reason: "Not applicable" }],
     [
@@ -12473,6 +12585,51 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         );
         expect(note).toContain(REPLY);
       });
+
+      // The transfer flips the conversation to `open`, and the newer message's gate exit that this
+      // causes dispenses the burst before the hand-over line is sent: the line still goes out.
+      for (const dir of ["input", "output"] as const) {
+        test(`the ${dir} hand-over line goes out when a gate exit dispensed the burst under the transfer`, async () => {
+          await configure(dir, {
+            action: "handoff",
+            handoffMessage: "ENCAMINHADO",
+          });
+          const convId = dir === "input" ? 7814 : 7815;
+          const { id: convDbId } = await seedConv(convId);
+          const log = newLog();
+          const base = await handoffStub(log)();
+          const client = {
+            ...base,
+            toggleStatus: async (
+              c: number,
+              status: "open" | "pending" | "resolved",
+            ) => {
+              await advanceHandledWatermark({
+                tenantId: gTenantId,
+                conversationDbId: convDbId,
+                toMessageId: 2,
+                dispensed: { kind: "range", afterMessageId: null },
+                base: appDb,
+              });
+              return base.toggleStatus(c, status);
+            },
+          } as unknown as ChatwootClient;
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingModel(TRIP),
+              makeClient: async () => client,
+              checkpointer: new MemorySaver(),
+            },
+          });
+          expect(log.toggles).toEqual([[convId, "open"]]);
+          expect(log.sent).toEqual([[convId, "ENCAMINHADO"]]);
+        });
+      }
 
       // A tool that writes to the customer from inside its call (the case opening) is screened by
       // the turn's own output gate, which the runtime hands to the toolset as `screenCustomerText`.

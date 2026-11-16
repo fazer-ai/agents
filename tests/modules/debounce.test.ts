@@ -1574,6 +1574,78 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toEqual({ won: false, reason: "handled" });
   });
 
+  // A transfer's closing line claims past the silence its own hand-over caused, and still elects one
+  // sender: of two transfers racing one burst under a gate exit's dispensal, one line goes out, and a
+  // turn that already claimed the burst keeps it.
+  for (const era of ["scalar", "per-message"] as const) {
+    test(`the transfer claim overturns a gate exit and elects one line (${era} era)`, async () => {
+      const convId = era === "scalar" ? 1814 : 1815;
+      await seedConversation(convId);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      if (era === "per-message") {
+        await suDb.conversation.update({
+          where: { id },
+          data: { replyClaimFloorMessageId: 0 },
+        });
+      }
+      const claim = (
+        initiatedBy: "automatic" | "transfer",
+        messageIds: number[],
+      ) =>
+        claimReplyBurst({
+          tenantId,
+          conversationDbId: id,
+          toMessageId: Math.max(...messageIds),
+          maxHandledAllowed: Math.min(...messageIds) - 1,
+          messageIds,
+          initiatedBy,
+          base: appDb,
+        });
+      await advanceHandledWatermark({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 3,
+        dispensed: { kind: "range", afterMessageId: null },
+        base: appDb,
+      });
+      expect((await claim("automatic", [1, 2])).won).toBe(false);
+      expect(await claim("transfer", [1, 2])).toEqual({ won: true });
+      expect((await claim("transfer", [1, 2])).won).toBe(false);
+      expect((await claim("transfer", [2])).won).toBe(false);
+    });
+  }
+
+  test("the transfer claim does not take a burst another turn already claimed", async () => {
+    const convId = 1816;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (initiatedBy: "automatic" | "transfer") =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        maxHandledAllowed: 0,
+        messageIds: [1, 2],
+        initiatedBy,
+        base: appDb,
+      });
+    expect(await claim("automatic")).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 3,
+      dispensed: { kind: "range", afterMessageId: null },
+      base: appDb,
+    });
+    expect((await claim("transfer")).won).toBe(false);
+  });
+
   // A DISPENSAL IS ASKED ABOUT THE IDS, NOT ABOUT THE SPAN THEY COVER. A burst is not dense: the
   // selection drops what renders to nothing, so `[1001, 1005]` spans four ids it does not contain.
   // Asked as an overlap of intervals, a dispensal inside that gap would suppress the whole reply

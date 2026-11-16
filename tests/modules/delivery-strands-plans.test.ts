@@ -3,7 +3,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { asSuperAdminOn } from "@/lib/tenancy";
 import { drainStrandsSql } from "@/modules/chatwoot/delivery-queue";
-import { strandedSelectionSql } from "@/modules/chatwoot/delivery-sweep";
+import {
+  deadClaimsSql,
+  strandedSelectionSql,
+} from "@/modules/chatwoot/delivery-sweep";
+import { pendingDeliveryAgeSql } from "@/modules/instance-health/sampler";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -12,6 +16,11 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // index's predicate from the query, which a status sent as a parameter cast to the enum never allows,
 // so the read walked the primary key over every processed row. Catches a status that stopped being a
 // literal, or a read that moved back under the tenant policy.
+
+// The dead-claims pass and the instance-health sampler read the open rows of EVERY tenant, so neither
+// has a tenant to lead the partial index with. As the fleet the planner sizes that index from the enum
+// predicate, whose statistics the policy hides, and takes it for the whole table. Catches either read
+// drifting back to a plan that walks the table.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -36,6 +45,7 @@ const suDb = su as PrismaClient;
 const appDb = app as PrismaClient;
 
 const PARTIAL = "chatwoot_webhook_deliveries_sweep_idx";
+const CLAIMED = "chatwoot_webhook_deliveries_claimed_idx";
 // Enough processed rows that walking them is the expensive plan, as it is in production, with about a
 // third of them conversation events (the share measured in production), so the read-back half of the
 // sweep's read is not planned against an empty population.
@@ -95,6 +105,14 @@ describe.skipIf(!dbUp)(
         SELECT ${tenantId}, ${inst.id}, 'strand-' || g, 'message_created', 'PENDING', NULL,
                g, g, (now() - interval '10 minutes') AT TIME ZONE 'UTC'
           FROM generate_series(1, 5) AS g`;
+      await suDb.$executeRaw`
+        INSERT INTO chatwoot_webhook_deliveries
+          (tenant_id, chatwoot_instance_id, delivery_id, event, status,
+           conversation_id, inbound_message_id, received_at, claimed_at, claimed_by)
+        SELECT ${tenantId}, ${inst.id}, 'claimed-' || g, 'message_created', 'PROCESSING',
+               g, g, (now() - interval '10 minutes') AT TIME ZONE 'UTC',
+               (now() - interval '9 minutes') AT TIME ZONE 'UTC', gen_random_uuid()
+          FROM generate_series(1, 3) AS g`;
       await suDb.$executeRawUnsafe(
         "VACUUM ANALYZE chatwoot_webhook_deliveries",
       );
@@ -144,6 +162,25 @@ describe.skipIf(!dbUp)(
         );
         expect(reads.map((n) => n["Index Name"])).toEqual([PARTIAL]);
       }
+    });
+
+    test("the dead-claims pass's read", async () => {
+      const reads = await readsOf(
+        deadClaimsSql({
+          self: crypto.randomUUID(),
+          ttlSeconds: 60,
+          batch: 500,
+        }),
+      );
+      expect(reads.map((n) => n["Index Name"])).toEqual([CLAIMED]);
+    });
+
+    test("the sampler's age of the oldest PENDING delivery", async () => {
+      const reads = await readsOf(pendingDeliveryAgeSql);
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.map((n) => n["Index Name"])).toEqual(
+        reads.map(() => PARTIAL),
+      );
     });
   },
 );

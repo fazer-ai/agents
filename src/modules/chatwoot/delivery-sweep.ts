@@ -1187,6 +1187,36 @@ export interface SweepDeadClaimsParams {
   readBudgetMs?: number;
 }
 
+// Through the partial index of claimed rows (`claimed_by IS NOT NULL`), the only one that serves a read
+// across every tenant as the fleet: the sweep's index is sized from `status`, whose statistics the
+// policy hides, and the planner took it for the whole ledger (docs/tenancy.md).
+export function deadClaimsSql(p: {
+  self: string;
+  ttlSeconds: number;
+  batch: number;
+}): Prisma.Sql {
+  return Prisma.sql`
+    SELECT d.id, d.tenant_id AS "tenantId", d.status::text AS status,
+           d.chatwoot_instance_id AS "chatwootInstanceId", d.delivery_id AS "deliveryId",
+           d.event, d.received_at AS "receivedAt", d.claimed_at AS "claimedAt",
+           d.claimed_by::text AS "claimedBy", d.attempts, d.conversation_id AS "conversationId",
+           d.inbound_message_id AS "inboundMessageId", d.human_reply_shape AS "humanReplyShape",
+           d.human_reply_message_id AS "humanReplyMessageId", d.route_observed AS "routeObserved",
+           d.route_agent_bot_id AS "routeAgentBotId", d.route_remembers AS "routeRemembers"
+      FROM chatwoot_webhook_deliveries d
+     WHERE d.status = 'PROCESSING'
+       AND d.claimed_by IS NOT NULL
+       AND d.claimed_by <> ${p.self}::uuid
+       AND NOT EXISTS (
+             SELECT 1 FROM process_leases l
+              WHERE l.id = d.claimed_by
+                AND l.heartbeat_at > now() - make_interval(secs => ${p.ttlSeconds}))
+     ORDER BY (d.event = ANY(${[...CONVERSATION_STATE_EVENTS]}::text[])
+               AND d.conversation_id IS NOT NULL),
+              d.claimed_at
+     LIMIT ${p.batch}`;
+}
+
 // Settles the PROCESSING rows whose claim names a process that is no longer alive: the
 // same verdicts the stranded sweep gives, without its 30-minute window, since a dead claimer is the
 // one thing that window was waiting to be sure of. A row claimed by a live process, or by an older
@@ -1207,30 +1237,14 @@ export async function sweepDeadClaims(
   // read itself, so older live ones filling a capped batch cannot hide a dead one pass after pass. And
   // every column the verdict reads comes from it: a second read could return the row claimed again by
   // a live process, and the write, guarded on the claimer the row carries, would end that attempt.
-  const ttlSeconds = (params.ttlMs ?? LEASE_TTL_MS) / 1000;
-  const rows = await asSuperAdminOn(
-    base,
-    (db) =>
-      db.$queryRaw<Array<StrandedRow & { tenantId: bigint }>>`
-      SELECT d.id, d.tenant_id AS "tenantId", d.status::text AS status,
-             d.chatwoot_instance_id AS "chatwootInstanceId", d.delivery_id AS "deliveryId",
-             d.event, d.received_at AS "receivedAt", d.claimed_at AS "claimedAt",
-             d.claimed_by::text AS "claimedBy", d.attempts, d.conversation_id AS "conversationId",
-             d.inbound_message_id AS "inboundMessageId", d.human_reply_shape AS "humanReplyShape",
-             d.human_reply_message_id AS "humanReplyMessageId", d.route_observed AS "routeObserved",
-             d.route_agent_bot_id AS "routeAgentBotId", d.route_remembers AS "routeRemembers"
-        FROM chatwoot_webhook_deliveries d
-       WHERE d.status = 'PROCESSING'
-         AND d.claimed_by IS NOT NULL
-         AND d.claimed_by <> ${self}::uuid
-         AND NOT EXISTS (
-               SELECT 1 FROM process_leases l
-                WHERE l.id = d.claimed_by
-                  AND l.heartbeat_at > now() - make_interval(secs => ${ttlSeconds}))
-       ORDER BY (d.event = ANY(${[...CONVERSATION_STATE_EVENTS]}::text[])
-                 AND d.conversation_id IS NOT NULL),
-                d.claimed_at
-       LIMIT ${params.batch ?? DEAD_CLAIM_BATCH}`,
+  const rows = await asSuperAdminOn(base, (db) =>
+    db.$queryRaw<Array<StrandedRow & { tenantId: bigint }>>(
+      deadClaimsSql({
+        self,
+        ttlSeconds: (params.ttlMs ?? LEASE_TTL_MS) / 1000,
+        batch: params.batch ?? DEAD_CLAIM_BATCH,
+      }),
+    ),
   );
   // No window at all, not zero: `claimedAt` is the dead process's clock, and on a host a little ahead
   // of this one a zero window would read the claim as in flight until the clocks agree.

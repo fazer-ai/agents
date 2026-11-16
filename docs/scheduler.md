@@ -31,7 +31,7 @@ The claims and the reaper run as the fleet; the prefix reads run under the tenan
 
 | Read | Role | Index | Measured before (production, 425k rows) |
 | --- | --- | --- | --- |
-| every lane's claim (`claimSql`) | fleet | `scheduler_jobs_pending_idx`, `(run_at) WHERE status = 'PENDING'` | 24k buffers per call on average, about 3 h of execution over nine days |
+| every lane's claim (`claimSql`) | fleet | `scheduler_jobs_pending_idx`, `(run_at) WHERE status = 'PENDING'` | 18k buffers per call on average over 951k calls, 4.9 h of execution in nine days |
 | the reaper (`reapSql`) | fleet | `scheduler_jobs_claimed_idx`, `(claimed_at) WHERE status = 'CLAIMED'` | 6k buffers per call |
 | the turn barrier's fallback reads (`pendingFallbacksSql`, `waitingFallbacksSql`) | tenant | `scheduler_jobs_tenant_id_dedupe_key_pattern_idx`, `(tenant_id, dedupe_key text_pattern_ops)`, through `starts_with` (`dedupeKeyStartsWith`) | 15k buffers and 73 ms per call, 70k calls |
 | a conversation's pending reminders (`threadRemindersSql`) | tenant | the same key index, by the `reminder:` key root | 16k buffers and 121 ms per call |

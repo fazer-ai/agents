@@ -258,7 +258,7 @@ export function sharedProviderConcurrency(budget: number): number {
 // row records that the work happened, and most kinds key their dedupeKey to a recurring unit (a
 // conversation's follow-up, a thread's compaction), so re-arming reuses it. INGEST_MESSAGE's key
 // names ONE MESSAGE (or a burst's second message would overwrite the first), so its rows follow
-// traffic, nothing reuses them, and nothing sweeps `scheduler_jobs`: left DONE they pile up forever.
+// traffic and nothing reuses them: left DONE they would wait for JOB_DONE_RETENTION_MS below.
 export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   FOLLOWUP: false,
   FOLLOWUP_SWEEP: false,
@@ -322,6 +322,54 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   DOCUMENT_APPROVAL_OUTCOME: true,
   // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
   SNOOZED_FOLLOWUP: false,
+};
+
+// How long a DONE row is kept before the retention pass deletes it (src/modules/flowlog/retention.ts),
+// or null to keep it for good. A DONE row with no failure budget left on it (`attempts = 0`) reads
+// the same as no row to every arm but `once`: `new-work` and `same-work` both write a fresh PENDING
+// row with zero attempts, and no reader but the arm itself asks for a DONE row by key. What reads one
+// in the meantime is work still settling on it (a claim being finished, the observer's refusal mark
+// against an allow still in flight), which is minutes. A week leaves that and a week of support
+// questions inside the window. The `once` kinds keep theirs: their DONE row is the dedupe. DEAD rows
+// are never deleted (docs/scheduler.md).
+const DONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+export const JOB_DONE_RETENTION_MS: Record<SchedulerJobKind, number | null> = {
+  FOLLOWUP: DONE_RETENTION_MS,
+  FOLLOWUP_SWEEP: DONE_RETENTION_MS,
+  WEBHOOK_RETRY: DONE_RETENTION_MS,
+  RAG_INGEST: DONE_RETENTION_MS,
+  HEARTBEAT: DONE_RETENTION_MS,
+  FLOWLOG_SWEEP: DONE_RETENTION_MS,
+  APPOINTMENT_REMINDER: DONE_RETENTION_MS,
+  REDIRECT_FOLLOWUP: DONE_RETENTION_MS,
+  DEBOUNCE: DONE_RETENTION_MS,
+  MEMORY_COMPACT: DONE_RETENTION_MS,
+  OTHER_INBOX_SUMMARY: DONE_RETENTION_MS,
+  INGEST_MESSAGE: DONE_RETENTION_MS,
+  INGEST_FALLBACK: DONE_RETENTION_MS,
+  DELIVERY_SWEEP: DONE_RETENTION_MS,
+  RECONCILE_SWEEP: DONE_RETENTION_MS,
+  SPEND_CEILING_POLL: DONE_RETENTION_MS,
+  OCCURRENCE_ROUND: DONE_RETENTION_MS,
+  OCCURRENCE_SWEEP: DONE_RETENTION_MS,
+  DASHBOARD_LOG_FACTS_BACKFILL: DONE_RETENTION_MS,
+  DELIVERY_RECOVERY: DONE_RETENTION_MS,
+  TAKEOVER_RECOVERY: DONE_RETENTION_MS,
+  HUMAN_REPLY_RECOVERY: DONE_RETENTION_MS,
+  OBSERVE: DONE_RETENTION_MS,
+  // Armed `once`: the DONE row is the memory that the text already went out (see JOB_DELETE_ON_DONE).
+  MEDIA_TEXT_FALLBACK: null,
+  KNOWLEDGE_SOURCE_SYNC: DONE_RETENTION_MS,
+  INBOUND_SWEEP: DONE_RETENTION_MS,
+  // Armed `once`: the DONE row is what keeps the next sweep pass from arming the same attempt.
+  INBOUND_REDISPATCH: null,
+  NOTHING_TO_ANSWER: DONE_RETENTION_MS,
+  // Armed `once`, beside the item it reviews: deleted, a re-arm would review a decided item again.
+  SUGGESTION_REVIEW: null,
+  CLIENT_ANON_SWEEP: DONE_RETENTION_MS,
+  DOCUMENT_APPROVAL_EXPIRY: DONE_RETENTION_MS,
+  DOCUMENT_APPROVAL_OUTCOME: DONE_RETENTION_MS,
+  SNOOZED_FOLLOWUP: DONE_RETENTION_MS,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the

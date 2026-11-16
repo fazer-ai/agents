@@ -25,6 +25,7 @@ import {
   drillDownPageIds,
 } from "@/modules/analytics/drilldown";
 import { loadAppointmentContext } from "@/modules/appointments/context";
+import { threadRemindersSql } from "@/modules/appointments/reminder-keys";
 import {
   exceptionInForceAt,
   isOutOfHoursNow,
@@ -1830,16 +1831,9 @@ export async function getConversationDetail(
   // Pending appointment reminders for this conversation's thread (soonest first). Exact times — these
   // are armed scheduler jobs, not estimates. Read under the same tenant scope as the trail.
   const reminderRows = await runScopedOn(base, ctx, (db) =>
-    db.schedulerJob.findMany({
-      where: {
-        kind: "APPOINTMENT_REMINDER",
-        status: "PENDING",
-        payload: { path: ["threadId"], equals: conv.threadId },
-      },
-      orderBy: { runAt: "asc" },
-      take: 20,
-      select: { runAt: true, payload: true },
-    }),
+    db.$queryRaw<{ runAt: Date; payload: unknown }[]>(
+      threadRemindersSql(tenantId, conv.threadId),
+    ),
   );
   const appointmentReminders = reminderRows.map((r) => {
     const p = (r.payload ?? {}) as Record<string, unknown>;

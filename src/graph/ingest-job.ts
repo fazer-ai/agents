@@ -1,12 +1,16 @@
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { armCompaction } from "@/modules/memory/compact";
-import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  dedupeKeyStartsWith,
+  enqueueJob,
+} from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type IngestRole, ingestMessageIntoThread } from "./ingest";
 
@@ -428,6 +432,35 @@ async function fallbackCovered(
   return stated !== null;
 }
 
+// A thread's PENDING fallbacks, by the key prefix the tenant policy lets reach an index
+// (`dedupeKeyStartsWith`). Exported so the plan test reads the statement the barrier runs.
+export function pendingFallbacksSql(
+  tenantId: bigint,
+  graphThreadId: string,
+): Prisma.Sql {
+  return Prisma.sql`
+    SELECT id, payload, payload_secret AS "payloadSecret"
+      FROM scheduler_jobs
+     WHERE tenant_id = ${tenantId}
+       AND ${dedupeKeyStartsWith(ingestFallbackKeyPrefix(graphThreadId))}
+       AND kind = 'INGEST_FALLBACK' AND status = 'PENDING'`;
+}
+
+// The ones still waiting for the owner: one that already failed is in backoff and keeps its retry time.
+export function waitingFallbacksSql(
+  tenantId: bigint,
+  graphThreadId: string,
+  now: Date,
+): Prisma.Sql {
+  return Prisma.sql`
+    SELECT id, dedupe_key AS "dedupeKey"
+      FROM scheduler_jobs
+     WHERE tenant_id = ${tenantId}
+       AND ${dedupeKeyStartsWith(ingestFallbackKeyPrefix(graphThreadId))}
+       AND kind = 'INGEST_FALLBACK' AND status = 'PENDING'
+       AND run_at > ${now} AND attempts = 0`;
+}
+
 // A newer message on the thread is in memory, so the dedup window moved on: a fallback still waiting
 // for an OLDER one comes due now rather than ten minutes on, when enough newer appends could have
 // pushed its id below the window's floor and made its append read as `ancient`. Its handler still
@@ -440,19 +473,9 @@ async function dueOlderFallbacks(
 ): Promise<void> {
   const prefix = ingestFallbackKeyPrefix(graphThreadId);
   const waiting = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.schedulerJob.findMany({
-      where: {
-        tenantId,
-        kind: "INGEST_FALLBACK",
-        status: "PENDING",
-        dedupeKey: { startsWith: prefix },
-        runAt: { gt: new Date() },
-        // Only the ones waiting for the owner: one that already failed is in backoff and keeps its
-        // retry time.
-        attempts: 0,
-      },
-      select: { id: true, dedupeKey: true },
-    }),
+    db.$queryRaw<{ id: bigint; dedupeKey: string }[]>(
+      waitingFallbacksSql(tenantId, graphThreadId, new Date()),
+    ),
   );
   const older = waiting
     .filter((row) => {
@@ -478,15 +501,9 @@ export async function retireCoveredFallbacks(
   base: PrismaClient,
 ): Promise<void> {
   const waiting = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.schedulerJob.findMany({
-      where: {
-        tenantId,
-        kind: "INGEST_FALLBACK",
-        status: "PENDING",
-        dedupeKey: { startsWith: ingestFallbackKeyPrefix(graphThreadId) },
-      },
-      select: { id: true, payload: true, payloadSecret: true },
-    }),
+    db.$queryRaw<
+      { id: bigint; payload: unknown; payloadSecret: string | null }[]
+    >(pendingFallbacksSql(tenantId, graphThreadId)),
   );
   for (const row of waiting) {
     if (

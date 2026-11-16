@@ -122,7 +122,7 @@ export interface ClaimedJob {
 //   "same-work": a clock re-pushes the same unit (a sweep, a boot re-arm): attempts carry over, or a
 //                broken job would get five fresh attempts on every tick.
 //   "once":      at most once: an existing row in any state is left untouched, so a redelivery never
-//                redoes the work. Its kind must not be deleted on DONE.
+//                redoes the work. Its kind keeps its DONE rows (JOB_DONE_RETENTION_MS null).
 // No default: the same row means opposite things to different callers, so the caller must choose.
 export type Rearm = "new-work" | "same-work" | "once";
 
@@ -349,6 +349,15 @@ export async function cancelPendingJob(
     });
     return res.count > 0;
   });
+}
+
+// The rows whose dedupeKey starts with `prefix`, in a form a tenant-scoped read can take to an index.
+// Under the tenant policy only leakproof operators reach an index, and neither `LIKE` (what Prisma's
+// `startsWith` sends) nor the enums `kind` and `status` are, so a prefix read walked every row of the
+// tenant. `starts_with` is leakproof, and Postgres turns it into a range over an index whose order is
+// byte-wise, which is why `scheduler_jobs_tenant_id_dedupe_key_pattern_idx` is `text_pattern_ops`.
+export function dedupeKeyStartsWith(prefix: string): Prisma.Sql {
+  return Prisma.sql`starts_with(dedupe_key, ${prefix})`;
 }
 
 // Like cancelPendingJob, but cancels EVERY pending job whose dedupeKey starts with `prefix` — used to
@@ -1212,7 +1221,7 @@ export function claimDueTrafficJobs(
   );
 }
 
-function trafficOrder(spendCap: number | undefined): ClaimOrder {
+export function trafficOrder(spendCap: number | undefined): ClaimOrder {
   const kinds = kindsInLane("shared", true);
   const caseOf = (value: (kind: SchedulerJobKind) => number) =>
     Prisma.sql`CASE kind ${Prisma.join(
@@ -1576,6 +1585,31 @@ export interface ReapedJob extends ClaimedJob {
   status: "PENDING" | "DEAD";
 }
 
+// The reaper's statement, exported so the plan test reads what it runs.
+export function reapSql(
+  cutoff: Date,
+  tenantId?: TenantFence,
+  kind?: SchedulerJobKind,
+): Prisma.Sql {
+  const tenantClause =
+    tenantId == null
+      ? Prisma.empty
+      : typeof tenantId === "bigint"
+        ? Prisma.sql`AND tenant_id = ${tenantId}`
+        : Prisma.sql`AND tenant_id IN (${Prisma.join([...tenantId])})`;
+  const kindClause =
+    kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
+  return Prisma.sql`
+      UPDATE scheduler_jobs
+      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} AND NOT (kind::text = ANY(${NEVER_DEAD_KINDS})) THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
+          attempts = attempts + 1,
+          claimed_at = NULL,
+          updated_at = now()
+      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
+      RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,
+                attempts, claim_seq, status`;
+}
+
 export async function reapStaleJobs(
   staleMs: number,
   base: PrismaClient = basePrisma,
@@ -1589,14 +1623,6 @@ export async function reapStaleJobs(
   kind?: ClaimedJob["kind"],
 ): Promise<ReapedJob[]> {
   const cutoff = new Date(now.getTime() - staleMs);
-  const tenantClause =
-    tenantId == null
-      ? Prisma.empty
-      : typeof tenantId === "bigint"
-        ? Prisma.sql`AND tenant_id = ${tenantId}`
-        : Prisma.sql`AND tenant_id IN (${Prisma.join([...tenantId])})`;
-  const kindClause =
-    kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -1610,15 +1636,7 @@ export async function reapStaleJobs(
         claim_seq: number;
         status: "PENDING" | "DEAD";
       }>
-    >(Prisma.sql`
-      UPDATE scheduler_jobs
-      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} AND NOT (kind::text = ANY(${NEVER_DEAD_KINDS})) THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
-          attempts = attempts + 1,
-          claimed_at = NULL,
-          updated_at = now()
-      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
-      RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,
-                attempts, claim_seq, status`);
+    >(reapSql(cutoff, tenantId, kind));
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenant_id,

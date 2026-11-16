@@ -660,8 +660,8 @@ export async function announceDeadCompaction(
       select: { status: true },
     });
     // NOTE: any status but DEAD suppresses. PENDING is a re-arm; DONE is what /reset writes
-    // (`cancelPendingJob` updates). A missing row cannot happen for this kind (JOB_DELETE_ON_DONE is
-    // false) and reads as live: no row is not evidence that work was lost.
+    // (`cancelPendingJob` updates). A missing row is a DONE one the retention pass deleted, and reads
+    // as live: no row is not evidence that work was lost.
     if (row?.status !== "DEAD") return "live" as const;
     // NOTE: the Logs page filters by conversation and inbox database ids.
     return db.conversation.findUnique({

@@ -2555,9 +2555,13 @@ model SchedulerJob {
 
   @@unique([tenantId, kind, dedupeKey])
   // The lookup the scoped reads can use: under RLS `kind` (an enum) never reaches the unique index
-  // above, so a read by dedupe key walks every kind of the tenant (issue #1700).
-  @@index([tenantId, dedupeKey])
+  // above, so a read by dedupe key walks every kind of the tenant. Byte-wise, so a prefix read reaches
+  // it too (`dedupeKeyStartsWith`): `LIKE` is not leakproof, `starts_with` is.
+  @@index([tenantId, dedupeKey(ops: raw("text_pattern_ops"))], map: "scheduler_jobs_tenant_id_dedupe_key_pattern_idx")
   @@index([status, runAt])
+  // NOTE: the claim's and the reaper's indexes are PARTIAL and live in raw SQL, which Prisma cannot
+  // express: `(run_at) WHERE status = 'PENDING'` and `(claimed_at) WHERE status = 'CLAIMED'`
+  // (20261116150000, 20261116150100).
   @@map("scheduler_jobs")
 }
 

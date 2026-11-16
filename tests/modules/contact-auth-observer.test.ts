@@ -582,16 +582,16 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
   // fresh write: the retention pass keeps it, and the older allow still in flight arms nothing.
   test("a refusal left on an old finished observation survives the retention pass and still fences an older allow", async () => {
     await setGate({ enabled: true, url: AUTH_URL });
-    await deliverMessage(28, "individual");
+    await deliverMessage(128, "individual");
     const old = new Date(Date.now() - 30 * 86_400_000);
     await suDb.$executeRaw`
       UPDATE scheduler_jobs SET status = 'DONE', attempts = 0, updated_at = ${old}
-       WHERE tenant_id = ${tenantId} AND kind = 'OBSERVE' AND payload->>'conversationId' = '28'`;
+       WHERE tenant_id = ${tenantId} AND kind = 'OBSERVE' AND payload->>'conversationId' = '128'`;
     const allowAskedAt = Date.now() - 1_000;
     await retireRefusedObserve({
       tenantId,
       instanceId,
-      conversationId: 28,
+      conversationId: 128,
       agentId: observerId,
       askedAt: Date.now(),
       base: appDb,
@@ -601,7 +601,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       await armObserve({
         tenantId,
         instanceId,
-        conversationId: 28,
+        conversationId: 128,
         agentId: observerId,
         reason: "burst",
         cfg: readMonitoringConfig({}),
@@ -609,7 +609,59 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
         base: appDb,
       }),
     ).toBe("off");
-    expect(await runnableObserveRows(28)).toEqual([]);
+    expect(await runnableObserveRows(128)).toEqual([]);
+  });
+
+  // The retention pass deleting the row while the refusal is being written: the refusal waits on the
+  // delete and lands on a row of its own, so the older allow still arms nothing.
+  test("a refusal written while the retention pass deletes its row still fences an older allow", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(129, "individual");
+    await suDb.$executeRaw`
+      UPDATE scheduler_jobs SET status = 'DONE', attempts = 0
+       WHERE tenant_id = ${tenantId} AND kind = 'OBSERVE' AND payload->>'conversationId' = '129'`;
+    const allowAskedAt = Date.now() - 1_000;
+    let blocked = false;
+    let refusal: Promise<unknown> | undefined;
+    await suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`
+          DELETE FROM scheduler_jobs
+           WHERE tenant_id = ${tenantId} AND kind = 'OBSERVE' AND payload->>'conversationId' = '129'`;
+        refusal = retireRefusedObserve({
+          tenantId,
+          instanceId,
+          conversationId: 129,
+          agentId: observerId,
+          askedAt: Date.now(),
+          base: appDb,
+        });
+        for (let i = 0; i < 200 && !blocked; i++) {
+          const rows = await suDb.$queryRaw<{ n: number }[]>`
+            SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'
+               AND query LIKE '%scheduler_jobs%'`;
+          blocked = (rows[0]?.n ?? 0) > 0;
+          if (!blocked) await new Promise((r) => setTimeout(r, 25));
+        }
+      },
+      { timeout: 20_000 },
+    );
+    expect(blocked).toBe(true);
+    await refusal;
+    expect(
+      await armObserve({
+        tenantId,
+        instanceId,
+        conversationId: 129,
+        agentId: observerId,
+        reason: "burst",
+        cfg: readMonitoringConfig({}),
+        gateAskedAt: allowAskedAt,
+        base: appDb,
+      }),
+    ).toBe("off");
+    expect(await runnableObserveRows(129)).toEqual([]);
   });
 
   // An arm that cannot read the gate (the database failing under it) on a gate that asks an

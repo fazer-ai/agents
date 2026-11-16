@@ -498,37 +498,22 @@ export async function retireUnlessAllowedLaterOn(
          AND dedupe_key = ${p.dedupeKey}
          AND status IN ('PENDING', 'CLAIMED')
          AND COALESCE((payload->>${p.allowedField})::bigint, 0) <= ${p.at}::bigint`;
-  await db.schedulerJob.upsert({
-    where: {
-      tenantId_kind_dedupeKey: {
-        tenantId: p.tenantId,
-        kind: p.kind,
-        dedupeKey: p.dedupeKey,
-      },
-    },
-    create: {
-      tenantId: p.tenantId,
-      kind: p.kind,
-      dedupeKey: p.dedupeKey,
-      runAt: new Date(p.at),
-      status: "DONE",
-      payload: {
-        ...p.createPayload,
-        [p.refusedField]: p.at,
-      } as Prisma.InputJsonValue,
-    },
-    update: {},
+  const created = JSON.stringify({
+    ...p.createPayload,
+    [p.refusedField]: p.at,
   });
+  // NOTE: one statement, so a retention delete cannot take the row between finding it and marking
+  // it: a row deleted under it is inserted again carrying the mark. updated_at moves because the
+  // retention pass ages a DONE row by it, and the mark is a fresh write.
   await db.$executeRaw`
-      UPDATE scheduler_jobs
-         SET payload = payload || jsonb_build_object(
+      INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, payload, status, run_at, updated_at)
+      VALUES (${p.tenantId}, ${p.kind}::"SchedulerJobKind", ${p.dedupeKey}, ${created}::jsonb,
+              'DONE', ${new Date(p.at)}, now())
+      ON CONFLICT (tenant_id, kind, dedupe_key) DO UPDATE
+         SET payload = scheduler_jobs.payload || jsonb_build_object(
                ${p.refusedField}::text,
-               GREATEST(COALESCE((payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint)),
-             -- NOTE: the retention pass ages a DONE row by updated_at, and this mark is a fresh write.
-             updated_at = now()
-       WHERE tenant_id = ${p.tenantId}
-         AND kind = ${p.kind}::"SchedulerJobKind"
-         AND dedupe_key = ${p.dedupeKey}`;
+               GREATEST(COALESCE((scheduler_jobs.payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint)),
+             updated_at = now()`;
 }
 
 function readJobRetirement(

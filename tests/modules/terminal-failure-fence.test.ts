@@ -121,13 +121,13 @@ const CENSUS: Record<string, string> = {
   // calls `announceReaped` lives in ./memory-dead-letter.test.ts.
   "src/modules/scheduler/service.ts:failJob":
     "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter",
-  "src/modules/scheduler/service.ts:reapStaleJobs":
-    "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter, via announceReaped",
+  "src/modules/scheduler/service.ts:reapSql":
+    "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter, via reapStaleJobs and announceReaped",
 };
 const ANNOUNCES_ELSEWHERE = new Set([
   "src/modules/instance-health/worker.ts:finalizeDead",
   "src/modules/scheduler/service.ts:failJob",
-  "src/modules/scheduler/service.ts:reapStaleJobs",
+  "src/modules/scheduler/service.ts:reapSql",
   // Not "announces elsewhere" but "was announced ALREADY", which lands in the same set because the
   // question this asks is whether the write reaches an operator, and this one's already did.
   "src/modules/chatwoot/recover-delivery.ts:putRowBack",

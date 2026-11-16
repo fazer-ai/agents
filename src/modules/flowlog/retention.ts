@@ -4,11 +4,12 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { expiredDoneJobs } from "@/modules/scheduler/done-retention";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
 // Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries, the turn
-// limit's delivered turns, and the agents' kept full turn detail). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
+// limit's delivered turns, the agents' kept full turn detail, and the scheduler's finished jobs). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
 // 24h (a reschedule does NOT consume an attempt). Deletes run RLS-scoped to the job's tenant, one
 // bounded batch per transaction, so each batch commits on its own and a pass that stops keeps what it
 // deleted. A pass runs for at most SWEEP_PASS_MS; a backlog it leaves is taken by the next run,
@@ -142,7 +143,7 @@ function ranOutOfTime(error: unknown): boolean {
   );
 }
 
-// One pass over the five tables. `done` is false when the deadline cut it short with rows left.
+// One pass over the six tables. `done` is false when the deadline cut it short with rows left.
 export async function sweepFlowlog(
   base: PrismaClient,
   tenantId: bigint,
@@ -160,6 +161,7 @@ export async function sweepFlowlog(
     Date.now() - config.flowlog.retentionDays * 86_400_000,
   );
   const now = new Date();
+  const expiredDone = expiredDoneJobs(now);
   const turnCutoff = new Date(Date.now() - TURN_DELIVERY_RETENTION_MS);
   const proactiveCutoff = new Date(
     Date.now() - PROACTIVE_DELIVERY_RETENTION_MS,
@@ -199,12 +201,25 @@ export async function sweepFlowlog(
       DELETE FROM full_detail_contents WHERE id = ANY(ARRAY(
         SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
         AND expires_at < ${now}`,
+    // NOTE: The scheduler's finished jobs past their kind's window (src/modules/scheduler/done-retention.ts).
+    // The outer predicate is repeated so a row re-armed between the select and the delete is
+    // re-checked under its row lock and kept: it is PENDING again, and somebody is waiting on it.
+    (rows) => Prisma.sql`
+      DELETE FROM scheduler_jobs WHERE id = ANY(ARRAY(
+        SELECT id FROM scheduler_jobs WHERE ${expiredDone} LIMIT ${rows}))
+        AND ${expiredDone}`,
   ];
-  // The texts' pass is the one whose outer predicate can keep a row the inner select picked (its
-  // expiry moved forward by a concurrent write), so a short batch there is re-asked before the table
-  // is called done.
-  const contentsLeft = Prisma.sql`
-    SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`;
+  // The passes whose outer predicate can keep a row the inner select picked (a text whose expiry a
+  // concurrent write moved forward, a job re-armed), so a short batch there is re-asked before the
+  // table is called done.
+  const rowsLeft: (Prisma.Sql | undefined)[] = [
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    Prisma.sql`SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`,
+    Prisma.sql`SELECT EXISTS(SELECT 1 FROM scheduler_jobs WHERE ${expiredDone}) AS more`,
+  ];
   // A sweep is done when each table has come back within the window once, over as many passes as it
   // takes: a pass works only the tables the sweep has left, from the one the last pass stopped on. So
   // a table that spends the budget (a backlog, or a slow check) keeps neither the tables after it from
@@ -222,7 +237,7 @@ export async function sweepFlowlog(
       passes[i] as (rows: number) => Prisma.Sql,
       deadline,
       o,
-      i === passes.length - 1 ? contentsLeft : undefined,
+      rowsLeft[i],
     );
     deleted += r.deleted;
     timeouts += r.timeouts;

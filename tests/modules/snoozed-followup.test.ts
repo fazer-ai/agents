@@ -38,6 +38,7 @@ import {
 } from "@/modules/chatwoot/constants";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import { isSnoozedForAPerson } from "@/modules/chatwoot/normalize";
+import { sweepFlowlog } from "@/modules/flowlog/retention";
 import {
   findSnoozedAnchor,
   SNOOZED_LADDER_ENDED,
@@ -1863,6 +1864,37 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       select: { runAt: true },
     });
     expect(again.runAt.getTime()).toBeLessThan(later.getTime());
+  });
+
+  test("a finished run older than the retention window still keeps an unchanged conversation out of the sweep", async () => {
+    await setSettings(LADDER);
+    const ranAt = new Date(Date.now() - 30 * 86_400_000);
+    const before = new Date(ranAt.getTime() - 60_000);
+    await seed(2019, { lastEventAt: before });
+    // Nothing about the agent or its inbox moved since that run either.
+    await suDb.$executeRaw`UPDATE agents SET updated_at = ${before} WHERE id = ${agentId}`;
+    await suDb.$executeRaw`UPDATE inboxes SET responder_bound_at = ${before} WHERE id = ${inboxDbId}`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: snoozedDedupeKey(threadOf(2019)),
+        payload: {},
+        status: "DONE",
+        runAt: ranAt,
+        runStartedAt: ranAt,
+        claimedAt: ranAt,
+        createdAt: ranAt,
+        updatedAt: ranAt,
+      },
+    });
+    await sweepFlowlog(appDb, tenantId);
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const rows = await suDb.schedulerJob.findMany({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2019)) },
+      select: { status: true },
+    });
+    expect(rows).toEqual([{ status: "DONE" }]);
   });
   test("a guardrail that would hand the reminder over drops it, and the person keeps the conversation", async () => {
     const key = await suDb.vaultEntry.findFirstOrThrow({

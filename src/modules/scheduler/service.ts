@@ -122,7 +122,7 @@ export interface ClaimedJob {
 //   "same-work": a clock re-pushes the same unit (a sweep, a boot re-arm): attempts carry over, or a
 //                broken job would get five fresh attempts on every tick.
 //   "once":      at most once: an existing row in any state is left untouched, so a redelivery never
-//                redoes the work. Its kind must not be deleted on DONE.
+//                redoes the work. Its kind keeps its DONE rows (JOB_DONE_RETENTION_MS null).
 // No default: the same row means opposite things to different callers, so the caller must choose.
 export type Rearm = "new-work" | "same-work" | "once";
 
@@ -351,6 +351,37 @@ export async function cancelPendingJob(
   });
 }
 
+// The rows whose dedupeKey starts with `prefix`, in a form a tenant-scoped read can take to an index.
+// Under the tenant policy only leakproof operators reach an index, and neither `LIKE` (what Prisma's
+// `startsWith` sends) nor the enums `kind` and `status` are, so a prefix read walked every row of the
+// tenant. `starts_with` is leakproof, and Postgres turns it into a range over an index whose order is
+// byte-wise, which is why `scheduler_jobs_tenant_id_dedupe_key_pattern_idx` is `text_pattern_ops`.
+export function dedupeKeyStartsWith(prefix: string): Prisma.Sql {
+  return Prisma.sql`starts_with(dedupe_key, ${prefix})`;
+}
+
+// The prefix cancel's statement, for `cancelPendingJobsByPrefix` and its episode-fenced sibling, so a
+// test reads the plan it gets under the tenant policy. With `atOrBelowMessageId`, only rows whose
+// numeric `atMessageId` is at or below it.
+export function cancelPendingByPrefixSql(
+  kind: SchedulerJobKind,
+  prefix: string,
+  atOrBelowMessageId?: number,
+): Prisma.Sql {
+  return Prisma.sql`
+      UPDATE scheduler_jobs
+         SET status = 'DONE', updated_at = now()
+       WHERE kind = ${kind}::"SchedulerJobKind"
+         AND status = 'PENDING'
+         AND ${dedupeKeyStartsWith(prefix)}
+         ${
+           atOrBelowMessageId === undefined
+             ? Prisma.empty
+             : Prisma.sql`AND jsonb_typeof(payload->'atMessageId') = 'number'
+                 AND (payload->>'atMessageId')::numeric <= ${atOrBelowMessageId}`
+         }`;
+}
+
 // Like cancelPendingJob, but cancels EVERY pending job whose dedupeKey starts with `prefix` — used to
 // drop all of an appointment's reminders at once (dedupeKey `reminder:<eventId>:<offset>`) when the
 // appointment is cancelled or rescheduled, without having to know each configured offset. Tenant-scoped
@@ -361,13 +392,9 @@ export async function cancelPendingJobsByPrefix(
   prefix: string,
   base: PrismaClient = basePrisma,
 ): Promise<number> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const res = await db.schedulerJob.updateMany({
-      where: { kind, status: "PENDING", dedupeKey: { startsWith: prefix } },
-      data: { status: "DONE" },
-    });
-    return res.count;
-  });
+  return runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.$executeRaw(cancelPendingByPrefixSql(kind, prefix)),
+  );
 }
 
 // The prefix cancel, fenced on the episode: only rows whose `atMessageId` is at or below the /reset
@@ -382,18 +409,9 @@ export async function cancelPendingJobsByPrefixUpToMessage(
   atOrBelowMessageId: number,
   base: PrismaClient = basePrisma,
 ): Promise<number> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const res = await db.schedulerJob.updateMany({
-      where: {
-        kind,
-        status: "PENDING",
-        dedupeKey: { startsWith: prefix },
-        payload: { path: ["atMessageId"], lte: atOrBelowMessageId },
-      },
-      data: { status: "DONE" },
-    });
-    return res.count;
-  });
+  return runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.$executeRaw(cancelPendingByPrefixSql(kind, prefix, atOrBelowMessageId)),
+  );
 }
 
 // Retires PENDING and CLAIMED rows under one dedupe key, for commands like /reset where the claimed
@@ -489,35 +507,22 @@ export async function retireUnlessAllowedLaterOn(
          AND dedupe_key = ${p.dedupeKey}
          AND status IN ('PENDING', 'CLAIMED')
          AND COALESCE((payload->>${p.allowedField})::bigint, 0) <= ${p.at}::bigint`;
-  await db.schedulerJob.upsert({
-    where: {
-      tenantId_kind_dedupeKey: {
-        tenantId: p.tenantId,
-        kind: p.kind,
-        dedupeKey: p.dedupeKey,
-      },
-    },
-    create: {
-      tenantId: p.tenantId,
-      kind: p.kind,
-      dedupeKey: p.dedupeKey,
-      runAt: new Date(p.at),
-      status: "DONE",
-      payload: {
-        ...p.createPayload,
-        [p.refusedField]: p.at,
-      } as Prisma.InputJsonValue,
-    },
-    update: {},
+  const created = JSON.stringify({
+    ...p.createPayload,
+    [p.refusedField]: p.at,
   });
+  // NOTE: one statement, so a retention delete cannot take the row between finding it and marking
+  // it: a row deleted under it is inserted again carrying the mark. updated_at moves because the
+  // retention pass ages a DONE row by it, and the mark is a fresh write.
   await db.$executeRaw`
-      UPDATE scheduler_jobs
-         SET payload = payload || jsonb_build_object(
+      INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, payload, status, run_at, updated_at)
+      VALUES (${p.tenantId}, ${p.kind}::"SchedulerJobKind", ${p.dedupeKey}, ${created}::jsonb,
+              'DONE', ${new Date(p.at)}, now())
+      ON CONFLICT (tenant_id, kind, dedupe_key) DO UPDATE
+         SET payload = scheduler_jobs.payload || jsonb_build_object(
                ${p.refusedField}::text,
-               GREATEST(COALESCE((payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint))
-       WHERE tenant_id = ${p.tenantId}
-         AND kind = ${p.kind}::"SchedulerJobKind"
-         AND dedupe_key = ${p.dedupeKey}`;
+               GREATEST(COALESCE((scheduler_jobs.payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint)),
+             updated_at = now()`;
 }
 
 function readJobRetirement(
@@ -773,6 +778,53 @@ async function announceErasedDeathsOrThrow(
   }
 }
 
+// The two statements of `revokeJobsByKeyPrefixOn`, so a test reads the plan each gets under the tenant
+// policy: the delete of a delete-on-done kind, and the retire of a reusable key.
+export function revokeDeleteByPrefixSql(
+  kind: SchedulerJobKind,
+  prefix: string,
+  atOrBelowMessageId?: number,
+): Prisma.Sql {
+  return Prisma.sql`
+        DELETE FROM scheduler_jobs
+         WHERE kind = ${kind}::"SchedulerJobKind"
+           -- DEAD included, and only here, where the row is DELETED. A job that exhausted its
+           -- retries before the reset is not going to run, but its row still holds the encrypted
+           -- message body, and nothing sweeps this table — so a reset that left it would confirm
+           -- "memory cleared" over a stored copy of the conversation. And spared on the other side
+           -- of the boundary for the same reason: a DEAD row for a message that arrived AFTER the
+           -- command holds a body the reset was never asked to erase, and deleting it also throws
+           -- away a dead-letter the operator may still need to read.
+           AND status IN ('PENDING', 'CLAIMED', 'DEAD')
+           AND ${dedupeKeyStartsWith(prefix)}
+           ${
+             atOrBelowMessageId === undefined
+               ? Prisma.empty
+               : Prisma.sql`AND NOT (
+                   substring(dedupe_key from char_length(${prefix}) + 1) ~ '^[0-9]{1,18}$'
+                   AND (substring(dedupe_key from char_length(${prefix}) + 1))::bigint > ${atOrBelowMessageId}
+                 )`
+           }
+        RETURNING id, tenant_id, dedupe_key, last_error,
+                  pg_current_xact_id()::text AS xid,
+                  (status = 'DEAD'
+                   AND payload->>${DEAD_LETTER_ANNOUNCED}
+                       IS DISTINCT FROM claim_seq::text)
+                  AS unannounced_death`;
+}
+
+export function revokeRetireByPrefixSql(
+  kind: SchedulerJobKind,
+  prefix: string,
+): Prisma.Sql {
+  return Prisma.sql`
+      UPDATE scheduler_jobs
+         SET status = 'DONE', updated_at = now()
+       WHERE kind = ${kind}::"SchedulerJobKind"
+         AND status IN ('PENDING', 'CLAIMED')
+         AND ${dedupeKeyStartsWith(prefix)}`;
+}
+
 // Revokes PENDING, CLAIMED and (for delete-on-done kinds) DEAD rows under a dedupe key prefix: after a
 // memory reset nothing queued against the thread may run. A handler already running learns it by
 // re-checking its claimSeq under the lock before its irreversible write (../../graph/ingest-job.ts).
@@ -790,93 +842,54 @@ export async function revokeJobsByKeyPrefixOn(
   // concurrent arm escape. An unparseable suffix is deleted: only proof of "above" spares a row.
   atOrBelowMessageId?: number,
 ): Promise<{ count: number; erasedDeaths: ErasedDeath[] }> {
-  {
-    // No `status` here on purpose: the delete spells its statuses in raw SQL (DEAD included) and
-    // the retire overrides them, so a status in this shared shape would decide nothing.
-    const where = {
-      kind,
-      dedupeKey: { startsWith: prefix },
-    };
-    // NOTE: deleted when the kind is delete-on-done: a revoked ingestion can never reach `completeJob`
-    // (no claim matches), so a DONE row would hold the encrypted body forever on a table nothing sweeps.
-    if (JOB_DELETE_ON_DONE[kind]) {
-      // A deleted DEAD row may be the only record of a death, so this statement returns the
-      // deaths nobody announced (see DEAD_LETTER_ANNOUNCED) for the caller to announce after commit.
-      // One statement with RETURNING, so no concurrent announcer slips in between. The stamp is tested
-      // in RETURNING, not WHERE: a DELETE blocked on the announcer's UPDATE re-evaluates WHERE, and a
-      // stamp there would spare the row the reset must erase. `_` and `%` are escaped by hand.
-      const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
-      const erased = await db.$queryRaw<
-        Array<{
-          id: bigint;
-          tenant_id: bigint;
-          dedupe_key: string;
-          last_error: string | null;
-          xid: string;
-          unannounced_death: boolean;
-        }>
-      >(Prisma.sql`
-        DELETE FROM scheduler_jobs
-         WHERE kind = ${kind}::"SchedulerJobKind"
-           -- DEAD included, and only here, where the row is DELETED. A job that exhausted its
-           -- retries before the reset is not going to run, but its row still holds the encrypted
-           -- message body, and nothing sweeps this table — so a reset that left it would confirm
-           -- "memory cleared" over a stored copy of the conversation. And spared on the other side
-           -- of the boundary for the same reason: a DEAD row for a message that arrived AFTER the
-           -- command holds a body the reset was never asked to erase, and deleting it also throws
-           -- away a dead-letter the operator may still need to read.
-           AND status IN ('PENDING', 'CLAIMED', 'DEAD')
-           AND dedupe_key LIKE ${like}
-           ${
-             atOrBelowMessageId === undefined
-               ? Prisma.empty
-               : Prisma.sql`AND NOT (
-                   substring(dedupe_key from char_length(${prefix}) + 1) ~ '^[0-9]{1,18}$'
-                   AND (substring(dedupe_key from char_length(${prefix}) + 1))::bigint > ${atOrBelowMessageId}
-                 )`
-           }
-        RETURNING id, tenant_id, dedupe_key, last_error,
-                  pg_current_xact_id()::text AS xid,
-                  (status = 'DEAD'
-                   AND payload->>${DEAD_LETTER_ANNOUNCED}
-                       IS DISTINCT FROM claim_seq::text)
-                  AS unannounced_death`);
-      return {
-        count: erased.length,
-        erasedDeaths: erased
-          // Only a DEATH, and only one nobody has claimed. A PENDING or CLAIMED row is work the
-          // operator asked to call off, and calling it a loss would turn one `/reset` into a burst
-          // of errors about messages that were never owed.
-          .filter((row) => row.unannounced_death)
-          .map((row) => ({
-            tenantId: row.tenant_id,
-            kind,
-            jobId: row.id,
-            dedupeKey: row.dedupe_key,
-            // What the ROW remembers, because whoever could explain this death is not here. The
-            // two empties are told apart on purpose: see UNRECORDED_DEATH_ERROR.
-            error:
-              row.last_error === null
-                ? REAPED_DEATH_ERROR
-                : row.last_error || UNRECORDED_DEATH_ERROR,
-            xid: row.xid,
-          })),
-      };
-    }
-    // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
-    // would erase the dead-letter the operator may still need to see.
-    // Nothing is erased, so nothing is owed: the announcement the DEAD row's own road will write is
-    // still ahead of it.
+  // NOTE: deleted when the kind is delete-on-done: a revoked ingestion can never reach `completeJob`
+  // (no claim matches), so a DONE row would hold the encrypted body forever on a table nothing sweeps.
+  if (JOB_DELETE_ON_DONE[kind]) {
+    // A deleted DEAD row may be the only record of a death, so this statement returns the
+    // deaths nobody announced (see DEAD_LETTER_ANNOUNCED) for the caller to announce after commit.
+    // One statement with RETURNING, so no concurrent announcer slips in between. The stamp is tested
+    // in RETURNING, not WHERE: a DELETE blocked on the announcer's UPDATE re-evaluates WHERE, and a
+    // stamp there would spare the row the reset must erase.
+    const erased = await db.$queryRaw<
+      Array<{
+        id: bigint;
+        tenant_id: bigint;
+        dedupe_key: string;
+        last_error: string | null;
+        xid: string;
+        unannounced_death: boolean;
+      }>
+    >(revokeDeleteByPrefixSql(kind, prefix, atOrBelowMessageId));
     return {
-      count: (
-        await db.schedulerJob.updateMany({
-          where: { ...where, status: { in: ["PENDING", "CLAIMED"] } },
-          data: { status: "DONE" },
-        })
-      ).count,
-      erasedDeaths: [],
+      count: erased.length,
+      erasedDeaths: erased
+        // Only a DEATH, and only one nobody has claimed. A PENDING or CLAIMED row is work the
+        // operator asked to call off, and calling it a loss would turn one `/reset` into a burst
+        // of errors about messages that were never owed.
+        .filter((row) => row.unannounced_death)
+        .map((row) => ({
+          tenantId: row.tenant_id,
+          kind,
+          jobId: row.id,
+          dedupeKey: row.dedupe_key,
+          // What the ROW remembers, because whoever could explain this death is not here. The
+          // two empties are told apart on purpose: see UNRECORDED_DEATH_ERROR.
+          error:
+            row.last_error === null
+              ? REAPED_DEATH_ERROR
+              : row.last_error || UNRECORDED_DEATH_ERROR,
+          xid: row.xid,
+        })),
     };
   }
+  // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
+  // would erase the dead-letter the operator may still need to see.
+  // Nothing is erased, so nothing is owed: the announcement the DEAD row's own road will write is
+  // still ahead of it.
+  return {
+    count: await db.$executeRaw(revokeRetireByPrefixSql(kind, prefix)),
+    erasedDeaths: [],
+  };
 }
 
 // A claim's test-only isolation: one tenant, or the few a test seeded (the claims are cross-tenant, so
@@ -1212,7 +1225,7 @@ export function claimDueTrafficJobs(
   );
 }
 
-function trafficOrder(spendCap: number | undefined): ClaimOrder {
+export function trafficOrder(spendCap: number | undefined): ClaimOrder {
   const kinds = kindsInLane("shared", true);
   const caseOf = (value: (kind: SchedulerJobKind) => number) =>
     Prisma.sql`CASE kind ${Prisma.join(
@@ -1576,6 +1589,31 @@ export interface ReapedJob extends ClaimedJob {
   status: "PENDING" | "DEAD";
 }
 
+// The reaper's statement, exported so the plan test reads what it runs.
+export function reapSql(
+  cutoff: Date,
+  tenantId?: TenantFence,
+  kind?: SchedulerJobKind,
+): Prisma.Sql {
+  const tenantClause =
+    tenantId == null
+      ? Prisma.empty
+      : typeof tenantId === "bigint"
+        ? Prisma.sql`AND tenant_id = ${tenantId}`
+        : Prisma.sql`AND tenant_id IN (${Prisma.join([...tenantId])})`;
+  const kindClause =
+    kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
+  return Prisma.sql`
+      UPDATE scheduler_jobs
+      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} AND NOT (kind::text = ANY(${NEVER_DEAD_KINDS})) THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
+          attempts = attempts + 1,
+          claimed_at = NULL,
+          updated_at = now()
+      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
+      RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,
+                attempts, claim_seq, status`;
+}
+
 export async function reapStaleJobs(
   staleMs: number,
   base: PrismaClient = basePrisma,
@@ -1589,14 +1627,6 @@ export async function reapStaleJobs(
   kind?: ClaimedJob["kind"],
 ): Promise<ReapedJob[]> {
   const cutoff = new Date(now.getTime() - staleMs);
-  const tenantClause =
-    tenantId == null
-      ? Prisma.empty
-      : typeof tenantId === "bigint"
-        ? Prisma.sql`AND tenant_id = ${tenantId}`
-        : Prisma.sql`AND tenant_id IN (${Prisma.join([...tenantId])})`;
-  const kindClause =
-    kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -1610,15 +1640,7 @@ export async function reapStaleJobs(
         claim_seq: number;
         status: "PENDING" | "DEAD";
       }>
-    >(Prisma.sql`
-      UPDATE scheduler_jobs
-      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} AND NOT (kind::text = ANY(${NEVER_DEAD_KINDS})) THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
-          attempts = attempts + 1,
-          claimed_at = NULL,
-          updated_at = now()
-      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
-      RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,
-                attempts, claim_seq, status`);
+    >(reapSql(cutoff, tenantId, kind));
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenant_id,

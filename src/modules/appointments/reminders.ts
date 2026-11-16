@@ -25,6 +25,7 @@ import {
   recordAppointment,
   storedAppointmentStart,
 } from "@/modules/appointments/record";
+import { REMINDER_KEY_ROOT } from "@/modules/appointments/reminder-keys";
 import {
   type ClaimedJob,
   cancelPendingJobsByPrefix,
@@ -56,7 +57,7 @@ function sysCtx(tenantId: bigint): TenantContext {
 // The dedupeKey prefix for ALL of an appointment's reminders; cancelAppointment drops them by it.
 // Keyed by the provider-scoped id (see reminderScopeId).
 function reminderPrefix(provider: string, eventId: string): string {
-  return `reminder:${reminderScopeId(provider, eventId)}:`;
+  return `${REMINDER_KEY_ROOT}${reminderScopeId(provider, eventId)}:`;
 }
 
 export interface ReminderJob {

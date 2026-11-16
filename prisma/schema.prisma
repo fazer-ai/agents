@@ -2928,6 +2928,11 @@ model LlmUsage {
   // A conversation's total and its turns' lines on the conversation screen (issue #853): the ledger
   // summed by conversation.
   @@index([tenantId, conversationId])
+  // The month's cost of one source: the spend-ceiling poll and the console's usage read
+  // sum `cost_usd` by tenant, source and month, and with `costUsd` in the key the sum never visits the
+  // heap. The table's insert-triggered autovacuum is tightened in
+  // 20261116130200_llm_usage_insert_vacuum so the visibility map keeps up with the appends.
+  @@index([tenantId, source, createdAt, costUsd])
   @@map("llm_usage")
 }
 

@@ -1,7 +1,7 @@
 -- THE INDEX-ONLY READ OF THE MONTH'S COST NEEDS THE VISIBILITY MAP TO KEEP UP WITH THE APPENDS.
 -- `llm_usage` is append-mostly, so autovacuum visits it only on its insert trigger, which by default
 -- waits for 1000 + 20% of the table, which on a busy ledger is days of writes. Every row written
--- since lives on a page not yet marked all-visible, and the index-only scan of 20261116130000 fetches
+-- since lives on a page not yet marked all-visible, and the index-only scan of 20261116160000 fetches
 -- the heap for each of them: measured on a busy production ledger, the rows written since its last
 -- pass cost 140k buffers through the index, close to half of what the poll paid before the index.
 --

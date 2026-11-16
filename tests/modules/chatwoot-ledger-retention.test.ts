@@ -168,6 +168,9 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
         p: deadAge - DAY,
       },
       deadPastFlowLog: { status: "DEAD", r: deadAge + DAY, p: deadAge + DAY },
+      // Settled just now after a long outage, by the sweep that also arms the row's recovery.
+      processedSettledToday: { status: "PROCESSED", r: past, p: 60_000 },
+      deadSettledToday: { status: "DEAD", r: deadAge + DAY, p: 60_000 },
       pendingAncient: { status: "PENDING", r: deadAge + DAY, p: null },
       processingAncient: { status: "PROCESSING", r: deadAge + DAY, p: null },
     } as const;
@@ -194,6 +197,8 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     expect(await idsOf(tenantId)).toEqual(
       [
         "deadPastLedgerOnly",
+        "deadSettledToday",
+        "processedSettledToday",
         "pendingAncient",
         "processedInside",
         "processedNow",

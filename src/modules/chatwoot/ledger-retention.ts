@@ -1,13 +1,13 @@
 import { Prisma } from "@/../generated/prisma/client";
 import config from "@/config";
 
-// How long a settled row of `chatwoot_webhook_deliveries` is kept. The longest any reader of the
-// ledger reaches back is six hours (the delivery recovery's ceiling, the stored-body drain's and the
-// reconcile's first pass, all `MAX_RECOVERY_AGE_MS`), and the reconcile, whose cursor can fall behind,
-// never judges a message older than `RECONCILE_MAX_LOOKBACK_MS`. Seven days is that with a margin wide
-// enough for an instance left off over a long weekend. A fixed constant and not an operator setting:
-// no screen, route or tool reads the ledger, and the only number that bounds it is in the code. See
-// docs/chatwoot.md, "Ledger retention".
+// How long a settled row of `chatwoot_webhook_deliveries` is kept, counted from its receipt and from its
+// settlement. The longest any reader reaches back is six hours from receipt (`MAX_RECOVERY_AGE_MS`) or
+// a recovery's retries from settlement, and the reconcile, whose cursor can fall behind, never judges a
+// message older than `RECONCILE_MAX_LOOKBACK_MS`. Seven days is that with a margin for an instance left
+// off over a long weekend. A fixed constant and not an operator setting: no screen, route or tool reads
+// the ledger, and the only number that bounds it is in the code. See docs/chatwoot.md, "Ledger
+// retention".
 export const LEDGER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 // The reconcile's floor: a day inside the retention, so a message it judges still has the row its
@@ -36,9 +36,10 @@ export function ledgerRetentionCutoffs(now = Date.now()): {
 // their cutoff, never a row still owed an attempt. The range runs on `(tenant_id, received_at)`, so the
 // tenant is named here and not left to the policy, which under the fleet role names none, and the
 // cutoffs are compared as timestamps: that comparison is leakproof and reaches the index under RLS,
-// the status filter is not and is applied to what the range returns. Receipt is the clock: no writer
-// reaches a row past the recovery's six hours, and the reconcile, which dates the rows it writes by
-// the message, never writes one older than `RECONCILE_MAX_LOOKBACK_MS`.
+// the status filter is not and is applied to what the range returns. The settlement is a second clock,
+// because the jobs that read a row are armed when it settles, not when it arrived: after a long outage
+// the stranded sweep settles a row days old and arms a takeover or reply recovery that has no age
+// ceiling, and the reconcile dates the rows it writes by the message.
 export function ledgerRetentionBatch(
   tenantId: bigint,
   rows: number,
@@ -48,7 +49,9 @@ export function ledgerRetentionBatch(
     DELETE FROM chatwoot_webhook_deliveries WHERE id = ANY(ARRAY(
       SELECT id FROM chatwoot_webhook_deliveries
        WHERE tenant_id = ${tenantId} AND received_at < ${cutoffs.processed}
-         AND (status = 'PROCESSED'
-           OR (status = 'DEAD' AND received_at < ${cutoffs.dead}))
+         AND ((status = 'PROCESSED'
+               AND COALESCE(processed_at, received_at) < ${cutoffs.processed})
+           OR (status = 'DEAD'
+               AND COALESCE(processed_at, received_at) < ${cutoffs.dead}))
        LIMIT ${rows}))`;
 }

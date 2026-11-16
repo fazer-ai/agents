@@ -175,7 +175,13 @@ export async function sweepFlowlog(
   // `id = ANY(ARRAY(...))`, never `id IN (...)`: the array is computed once, and the delete walks the
   // primary key. Planned as a semi join, the IN form rescanned the tenant's rows once per row picked:
   // 29 s for a batch of 100 over 700k expired rows, measured under RLS.
-  const passes: ((rows: number) => Prisma.Sql)[] = [
+  // A pass whose outer predicate can keep a row the inner select picked (a text whose expiry a
+  // concurrent write moved forward, a job re-armed) carries the read that re-asks a short batch before
+  // the table is called done, beside its own delete so the two cannot fall out of step.
+  const passes: (
+    | ((rows: number) => Prisma.Sql)
+    | { batch: (rows: number) => Prisma.Sql; rowsLeft: Prisma.Sql }
+  )[] = [
     (rows) => Prisma.sql`
       DELETE FROM execution_logs WHERE id = ANY(ARRAY(
         SELECT id FROM execution_logs WHERE created_at < ${cutoff} LIMIT ${rows}))`,
@@ -204,28 +210,23 @@ export async function sweepFlowlog(
       DELETE FROM full_detail_refs WHERE id = ANY(ARRAY(
         SELECT id FROM full_detail_refs WHERE expires_at < ${now} LIMIT ${rows}))
         AND expires_at < ${now}`,
-    (rows) => Prisma.sql`
-      DELETE FROM full_detail_contents WHERE id = ANY(ARRAY(
-        SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
-        AND expires_at < ${now}`,
+    {
+      batch: (rows) => Prisma.sql`
+        DELETE FROM full_detail_contents WHERE id = ANY(ARRAY(
+          SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
+          AND expires_at < ${now}`,
+      rowsLeft: Prisma.sql`SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`,
+    },
     // NOTE: The scheduler's finished jobs past their kind's window (src/modules/scheduler/done-retention.ts).
     // The outer predicate is repeated so a row re-armed between the select and the delete is
     // re-checked under its row lock and kept: it is PENDING again, and somebody is waiting on it.
-    (rows) => Prisma.sql`
-      DELETE FROM scheduler_jobs WHERE id = ANY(ARRAY(
-        SELECT id FROM scheduler_jobs WHERE ${expiredDone} LIMIT ${rows}))
-        AND ${expiredDone}`,
-  ];
-  // The passes whose outer predicate can keep a row the inner select picked (a text whose expiry a
-  // concurrent write moved forward, a job re-armed), so a short batch there is re-asked before the
-  // table is called done.
-  const rowsLeft: (Prisma.Sql | undefined)[] = [
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    Prisma.sql`SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`,
-    Prisma.sql`SELECT EXISTS(SELECT 1 FROM scheduler_jobs WHERE ${expiredDone}) AS more`,
+    {
+      batch: (rows) => Prisma.sql`
+        DELETE FROM scheduler_jobs WHERE id = ANY(ARRAY(
+          SELECT id FROM scheduler_jobs WHERE ${expiredDone} LIMIT ${rows}))
+          AND ${expiredDone}`,
+      rowsLeft: Prisma.sql`SELECT EXISTS(SELECT 1 FROM scheduler_jobs WHERE ${expiredDone}) AS more`,
+    },
   ];
   // A sweep is done when each table has come back within the window once, over as many passes as it
   // takes: a pass works only the tables the sweep has left, from the one the last pass stopped on. So
@@ -237,14 +238,15 @@ export async function sweepFlowlog(
   let timeouts = 0;
   while (left.length > 0) {
     const i = left[0] as number;
+    const pass = passes[i] as (typeof passes)[number];
     const r = await deleteInBatches(
       base,
       ctx,
       `${tenantId}:${i}`,
-      passes[i] as (rows: number) => Prisma.Sql,
+      typeof pass === "function" ? pass : pass.batch,
       deadline,
       o,
-      rowsLeft[i],
+      typeof pass === "function" ? undefined : pass.rowsLeft,
     );
     deleted += r.deleted;
     timeouts += r.timeouts;

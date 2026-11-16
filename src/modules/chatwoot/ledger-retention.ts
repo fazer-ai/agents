@@ -37,9 +37,9 @@ export function ledgerRetentionCutoffs(now = Date.now()): {
 // tenant named here, since under the fleet role the policy names none, and timestamps are leakproof and
 // reach the index under RLS while the status filter is applied to what the range returns. Settlement
 // is a second clock because the stranded sweep settles a days-old row after an outage and arms a
-// recovery with no age ceiling, and the reconcile dates its rows by the message. A row whose takeover
-// or reply recovery is PENDING or CLAIMED stays at any age: that job reads it by id and, finding none,
-// ends `not-owed` unrepaired (keys of `takeoverRecoveryDedupeKey`, `humanReplyRecoveryDedupeKey`).
+// recovery with no age ceiling, and the reconcile dates its rows by the message. A row with a recovery
+// still PENDING or CLAIMED stays at any age: each reads its row by id and, finding none, ends without
+// its repair or its handoff (keys of the three `*RecoveryDedupeKey`: delivery, takeover, human reply).
 export function ledgerRetentionBatch(
   tenantId: bigint,
   rows: number,
@@ -56,7 +56,8 @@ export function ledgerRetentionBatch(
          AND NOT EXISTS (
                SELECT 1 FROM scheduler_jobs j
                 WHERE j.tenant_id = ${tenantId}
-                  AND j.dedupe_key IN ('takeover-recovery:' || d.id,
+                  AND j.dedupe_key IN ('delivery-recovery:' || d.id,
+                                       'takeover-recovery:' || d.id,
                                        'human-reply-recovery:' || d.id)
                   AND j.status IN ('PENDING', 'CLAIMED'))
        LIMIT ${rows}))`;

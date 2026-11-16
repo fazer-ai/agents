@@ -16,6 +16,7 @@ import {
   ledgerRetentionCutoffs,
 } from "@/modules/chatwoot/ledger-retention";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { armDeliveryRecovery } from "@/modules/chatwoot/recover-delivery";
 import { armHumanReplyRecovery } from "@/modules/chatwoot/recover-human-reply";
 import { armTakeoverRecovery } from "@/modules/chatwoot/recover-takeover";
 import { recordAndProcessChatwootDelivery } from "@/modules/chatwoot/webhook";
@@ -143,7 +144,13 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     await suDb.schedulerJob.deleteMany({
       where: {
         tenantId,
-        kind: { in: ["TAKEOVER_RECOVERY", "HUMAN_REPLY_RECOVERY"] },
+        kind: {
+          in: [
+            "DELIVERY_RECOVERY",
+            "TAKEOVER_RECOVERY",
+            "HUMAN_REPLY_RECOVERY",
+          ],
+        },
       },
     });
   });
@@ -232,13 +239,15 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     expect(kept.map((k) => k.status)).toEqual(["PENDING", "PROCESSING"]);
   });
 
-  test("a settled row whose takeover or reply recovery is still pending or claimed stays past every window", async () => {
+  test("a settled row whose delivery, takeover or reply recovery is still pending or claimed stays past every window", async () => {
     const old = config.flowlog.retentionDays * DAY + DAY;
     const ids: Record<string, bigint> = {};
     for (const [name, status] of [
       ["takeoverPending", "PROCESSED"],
       ["replyClaimed", "PROCESSED"],
       ["deadReplyPending", "DEAD"],
+      ["deadDeliveryPending", "DEAD"],
+      ["deadDeliveryDone", "DEAD"],
       ["takeoverDone", "PROCESSED"],
       ["replyFailed", "PROCESSED"],
       ["noJob", "PROCESSED"],
@@ -257,6 +266,8 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     await armHumanReplyRecovery(tenantId, id("deadReplyPending"), appDb);
     await armTakeoverRecovery(tenantId, id("takeoverDone"), appDb);
     await armHumanReplyRecovery(tenantId, id("replyFailed"), appDb);
+    await armDeliveryRecovery(tenantId, id("deadDeliveryPending"), appDb);
+    await armDeliveryRecovery(tenantId, id("deadDeliveryDone"), appDb);
     const settle = async (kind: string, name: string, status: string) =>
       suDb.$executeRawUnsafe(
         `UPDATE scheduler_jobs SET status = '${status}' WHERE tenant_id = ${tenantId} AND kind = '${kind}' AND payload->>'deliveryRowId' = '${id(name)}'`,
@@ -265,20 +276,28 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
       await settle("HUMAN_REPLY_RECOVERY", "replyClaimed", "CLAIMED"),
     ).toBe(1);
     expect(await settle("TAKEOVER_RECOVERY", "takeoverDone", "DONE")).toBe(1);
+    expect(await settle("DELIVERY_RECOVERY", "deadDeliveryDone", "DONE")).toBe(
+      1,
+    );
     expect(await settle("HUMAN_REPLY_RECOVERY", "replyFailed", "FAILED")).toBe(
       1,
     );
 
     await sweepUntilDone(tenantId);
     expect(await idsOf(tenantId)).toEqual(
-      ["deadReplyPending", "replyClaimed", "takeoverPending"].sort(),
+      [
+        "deadDeliveryPending",
+        "deadReplyPending",
+        "replyClaimed",
+        "takeoverPending",
+      ].sort(),
     );
 
     // Once the recovery has run, the row is an ordinary settled one again.
     await settle("TAKEOVER_RECOVERY", "takeoverPending", "DONE");
     await sweepUntilDone(tenantId);
     expect(await idsOf(tenantId)).toEqual(
-      ["deadReplyPending", "replyClaimed"].sort(),
+      ["deadDeliveryPending", "deadReplyPending", "replyClaimed"].sort(),
     );
   });
 

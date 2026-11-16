@@ -711,7 +711,7 @@ model ChatwootWebhookDelivery {
   @@unique([chatwootInstanceId, deliveryId])
   // The retention pass's range: settled rows by receipt. Full, not partial on the settled statuses,
   // because under RLS an enum comparison is not leakproof and the planner cannot prove such a
-  // predicate (see 20261116140000). It also serves every read the bare tenant index served.
+  // predicate (see 20261116170000). It also serves every read the bare tenant index served.
   @@index([tenantId, receivedAt])
   // Serves the other half of the same contract: a turn retiring the rows of the messages it just ran
   // over. ACCOUNT FIRST, because that is how the write is keyed — display ids and message ids are

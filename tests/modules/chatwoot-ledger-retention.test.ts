@@ -9,6 +9,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { armIngest } from "@/graph/ingest-job";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy";
 import {
   LEDGER_RETENTION_MS,
@@ -299,6 +300,60 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     expect(await idsOf(tenantId)).toEqual(
       ["deadDeliveryPending", "deadReplyPending", "replyClaimed"].sort(),
     );
+  });
+
+  test("the deliveries of a message an ingest fallback still waits on stay past every window", async () => {
+    const old = config.flowlog.retentionDays * DAY + DAY;
+    const row = async (
+      deliveryId: string,
+      conversationId: number,
+      messageId: number,
+    ) => {
+      const id = await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId,
+        status: "PROCESSED",
+        receivedAt: ago(old),
+        processedAt: ago(old),
+      });
+      await suDb.$executeRaw`
+        UPDATE chatwoot_webhook_deliveries
+           SET conversation_id = ${conversationId}, inbound_message_id = ${messageId}
+         WHERE id = ${id}`;
+    };
+    await row("waitedOn", 5101, 9101);
+    await row("waitedOnUpdate", 5101, 9101);
+    await row("otherConversation", 5102, 9101);
+    await row("fallbackDone", 5103, 9103);
+    await row("noFallback", 5104, 9104);
+    const arm = (conversationId: number, messageId: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId: 1,
+        graphThreadId: `ledger-r-${process.pid}:${conversationId}`,
+        messageId,
+        text: "oi",
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        fallbackAfterMs: DAY,
+        event: "message_created",
+        base: appDb,
+      });
+    await arm(5101, 9101);
+    await arm(5103, 9103);
+    expect(
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET status = 'DONE'
+         WHERE tenant_id = ${tenantId} AND kind = 'INGEST_FALLBACK'
+           AND payload->>'messageId' = '9103'`,
+    ).toBe(1);
+
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual(["waitedOn", "waitedOnUpdate"]);
   });
 
   test("a Chatwoot retry of a delivery inside the window is still recognised after the pass", async () => {

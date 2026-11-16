@@ -37,9 +37,9 @@ export function ledgerRetentionCutoffs(now = Date.now()): {
 // tenant named here, since under the fleet role the policy names none, and timestamps are leakproof and
 // reach the index under RLS while the status filter is applied to what the range returns. Settlement
 // is a second clock because the stranded sweep settles a days-old row after an outage and arms a
-// recovery with no age ceiling, and the reconcile dates its rows by the message. A row with a recovery
-// still PENDING or CLAIMED stays at any age: each reads its row by id and, finding none, ends without
-// its repair or its handoff (keys of the three `*RecoveryDedupeKey`: delivery, takeover, human reply).
+// recovery with no age ceiling, and the reconcile dates its rows by the message. A row that a live job
+// still reads stays at any age: its delivery, takeover or reply recovery (the `*RecoveryDedupeKey`
+// keys), which ends unrepaired without it, or an ingest fallback of its message, which counts it.
 export function ledgerRetentionBatch(
   tenantId: bigint,
   rows: number,
@@ -47,6 +47,18 @@ export function ledgerRetentionBatch(
 ): Prisma.Sql {
   return Prisma.sql`
     DELETE FROM chatwoot_webhook_deliveries WHERE id = ANY(ARRAY(
+      -- The messages an ingest fallback still waiting will count settled deliveries of
+      -- (fallbackCovered in src/graph/ingest-job.ts), read once per batch by the key prefix, which is
+      -- leakproof and reaches the index under the policy. Compared as text, so a payload no fallback
+      -- could parse costs its rows nothing rather than failing the batch.
+      WITH fallbacks AS MATERIALIZED (
+        SELECT j.payload->>'instanceId' AS instance_id,
+               j.payload->>'conversationId' AS conversation_id,
+               j.payload->>'messageId' AS message_id
+          FROM scheduler_jobs j
+         WHERE j.tenant_id = ${tenantId}
+           AND starts_with(j.dedupe_key, 'ingest-fallback:')
+           AND j.status IN ('PENDING', 'CLAIMED'))
       SELECT d.id FROM chatwoot_webhook_deliveries d
         -- The recovery keys, built beside the row and compared bare below: built inside the lookup
         -- they are a leaky expression over an outer reference, which PostgreSQL 17.12 keeps above the
@@ -70,5 +82,10 @@ export function ledgerRetentionBatch(
                -- A probe per row by key, never an anti join: under the policy the status filter does
                -- not narrow the estimate, and joined the lookup reaches the index by tenant alone.
                OFFSET 0)
+         AND NOT EXISTS (
+               SELECT 1 FROM fallbacks f
+                WHERE f.instance_id = d.chatwoot_instance_id::text
+                  AND f.conversation_id = d.conversation_id::text
+                  AND f.message_id = d.inbound_message_id::text)
        LIMIT ${rows}))`;
 }

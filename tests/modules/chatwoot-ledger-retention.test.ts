@@ -401,7 +401,7 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
       { tenantId, userId: null, role: "TENANT_ADMIN" },
       (db) => ledgerRetentionStep(db, tenantId, 100, cutoffs),
     );
-    expect(first).toEqual({ examined: 100, deleted: 0 });
+    expect([first.examined, first.deleted]).toEqual([100, 0]);
 
     // A finished job past its window, in the table the sweep takes after the ledger.
     await suDb.$executeRaw`
@@ -434,6 +434,71 @@ describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
     expect(left).toHaveLength(held + 1);
     expect(left).not.toContain("pastA");
     expect(left).not.toContain("pastB");
+  });
+
+  test("a page whose transaction rolls back is examined again, not skipped", async () => {
+    await suDb.$executeRaw`
+      INSERT INTO chatwoot_webhook_deliveries
+        (tenant_id, chatwoot_instance_id, delivery_id, event, status, received_at, processed_at)
+      SELECT ${tenantId}, ${instanceId}, 'rb-' || lpad(g::text, 3, '0'), 'message_created', 'PROCESSED',
+             ${ago(LEDGER_RETENTION_MS + DAY)}::timestamp + g * interval '1 second',
+             ${ago(LEDGER_RETENTION_MS + DAY)}::timestamp + g * interval '1 second'
+        FROM generate_series(1, 150) g`;
+    const cutoffs = ledgerRetentionCutoffs();
+    const scope = { tenantId, userId: null, role: "TENANT_ADMIN" } as const;
+    // The statement ran and the transaction did not commit, as when it outlives its budget.
+    let advance: (() => void) | undefined;
+    await expect(
+      runScopedOn(appDb, scope, async (db) => {
+        const r = await ledgerRetentionStep(db, tenantId, 100, cutoffs);
+        expect(r.deleted).toBe(100);
+        advance = r.advance;
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect(advance).toBeDefined();
+    expect(await idsOf(tenantId)).toHaveLength(150);
+
+    // The rolled-back page left the position where it was, so the next page takes the same rows.
+    const again = await runScopedOn(appDb, scope, (db) =>
+      ledgerRetentionStep(db, tenantId, 100, cutoffs),
+    );
+    again.advance();
+    expect(again.deleted).toBe(100);
+    const left = await idsOf(tenantId);
+    expect(left).toHaveLength(50);
+    expect(left[0]).toBe("rb-101");
+  });
+
+  test("the sibling deliveries of a colleague's reply still being delivered stay past every window", async () => {
+    const old = config.flowlog.retentionDays * DAY + DAY;
+    const reply = async (
+      deliveryId: string,
+      status: "PENDING" | "PROCESSED",
+      messageId: number,
+    ) => {
+      const id = await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId,
+        status,
+        receivedAt: ago(old),
+        processedAt: status === "PENDING" ? null : ago(old),
+      });
+      await suDb.$executeRaw`
+        UPDATE chatwoot_webhook_deliveries
+           SET conversation_id = 5301, human_reply_message_id = ${messageId}
+         WHERE id = ${id}`;
+    };
+    await reply("strandedReply", "PENDING", 9301);
+    await reply("responderSibling", "PROCESSED", 9301);
+    await reply("settledReply", "PROCESSED", 9302);
+
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual([
+      "responderSibling",
+      "strandedReply",
+    ]);
   });
 
   test("a Chatwoot retry of a delivery inside the window is still recognised after the pass", async () => {

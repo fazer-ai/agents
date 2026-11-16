@@ -52,8 +52,8 @@ export function forgetLedgerCursorsForTest(): void {
 // must keep is walked a page at a time instead of in one statement. The range runs on
 // `(tenant_id, received_at)` with the tenant named, timestamps and bigint compare leakproof under RLS.
 // A row a live job still reads stays: its delivery, takeover or reply recovery by the row's key, the
-// deliveries of a message its ingest fallback counts, and the siblings a reply recovery's coverage
-// question reads (docs/chatwoot.md, "Ledger retention").
+// deliveries of a message its ingest fallback counts, and the siblings a reply recovery, armed or still
+// to be, reads (docs/chatwoot.md, "Ledger retention").
 export function ledgerRetentionPage(
   tenantId: bigint,
   rows: number,
@@ -135,7 +135,16 @@ export function ledgerRetentionPage(
                  SELECT 1 FROM replied h
                   WHERE h.chatwoot_instance_id = p.chatwoot_instance_id
                     AND h.conversation_id = p.conversation_id
-                    AND h.human_reply_message_id = p.human_reply_message_id)))
+                    AND h.human_reply_message_id = p.human_reply_message_id)
+           -- And a colleague's reply still being delivered, whose recovery is not armed yet: probed per
+           -- row on the reply-sibling index, which only a row naming a reply reaches.
+           AND NOT EXISTS (
+                 SELECT 1 FROM chatwoot_webhook_deliveries o
+                  WHERE o.chatwoot_instance_id = p.chatwoot_instance_id
+                    AND o.conversation_id = p.conversation_id
+                    AND o.human_reply_message_id = p.human_reply_message_id
+                    AND o.status IN ('PENDING', 'PROCESSING')
+                 OFFSET 0)))
       RETURNING 1)
     SELECT (SELECT count(*) FROM page)::int AS examined,
            (SELECT count(*) FROM gone)::int AS deleted,
@@ -145,14 +154,15 @@ export function ledgerRetentionPage(
         SELECT received_at, id FROM page ORDER BY received_at DESC, id DESC LIMIT 1) l ON true`;
 }
 
-// Runs one page from where the tenant's pass stands, and moves it on: past the page when the page was
-// full, back to the start when the range ran out, so the next sweep walks it again from the oldest.
+// Runs one page from where the tenant's pass stands. `advance` moves it on (past the page when the page
+// was full, back to the start when the range ran out) and is the caller's to call once the page's
+// transaction commits: a page rolled back after this returns must be examined again.
 export async function ledgerRetentionStep(
   db: { $queryRaw: (sql: Prisma.Sql) => Promise<unknown> },
   tenantId: bigint,
   rows: number,
   cutoffs: { processed: Date; dead: Date },
-): Promise<{ examined: number; deleted: number }> {
+): Promise<{ examined: number; deleted: number; advance: () => void }> {
   const key = String(tenantId);
   const [r] = (await db.$queryRaw(
     ledgerRetentionPage(tenantId, rows, cutoffs, cursors.get(key) ?? null),
@@ -163,8 +173,16 @@ export async function ledgerRetentionStep(
     lastId: bigint | null;
   }[];
   if (!r) throw new Error("ledger retention: the page returned no row");
-  if (r.examined < rows || r.lastAt === null || r.lastId === null)
-    cursors.delete(key);
-  else cursors.set(key, { at: r.lastAt, id: r.lastId });
-  return { examined: r.examined, deleted: r.deleted };
+  const next =
+    r.examined < rows || r.lastAt === null || r.lastId === null
+      ? null
+      : { at: r.lastAt, id: r.lastId };
+  return {
+    examined: r.examined,
+    deleted: r.deleted,
+    advance: () => {
+      if (next) cursors.set(key, next);
+      else cursors.delete(key);
+    },
+  };
 }

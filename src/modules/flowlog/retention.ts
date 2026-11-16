@@ -91,7 +91,7 @@ export function nextBatchSize(
 type Step = (
   db: Prisma.TransactionClient,
   rows: number,
-) => Promise<{ examined: number; deleted: number }>;
+) => Promise<{ examined: number; deleted: number; advance?: () => void }>;
 
 function deleteStep(batch: (rows: number) => Prisma.Sql): Step {
   return async (db, rows) => {
@@ -129,6 +129,8 @@ async function deleteInBatches(
     const started = Date.now();
     try {
       const r = await runScopedOn(base, ctx, (db) => step(db, size));
+      // Committed: only now may a step that keeps a position move it on.
+      r.advance?.();
       n = r.examined;
       deleted += r.deleted;
     } catch (error) {

@@ -10,10 +10,14 @@ import config from "@/config";
 // retention".
 export const LEDGER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-// The reconcile's floor: a day inside the retention, so a message it judges still has the row its
-// delivery wrote (a row's receipt follows the message's creation, give or take the clocks of two hosts).
-export const RECONCILE_MAX_LOOKBACK_MS =
-  LEDGER_RETENTION_MS - 24 * 60 * 60 * 1000;
+// How old a message a reader that a webhook or a cursor brings back may ask the ledger about: a day
+// inside the retention, so the rows its delivery wrote are still there (a row's receipt follows the
+// message's creation, give or take the clocks of two hosts). A job holds its own row instead, for as
+// long as it is live (`ledgerRetentionBatch`).
+export const LEDGER_READ_HORIZON_MS = LEDGER_RETENTION_MS - 24 * 60 * 60 * 1000;
+
+// The reconcile's floor.
+export const RECONCILE_MAX_LOOKBACK_MS = LEDGER_READ_HORIZON_MS;
 
 // The two cutoffs of the retention pass. A `PROCESSED` row goes at `LEDGER_RETENTION_MS`. A `DEAD` row
 // is the customer nobody answered, and the error line that reports it lives in the flow log, so it stays

@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { LEDGER_READ_HORIZON_MS } from "@/modules/chatwoot/ledger-retention";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   fillLedgerTranscribedMessage,
@@ -77,6 +78,7 @@ function lateAudio(
     chatwootInboxId?: number;
     // NOTE: The conversation is the bot's and nobody has taken it: `act` is true, on an update too.
     ownedByBot?: boolean;
+    createdAt?: Date;
   },
 ) {
   const convId =
@@ -87,6 +89,7 @@ function lateAudio(
     content: "",
     message_type: "incoming",
     private: false,
+    ...(opts.createdAt ? { created_at: opts.createdAt.toISOString() } : {}),
     attachments: [
       {
         id: 90 + messageId,
@@ -714,6 +717,27 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     await deliver(n);
 
     expect(await armedFor(6103)).toHaveLength(0);
+  });
+
+  // The creation's rows of a message this old may be gone to the ledger's retention, and without them
+  // the gate reads ownership: a colleague holds the conversation, so it would fold the words in again.
+  test("a late transcription of a message older than the ledger keeps is not folded in", async () => {
+    const old = lateAudio(6110, {
+      transcribed: true,
+      createdAt: new Date(Date.now() - LEDGER_READ_HORIZON_MS - 60_000),
+    });
+    const recent = lateAudio(6111, {
+      transcribed: true,
+      createdAt: new Date(Date.now() - LEDGER_READ_HORIZON_MS + 60_000 * 60),
+    });
+    if (!old || !recent)
+      throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(old);
+    await deliver(recent);
+
+    expect(await armedFor(6110)).toHaveLength(0);
+    expect(await armedFor(6111)).toHaveLength(1);
   });
 
   test("an update with nothing analysed leaves the ledger's message column null", async () => {

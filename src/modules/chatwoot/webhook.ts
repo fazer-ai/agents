@@ -224,6 +224,7 @@ import {
   loadChatwootClient,
 } from "./instance";
 import { withConversationLabels } from "./labels";
+import { LEDGER_READ_HORIZON_MS } from "./ledger-retention";
 import { mirrorOncePerEvent } from "./mirror-once";
 import {
   type ControlCommand,
@@ -2334,6 +2335,26 @@ async function ingestUnhandledMessage(args: {
     n.message.transcribedText = lateTranscription;
   }
   const lateMediaAnalyzed = lateTranscription !== null;
+  // A late update of a message older than the ledger keeps is not taken up: its verdict, and the
+  // fallback's count, read the creation's rows, which retention may have deleted, and without them
+  // the gate would fold in again a message a turn already had (docs/chatwoot.md, "Ledger retention").
+  const sentAt = n.message.createdAt ?? null;
+  if (
+    lateMediaAnalyzed &&
+    sentAt !== null &&
+    Date.now() - sentAt.getTime() > LEDGER_READ_HORIZON_MS
+  ) {
+    logger.info(
+      {
+        tenantId: String(tenantId),
+        conversationId,
+        messageId,
+        sentAt: sentAt.toISOString(),
+      },
+      "chatwoot: late transcription of a message past the ledger's window, not folded in",
+    );
+    return "nothing";
+  }
   // The late-transcription arm asks the LEDGER, not ownership now: `act` on a `message_updated`
   // reads a decision taken on the creation's delivery and errs both ways; null falls back to it. The
   // creation arm keeps `act`, where both questions are one fact and its own row has not settled.

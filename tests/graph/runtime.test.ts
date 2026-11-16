@@ -4236,11 +4236,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     [true, "gate-exit-per-message", 9817],
     [false, "gate-exit", 9815],
     [true, "another-turn", 9816],
+    [true, "another-turn-then-gate-exit", 9818],
   ] as const) {
+    const byAnotherTurn = lostTo.startsWith("another-turn");
     const label = !handsOff
       ? "a newer message's gate exit under the turn still stops a plain reply"
-      : lostTo === "another-turn"
-        ? "another turn's claim under the turn still stops the transfer's closing line"
+      : byAnotherTurn
+        ? `another turn's claim under the turn still stops the transfer's closing line${lostTo === "another-turn" ? "" : ", with a gate exit's dispensal over it"}`
         : `a newer message's gate exit under the turn still lets the transfer's closing line out (${lostTo === "gate-exit" ? "scalar mark" : "per-message rows"})`;
     test(label, async () => {
       await seedConversation(conv, null);
@@ -4266,25 +4268,26 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         sendPrivateNote: async () => ({}),
       } as unknown as ChatwootClient;
       const newerMessageGateExit = async () => {
+        if (byAnotherTurn) {
+          await claimReplyBurst({
+            tenantId,
+            conversationDbId: convDbId,
+            toMessageId: 2,
+            maxHandledAllowed: null,
+            messageIds: [1, 2],
+            initiatedBy: "automatic",
+            base: appDb,
+          });
+        }
         if (lostTo !== "another-turn") {
           await advanceHandledWatermark({
             tenantId,
             conversationDbId: convDbId,
-            toMessageId: 2,
+            toMessageId: 3,
             dispensed: { kind: "range", afterMessageId: null },
             base: appDb,
           });
-          return;
         }
-        await claimReplyBurst({
-          tenantId,
-          conversationDbId: convDbId,
-          toMessageId: 2,
-          maxHandledAllowed: null,
-          messageIds: [1, 2],
-          initiatedBy: "automatic",
-          base: appDb,
-        });
       };
       class RacedModel {
         async invoke() {
@@ -4329,7 +4332,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
       });
       expect(sent).toEqual(
-        handsOff && lostTo !== "another-turn"
+        handsOff && !byAnotherTurn
           ? ["Procure atendimento de emergência ou ligue 192."]
           : [],
       );

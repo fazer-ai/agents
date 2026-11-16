@@ -190,8 +190,10 @@ export async function claimReplyBurst(params: {
   // Only `"operator"` (the re-engage click) changes anything: it may overturn a dispensal, since the
   // button exists to overturn a deliberate silence. Declared rather than derived from the ids,
   // because a delayed redelivery of an old message looks the same by arithmetic and must not be
-  // answered twice. Required, so a new path cannot inherit `"operator"` by omission.
-  initiatedBy: "automatic" | "operator";
+  // answered twice. Required, so a new path cannot inherit `"operator"` by omission. `"transfer"`
+  // is the closing line of a hand-over this turn completed: it overturns silences too, with no
+  // handled ceiling, since the silence was the gate reading the conversation as the team's.
+  initiatedBy: "automatic" | "operator" | "transfer";
   base?: PrismaClient;
 }): Promise<ReplyClaimOutcome> {
   const base = params.base ?? basePrisma;
@@ -231,7 +233,7 @@ export async function claimReplyBurst(params: {
       // twice); above it the absence of a row is evidence, because every decision there writes one.
       const floor = row.floor;
       const reachesBelowFloor = floor === null || lowest <= floor;
-      const overturnsSilence = params.initiatedBy === "operator";
+      const overturnsSilence = params.initiatedBy !== "automatic";
       if (reachesBelowFloor && row.claimed !== null) {
         if (row.claimed >= params.toMessageId) {
           return { won: false, reason: "claimed" };
@@ -243,6 +245,7 @@ export async function claimReplyBurst(params: {
       // below-floor check.
       if (
         (reachesBelowFloor || overturnsSilence) &&
+        params.initiatedBy !== "transfer" &&
         row.handled !== null &&
         (params.maxHandledAllowed === null ||
           row.handled > params.maxHandledAllowed)

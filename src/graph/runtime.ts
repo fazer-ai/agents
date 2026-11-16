@@ -823,7 +823,6 @@ export async function runLoadedTurn(
   // supersede gate: turns that then say nothing (guardrail, empty reply, revoked document) must
   // leave the column untouched. Two racing turns still meet in one atomic CAS.
   let decided: boolean | null = null;
-  let lostTo: ReplyClaimLoss | null = null;
   const claimBeforeSend = async (): Promise<boolean> => {
     if (decided !== null) return decided;
     const claim = await claimReplyBurst({
@@ -836,7 +835,6 @@ export async function runLoadedTurn(
       base,
     });
     if (!claim.won) {
-      lostTo = claim.reason;
       target.onLost?.(claim.reason);
       logger.info(
         "turn: %s (conv=%s target=%s), deferring",
@@ -854,17 +852,32 @@ export async function runLoadedTurn(
     decided = claim.won;
     return decided;
   };
-  return runTurnBody({ ...params, claimBeforeSend, claimLostTo: () => lostTo });
+  // The closing line of a completed transfer, asked only after the ordinary claim lost: the same
+  // burst, claimed past the silences (a dispensal, a moved mark) that the hand-over itself caused, and
+  // still refused by any claim another turn holds. Memoized, so one turn sends one line.
+  let transferDecided: boolean | null = null;
+  const claimForTransfer = async (): Promise<boolean> => {
+    if (transferDecided !== null) return transferDecided;
+    const claim = await claimReplyBurst({
+      tenantId: params.tenantId,
+      conversationDbId: target.conversationDbId,
+      toMessageId: target.toMessageId,
+      maxHandledAllowed: target.maxHandledAllowed,
+      messageIds: target.messageIds,
+      initiatedBy: "transfer",
+      base,
+    });
+    transferDecided = claim.won;
+    return transferDecided;
+  };
+  return runTurnBody({ ...params, claimBeforeSend, claimForTransfer });
 }
-
-type ReplyClaimLoss = "claimed" | "handled" | "dispensed" | "partial";
 
 // `RunLoadedTurnParams` plus the claim gate the wrapper above built. Not on the public type because
 // no caller may supply it; absent (the playground, no triggering message), it answers yes.
 type RunTurnBodyParams = RunLoadedTurnParams & {
   claimBeforeSend?: () => Promise<boolean>;
-  // Why the claim was lost, once it was asked and lost; null before that.
-  claimLostTo?: () => ReplyClaimLoss | null;
+  claimForTransfer?: () => Promise<boolean>;
 };
 
 // Whether a read receipt on this channel can reach anything. Unknown counts as WhatsApp: the
@@ -914,14 +927,12 @@ async function runTurnBody(
     return won;
   };
   // The claim for the closing line of a transfer this turn completed, asked only once it landed.
-  // Once the conversation is a person's no later turn speaks for the burst, so a claim lost to a
-  // decision that answered nobody (a gate exit's dispensal, a mark moved past it) still lets the line
-  // out. A claim held by another turn does not: that turn may have transferred and said its own line.
-  // See docs/graph.md, "The reply claim".
+  // Once the conversation is a person's no later turn speaks for the burst, so a claim lost to the
+  // silence the hand-over caused (a gate exit's dispensal, a mark moved past it) is asked again past
+  // it. Another turn's claim still refuses it. See docs/graph.md, "The reply claim".
   const claimTransferLine = async (): Promise<boolean> => {
     if (await claimBeforeSend()) return true;
-    const lost = params.claimLostTo?.() ?? null;
-    return lost === "dispensed" || lost === "handled";
+    return (await params.claimForTransfer?.()) ?? false;
   };
   // Applied before anything reads the config, so the model, the output guardrail and the
   // audited row all see the same prompt.

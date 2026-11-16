@@ -1,5 +1,5 @@
 import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import {
@@ -368,6 +368,20 @@ export function snapshot(now: number = Date.now()): {
   };
 }
 
+// One tenant at a time, oldest first, on the partial index of open rows. Read across every tenant, as
+// the fleet, nothing leads that index and the planner sizes it as the whole ledger (the policy hides
+// the statistics of `status` from an enum comparison), so it scanned the table: 650 ms and 198k
+// buffers per tick on a ledger of 8.5M rows (docs/tenancy.md).
+export const pendingDeliveryAgeSql = Prisma.sql`
+  SELECT (extract(epoch FROM (now() AT TIME ZONE 'UTC') - min(o.received_at)) * 1000)::float8 AS age_ms
+    FROM tenants t
+   CROSS JOIN LATERAL (
+         SELECT d.received_at
+           FROM chatwoot_webhook_deliveries d
+          WHERE d.tenant_id = t.id AND d.status = 'PENDING'
+          ORDER BY d.received_at
+          LIMIT 1) o`;
+
 export async function readDatabaseSignals(
   base: PrismaClient = instanceHealthPrisma,
 ): Promise<DatabaseReading> {
@@ -380,10 +394,9 @@ export async function readDatabaseSignals(
         FROM scheduler_jobs
        WHERE status = 'PENDING' AND run_at <= now()
        GROUP BY kind`;
-    const [pending] = await db.$queryRaw<{ age_ms: number | null }[]>`
-      SELECT (extract(epoch FROM (now() AT TIME ZONE 'UTC') - min(received_at)) * 1000)::float8 AS age_ms
-        FROM chatwoot_webhook_deliveries
-       WHERE status = 'PENDING'`;
+    const [pending] = await db.$queryRaw<{ age_ms: number | null }[]>(
+      pendingDeliveryAgeSql,
+    );
     const [debounce] = await db.$queryRaw<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM scheduler_jobs

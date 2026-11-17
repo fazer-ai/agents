@@ -20,6 +20,11 @@
 //     is not the translation function, and neither is one inside a function
 //     whose own parameter is named `t`), and `const tr = useTranslation().t`
 //     (or `["t"]`, `[0]`);
+//   - `i18n.t` (or `i18n["t"]`, or the same on `i18next`), called or read
+//     (`const tr = i18n.t`), and `const { t: tr } = i18n`, in any client
+//     file, the hook's `i18n` and the module's alike: `no-dynamic-i18n-key`
+//     never sees them (`i18n.language` and the rest of `i18n` stay allowed;
+//     code outside a component takes `t: TFunction` as a parameter);
 //   - importing the hook under another name
 //     (`import { useTranslation as useI18n }`), which would hide every call
 //     from this rule (a type-only import is left alone).
@@ -95,15 +100,6 @@ pattern t_parameter_scope() {
     }
 }
 
-// The hook's result is bound to the left side of a declarator or of an
-// assignment.
-pattern hook_target($pat) {
-    or {
-        `$pat = $init` where { $init <: hook_call() },
-        JsAssignmentExpression($pat, $init) where { $init <: hook_call() }
-    }
-}
-
 pattern t_key() {
     or {
         r"^(?:t|\"t\"|'t')$",
@@ -158,55 +154,67 @@ pattern renamed_t_or_zero($prop) {
 }
 
 or {
-    hook_target($pat) where {
-        $pat <: object_pattern($properties),
-        $properties <: some or {
-            renamed_t_or_zero($prop),
-            pattern_property($outer, $nested) where {
-                $outer <: i18n_key(),
-                $nested <: object_pattern($inner),
-                $inner <: some renamed_t($prop)
-            }
+    // The hook's result is bound to the left side of a declarator (typed or
+    // not: the declarator node, since the snippet `$pat = $init` skips one with a
+    // type annotation) or of an assignment.
+    // NOTE: matched inline and only once: a named pattern called at the top of the `or` runs at every
+    // node of every file, and four calls of it made the whole-tree lint about 17 times slower.
+    or {
+        JsVariableDeclarator($pat, $_, $clause) where {
+            $clause <: JsInitializerClause($init),
+            $init <: hook_call()
         },
-        register_diagnostic(
-            span = $prop,
-            message = "Don't rename `t` from `useTranslation()`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the renamed function leaves the catalog. If the name conflicts, rename the outer binding instead."
-        )
-    },
-    hook_target($pat) where {
-        $pat <: array_pattern($tuple),
-        $tuple <: [$_, array_element($element), ...],
-        $element <: object_pattern($properties),
-        $properties <: some renamed_t($prop),
-        register_diagnostic(
-            span = $prop,
-            message = "Don't rename `t` from `useTranslation()`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the renamed function leaves the catalog. If the name conflicts, rename the outer binding instead."
-        )
-    },
-    hook_target($pat) where {
-        $pat <: array_pattern($elements),
-        $elements <: [$first, ...],
-        $first <: or {
-            array_element($target) where {
-                $target <: bound_name(),
-                $target <: not r"^t$"
+        JsAssignmentExpression($pat, $init) where { $init <: hook_call() }
+    } where {
+        $pat <: or {
+            object_pattern($properties) where {
+                $properties <: some or {
+                    renamed_t_or_zero($prop),
+                    pattern_property($outer, $nested) where {
+                        $outer <: i18n_key(),
+                        $nested <: object_pattern($inner),
+                        $inner <: some renamed_t($prop)
+                    }
+                },
+                register_diagnostic(
+                    span = $prop,
+                    message = "Don't rename `t` from `useTranslation()`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the renamed function leaves the catalog. If the name conflicts, rename the outer binding instead."
+                )
             },
-            JsArrayBindingPatternRestElement(),
-            JsArrayAssignmentPatternRestElement()
-        },
-        register_diagnostic(
-            span = $pat,
-            message = "Don't take the translation function out of `useTranslation()` under another name. Destructure it as `const { t } = useTranslation()`: `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`."
-        )
+            array_pattern($tuple) where {
+                $tuple <: [$_, array_element($element), ...],
+                $element <: object_pattern($properties),
+                $properties <: some renamed_t($prop),
+                register_diagnostic(
+                    span = $prop,
+                    message = "Don't rename `t` from `useTranslation()`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the renamed function leaves the catalog. If the name conflicts, rename the outer binding instead."
+                )
+            },
+            array_pattern($elements) where {
+                $elements <: [$first, ...],
+                $first <: or {
+                    array_element($target) where {
+                        $target <: bound_name(),
+                        $target <: not r"^t$"
+                    },
+                    JsArrayBindingPatternRestElement(),
+                    JsArrayAssignmentPatternRestElement()
+                },
+                register_diagnostic(
+                    span = $pat,
+                    message = "Don't take the translation function out of `useTranslation()` under another name. Destructure it as `const { t } = useTranslation()`: `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`."
+                )
+            },
+            bound_name() where {
+                register_diagnostic(
+                    span = $pat,
+                    message = "Destructure directly: `const { t } = useTranslation()`. Capturing the hook return in a variable and calling `.t(...)` escapes `no-dynamic-i18n-key`."
+                )
+            }
+        }
     },
-    hook_target($pat) where {
-        $pat <: bound_name(),
-        register_diagnostic(
-            span = $pat,
-            message = "Destructure directly: `const { t } = useTranslation()`. Capturing the hook return in a variable and calling `.t(...)` escapes `no-dynamic-i18n-key`."
-        )
-    },
-    `$alias = $value` where {
+    JsVariableDeclarator($alias, $_, $clause) where {
+        $clause <: JsInitializerClause($value),
         $alias <: JsIdentifierBinding(),
         $alias <: not r"^t$",
         $value <: or {
@@ -231,7 +239,29 @@ or {
             message = "Don't import `useTranslation` under another name: this lint and `no-dynamic-i18n-key` only recognise the hook by its own name, so a `t` taken from the renamed hook goes unchecked."
         )
     },
-    `$alias = t` as $declarator where {
+    or {
+        JsStaticMemberExpression($object, $member) where { $member <: r"^t$" },
+        JsComputedMemberExpression($object, $member) where { $member <: r"^(?:\"t\"|'t'|`t`)$" }
+    } as $access where {
+        $object <: r"^(?:i18n|i18next)$",
+        register_diagnostic(
+            span = $access,
+            message = "Call `t` from `const { t } = useTranslation()` (or take `t: TFunction` as a parameter outside a component) instead of reaching `i18n.t`: `no-dynamic-i18n-key` only sees calls named `t`, so a dynamic key passed to `i18n.t` or to an alias of it is never flagged."
+        )
+    },
+    JsVariableDeclarator($pat, $_, $clause) where {
+        $clause <: JsInitializerClause($value),
+        $value <: r"^(?:i18n|i18next)$",
+        $pat <: object_pattern($properties),
+        $properties <: some renamed_t($prop),
+        register_diagnostic(
+            span = $prop,
+            message = "Call `t` from `const { t } = useTranslation()` (or take `t: TFunction` as a parameter outside a component) instead of reaching `i18n.t`: `no-dynamic-i18n-key` only sees calls named `t`, so a dynamic key passed to `i18n.t` or to an alias of it is never flagged."
+        )
+    },
+    JsVariableDeclarator($alias, $_, $clause) as $declarator where {
+        $clause <: JsInitializerClause($value),
+        $value <: r"^t$",
         $alias <: JsIdentifierBinding(),
         $program <: contains hook_call(),
         $declarator <: not within t_parameter_scope(),

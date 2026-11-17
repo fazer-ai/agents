@@ -10,7 +10,7 @@
 // anywhere else is unrelated and may be renamed freely. A type-only import
 // (`import type { ... }`, `import { type translate as T }`) creates nothing
 // callable and is left alone. An alias counts only in a file that imports
-// `translate` from that module under its own name, and not inside a function
+// `translate` from that module under its own name (`{ translate }` or `{ translate as translate }`), and not inside a function
 // whose own parameter named `translate` shadows it.
 //
 // Out of scope: the lint catches an honest mistake, not a deliberate way
@@ -85,13 +85,20 @@ or {
             message = "Don't import `translate` under another name. `bun i18n:extract` and `no-dynamic-translate-key` only see calls named `translate`, so a key passed to the renamed function leaves the catalog."
         )
     },
-    `$alias = translate` as $declarator where {
+    JsVariableDeclarator($alias, $_, $clause) as $declarator where {
+        $clause <: JsInitializerClause($value),
+        $value <: r"^translate$",
         $alias <: JsIdentifierBinding(),
         $declarator <: not within translate_parameter_scope(),
         $program <: contains JsImport() as $import where {
             $import <: i18n_import(),
-            $import <: contains JsShorthandNamedImportSpecifier() as $plain where {
-                $plain <: r"^translate$"
+            $import <: contains or {
+                JsShorthandNamedImportSpecifier() as $plain where { $plain <: r"^translate$" },
+                JsNamedImportSpecifier($name, $local) as $named where {
+                    $name <: r"^translate$",
+                    $local <: r"^translate$",
+                    $named <: not r"^type\s.*"
+                }
             }
         },
         register_diagnostic(

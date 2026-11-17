@@ -38,7 +38,8 @@ function ruleOf(message: string): Rule {
   if (
     message.includes("only see calls named `t`") ||
     message.startsWith("Destructure directly") ||
-    message.startsWith("Don't import `useTranslation`")
+    message.startsWith("Don't import `useTranslation`") ||
+    message.startsWith("Call `t` from")
   )
     return "tRename";
   if (message.startsWith("Dynamic i18n key"))
@@ -335,6 +336,80 @@ const T_RENAME: Record<string, [string, Partial<Hits>]> = {
     `declare function useOther(): { t: unknown };\nexport function useX() {\n  const { t: tr } = useOther();\n}\n`,
     {},
   ],
+  "i18n-member-t.tsx": [
+    hook(`const { i18n } = useTranslation();\n  return i18n.t("a");`),
+    { tRename: 1 },
+  ],
+  "i18n-member-t-alias.tsx": [
+    hook(
+      `const { i18n } = useTranslation();\n  const tr = i18n.t;\n  return tr("a");`,
+    ),
+    { tRename: 1 },
+  ],
+  "i18n-computed-t.tsx": [
+    hook(`const { i18n } = useTranslation();\n  return i18n["t"]("a");`),
+    { tRename: 1 },
+  ],
+  "i18n-destructure-rename.tsx": [
+    hook(
+      `const { i18n } = useTranslation();\n  const { t: tr } = i18n;\n  return tr("a");`,
+    ),
+    { tRename: 1 },
+  ],
+  "i18n-destructure-other.tsx": [
+    hook(
+      `const { t, i18n } = useTranslation();\n  const { language } = i18n;\n  return [t("a"), language];`,
+    ),
+    {},
+  ],
+  "i18n-member-language.tsx": [
+    hook(
+      `const { t, i18n } = useTranslation();\n  return [t("a"), i18n.language];`,
+    ),
+    {},
+  ],
+  "i18n-module-call.tsx": [
+    `import i18n from "@/client/lib/i18n";\nexport const a = i18n.t("a");\n`,
+    { tRename: 1 },
+  ],
+  "i18n-module-alias.tsx": [
+    `import i18n from "@/client/lib/i18n";\nconst tr = i18n.t;\nexport const a = tr("a");\n`,
+    { tRename: 1 },
+  ],
+  "i18n-module-destructure-rename.tsx": [
+    `import i18n from "@/client/lib/i18n";\nconst { t: tr } = i18n;\nexport const a = tr("a");\n`,
+    { tRename: 1 },
+  ],
+  "i18next-module-call.tsx": [
+    `import i18next from "i18next";\nexport const a = i18next.t("a");\n`,
+    { tRename: 1 },
+  ],
+  "i18n-module-language.tsx": [
+    `import i18n from "@/client/lib/i18n";\nexport const a = [i18n.language, i18n.changeLanguage];\n`,
+    {},
+  ],
+  "t-from-parameter.tsx": [
+    `import type { TFunction } from "i18next";\nexport const label = (t: TFunction) => t("a");\n`,
+    {},
+  ],
+  "typed-rename.tsx": [
+    hook(`const { t: tr }: { t: (key: string) => string } = useTranslation();`),
+    { tRename: 1 },
+  ],
+  "typed-whole-value.tsx": [
+    hook(`const i18n: ReturnType<typeof useTranslation> = useTranslation();`),
+    { tRename: 1 },
+  ],
+  "typed-member-of-call.tsx": [
+    hook(`const tr: (key: string) => string = useTranslation().t;`),
+    { tRename: 1 },
+  ],
+  "typed-alias.tsx": [
+    hook(
+      `const { t } = useTranslation();\n  const tr: typeof t = t;\n  return tr("a");`,
+    ),
+    { tRename: 1 },
+  ],
 };
 
 const CLIENT_SAMPLES: Record<string, [string, Partial<Hits>]> = {
@@ -494,6 +569,14 @@ const API_SAMPLES: Record<string, [string, Partial<Hits>]> = {
   "t-rename-in-api.ts": [
     `${HOOK}export function useX() {\n  const { t: tr } = useTranslation();\n}\n`,
     {},
+  ],
+  "alias-after-self-named-import.ts": [
+    `import { translate as translate } from "@/api/lib/i18n";\nconst tr = translate;\nexport const a = tr("x");\n`,
+    { translateRename: 1 },
+  ],
+  "typed-alias.ts": [
+    `${TRANSLATE}const tr: typeof translate = translate;\nexport const a = tr("x");\n`,
+    { translateRename: 1 },
   ],
 };
 

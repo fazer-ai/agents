@@ -1,0 +1,12 @@
+// Refuses, under src/, a loop's failed tick logged straight at error level (`logger.error(...,
+// "... tick failed")`). An error-level line pages the ops alert channel, and a tick that failed only
+// because the database had no connection to give for a few seconds is not an incident: report it
+// through `tickFailures` (src/lib/tick-failure.ts), which logs it at warn and pages once the outage
+// lasts.
+language js;
+
+JsCallExpression(callee = $callee) as $site where {
+    $callee <: r"[\s\S]*logger\s*\.\s*(?:error|fatal)",
+    $site <: r"[\s\S]*tick failed[\s\S]*",
+    register_diagnostic(span = $site, message = "A failed tick is reported through `tickFailures` (src/lib/tick-failure.ts), so a database briefly unavailable logs at warn instead of paging.")
+}

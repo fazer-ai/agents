@@ -142,6 +142,14 @@
       ],
       "plugins": ["./biome-plugins/no-raw-violation-code.grit"]
     },
+    // A failed tick goes through `tickFailures` (biome-plugins/no-raw-tick-failure-log.grit).
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "tests/lint/.probe-src-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-raw-tick-failure-log.grit"]
+    },
     {
       "includes": ["src/**/*.tsx", "tests/lint/.probe-src-*/**/*.tsx"],
       "plugins": ["./biome-plugins/no-jsx-comment-note.grit"]

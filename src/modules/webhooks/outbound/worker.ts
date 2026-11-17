@@ -7,6 +7,7 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { isDraining } from "@/lib/shutdown";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { tickFailures } from "@/lib/tick-failure";
 import { runWithWorkLabel } from "@/lib/work-label";
 import { emitDeliveryDead } from "@/modules/flowlog/webhook";
 import { resolveSigningSecret } from "@/modules/vault/service";
@@ -381,6 +382,8 @@ function workerState(): WorkerState {
   return g[WORKER_KEY] as WorkerState;
 }
 
+const outboundTickFailures = tickFailures();
+
 async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
   if (state.running) return; // single-replica reentrancy guard
   state.running = true;
@@ -396,8 +399,14 @@ async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
         summary.dead,
       );
     }
+    outboundTickFailures.succeeded();
   } catch (err) {
-    logger.error("Outbound webhook tick failed: %s", errMsg(err));
+    outboundTickFailures.failed(
+      err,
+      {},
+      "Outbound webhook tick failed: %s",
+      errMsg(err),
+    );
   } finally {
     state.running = false;
   }

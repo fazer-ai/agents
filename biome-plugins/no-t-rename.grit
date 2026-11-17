@@ -54,11 +54,16 @@ pattern hook_call() {
     }
 }
 
-// A parameter named `t`: plain, rest (`...t`) or a constructor
+// A parameter that binds `t`: plain, destructured (`{ t }`, `[t]`), rest (`...t`) or a constructor
 // property (`private t: X`).
 pattern t_parameter() {
     or {
-        JsFormalParameter($_, $binding) where { $binding <: r"^t$" },
+        JsFormalParameter($_, $binding) where {
+            $binding <: or {
+                r"^t$",
+                contains JsIdentifierBinding() as $bound where { $bound <: r"^t$" }
+            }
+        },
         JsRestParameter() as $rest where { $rest <: r"(?s)^\.\.\.t(?:[\s:=].*)?$" },
         TsPropertyParameter($_, $_, $property) where {
             $property <: JsFormalParameter($_, $binding) where { $binding <: r"^t$" }

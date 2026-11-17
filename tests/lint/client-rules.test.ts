@@ -4,24 +4,20 @@ import { join } from "node:path";
 
 // NOTE: The i18n and client plugins in biome-plugins/, through the real Biome (another fazer.ai app:
 // no-t-rename let `const { t: tr } = useTranslation()` through, and nothing failed). Probes are
-// written into the client tree, the API tree and the top level of the pages directory (where each
-// rule applies), into a pages subdirectory (outside require-page-container) and into tests/ (where
-// none of them apply). One Biome process lints them all and the hits are counted per file and per
+// written under tests/lint, never into src/, where the suite's source sweeps would read a probe that
+// this file deletes under them in a parallel run. biome.jsonc applies each rule to a stand-in here:
+// `client/` for the client tree, `api/` for the API tree and the top of `pages/` for the pages
+// directory. A pages subdirectory stands for outside require-page-container, and `none/` for where
+// none of them apply. One Biome process lints them all and the hits are counted per file and per
 // rule, so a probe that trips an unrelated rule fails too.
 
 const ROOT = join(import.meta.dir, "../..");
-// Built rather than written: a literal path into the source tree is what the
-// no-test-reads-source rule refuses, in this file too.
-const SRC = ["s", "rc"].join("");
-const RUN = `.probe-client-rules-${process.pid}`;
-const CLIENT = `${SRC}/client/${RUN}`;
-const API = `${SRC}/api/${RUN}`;
-// The require-page-container rule covers `pages/*.tsx` only, so its probes are files directly in the
-// pages directory, named after this run so they cannot collide with a page.
-const PAGES = `${SRC}/client/pages`;
-const PAGE_PREFIX = `${RUN}-`;
-const SUBPAGES = `${PAGES}/${RUN}`;
-const OUTSIDE = `tests/${RUN}`;
+const RUN = `tests/lint/.probe-client-rules-${process.pid}`;
+const CLIENT = `${RUN}/client`;
+const API = `${RUN}/api`;
+const PAGES = `${RUN}/pages`;
+const SUBPAGES = `${PAGES}/sub`;
+const OUTSIDE = `${RUN}/none`;
 
 const RULES = [
   "tRename",
@@ -31,7 +27,6 @@ const RULES = [
   "modal",
   "publicEnv",
   "pageContainer",
-  "envRead",
   "other",
 ] as const;
 type Rule = (typeof RULES)[number];
@@ -54,8 +49,6 @@ function ruleOf(message: string): Rule {
   if (message.includes("process.env.BUN_PUBLIC_")) return "publicEnv";
   if (message.startsWith("Page components must render inside"))
     return "pageContainer";
-  if (message.startsWith("The environment is read in src/config.ts"))
-    return "envRead";
   return "other";
 }
 
@@ -253,6 +246,18 @@ const T_RENAME: Record<string, [string, Partial<Hits>]> = {
     ),
     {},
   ],
+  "alias-of-destructured-parameter.tsx": [
+    hook(
+      `const { t } = useTranslation();\n  const rows = [{ t: 1 }].map(({ t }) => {\n    const value = t;\n    return value;\n  });\n  return [rows, [[1]].map(([t]) => {\n    const first = t;\n    return first;\n  })];`,
+    ),
+    {},
+  ],
+  "alias-beside-renamed-destructured-parameter.tsx": [
+    hook(
+      `const { t } = useTranslation();\n  return [{ t: 1 }].map(({ t: count }) => {\n    const tr = t;\n    return [count, tr("a")];\n  });`,
+    ),
+    { tRename: 1 },
+  ],
   "alias-of-function-parameter.tsx": [
     `${HOOK}export function useX() {\n  const { t } = useTranslation();\n  return t("a");\n}\nfunction pick(index: number, t: { id: number }) {\n  const item = t;\n  return item.id + index;\n}\n`,
     {},
@@ -380,11 +385,9 @@ const CLIENT_SAMPLES: Record<string, [string, Partial<Hits>]> = {
   ],
   "public-env.tsx": [
     `export const a = process.env.BUN_PUBLIC_API_URL;\n`,
-    { publicEnv: 1, envRead: 1 },
+    { publicEnv: 1 },
   ],
-  // NOTE: no-env-read-outside-config refuses any env read in src/client outside src/client/lib/env.ts,
-  // so both env probes carry its hit too; what this one pins is that no-bun-public-env stays quiet.
-  "node-env.tsx": [`export const a = process.env.NODE_ENV;\n`, { envRead: 1 }],
+  "node-env.tsx": [`export const a = process.env.NODE_ENV;\n`, {}],
   // NOTE: the page rule is scoped to the top of the pages directory, so a bare page here passes.
   "page-outside-pages.tsx": [
     `export function ProbePage() {\n  return <div />;\n}\n`,
@@ -454,6 +457,10 @@ const API_SAMPLES: Record<string, [string, Partial<Hits>]> = {
     `${TRANSLATE}export function adapt(props: { translate: number }) {\n  const tr = translate;\n  return [props, tr("x")];\n}\n`,
     { translateRename: 1 },
   ],
+  "alias-of-destructured-parameter.ts": [
+    `${TRANSLATE}export function adapt({ translate }: { translate: (key: string) => string }) {\n  const tr = translate;\n  return tr("x");\n}\n`,
+    {},
+  ],
   "alias-of-constructor-parameter.ts": [
     `${TRANSLATE}export class Renderer {\n  constructor(private translate: (key: string) => string) {\n    const tr = translate;\n    console.log(tr("x"));\n  }\n}\n`,
     {},
@@ -521,7 +528,7 @@ for (const [name, sample] of Object.entries(CLIENT_SAMPLES))
 for (const [name, sample] of Object.entries(API_SAMPLES))
   place(`${API}/${name}`, sample);
 for (const [name, sample] of Object.entries(PAGE_SAMPLES)) {
-  place(`${PAGES}/${PAGE_PREFIX}${name}`, sample);
+  place(`${PAGES}/${name}`, sample);
   place(`${SUBPAGES}/${name}`, [sample[0], {}]);
 }
 const ALL = { ...CLIENT_SAMPLES, ...API_SAMPLES, ...PAGE_SAMPLES };
@@ -566,10 +573,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  for (const dir of [CLIENT, API, SUBPAGES, OUTSIDE])
-    rmSync(join(ROOT, dir), { recursive: true, force: true });
-  for (const name of Object.keys(PAGE_SAMPLES))
-    rmSync(join(ROOT, PAGES, `${PAGE_PREFIX}${name}`), { force: true });
+  rmSync(join(ROOT, RUN), { recursive: true, force: true });
 });
 
 const of = (path: string): Hits => hits.get(path) ?? NONE;
@@ -593,7 +597,7 @@ describe.each([
 
 describe("require-page-container", () => {
   test.each(Object.keys(PAGE_SAMPLES))("at the top of pages: %s", (name) => {
-    const path = `${PAGES}/${PAGE_PREFIX}${name}`;
+    const path = `${PAGES}/${name}`;
     expect(of(path)).toEqual({ ...NONE, ...expected[path] });
   });
 
@@ -614,7 +618,7 @@ test("every refused sample is reported by its own rule", () => {
     expect({ path, hits: of(path) }).toEqual({ path, hits: { ...NONE, ...h } });
 });
 
-test("outside src/ none of these rules apply", () => {
+test("outside the stand-ins none of these rules apply", () => {
   expect(of(`${OUTSIDE}/${CANARY}`).other).toBe(1);
   for (const path of Object.keys(files).filter(
     (p) => p.startsWith(`${OUTSIDE}/`) && !p.endsWith(CANARY),

@@ -22,11 +22,16 @@
 // `const x = translate`.
 language js;
 
-// A parameter named `translate`: plain, rest (`...translate`) or a constructor
+// A parameter that binds `translate`: plain, destructured (`{ translate }`, `[translate]`), rest (`...translate`) or a constructor
 // property (`private translate: X`).
 pattern translate_parameter() {
     or {
-        JsFormalParameter($_, $binding) where { $binding <: r"^translate$" },
+        JsFormalParameter($_, $binding) where {
+            $binding <: or {
+                r"^translate$",
+                contains JsIdentifierBinding() as $bound where { $bound <: r"^translate$" }
+            }
+        },
         JsRestParameter() as $rest where { $rest <: r"(?s)^\.\.\.translate(?:[\s:=].*)?$" },
         TsPropertyParameter($_, $_, $property) where {
             $property <: JsFormalParameter($_, $binding) where { $binding <: r"^translate$" }

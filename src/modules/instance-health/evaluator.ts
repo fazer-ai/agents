@@ -36,10 +36,11 @@ interface EvaluatorState {
   generation: number;
   signals: Map<string, SignalState>;
   base: PrismaClient;
-  // A reconcile the database briefly refused logs at warn (docs/logs.md, "Background loops"),
-  // timed by the samples' own clock, which is the clock the breach durations run on.
+  // A reconcile the database briefly refused logs at warn (docs/logs.md, "Background loops"). Its
+  // outage runs on the wall clock, not the samples' clock: a sample is stamped before the database
+  // half of its tick, which waits out the pool on every refused query, so in a stall the samples'
+  // clock falls behind and a persistent outage would page late or not at all.
   reconcileFailures: TickFailures;
-  sampledAt: number;
 }
 
 const KEY = Symbol.for("fazerai.instanceHealth.evaluator");
@@ -52,8 +53,7 @@ function state(): EvaluatorState {
     generation: 0,
     signals: new Map(),
     base: instanceHealthPrisma,
-    reconcileFailures: reconcileTracker(),
-    sampledAt: 0,
+    reconcileFailures: tickFailures(),
   };
   return g[KEY];
 }
@@ -64,13 +64,8 @@ export function resetEvaluator(base?: PrismaClient): void {
   s.thresholds = null;
   s.loadedAt = 0;
   s.signals = new Map();
-  s.reconcileFailures = reconcileTracker();
-  s.sampledAt = 0;
+  s.reconcileFailures = tickFailures();
   if (base) s.base = base;
-}
-
-function reconcileTracker(): TickFailures {
-  return tickFailures({ now: () => state().sampledAt });
 }
 
 // Test-only: swap the client without forgetting the signals' state, to fail one write.
@@ -252,8 +247,6 @@ export async function evaluateSample(
   judgeWith(limits, values, now);
   const want = new Map<string, Wanted>();
   for (const [signal, st] of s.signals) if (st.want) want.set(signal, st.want);
-  // A sample judged late (the database half of an earlier tick) does not move the clock back.
-  s.sampledAt = Math.max(s.sampledAt, now);
   await reconcile(s.base, want);
 }
 

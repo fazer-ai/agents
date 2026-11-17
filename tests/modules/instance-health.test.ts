@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
   spyOn,
   test,
 } from "bun:test";
@@ -547,6 +548,7 @@ describe.skipIf(!dbUp)("above X for Y seconds", () => {
 
 describe.skipIf(!dbUp)("a reconcile the database refused", () => {
   const RECONCILE = "instance alerts not reconciled";
+  const T = 1_800_000_000_000;
   const neverStarted = () =>
     Object.assign(
       new Error(
@@ -566,6 +568,11 @@ describe.skipIf(!dbUp)("a reconcile the database refused", () => {
     spy.mock.calls
       .filter((c: unknown[]) => String(c[1]).startsWith(RECONCILE))
       .map((c: unknown[]) => c[0] as Record<string, unknown>);
+  // A sample stamped `sampledAt` and judged when the wall clock reads `wallAt`.
+  const judged = async (sampledAt: number, wallAt: number) => {
+    setSystemTime(new Date(T + wallAt));
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_000_000 + sampledAt);
+  };
 
   beforeEach(async () => {
     await wipe();
@@ -580,16 +587,17 @@ describe.skipIf(!dbUp)("a reconcile the database refused", () => {
   afterEach(() => {
     warn.mockRestore();
     error.mockRestore();
+    setSystemTime();
     setEvaluatorBase(appDb);
   });
 
   test("one refused reconcile logs at warn, and a reconcile that completes ends the outage", async () => {
     setEvaluatorBase(refusing(neverStarted));
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_005_000);
+    await judged(5_000, 5_000);
     setEvaluatorBase(appDb);
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_010_000);
+    await judged(10_000, 10_000);
     setEvaluatorBase(refusing(neverStarted));
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_200_000);
+    await judged(200_000, 200_000);
     expect(lines(error)).toEqual([]);
     expect(lines(warn)).toEqual([
       expect.objectContaining({ transient: true, outageMs: 0 }),
@@ -597,27 +605,33 @@ describe.skipIf(!dbUp)("a reconcile the database refused", () => {
     ]);
   });
 
-  test("refused for a minute of samples, it pages", async () => {
+  test("refused for a minute, it pages", async () => {
     setEvaluatorBase(refusing(neverStarted));
-    for (const t of [9_005_000, 9_035_000, 9_064_999, 9_065_000]) {
-      await evaluateSample({ ingress_lag_p95_ms: 0 }, t);
-    }
+    for (const t of [5_000, 35_000, 64_999, 65_000]) await judged(t, t);
     expect(lines(warn).map((f) => f.outageMs)).toEqual([0, 30_000, 59_999]);
     expect(lines(error)).toHaveLength(1);
   });
 
-  test("a sample judged late does not move the outage clock back", async () => {
+  test("a stall that holds each sample back still pages a minute in", async () => {
+    // As measured in an 80 s stall: each refused reconcile is judged ~20 s after its sample was
+    // stamped, so the samples' clock had covered 55 s when the wall clock had covered 70 s.
     setEvaluatorBase(refusing(neverStarted));
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_100_000);
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_005_000);
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_160_000);
-    expect(lines(warn).map((f) => f.outageMs)).toEqual([0, 0]);
+    const stall: [number, number][] = [
+      [1_000, 6_000],
+      [11_000, 26_000],
+      [31_000, 51_000],
+      [56_000, 76_000],
+    ];
+    for (const [sampledAt, wallAt] of stall) {
+      await judged(sampledAt, wallAt);
+    }
+    expect(lines(warn).map((f) => f.outageMs)).toEqual([0, 20_000, 45_000]);
     expect(lines(error)).toHaveLength(1);
   });
 
   test("any other error logs at error the first time", async () => {
     setEvaluatorBase(refusing(() => new Error("relation does not exist")));
-    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_005_000);
+    await judged(5_000, 5_000);
     expect(lines(warn)).toEqual([]);
     expect(lines(error)).toHaveLength(1);
   });

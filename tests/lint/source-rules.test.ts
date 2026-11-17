@@ -131,6 +131,14 @@ const PROBES: Record<string, string> = {
   [P("violation-comment.ts")]:
     "// a P2002 is a unique violation\nexport const a = 1;\n",
 
+  // no-prisma-cursor
+  [P("cursor-direct.ts")]:
+    "declare const db: { c: { findMany(a: object): unknown } };\nexport const a = db.c.findMany({ where: {}, cursor: { id: 1n }, skip: 1, take: 2 });\n",
+  [P("cursor-spread.ts")]:
+    "declare const db: { c: { findMany(a: object): unknown } };\ndeclare const k: bigint | null;\nexport const a = db.c.findMany({\n  take: 2,\n  ...(k != null ? { cursor: { id: k }, skip: 1 } : {}),\n});\n",
+  [P("cursor-column.ts")]:
+    'declare const db: { c: { findMany(a: object): unknown } };\nexport const a = db.c.findMany({ where: { cursor: 1 }, take: 2 });\nexport const payload = { cursor: { appId: "1" } };\n',
+
   // no-bigint-cast
   [P("bigint-param.ts")]:
     "declare const params: { id: string };\nexport const a = BigInt(params.id);\n",
@@ -290,6 +298,7 @@ const RULES = {
   number: "A number field takes the range the server enforces",
   timer: "A recurring timer runs under a work label",
   drop: "A pool survives a dropped connection",
+  cursor: "Prisma's `cursor` sends a findMany with no LIMIT",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -651,5 +660,18 @@ describe("no-raw-read-of-globbed-source", () => {
   test("a read through the scan, and a raw read in a test that globs nothing, pass", () => {
     expect(of(P("glob-scanned.ts"), "glob")).toBe(0);
     expect(of(P("glob-none.ts"), "glob")).toBe(0);
+  });
+});
+
+describe("no-prisma-cursor", () => {
+  test.each([["cursor-direct.ts"], ["cursor-spread.ts"]])(
+    "a findMany paged by Prisma's cursor is refused (%s)",
+    (name) => {
+      expect(of(P(name), "cursor")).toBe(1);
+    },
+  );
+
+  test("a column named cursor in the where, and a payload outside a findMany, pass", () => {
+    expect(of(P("cursor-column.ts"), "cursor")).toBe(0);
   });
 });

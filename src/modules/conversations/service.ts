@@ -14,6 +14,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { afterDescNullsLast } from "@/lib/keyset";
 import { withEntityLock } from "@/lib/locks";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { DEPTH_MARKER, MAX_ARRAY, TRUNCATED } from "@/lib/redact";
@@ -266,18 +267,36 @@ export async function listConversations(
         )
       : null;
     if (pageIds && pageIds.length === 0) return [];
+    // A cursor names a row of this same list. One outside it (another filter, another tenant,
+    // or no row at all) ends the list.
+    const anchor =
+      cursorId != null && !pageIds
+        ? await db.conversation.findFirst({
+            where: { AND: [where, { id: cursorId }] },
+            select: { id: true, lastEventAt: true },
+          })
+        : undefined;
+    if (anchor === null) return [];
     const found = await db.conversation.findMany({
-      where: pageIds ? { id: { in: pageIds } } : where,
+      where: pageIds
+        ? { id: { in: pageIds } }
+        : anchor
+          ? {
+              AND: [
+                where,
+                afterDescNullsLast<Prisma.ConversationWhereInput>(
+                  "lastEventAt",
+                  { at: anchor.lastEventAt, id: anchor.id },
+                ),
+              ],
+            }
+          : where,
       // lastEventAt is the canonical recency signal (nulls sort last); id breaks ties.
       orderBy: [
         { lastEventAt: { sort: "desc", nulls: "last" } },
         { id: "desc" },
       ],
       take,
-      // Keyset: seek past the cursor row in the ordering above (id is unique → a stable anchor).
-      ...(cursorId != null && !pageIds
-        ? { cursor: { id: cursorId }, skip: 1 }
-        : {}),
       select: {
         id: true,
         threadId: true,

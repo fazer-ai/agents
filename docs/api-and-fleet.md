@@ -68,6 +68,12 @@ Neither scope carries per-operation permissions: a fleet key is the whole SUPER_
 
 **Isolation-preserving projection.** Fleet-facing surfaces (read API, outbound webhooks, MCP read resources, SUPER_ADMIN cross-tenant) expose metrics + state + control by default, never message bodies or PII. A per-instance toggle opts a tenant into raw detail.
 
+### Paging
+
+A list that pages by cursor (`GET /v1/conversations`, the decided approvals) orders on a nullable timestamp, nulls last, then the id, and the cursor is the id of the last row of the previous page. The page after it is read with that row's place written into the `where` (`afterDescNullsLast` in `src/lib/keyset.ts`), so the page size reaches the database as a `LIMIT`. Prisma's own `cursor` option is not used for these lists: with that order it sends the query with no `LIMIT`, the database returns every row after the cursor, and the page is cut inside the process, so a page costs the rest of the list. On a tenant with about a hundred thousand conversations that is about a hundred thousand rows read and parsed per page, which holds the event loop long enough to make transactions elsewhere in the process miss their `maxWait`. A cursor that is not a row of the same list (another filter, another tenant, or no row) ends the list: an empty page with no `nextCursor`.
+
+`GET /v1/conversations` serves at most 100 conversations per page (default 50), and a larger `limit` is served as 100.
+
 ## Instance identity
 
 `instanceIdentity` (`src/lib/instance.ts`) = `{ instanceId, name, version }`, stamped on every read-API response and outbound webhook payload so a fleet can attribute events to the emitting instance. `instanceId` is `INSTANCE_ID` (pinned across restarts/replicas) or a per-process random UUID for the single-replica MVP.

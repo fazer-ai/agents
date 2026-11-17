@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { afterDescNullsLast } from "@/lib/keyset";
 import { withEntityLock } from "@/lib/locks";
 import { isForeignKeyViolation, isUniqueViolation } from "@/lib/pg-error";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -597,12 +598,31 @@ export async function listDecidedApprovals(
   page: { cursor?: bigint; limit?: number } = {},
 ): Promise<DecidedApprovalItem[]> {
   return runScopedOn(base, ctx, async (db) => {
+    const decided: Prisma.DocumentApprovalRequestWhereInput = {
+      status: { not: "PENDING" },
+    };
+    // A cursor outside this list ends it.
+    const anchor =
+      page.cursor === undefined
+        ? undefined
+        : await db.documentApprovalRequest.findFirst({
+            where: { AND: [decided, { id: page.cursor }] },
+            select: { id: true, decidedAt: true },
+          });
+    if (anchor === null) return [];
     const rows = await db.documentApprovalRequest.findMany({
-      where: { status: { not: "PENDING" } },
+      where: anchor
+        ? {
+            AND: [
+              decided,
+              afterDescNullsLast<Prisma.DocumentApprovalRequestWhereInput>(
+                "decidedAt",
+                { at: anchor.decidedAt, id: anchor.id },
+              ),
+            ],
+          }
+        : decided,
       orderBy: [{ decidedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }],
-      ...(page.cursor === undefined
-        ? {}
-        : { cursor: { id: page.cursor }, skip: 1 }),
       take: page.limit ?? PENDING_PAGE_SIZE,
       select: {
         id: true,

@@ -1,0 +1,97 @@
+// Backend counterpart to `no-t-rename.grit`. The API extractor config
+// (`i18next-parser.api.config.cjs`) and `no-dynamic-translate-key.grit` only
+// see calls named `translate`, so importing it under another name
+// (`import { translate as tr } from "@/api/lib/i18n"`) or aliasing it
+// (`const tr = translate`) takes every key passed through the new name out of
+// the catalog without a warning.
+//
+// Only a `translate` imported from the i18n module counts (any path ending in
+// `i18n`, so `@/api/lib/i18n`, `../lib/i18n` and `./i18n`): a `translate` from
+// anywhere else is unrelated and may be renamed freely. A type-only import
+// (`import type { ... }`, `import { type translate as T }`) creates nothing
+// callable and is left alone. An alias counts only in a file that imports
+// `translate` from that module under its own name, and not inside a function
+// whose own parameter named `translate` shadows it.
+//
+// Out of scope: the lint catches an honest mistake, not a deliberate way
+// around it, so escaped or quoted spellings (`import { "translate" as tr }`)
+// and wrappers around the alias (`const tr = (translate)`) are left to code
+// review. Also not caught, since GritQL has no scope analysis: `translate`
+// passed as an argument, a namespace import (`import * as i18n from ...` then
+// `i18n.translate(key)`), and any alias that is not a plain
+// `const x = translate`.
+language js;
+
+// A parameter named `translate`: plain, rest (`...translate`) or a constructor
+// property (`private translate: X`).
+pattern translate_parameter() {
+    or {
+        JsFormalParameter($_, $binding) where { $binding <: r"^translate$" },
+        JsRestParameter() as $rest where { $rest <: r"(?s)^\.\.\.translate(?:[\s:=].*)?$" },
+        TsPropertyParameter($_, $_, $property) where {
+            $property <: JsFormalParameter($_, $binding) where { $binding <: r"^translate$" }
+        }
+    }
+}
+
+// A function, method, constructor or setter whose own parameter is named
+// `translate`, which shadows the outer one.
+pattern translate_parameter_scope() {
+    or {
+        or {
+            JsArrowFunctionExpression($_, $params),
+            JsFunctionDeclaration($_, $_, $params),
+            JsFunctionExpression($_, $_, $params),
+            JsMethodObjectMember($_, $_, $params),
+            JsMethodClassMember($_, $_, $_, $params)
+        } where {
+            $params <: or {
+                r"^translate$",
+                JsParameters($items) where { $items <: some translate_parameter() }
+            }
+        },
+        JsConstructorClassMember($_, $_, $params) where {
+            $params <: JsConstructorParameters($items) where { $items <: some translate_parameter() }
+        },
+        JsSetterClassMember($_, $_, $parameter) where { $parameter <: translate_parameter() },
+        JsSetterObjectMember($_, $parameter) where { $parameter <: translate_parameter() }
+    }
+}
+
+// A value import from the i18n module.
+pattern i18n_import() {
+    JsImport() as $import where {
+        $import <: not r"(?s)^import\s+type\s.*",
+        $import <: contains JsModuleSource() as $source,
+        $source <: r"^.(?:.*/)?i18n(?:\.ts)?.$"
+    }
+}
+
+or {
+    JsImport() as $import where {
+        $import <: i18n_import(),
+        $import <: contains JsNamedImportSpecifier($name, $local) as $spec where {
+            $name <: r"^translate$",
+            $local <: not r"^translate$",
+            $spec <: not r"^type\s.*"
+        },
+        register_diagnostic(
+            span = $spec,
+            message = "Don't import `translate` under another name. `bun i18n:extract` and `no-dynamic-translate-key` only see calls named `translate`, so a key passed to the renamed function leaves the catalog."
+        )
+    },
+    `$alias = translate` as $declarator where {
+        $alias <: JsIdentifierBinding(),
+        $declarator <: not within translate_parameter_scope(),
+        $program <: contains JsImport() as $import where {
+            $import <: i18n_import(),
+            $import <: contains JsShorthandNamedImportSpecifier() as $plain where {
+                $plain <: r"^translate$"
+            }
+        },
+        register_diagnostic(
+            span = $alias,
+            message = "Don't alias `translate`. `bun i18n:extract` and `no-dynamic-translate-key` only see calls named `translate`, so a key passed to the alias leaves the catalog. Call `translate` itself."
+        )
+    }
+}

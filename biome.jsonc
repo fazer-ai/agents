@@ -104,7 +104,10 @@
     },
     {
       "includes": ["src/api/**/*.ts"],
-      "plugins": ["./biome-plugins/no-dynamic-translate-key.grit"]
+      "plugins": [
+        "./biome-plugins/no-dynamic-translate-key.grit",
+        "./biome-plugins/no-translate-rename.grit"
+      ]
     },
     {
       "includes": ["src/modules/**/*.ts", "tests/lint/.probe-*/**/*.ts"],

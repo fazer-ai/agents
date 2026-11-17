@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
+import { type TickFailures, tickFailures } from "@/lib/tick-failure";
 import { signalDetail } from "./details";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { SIGNALS, type SignalUnit, signalDef } from "./signals";
@@ -35,6 +36,10 @@ interface EvaluatorState {
   generation: number;
   signals: Map<string, SignalState>;
   base: PrismaClient;
+  // A reconcile the database briefly refused logs at warn (docs/logs.md, "Background loops"),
+  // timed by the samples' own clock, which is the clock the breach durations run on.
+  reconcileFailures: TickFailures;
+  sampledAt: number;
 }
 
 const KEY = Symbol.for("fazerai.instanceHealth.evaluator");
@@ -47,6 +52,8 @@ function state(): EvaluatorState {
     generation: 0,
     signals: new Map(),
     base: instanceHealthPrisma,
+    reconcileFailures: reconcileTracker(),
+    sampledAt: 0,
   };
   return g[KEY];
 }
@@ -57,7 +64,13 @@ export function resetEvaluator(base?: PrismaClient): void {
   s.thresholds = null;
   s.loadedAt = 0;
   s.signals = new Map();
+  s.reconcileFailures = reconcileTracker();
+  s.sampledAt = 0;
   if (base) s.base = base;
+}
+
+function reconcileTracker(): TickFailures {
+  return tickFailures({ now: () => state().sampledAt });
 }
 
 // Test-only: swap the client without forgetting the signals' state, to fail one write.
@@ -239,6 +252,8 @@ export async function evaluateSample(
   judgeWith(limits, values, now);
   const want = new Map<string, Wanted>();
   for (const [signal, st] of s.signals) if (st.want) want.set(signal, st.want);
+  // A sample judged late (the database half of an earlier tick) does not move the clock back.
+  s.sampledAt = Math.max(s.sampledAt, now);
   await reconcile(s.base, want);
 }
 
@@ -341,7 +356,12 @@ async function reconcile(
         }
       }
     });
+    state().reconcileFailures.succeeded();
   } catch (err) {
-    logger.error({ err }, "instance alerts not reconciled");
+    state().reconcileFailures.failed(
+      err,
+      { err },
+      "instance alerts not reconciled",
+    );
   }
 }

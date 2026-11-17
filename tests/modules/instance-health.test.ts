@@ -1,8 +1,17 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { asSuperAdminOn, type TenantContext } from "@/lib/tenancy";
 import {
   createInstanceAlertChannel,
@@ -533,6 +542,84 @@ describe.skipIf(!dbUp)("above X for Y seconds", () => {
         `${all.id}:debounce_lane_full_ms`,
       ].sort(),
     );
+  });
+});
+
+describe.skipIf(!dbUp)("a reconcile the database refused", () => {
+  const RECONCILE = "instance alerts not reconciled";
+  const neverStarted = () =>
+    Object.assign(
+      new Error(
+        "Transaction API error: Unable to start a transaction in the given time.",
+      ),
+      { code: "P2028" },
+    );
+  const refusing = (err: () => Error) =>
+    ({
+      $transaction: async () => {
+        throw err();
+      },
+    }) as unknown as PrismaClient;
+  let warn: ReturnType<typeof spyOn>;
+  let error: ReturnType<typeof spyOn>;
+  const lines = (spy: ReturnType<typeof spyOn>): Record<string, unknown>[] =>
+    spy.mock.calls
+      .filter((c: unknown[]) => String(c[1]).startsWith(RECONCILE))
+      .map((c: unknown[]) => c[0] as Record<string, unknown>);
+
+  beforeEach(async () => {
+    await wipe();
+    resetEvaluator(appDb);
+    await channel();
+    // The first sample reads the limits, so the refused ones below judge with them cached.
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_000_000);
+    warn = spyOn(logger, "warn");
+    error = spyOn(logger, "error");
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
+    setEvaluatorBase(appDb);
+  });
+
+  test("one refused reconcile logs at warn, and a reconcile that completes ends the outage", async () => {
+    setEvaluatorBase(refusing(neverStarted));
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_005_000);
+    setEvaluatorBase(appDb);
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_010_000);
+    setEvaluatorBase(refusing(neverStarted));
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_200_000);
+    expect(lines(error)).toEqual([]);
+    expect(lines(warn)).toEqual([
+      expect.objectContaining({ transient: true, outageMs: 0 }),
+      expect.objectContaining({ transient: true, outageMs: 0 }),
+    ]);
+  });
+
+  test("refused for a minute of samples, it pages", async () => {
+    setEvaluatorBase(refusing(neverStarted));
+    for (const t of [9_005_000, 9_035_000, 9_064_999, 9_065_000]) {
+      await evaluateSample({ ingress_lag_p95_ms: 0 }, t);
+    }
+    expect(lines(warn).map((f) => f.outageMs)).toEqual([0, 30_000, 59_999]);
+    expect(lines(error)).toHaveLength(1);
+  });
+
+  test("a sample judged late does not move the outage clock back", async () => {
+    setEvaluatorBase(refusing(neverStarted));
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_100_000);
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_005_000);
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_160_000);
+    expect(lines(warn).map((f) => f.outageMs)).toEqual([0, 0]);
+    expect(lines(error)).toHaveLength(1);
+  });
+
+  test("any other error logs at error the first time", async () => {
+    setEvaluatorBase(refusing(() => new Error("relation does not exist")));
+    await evaluateSample({ ingress_lag_p95_ms: 0 }, 9_005_000);
+    expect(lines(warn)).toEqual([]);
+    expect(lines(error)).toHaveLength(1);
   });
 });
 

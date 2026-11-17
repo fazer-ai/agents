@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
+import { type TickFailures, tickFailures } from "@/lib/tick-failure";
 import { signalDetail } from "./details";
 import { asFleetForInstanceHealth } from "./fleet-tx";
 import { SIGNALS, type SignalUnit, signalDef } from "./signals";
@@ -35,6 +36,11 @@ interface EvaluatorState {
   generation: number;
   signals: Map<string, SignalState>;
   base: PrismaClient;
+  // A reconcile the database briefly refused logs at warn (docs/logs.md, "Background loops"). Its
+  // outage runs on the wall clock, not the samples' clock: a sample is stamped before the database
+  // half of its tick, which waits out the pool on every refused query, so in a stall the samples'
+  // clock falls behind and a persistent outage would page late or not at all.
+  reconcileFailures: TickFailures;
 }
 
 const KEY = Symbol.for("fazerai.instanceHealth.evaluator");
@@ -47,6 +53,7 @@ function state(): EvaluatorState {
     generation: 0,
     signals: new Map(),
     base: instanceHealthPrisma,
+    reconcileFailures: tickFailures(),
   };
   return g[KEY];
 }
@@ -57,6 +64,7 @@ export function resetEvaluator(base?: PrismaClient): void {
   s.thresholds = null;
   s.loadedAt = 0;
   s.signals = new Map();
+  s.reconcileFailures = tickFailures();
   if (base) s.base = base;
 }
 
@@ -341,7 +349,12 @@ async function reconcile(
         }
       }
     });
+    state().reconcileFailures.succeeded();
   } catch (err) {
-    logger.error({ err }, "instance alerts not reconciled");
+    state().reconcileFailures.failed(
+      err,
+      { err },
+      "instance alerts not reconciled",
+    );
   }
 }

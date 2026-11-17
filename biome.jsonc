@@ -77,11 +77,20 @@
       }
     },
     {
-      "includes": ["src/client/**/*.{ts,tsx}", "!src/client/lib/env.ts"],
+      // The client, API and pages groups below also cover the stand-ins of
+      // tests/lint/client-rules.test.ts, which probes them through the real Biome.
+      "includes": [
+        "src/client/**/*.{ts,tsx}",
+        "!src/client/lib/env.ts",
+        "tests/lint/.probe-client-rules-*/client/**/*.{ts,tsx}"
+      ],
       "plugins": ["./biome-plugins/no-bun-public-env.grit"]
     },
     {
-      "includes": ["src/client/**/*.{ts,tsx}"],
+      "includes": [
+        "src/client/**/*.{ts,tsx}",
+        "tests/lint/.probe-client-rules-*/client/**/*.{ts,tsx}"
+      ],
       "plugins": [
         "./biome-plugins/no-dynamic-i18n-key.grit",
         "./biome-plugins/no-t-rename.grit",
@@ -103,15 +112,24 @@
       "plugins": ["./biome-plugins/no-dialog-outside-modal.grit"]
     },
     {
-      "includes": ["src/api/**/*.ts"],
-      "plugins": ["./biome-plugins/no-dynamic-translate-key.grit"]
+      "includes": [
+        "src/api/**/*.ts",
+        "tests/lint/.probe-client-rules-*/api/**/*.ts"
+      ],
+      "plugins": [
+        "./biome-plugins/no-dynamic-translate-key.grit",
+        "./biome-plugins/no-translate-rename.grit"
+      ]
     },
     {
       "includes": ["src/modules/**/*.ts", "tests/lint/.probe-*/**/*.ts"],
       "plugins": ["./biome-plugins/require-resolution-hooks.grit"]
     },
     {
-      "includes": ["src/client/pages/*.tsx"],
+      "includes": [
+        "src/client/pages/*.tsx",
+        "tests/lint/.probe-client-rules-*/pages/*.tsx"
+      ],
       "plugins": ["./biome-plugins/require-page-container.grit"]
     },
     // The repo-wide source rules. Each also applies under tests/lint/.probe-src-*, where

@@ -1,27 +1,273 @@
 // Ensures the translation function is always named `t` when obtained from
-// `useTranslation()`. The `no-dynamic-i18n-key.grit` plugin only tracks calls
-// named `t` literally, so renaming the binding (`const { t: trans } = ...`)
-// or capturing the whole hook return value (`const i18n = useTranslation()`
-// + `i18n.t(foo)`) bypasses the dynamic-key check silently.
+// `useTranslation()`. `bun i18n:extract` (i18next-parser) and the
+// `no-dynamic-i18n-key.grit` plugin only see calls named `t` literally, so a
+// key passed to a renamed binding never reaches the catalog and a dynamic key
+// passed to it is never flagged.
 //
-// This is the contour for the documented limitation that GritQL has no
-// scope/alias analysis: banning the rename at the source keeps the canonical
-// name intact everywhere downstream.
+// Refused, on `useTranslation()`, a member call (`i18next.useTranslation()`,
+// `i18next?.useTranslation()`) or a call with type arguments, in a declaration
+// or an assignment (`({ t: tr } = useTranslation())`):
+//   - `t` renamed in an object destructure: `{ t: tr }`, `{ i18n, t: tr }`, a
+//     default value, a quoted key (`{ "t": tr }`), a computed string key
+//     (`{ ["t"]: tr }`), and the tuple index `{ 0: tr }`;
+//   - `t` renamed out of `i18n`, by name or by its tuple index:
+//     `{ i18n: { t: tr } }`, `{ 1: { t: tr } }`, `[t, { t: tr }]`;
+//   - a tuple whose first element is bound to another name, or a rest element
+//     (the hook result is also `[t, i18n, ready]`): `[tr]`, `[...all]`;
+//   - the whole return value: `const i18n = useTranslation()`, then
+//     `i18n.t(foo)`;
+//   - the alias `const tr = t`, in a file that calls the hook (elsewhere a `t`
+//     is not the translation function, and neither is one inside a function
+//     whose own parameter is named `t`), and `const tr = useTranslation().t`
+//     (or `["t"]`, `[0]`);
+//   - `i18n.t` (or `i18n["t"]`, or the same on `i18next`), called or read
+//     (`const tr = i18n.t`), and `const { t: tr } = i18n`, in any client
+//     file, the hook's `i18n` and the module's alike: `no-dynamic-i18n-key`
+//     never sees them (`i18n.language` and the rest of `i18n` stay allowed;
+//     code outside a component takes `t: TFunction` as a parameter);
+//   - importing the hook under another name
+//     (`import { useTranslation as useI18n }`), which would hide every call
+//     from this rule (a type-only import is left alone).
+// Allowed: `{ t }`, `{ t, i18n }`, `{ t: t }`, `{ i18n }`, `{ t: { name } }`
+// and `[{ name }]` (they read fields of the function), `[t, i18n]`,
+// `[t = fallback]`, `[, i18n]`, a deeper key such as
+// `{ i18n: { languages: { 0: lang } } }`, and `const { name } = t`.
+//
+// Why AST nodes and not a snippet: Biome's GritQL does not match
+// `const { t: $alias, $$$ } = useTranslation($...)` against any destructure
+// (measured on 2.5.15 and 2.6.3), which is how the rename went through
+// unflagged (another fazer.ai app). The property nodes are read from the
+// binding pattern instead, with their slots bound by position (key, binding,
+// default) because Biome's GritQL refuses the slot name `pattern`.
+//
+// Out of scope: the lint catches an honest mistake, not a deliberate way
+// around it, so escaped spellings (`{ "t": tr }`), exotic numbers
+// (`{ 0x0: tr }`), comments or parentheses inside a computed key, and wrappers
+// around the call (`(useTranslation)()`, `useTranslation() as X`) are left to
+// code review. Also not caught, since GritQL has no scope analysis: `t` passed
+// as a prop or an argument, a rest element read later, an alias that is not a
+// plain `x = t` declarator, a key computed from a variable, and the hook
+// stored in another variable before the call.
 language js;
 
+pattern hook_call() {
+    JsCallExpression($callee) where {
+        $callee <: or {
+            `useTranslation`,
+            JsStaticMemberExpression($_, $member) where { $member <: r"^useTranslation$" }
+        }
+    }
+}
+
+// A parameter that binds `t`: plain, destructured (`{ t }`, `[t]`), rest (`...t`) or a constructor
+// property (`private t: X`).
+pattern t_parameter() {
+    or {
+        JsFormalParameter($_, $binding) where {
+            $binding <: or {
+                r"^t$",
+                contains JsIdentifierBinding() as $bound where { $bound <: r"^t$" }
+            }
+        },
+        JsRestParameter() as $rest where { $rest <: r"(?s)^\.\.\.t(?:[\s:=].*)?$" },
+        TsPropertyParameter($_, $_, $property) where {
+            $property <: JsFormalParameter($_, $binding) where { $binding <: r"^t$" }
+        }
+    }
+}
+
+// A function, method, constructor or setter whose own parameter is named
+// `t`, which shadows the outer one.
+pattern t_parameter_scope() {
+    or {
+        or {
+            JsArrowFunctionExpression($_, $params),
+            JsFunctionDeclaration($_, $_, $params),
+            JsFunctionExpression($_, $_, $params),
+            JsMethodObjectMember($_, $_, $params),
+            JsMethodClassMember($_, $_, $_, $params)
+        } where {
+            $params <: or {
+                r"^t$",
+                JsParameters($items) where { $items <: some t_parameter() }
+            }
+        },
+        JsConstructorClassMember($_, $_, $params) where {
+            $params <: JsConstructorParameters($items) where { $items <: some t_parameter() }
+        },
+        JsSetterClassMember($_, $_, $parameter) where { $parameter <: t_parameter() },
+        JsSetterObjectMember($_, $parameter) where { $parameter <: t_parameter() }
+    }
+}
+
+pattern t_key() {
+    or {
+        r"^(?:t|\"t\"|'t')$",
+        JsComputedMemberName($key) where { $key <: r"^(?:\"t\"|'t'|`t`)$" }
+    }
+}
+
+pattern zero_key() { r"^(?:0|\"0\"|'0')$" }
+
+pattern i18n_key() { r"^(?:i18n|\"i18n\"|'i18n'|1|\"1\"|'1')$" }
+
+pattern bound_name() { or { JsIdentifierBinding(), JsIdentifierAssignment() } }
+
+pattern pattern_property($key, $binding) {
+    or {
+        JsObjectBindingPatternProperty($key, $binding, $_),
+        JsObjectAssignmentPatternProperty($key, $binding, $_)
+    }
+}
+
+pattern object_pattern($properties) {
+    or { JsObjectBindingPattern($properties), JsObjectAssignmentPattern($properties) }
+}
+
+pattern array_pattern($elements) {
+    or { JsArrayBindingPattern($elements), JsArrayAssignmentPattern($elements) }
+}
+
+pattern array_element($element) {
+    or {
+        JsArrayBindingPatternElement($element, $_),
+        JsArrayAssignmentPatternElement($element, $_)
+    }
+}
+
+// A property that takes `t` under another identifier; at the top of the
+// pattern the tuple index `0` names it too.
+pattern renamed_t($prop) {
+    pattern_property($key, $binding) as $prop where {
+        $key <: t_key(),
+        $binding <: bound_name(),
+        $binding <: not r"^t$"
+    }
+}
+
+pattern renamed_t_or_zero($prop) {
+    pattern_property($key, $binding) as $prop where {
+        $key <: or { t_key(), zero_key() },
+        $binding <: bound_name(),
+        $binding <: not r"^t$"
+    }
+}
+
 or {
-    `const { t: $alias, $$$ } = useTranslation($...)` where {
-        $alias <: not `t`,
+    // The hook's result is bound to the left side of a declarator (typed or
+    // not: the declarator node, since the snippet `$pat = $init` skips one with a
+    // type annotation) or of an assignment.
+    // NOTE: matched inline and only once: a named pattern called at the top of the `or` runs at every
+    // node of every file, and four calls of it made the whole-tree lint about 17 times slower.
+    or {
+        JsVariableDeclarator($pat, $_, $clause) where {
+            $clause <: JsInitializerClause($init),
+            $init <: hook_call()
+        },
+        JsAssignmentExpression($pat, $init) where { $init <: hook_call() }
+    } where {
+        $pat <: or {
+            object_pattern($properties) where {
+                $properties <: some or {
+                    renamed_t_or_zero($prop),
+                    pattern_property($outer, $nested) where {
+                        $outer <: i18n_key(),
+                        $nested <: object_pattern($inner),
+                        $inner <: some renamed_t($prop)
+                    }
+                },
+                register_diagnostic(
+                    span = $prop,
+                    message = "Don't rename `t` from `useTranslation()`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the renamed function leaves the catalog. If the name conflicts, rename the outer binding instead."
+                )
+            },
+            array_pattern($tuple) where {
+                $tuple <: [$_, array_element($element), ...],
+                $element <: object_pattern($properties),
+                $properties <: some renamed_t($prop),
+                register_diagnostic(
+                    span = $prop,
+                    message = "Don't rename `t` from `useTranslation()`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the renamed function leaves the catalog. If the name conflicts, rename the outer binding instead."
+                )
+            },
+            array_pattern($elements) where {
+                $elements <: [$first, ...],
+                $first <: or {
+                    array_element($target) where {
+                        $target <: bound_name(),
+                        $target <: not r"^t$"
+                    },
+                    JsArrayBindingPatternRestElement(),
+                    JsArrayAssignmentPatternRestElement()
+                },
+                register_diagnostic(
+                    span = $pat,
+                    message = "Don't take the translation function out of `useTranslation()` under another name. Destructure it as `const { t } = useTranslation()`: `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`."
+                )
+            },
+            bound_name() where {
+                register_diagnostic(
+                    span = $pat,
+                    message = "Destructure directly: `const { t } = useTranslation()`. Capturing the hook return in a variable and calling `.t(...)` escapes `no-dynamic-i18n-key`."
+                )
+            }
+        }
+    },
+    JsVariableDeclarator($alias, $_, $clause) where {
+        $clause <: JsInitializerClause($value),
+        $alias <: JsIdentifierBinding(),
+        $alias <: not r"^t$",
+        $value <: or {
+            JsStaticMemberExpression($object, $member) where { $member <: r"^t$" },
+            JsComputedMemberExpression($object, $member) where {
+                $member <: r"^(?:0|\"t\"|'t'|`t`)$"
+            }
+        },
+        $object <: hook_call(),
         register_diagnostic(
             span = $alias,
-            message = "Don't rename `t` from `useTranslation()`. Keep the canonical name `t` so `no-dynamic-i18n-key` can track it. If the name conflicts, rename the outer binding instead."
+            message = "Don't take the translation function out of `useTranslation()` under another name. Destructure it as `const { t } = useTranslation()`: `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`."
         )
     },
-    `const $name = useTranslation($...)` where {
-        $name <: r"^[a-zA-Z_$][a-zA-Z0-9_$]*$",
+    JsNamedImportSpecifier($name, $local) as $spec where {
+        $name <: r"^useTranslation$",
+        $local <: not r"^useTranslation$",
+        $spec <: not r"^type\s.*",
+        $spec <: not within JsImport() as $import where { $import <: r"(?s)^import\s+type\s.*" },
         register_diagnostic(
-            span = $name,
-            message = "Destructure directly: `const { t } = useTranslation()`. Capturing the hook return in a variable and calling `.t(...)` escapes `no-dynamic-i18n-key`."
+            span = $spec,
+            message = "Don't import `useTranslation` under another name: this lint and `no-dynamic-i18n-key` only recognise the hook by its own name, so a `t` taken from the renamed hook goes unchecked."
+        )
+    },
+    or {
+        JsStaticMemberExpression($object, $member) where { $member <: r"^t$" },
+        JsComputedMemberExpression($object, $member) where { $member <: r"^(?:\"t\"|'t'|`t`)$" }
+    } as $access where {
+        $object <: r"^(?:i18n|i18next)$",
+        register_diagnostic(
+            span = $access,
+            message = "Call `t` from `const { t } = useTranslation()` (or take `t: TFunction` as a parameter outside a component) instead of reaching `i18n.t`: `no-dynamic-i18n-key` only sees calls named `t`, so a dynamic key passed to `i18n.t` or to an alias of it is never flagged."
+        )
+    },
+    JsVariableDeclarator($pat, $_, $clause) where {
+        $clause <: JsInitializerClause($value),
+        $value <: r"^(?:i18n|i18next)$",
+        $pat <: object_pattern($properties),
+        $properties <: some renamed_t($prop),
+        register_diagnostic(
+            span = $prop,
+            message = "Call `t` from `const { t } = useTranslation()` (or take `t: TFunction` as a parameter outside a component) instead of reaching `i18n.t`: `no-dynamic-i18n-key` only sees calls named `t`, so a dynamic key passed to `i18n.t` or to an alias of it is never flagged."
+        )
+    },
+    JsVariableDeclarator($alias, $_, $clause) as $declarator where {
+        $clause <: JsInitializerClause($value),
+        $value <: r"^t$",
+        $alias <: JsIdentifierBinding(),
+        $program <: contains hook_call(),
+        $declarator <: not within t_parameter_scope(),
+        register_diagnostic(
+            span = $alias,
+            message = "Don't alias `t`. `bun i18n:extract` and `no-dynamic-i18n-key` only see calls named `t`, so a key passed to the alias leaves the catalog. Call `t` itself."
         )
     }
 }

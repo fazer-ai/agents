@@ -4,12 +4,17 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  ledgerRetentionCutoffs,
+  ledgerRetentionStep,
+} from "@/modules/chatwoot/ledger-retention";
 import { expiredDoneJobs } from "@/modules/scheduler/done-retention";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
 // Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries, the turn
-// limit's delivered turns, the agents' kept full turn detail, and the scheduler's finished jobs). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
+// limit's delivered turns, the settled Chatwoot delivery ledger, the agents' kept full turn detail,
+// and the scheduler's finished jobs). One FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every
 // 24h (a reschedule does NOT consume an attempt). Deletes run RLS-scoped to the job's tenant, one
 // bounded batch per transaction, so each batch commits on its own and a pass that stops keeps what it
 // deleted. A pass runs for at most SWEEP_PASS_MS; a backlog it leaves is taken by the next run,
@@ -81,21 +86,35 @@ export function nextBatchSize(
   );
 }
 
+// One batch of a table: how many rows it examined, which decides whether the table is done, and how
+// many of them it deleted. For a plain delete the two are the same number.
+type Step = (
+  db: Prisma.TransactionClient,
+  rows: number,
+) => Promise<{ examined: number; deleted: number; advance?: () => void }>;
+
+function deleteStep(batch: (rows: number) => Prisma.Sql): Step {
+  return async (db, rows) => {
+    const n = await db.$executeRaw(batch(rows));
+    return { examined: n, deleted: n };
+  };
+}
+
 interface TableSweep {
   deleted: number;
   done: boolean;
   timeouts: number;
 }
 
-// Deletes, one transaction per batch, the rows `batch(n)` picks up to n at a time, until a batch comes
-// back short (done) or the pass deadline passes (not done). A batch that runs out of time (statement
+// Deletes, one transaction per batch, the rows `step(n)` examines up to n at a time, until a batch
+// examines fewer than n (done) or the pass deadline passes (not done). A batch that runs out of time (statement
 // timeout, lock timeout, or the transaction outliving its budget) is retried at half the size, down to
 // SWEEP_MIN_BATCH_ROWS, in this pass if time is left and in the next one otherwise.
 async function deleteInBatches(
   base: PrismaClient,
   ctx: TenantContext,
   key: string,
-  batch: (rows: number) => Prisma.Sql,
+  step: Step,
   deadline: number,
   o: Required<SweepOptions>,
   // Asked when a batch comes back short, for a table whose outer predicate can keep a picked row: a
@@ -109,7 +128,11 @@ async function deleteInBatches(
     let n: number;
     const started = Date.now();
     try {
-      n = await runScopedOn(base, ctx, (db) => db.$executeRaw(batch(size)));
+      const r = await runScopedOn(base, ctx, (db) => step(db, size));
+      // Committed: only now may a step that keeps a position move it on.
+      r.advance?.();
+      n = r.examined;
+      deleted += r.deleted;
     } catch (error) {
       if (!ranOutOfTime(error) || size <= SWEEP_MIN_BATCH_ROWS) throw error;
       timeouts++;
@@ -117,7 +140,6 @@ async function deleteInBatches(
       batchSizes.set(key, size);
       continue;
     }
-    deleted += n;
     if (n < size) {
       const more =
         rowsLeft !== undefined &&
@@ -166,10 +188,18 @@ export async function sweepFlowlog(
   const proactiveCutoff = new Date(
     Date.now() - PROACTIVE_DELIVERY_RETENTION_MS,
   );
+  const ledger = ledgerRetentionCutoffs();
   // `id = ANY(ARRAY(...))`, never `id IN (...)`: the array is computed once, and the delete walks the
   // primary key. Planned as a semi join, the IN form rescanned the tenant's rows once per row picked:
   // 29 s for a batch of 100 over 700k expired rows, measured under RLS.
-  const passes: ((rows: number) => Prisma.Sql)[] = [
+  // A pass whose outer predicate can keep a row the inner select picked (a text whose expiry a
+  // concurrent write moved forward, a job re-armed) carries the read that re-asks a short batch before
+  // the table is called done, beside its own delete so the two cannot fall out of step.
+  const passes: (
+    | ((rows: number) => Prisma.Sql)
+    | { batch: (rows: number) => Prisma.Sql; rowsLeft: Prisma.Sql }
+    | { step: Step }
+  )[] = [
     (rows) => Prisma.sql`
       DELETE FROM execution_logs WHERE id = ANY(ARRAY(
         SELECT id FROM execution_logs WHERE created_at < ${cutoff} LIMIT ${rows}))`,
@@ -187,6 +217,9 @@ export async function sweepFlowlog(
          WHERE (NOT proactive AND delivered_at < ${turnCutoff})
             OR delivered_at < ${proactiveCutoff}
          LIMIT ${rows}))`,
+    {
+      step: (db, rows) => ledgerRetentionStep(db, tenantId, rows, ledger),
+    },
     // NOTE: An agent's full turn detail leaves at the expiry each row was written with (the
     // agent's own days, never past this cutoff), not at `FLOWLOG_RETENTION_DAYS`. Pointers first,
     // then texts: a text's expiry is the latest of its pointers', so by the time it is due no pointer
@@ -197,28 +230,23 @@ export async function sweepFlowlog(
       DELETE FROM full_detail_refs WHERE id = ANY(ARRAY(
         SELECT id FROM full_detail_refs WHERE expires_at < ${now} LIMIT ${rows}))
         AND expires_at < ${now}`,
-    (rows) => Prisma.sql`
-      DELETE FROM full_detail_contents WHERE id = ANY(ARRAY(
-        SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
-        AND expires_at < ${now}`,
+    {
+      batch: (rows) => Prisma.sql`
+        DELETE FROM full_detail_contents WHERE id = ANY(ARRAY(
+          SELECT id FROM full_detail_contents WHERE expires_at < ${now} LIMIT ${rows}))
+          AND expires_at < ${now}`,
+      rowsLeft: Prisma.sql`SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`,
+    },
     // NOTE: The scheduler's finished jobs past their kind's window (src/modules/scheduler/done-retention.ts).
     // The outer predicate is repeated so a row re-armed between the select and the delete is
     // re-checked under its row lock and kept: it is PENDING again, and somebody is waiting on it.
-    (rows) => Prisma.sql`
-      DELETE FROM scheduler_jobs WHERE id = ANY(ARRAY(
-        SELECT id FROM scheduler_jobs WHERE ${expiredDone} LIMIT ${rows}))
-        AND ${expiredDone}`,
-  ];
-  // The passes whose outer predicate can keep a row the inner select picked (a text whose expiry a
-  // concurrent write moved forward, a job re-armed), so a short batch there is re-asked before the
-  // table is called done.
-  const rowsLeft: (Prisma.Sql | undefined)[] = [
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    Prisma.sql`SELECT EXISTS(SELECT 1 FROM full_detail_contents WHERE expires_at < ${now}) AS more`,
-    Prisma.sql`SELECT EXISTS(SELECT 1 FROM scheduler_jobs WHERE ${expiredDone}) AS more`,
+    {
+      batch: (rows) => Prisma.sql`
+        DELETE FROM scheduler_jobs WHERE id = ANY(ARRAY(
+          SELECT id FROM scheduler_jobs WHERE ${expiredDone} LIMIT ${rows}))
+          AND ${expiredDone}`,
+      rowsLeft: Prisma.sql`SELECT EXISTS(SELECT 1 FROM scheduler_jobs WHERE ${expiredDone}) AS more`,
+    },
   ];
   // A sweep is done when each table has come back within the window once, over as many passes as it
   // takes: a pass works only the tables the sweep has left, from the one the last pass stopped on. So
@@ -230,14 +258,19 @@ export async function sweepFlowlog(
   let timeouts = 0;
   while (left.length > 0) {
     const i = left[0] as number;
+    const pass = passes[i] as (typeof passes)[number];
     const r = await deleteInBatches(
       base,
       ctx,
       `${tenantId}:${i}`,
-      passes[i] as (rows: number) => Prisma.Sql,
+      typeof pass === "function"
+        ? deleteStep(pass)
+        : "step" in pass
+          ? pass.step
+          : deleteStep(pass.batch),
       deadline,
       o,
-      rowsLeft[i],
+      typeof pass === "function" || "step" in pass ? undefined : pass.rowsLeft,
     );
     deleted += r.deleted;
     timeouts += r.timeouts;

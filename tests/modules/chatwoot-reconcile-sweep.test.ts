@@ -14,6 +14,10 @@ import {
   type ChatwootInboxConversation,
 } from "@/modules/chatwoot/client";
 import {
+  LEDGER_RETENTION_MS,
+  RECONCILE_MAX_LOOKBACK_MS,
+} from "@/modules/chatwoot/ledger-retention";
+import {
   maxIncomingId,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
@@ -415,6 +419,39 @@ describe.skipIf(!dbUp)("reconciling from Chatwoot", () => {
     });
     expect(counts.handedToRecovery).toBe(0);
     expect(await ledgerFor(502)).toHaveLength(1);
+  });
+
+  test("a cursor fallen behind the ledger's retention does not judge messages older than what the ledger keeps", async () => {
+    const day = 24 * 60;
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { reconciledUntil: minutesAgo(10 * day) },
+    });
+    // Both conversations moved inside the cursor's window and neither message has a row: the older
+    // one's row would already be gone to the retention, so only the younger one can be judged.
+    const s: Scripted = {
+      conversations: new Map([
+        [
+          INBOX,
+          [conv(511, minutesAgo(5 * day)), conv(512, minutesAgo(8 * day))],
+        ],
+      ]),
+      messages: new Map([
+        [511, [incoming(9011, minutesAgo(5 * day))]],
+        [512, [incoming(9012, minutesAgo(8 * day))]],
+      ]),
+      listed: [],
+    };
+    const counts = await reconcileFromChatwoot({
+      tenantId,
+      base: appDb,
+      now: NOW,
+      makeClient: chatwoot(s),
+    });
+    expect(counts.handedToRecovery).toBe(1);
+    expect(await ledgerFor(511)).toHaveLength(1);
+    expect(await ledgerFor(512)).toHaveLength(0);
+    expect(RECONCILE_MAX_LOOKBACK_MS).toBeLessThan(LEDGER_RETENTION_MS);
   });
 
   test("a conversation a person holds, one where we spoke last, and one gone quiet before the window are not touched", async () => {

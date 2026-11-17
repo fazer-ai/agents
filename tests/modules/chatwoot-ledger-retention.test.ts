@@ -1,0 +1,694 @@
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
+import { armIngest } from "@/graph/ingest-job";
+import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy";
+import {
+  forgetLedgerCursorsForTest,
+  LEDGER_RETENTION_MS,
+  ledgerRetentionCutoffs,
+  ledgerRetentionPage,
+  ledgerRetentionStep,
+} from "@/modules/chatwoot/ledger-retention";
+import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { armDeliveryRecovery } from "@/modules/chatwoot/recover-delivery";
+import { armHumanReplyRecovery } from "@/modules/chatwoot/recover-human-reply";
+import { armTakeoverRecovery } from "@/modules/chatwoot/recover-takeover";
+import { recordAndProcessChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  forgetSweepBatchSizesForTest,
+  registerFlowlogRetentionHandler,
+  SWEEP_CATCHUP_MS,
+  setSweepOptionsForTest,
+  sweepFlowlog,
+} from "@/modules/flowlog/retention";
+import type { ClaimedJob } from "@/modules/scheduler/service";
+import { getJobHandler, type JobResult } from "@/modules/scheduler/worker";
+import { dbProbeFailed } from "@/tests/db-gate";
+import { seedChatwootInstance } from "../utils/chatwoot";
+import { clearFlowLog } from "../utils/flowlog";
+import { burnSchedulerJobId } from "../utils/scheduler";
+
+// The flow-log sweep's ledger pass: a settled delivery row goes once it is past the ledger's window
+// (a DEAD one once it is past the flow log's too), a row still owed an attempt never does, and a
+// backlog drains a batch per transaction over short passes.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch (err) {
+    dbUp = dbProbeFailed(err);
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+const DAY = 86_400_000;
+const ago = (ms: number) => new Date(Date.now() - ms);
+
+let tenantId = 0n;
+let instanceId = 0n;
+let otherTenantId = 0n;
+let otherInstanceId = 0n;
+let jobId = 0n;
+const trig = `ledger_slow_${process.pid}`;
+
+async function insertRow(p: {
+  tenant: bigint;
+  instance: bigint;
+  deliveryId: string;
+  status: "PENDING" | "PROCESSING" | "PROCESSED" | "DEAD";
+  receivedAt: Date;
+  processedAt: Date | null;
+  event?: string;
+}): Promise<bigint> {
+  const [row] = await suDb.$queryRaw<{ id: bigint }[]>`
+    INSERT INTO chatwoot_webhook_deliveries
+      (tenant_id, chatwoot_instance_id, delivery_id, event, status, received_at, processed_at)
+    VALUES (${p.tenant}, ${p.instance}, ${p.deliveryId}, ${p.event ?? "message_created"},
+            ${p.status}::"InboundDeliveryStatus", ${p.receivedAt}, ${p.processedAt})
+    RETURNING id`;
+  return (row as { id: bigint }).id;
+}
+
+async function idsOf(tenant: bigint): Promise<string[]> {
+  const rows = await suDb.chatwootWebhookDelivery.findMany({
+    where: { tenantId: tenant },
+    select: { deliveryId: true },
+    orderBy: { deliveryId: "asc" },
+  });
+  return rows.map((r) => r.deliveryId);
+}
+
+async function sweepUntilDone(tenant: bigint, max = 200): Promise<number> {
+  for (let i = 1; i <= max; i++) {
+    const r = await sweepFlowlog(appDb, tenant, { pauseMs: 0 });
+    if (r.done) return i;
+  }
+  throw new Error("sweep never finished");
+}
+
+describe.skipIf(!dbUp)("chatwoot delivery ledger retention", () => {
+  beforeAll(async () => {
+    jobId = await burnSchedulerJobId(suDb);
+    tenantId = (
+      await suDb.tenant.create({
+        data: { name: "LedgerR", slug: `ledger-r-${process.pid}` },
+      })
+    ).id;
+    instanceId = (await seedChatwootInstance(suDb, { tenantId, accountId: 71 }))
+      .id;
+    otherTenantId = (
+      await suDb.tenant.create({
+        data: { name: "LedgerR2", slug: `ledger-r2-${process.pid}` },
+      })
+    ).id;
+    otherInstanceId = (
+      await seedChatwootInstance(suDb, {
+        tenantId: otherTenantId,
+        accountId: 72,
+      })
+    ).id;
+    registerFlowlogRetentionHandler();
+  });
+
+  // The scenarios below place a DEAD row between the ledger's window and the flow log's, so the flow
+  // log's is pinned past the ledger's instead of read from whatever the environment sets.
+  const configuredFlowlogDays = config.flowlog.retentionDays;
+
+  beforeEach(async () => {
+    config.flowlog.retentionDays = 30;
+    forgetSweepBatchSizesForTest();
+    forgetLedgerCursorsForTest();
+    setSweepOptionsForTest({});
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { tenantId: { in: [tenantId, otherTenantId] } },
+    });
+    await suDb.schedulerJob.deleteMany({
+      where: {
+        tenantId,
+        kind: {
+          in: [
+            "DELIVERY_RECOVERY",
+            "TAKEOVER_RECOVERY",
+            "HUMAN_REPLY_RECOVERY",
+          ],
+        },
+      },
+    });
+  });
+
+  afterAll(async () => {
+    config.flowlog.retentionDays = configuredFlowlogDays;
+    setSweepOptionsForTest({});
+    await suDb.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS ${trig} ON chatwoot_webhook_deliveries`,
+    );
+    await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${trig}()`);
+    for (const t of [tenantId, otherTenantId]) {
+      if (!t) continue;
+      await suDb.schedulerJob.deleteMany({ where: { tenantId: t } });
+      await clearFlowLog(suDb, { tenantId: t });
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${t}`);
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  test("settled rows past the window go, rows inside it and rows still owed an attempt stay", async () => {
+    // A DEAD row is kept as long as the flow log keeps the line that reports it, which here is longer
+    // than the ledger's own window, so a DEAD row between the two is the one that tells them apart.
+    const deadAge = config.flowlog.retentionDays * DAY;
+    expect(deadAge).toBeGreaterThan(LEDGER_RETENTION_MS + 2 * DAY);
+    const past = LEDGER_RETENTION_MS + DAY;
+    const inside = LEDGER_RETENTION_MS - DAY;
+    const rows = {
+      processedPast: { status: "PROCESSED", r: past, p: past },
+      processedInside: { status: "PROCESSED", r: inside, p: inside },
+      processedNow: { status: "PROCESSED", r: 60_000, p: 30_000 },
+      deadPastLedgerOnly: {
+        status: "DEAD",
+        r: deadAge - DAY,
+        p: deadAge - DAY,
+      },
+      deadPastFlowLog: { status: "DEAD", r: deadAge + DAY, p: deadAge + DAY },
+      // Settled just now after a long outage, by the sweep that also arms the row's recovery.
+      processedSettledToday: { status: "PROCESSED", r: past, p: 60_000 },
+      deadSettledToday: { status: "DEAD", r: deadAge + DAY, p: 60_000 },
+      pendingAncient: { status: "PENDING", r: deadAge + DAY, p: null },
+      processingAncient: { status: "PROCESSING", r: deadAge + DAY, p: null },
+    } as const;
+    for (const [name, v] of Object.entries(rows))
+      await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId: name,
+        status: v.status,
+        receivedAt: ago(v.r),
+        processedAt: v.p === null ? null : ago(v.p),
+      });
+    await insertRow({
+      tenant: otherTenantId,
+      instance: otherInstanceId,
+      deliveryId: "otherTenantPast",
+      status: "PROCESSED",
+      receivedAt: ago(past),
+      processedAt: ago(past),
+    });
+
+    const r = await sweepFlowlog(appDb, tenantId, { pauseMs: 0 });
+    expect(r.done).toBe(true);
+    expect(await idsOf(tenantId)).toEqual(
+      [
+        "deadPastLedgerOnly",
+        "deadSettledToday",
+        "processedSettledToday",
+        "pendingAncient",
+        "processedInside",
+        "processedNow",
+        "processingAncient",
+      ].sort(),
+    );
+    // The pass is the tenant's: another tenant's expired row waits for that tenant's own pass.
+    expect(await idsOf(otherTenantId)).toEqual(["otherTenantPast"]);
+    const kept = await suDb.chatwootWebhookDelivery.findMany({
+      where: {
+        tenantId,
+        deliveryId: { in: ["pendingAncient", "processingAncient"] },
+      },
+      select: { status: true },
+      orderBy: { deliveryId: "asc" },
+    });
+    expect(kept.map((k) => k.status)).toEqual(["PENDING", "PROCESSING"]);
+  });
+
+  test("a settled row whose delivery, takeover or reply recovery is still pending or claimed stays past every window", async () => {
+    const old = config.flowlog.retentionDays * DAY + DAY;
+    const ids: Record<string, bigint> = {};
+    for (const [name, status] of [
+      ["takeoverPending", "PROCESSED"],
+      ["replyClaimed", "PROCESSED"],
+      ["deadReplyPending", "DEAD"],
+      ["deadDeliveryPending", "DEAD"],
+      ["deadDeliveryDone", "DEAD"],
+      ["takeoverDone", "PROCESSED"],
+      ["replyFailed", "PROCESSED"],
+      ["noJob", "PROCESSED"],
+    ] as const)
+      ids[name] = await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId: name,
+        status,
+        receivedAt: ago(old),
+        processedAt: ago(old),
+      });
+    const id = (name: string) => ids[name] as bigint;
+    await armTakeoverRecovery(tenantId, id("takeoverPending"), appDb);
+    await armHumanReplyRecovery(tenantId, id("replyClaimed"), appDb);
+    await armHumanReplyRecovery(tenantId, id("deadReplyPending"), appDb);
+    await armTakeoverRecovery(tenantId, id("takeoverDone"), appDb);
+    await armHumanReplyRecovery(tenantId, id("replyFailed"), appDb);
+    await armDeliveryRecovery(tenantId, id("deadDeliveryPending"), appDb);
+    await armDeliveryRecovery(tenantId, id("deadDeliveryDone"), appDb);
+    const settle = async (kind: string, name: string, status: string) =>
+      suDb.$executeRawUnsafe(
+        `UPDATE scheduler_jobs SET status = '${status}' WHERE tenant_id = ${tenantId} AND kind = '${kind}' AND payload->>'deliveryRowId' = '${id(name)}'`,
+      );
+    expect(
+      await settle("HUMAN_REPLY_RECOVERY", "replyClaimed", "CLAIMED"),
+    ).toBe(1);
+    expect(await settle("TAKEOVER_RECOVERY", "takeoverDone", "DONE")).toBe(1);
+    expect(await settle("DELIVERY_RECOVERY", "deadDeliveryDone", "DONE")).toBe(
+      1,
+    );
+    expect(await settle("HUMAN_REPLY_RECOVERY", "replyFailed", "FAILED")).toBe(
+      1,
+    );
+
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual(
+      [
+        "deadDeliveryPending",
+        "deadReplyPending",
+        "replyClaimed",
+        "takeoverPending",
+      ].sort(),
+    );
+
+    // Once the recovery has run, the row is an ordinary settled one again.
+    await settle("TAKEOVER_RECOVERY", "takeoverPending", "DONE");
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual(
+      ["deadDeliveryPending", "deadReplyPending", "replyClaimed"].sort(),
+    );
+  });
+
+  test("the deliveries of a message an ingest fallback still waits on stay past every window", async () => {
+    const old = config.flowlog.retentionDays * DAY + DAY;
+    const row = async (
+      deliveryId: string,
+      conversationId: number,
+      messageId: number,
+    ) => {
+      const id = await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId,
+        status: "PROCESSED",
+        receivedAt: ago(old),
+        processedAt: ago(old),
+      });
+      await suDb.$executeRaw`
+        UPDATE chatwoot_webhook_deliveries
+           SET conversation_id = ${conversationId}, inbound_message_id = ${messageId}
+         WHERE id = ${id}`;
+    };
+    await row("waitedOn", 5101, 9101);
+    await row("waitedOnUpdate", 5101, 9101);
+    await row("otherConversation", 5102, 9101);
+    await row("fallbackDone", 5103, 9103);
+    await row("noFallback", 5104, 9104);
+    const arm = (conversationId: number, messageId: number) =>
+      armIngest({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId: 1,
+        graphThreadId: `ledger-r-${process.pid}:${conversationId}`,
+        messageId,
+        text: "oi",
+        role: "customer",
+        agentId: 1n,
+        compactionEnabled: false,
+        fallbackAfterMs: DAY,
+        event: "message_created",
+        base: appDb,
+      });
+    await arm(5101, 9101);
+    await arm(5103, 9103);
+    expect(
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET status = 'DONE'
+         WHERE tenant_id = ${tenantId} AND kind = 'INGEST_FALLBACK'
+           AND payload->>'messageId' = '9103'`,
+    ).toBe(1);
+
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual(["waitedOn", "waitedOnUpdate"]);
+  });
+
+  test("a range the pass must keep is walked a page at a time, and what lies past it and the tables after it are still swept", async () => {
+    const held = 1_500;
+    const old = config.flowlog.retentionDays * DAY + 2 * DAY;
+    // A colleague's reply whose recovery is still pending: its own row is held by the job's key, and
+    // every sibling delivery of the same reply is held for the coverage question the recovery asks.
+    const replyRow = await insertRow({
+      tenant: tenantId,
+      instance: instanceId,
+      deliveryId: "reply-own",
+      status: "PROCESSED",
+      receivedAt: ago(old),
+      processedAt: ago(old),
+    });
+    await suDb.$executeRaw`
+      UPDATE chatwoot_webhook_deliveries
+         SET conversation_id = 5201, human_reply_message_id = 9201
+       WHERE id = ${replyRow}`;
+    await suDb.$executeRaw`
+      INSERT INTO chatwoot_webhook_deliveries
+        (tenant_id, chatwoot_instance_id, delivery_id, event, status, received_at, processed_at,
+         conversation_id, human_reply_message_id)
+      SELECT ${tenantId}, ${instanceId}, 'held-' || g, 'message_created', 'PROCESSED',
+             ${ago(old)}, ${ago(old)}, 5201, 9201
+        FROM generate_series(1, ${held}) g`;
+    await armHumanReplyRecovery(tenantId, replyRow, appDb);
+    // Newer than every held row, still past the window: reached only once the held range is walked.
+    for (const name of ["pastA", "pastB"])
+      await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId: name,
+        status: "PROCESSED",
+        receivedAt: ago(LEDGER_RETENTION_MS + DAY),
+        processedAt: ago(LEDGER_RETENTION_MS + DAY),
+      });
+
+    const cutoffs = ledgerRetentionCutoffs();
+    const first = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) => ledgerRetentionStep(db, tenantId, 100, cutoffs),
+    );
+    expect([first.examined, first.deleted]).toEqual([100, 0]);
+
+    // A finished job past its window, in the table the sweep takes after the ledger.
+    await suDb.$executeRaw`
+      INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, status, run_at, created_at, updated_at)
+      VALUES (${tenantId}, 'DEBOUNCE', ${`ledger-r-done-${process.pid}`}, 'DONE',
+              ${ago(400 * DAY)}, ${ago(400 * DAY)}, ${ago(400 * DAY)})`;
+    // Short passes of small pages: each ends on its own time with the range part walked, and the next
+    // takes it up from there, never from the oldest row again.
+    let passes = 0;
+    let done = false;
+    while (!done && passes < 100) {
+      done = (
+        await sweepFlowlog(appDb, tenantId, {
+          batchRows: 100,
+          targetBatchMs: 0,
+          passMs: 25,
+          pauseMs: 0,
+        })
+      ).done;
+      passes++;
+    }
+    expect(done).toBe(true);
+    expect(passes).toBeGreaterThan(1);
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: `ledger-r-done-${process.pid}` },
+      }),
+    ).toBe(0);
+    const left = await idsOf(tenantId);
+    expect(left).toHaveLength(held + 1);
+    expect(left).not.toContain("pastA");
+    expect(left).not.toContain("pastB");
+  });
+
+  test("a page whose transaction rolls back is examined again, not skipped", async () => {
+    await suDb.$executeRaw`
+      INSERT INTO chatwoot_webhook_deliveries
+        (tenant_id, chatwoot_instance_id, delivery_id, event, status, received_at, processed_at)
+      SELECT ${tenantId}, ${instanceId}, 'rb-' || lpad(g::text, 3, '0'), 'message_created', 'PROCESSED',
+             ${ago(LEDGER_RETENTION_MS + DAY)}::timestamp + g * interval '1 second',
+             ${ago(LEDGER_RETENTION_MS + DAY)}::timestamp + g * interval '1 second'
+        FROM generate_series(1, 150) g`;
+    const cutoffs = ledgerRetentionCutoffs();
+    const scope = { tenantId, userId: null, role: "TENANT_ADMIN" } as const;
+    // The statement ran and the transaction did not commit, as when it outlives its budget.
+    let advance: (() => void) | undefined;
+    await expect(
+      runScopedOn(appDb, scope, async (db) => {
+        const r = await ledgerRetentionStep(db, tenantId, 100, cutoffs);
+        expect(r.deleted).toBe(100);
+        advance = r.advance;
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect(advance).toBeDefined();
+    expect(await idsOf(tenantId)).toHaveLength(150);
+
+    // The rolled-back page left the position where it was, so the next page takes the same rows.
+    const again = await runScopedOn(appDb, scope, (db) =>
+      ledgerRetentionStep(db, tenantId, 100, cutoffs),
+    );
+    again.advance();
+    expect(again.deleted).toBe(100);
+    const left = await idsOf(tenantId);
+    expect(left).toHaveLength(50);
+    expect(left[0]).toBe("rb-101");
+  });
+
+  test("the sibling deliveries of a colleague's reply still being delivered stay past every window", async () => {
+    const old = config.flowlog.retentionDays * DAY + DAY;
+    const reply = async (
+      deliveryId: string,
+      status: "PENDING" | "PROCESSED",
+      messageId: number,
+    ) => {
+      const id = await insertRow({
+        tenant: tenantId,
+        instance: instanceId,
+        deliveryId,
+        status,
+        receivedAt: ago(old),
+        processedAt: status === "PENDING" ? null : ago(old),
+      });
+      await suDb.$executeRaw`
+        UPDATE chatwoot_webhook_deliveries
+           SET conversation_id = 5301, human_reply_message_id = ${messageId}
+         WHERE id = ${id}`;
+    };
+    await reply("strandedReply", "PENDING", 9301);
+    await reply("responderSibling", "PROCESSED", 9301);
+    await reply("settledReply", "PROCESSED", 9302);
+
+    await sweepUntilDone(tenantId);
+    expect(await idsOf(tenantId)).toEqual([
+      "responderSibling",
+      "strandedReply",
+    ]);
+  });
+
+  test("a Chatwoot retry of a delivery inside the window is still recognised after the pass", async () => {
+    const deliveryId = `ledger-dedup-${process.pid}`;
+    const rowId = await insertRow({
+      tenant: tenantId,
+      instance: instanceId,
+      deliveryId,
+      status: "PROCESSED",
+      receivedAt: ago(LEDGER_RETENTION_MS - DAY),
+      processedAt: ago(LEDGER_RETENTION_MS - DAY),
+    });
+    await insertRow({
+      tenant: tenantId,
+      instance: instanceId,
+      deliveryId: "expired",
+      status: "PROCESSED",
+      receivedAt: ago(LEDGER_RETENTION_MS + DAY),
+      processedAt: ago(LEDGER_RETENTION_MS + DAY),
+    });
+    await sweepFlowlog(appDb, tenantId, { pauseMs: 0 });
+    expect(await idsOf(tenantId)).toEqual([deliveryId]);
+
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: 4401,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: 4400,
+        inbox_id: 9901,
+        status: "open",
+        contact_inbox: { id: 61_401 },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const outcome = await recordAndProcessChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryId,
+      agentBotId: 1,
+      normalized: n,
+      base: appDb,
+    });
+    expect(outcome).toBe("skipped");
+    const after = await suDb.chatwootWebhookDelivery.findMany({
+      where: { chatwootInstanceId: instanceId, deliveryId },
+      select: { id: true, status: true },
+    });
+    expect(after).toEqual([{ id: rowId, status: "PROCESSED" }]);
+  });
+
+  test("a backlog drains over short passes, each batch committed on its own, and the sweep goes back to its daily rhythm", async () => {
+    const total = 3_000;
+    const batchRows = 500;
+    await suDb.$executeRaw`
+      INSERT INTO chatwoot_webhook_deliveries
+        (tenant_id, chatwoot_instance_id, delivery_id, event, status, received_at, processed_at)
+      SELECT ${tenantId}, ${instanceId}, 'old-' || g, 'message_created', 'PROCESSED',
+             ${ago(LEDGER_RETENTION_MS + 3 * DAY)}, ${ago(LEDGER_RETENTION_MS + 3 * DAY)}
+        FROM generate_series(1, ${total}) g`;
+    await insertRow({
+      tenant: tenantId,
+      instance: instanceId,
+      deliveryId: "inside",
+      status: "PROCESSED",
+      receivedAt: ago(DAY),
+      processedAt: ago(DAY),
+    });
+    // Each delete statement of this tenant sleeps, so a pass fits two batches of the six.
+    const sleepMs = 300;
+    await suDb.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION ${trig}() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF current_setting('app.tenant_id', true) = '${tenantId}' THEN
+           PERFORM pg_sleep(${sleepMs / 1000});
+         END IF;
+         RETURN NULL;
+       END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${trig} AFTER DELETE ON chatwoot_webhook_deliveries
+       FOR EACH STATEMENT EXECUTE FUNCTION ${trig}()`,
+    );
+    try {
+      setSweepOptionsForTest({
+        batchRows,
+        targetBatchMs: 0,
+        pauseMs: 0,
+        passMs: Math.ceil(sleepMs * 1.5),
+      });
+      const handler = getJobHandler("FLOWLOG_SWEEP") as NonNullable<
+        ReturnType<typeof getJobHandler>
+      >;
+      const job: ClaimedJob = {
+        id: jobId,
+        tenantId,
+        kind: "FLOWLOG_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      };
+      const left = async () =>
+        (await idsOf(tenantId)).filter((d) => d.startsWith("old-")).length;
+      const before = Date.now();
+      const first = (await handler(job, appDb)) as JobResult;
+      const afterFirst = await left();
+      expect(afterFirst).toBeGreaterThan(0);
+      expect(afterFirst).toBeLessThan(total);
+      expect((total - afterFirst) % batchRows).toBe(0);
+      expect(first.outcome).toBe("reschedule");
+      if (first.outcome === "reschedule")
+        expect(first.runAt.getTime()).toBeLessThan(
+          before + SWEEP_CATCHUP_MS + 5_000,
+        );
+      let last = first;
+      for (let i = 0; i < 20 && (await left()) > 0; i++)
+        last = (await handler(job, appDb)) as JobResult;
+      // The pass that finds nothing left is the one that goes back to the daily rhythm.
+      last = (await handler(job, appDb)) as JobResult;
+      expect(await left()).toBe(0);
+      expect(await idsOf(tenantId)).toEqual(["inside"]);
+      expect(last.outcome).toBe("reschedule");
+      if (last.outcome === "reschedule")
+        expect(last.runAt.getTime()).toBeGreaterThan(
+          Date.now() + 23 * 3_600_000,
+        );
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${trig} ON chatwoot_webhook_deliveries`,
+      );
+    }
+  }, 60_000);
+
+  test("a sweep over a tenant whose ledger is already within the window deletes nothing", async () => {
+    await insertRow({
+      tenant: tenantId,
+      instance: instanceId,
+      deliveryId: "recent",
+      status: "PROCESSED",
+      receivedAt: ago(DAY),
+      processedAt: ago(DAY),
+    });
+    expect(await sweepUntilDone(tenantId)).toBe(1);
+    expect(await sweepUntilDone(tenantId)).toBe(1);
+    expect(await idsOf(tenantId)).toEqual(["recent"]);
+  });
+
+  test("a batch is a range over (tenant_id, received_at) under the tenant scope and under the fleet role", async () => {
+    const cutoffs = ledgerRetentionCutoffs();
+    const plans: string[] = [];
+    // With sequential scans priced out, the plan shows whether the range CAN reach the index:
+    // a predicate the RLS barrier holds back would leave the index usable only as a filter.
+    const read = async (db: {
+      $executeRaw: PrismaClient["$executeRaw"];
+      $queryRaw: PrismaClient["$queryRaw"];
+    }) => {
+      await db.$executeRaw`SELECT set_config('enable_seqscan', 'off', true)`;
+      // From the start of the range, and from a cursor part way along it.
+      for (const after of [null, { at: cutoffs.dead, id: 1n }]) {
+        const page = ledgerRetentionPage(tenantId, 1000, cutoffs, after);
+        const rows = await db.$queryRaw<{ "QUERY PLAN": string }[]>(
+          Prisma.sql`EXPLAIN ${page}`,
+        );
+        plans.push(rows.map((r) => r["QUERY PLAN"]).join("\n"));
+      }
+    };
+    await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      read,
+    );
+    await asSuperAdminOn(appDb, read);
+    expect(plans).toHaveLength(4);
+    for (const plan of plans) {
+      expect(plan).toContain(
+        "chatwoot_webhook_deliveries_tenant_id_received_at_idx",
+      );
+      expect(plan).toMatch(/Index Cond: \(\(tenant_id = .*received_at </);
+      // The recovery lookup reaches the job keys too: built inside it from the outer row, a key is a
+      // Filter under the tenant policy on PostgreSQL 17.12, and every row then walks the tenant's jobs.
+      expect(plan).toMatch(
+        /Index Scan using scheduler_jobs_\w+ on scheduler_jobs j[^\n]*\n\s*Index Cond: \(\(tenant_id = [^\n]*dedupe_key = ANY/,
+      );
+    }
+  });
+});

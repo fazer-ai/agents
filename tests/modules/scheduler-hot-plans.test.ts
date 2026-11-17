@@ -5,6 +5,10 @@ import { pendingFallbacksSql, waitingFallbacksSql } from "@/graph/ingest-job";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy";
 import { threadRemindersSql } from "@/modules/appointments/reminder-keys";
 import {
+  ledgerRetentionCutoffs,
+  ledgerRetentionPage,
+} from "@/modules/chatwoot/ledger-retention";
+import {
   cancelPendingByPrefixSql,
   cancelPendingJobsByPrefixUpToMessage,
   claimSql,
@@ -200,6 +204,21 @@ describe.skipIf(!dbUp)(
         expect(reads.length).toBeGreaterThan(0);
         // NOTE: the reminders' read may AND the key range with the PENDING rows' index; either way
         // nothing walks the finished rows.
+        for (const n of reads)
+          expect([BY_KEY, PENDING]).toContain(n["Index Name"] as string);
+        expect(reads.map((n) => n["Index Name"])).toContain(BY_KEY);
+      }
+    });
+
+    test("the ledger retention's job lookups, under the tenant policy and as the fleet", async () => {
+      const sql = ledgerRetentionPage(
+        tenantId,
+        1000,
+        ledgerRetentionCutoffs(),
+        null,
+      );
+      for (const reads of [await asTenant(sql), await asFleet(sql)]) {
+        expect(reads.length).toBeGreaterThan(0);
         for (const n of reads)
           expect([BY_KEY, PENDING]).toContain(n["Index Name"] as string);
         expect(reads.map((n) => n["Index Name"])).toContain(BY_KEY);

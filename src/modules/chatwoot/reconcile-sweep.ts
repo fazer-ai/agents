@@ -13,6 +13,7 @@ import {
 import { markAccountIdentities } from "./account-identity";
 import type { ChatwootClient, ChatwootInboxConversation } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
+import { RECONCILE_MAX_LOOKBACK_MS } from "./ledger-retention";
 import {
   type ChatwootMessageRow,
   hasAnswerableContent,
@@ -684,7 +685,14 @@ export async function reconcileFromChatwoot(
           )
         )?.reconciledUntil ?? start;
     }
-    const since = new Date(reconciledUntil.getTime() - CURSOR_MARGIN_MS);
+    // Never further back than the delivery ledger keeps its rows: past that, a message whose
+    // delivery was settled has no row left to say so, and would be handed over as never received.
+    const since = new Date(
+      Math.max(
+        reconciledUntil.getTime() - CURSOR_MARGIN_MS,
+        now.getTime() - RECONCILE_MAX_LOOKBACK_MS,
+      ),
+    );
     const inboxes = await boundInboxes(base, tenantId, instance.id);
     if (inboxes.length === 0) continue;
     let finished = true;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import config from "@/config";
@@ -46,6 +46,12 @@ function refusingBase(): PrismaClient {
 
 const warn = spyOn(logger, "warn");
 const error = spyOn(logger, "error");
+
+// The logger is shared by every file the process runs after this one.
+afterAll(() => {
+  warn.mockRestore();
+  error.mockRestore();
+});
 
 afterEach(() => {
   stopScheduler();

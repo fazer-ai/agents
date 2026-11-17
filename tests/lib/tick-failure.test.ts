@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 import logger from "@/api/lib/logger";
 import {
   TICK_OUTAGE_PAGE_MS,
@@ -39,6 +39,12 @@ function clock(start = 1_000_000) {
 
 const warn = spyOn(logger, "warn");
 const error = spyOn(logger, "error");
+
+// The logger is shared by every file the process runs after this one.
+afterAll(() => {
+  warn.mockRestore();
+  error.mockRestore();
+});
 
 afterEach(() => {
   warn.mockClear();

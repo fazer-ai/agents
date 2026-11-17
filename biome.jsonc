@@ -161,6 +161,7 @@
       ],
       "plugins": [
         "./biome-plugins/no-bigint-cast.grit",
+        "./biome-plugins/no-prisma-cursor.grit",
         "./biome-plugins/no-scrub-around-cut.grit"
       ]
     },

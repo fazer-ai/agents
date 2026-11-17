@@ -1,0 +1,13 @@
+// Refuses Prisma's `cursor` option on a `findMany`. With an order on more than one column Prisma sends
+// that query with no LIMIT, so the database returns every row after the cursor and the page is cut in
+// the process: a page costs the rest of the table. A keyset page writes the cursor row's place into
+// the `where` instead (`afterDescNullsLast` in src/lib/keyset.ts, docs/api-and-fleet.md "Paging").
+language js;
+
+JsCallExpression(callee = $callee, arguments = $args) as $call where {
+    $callee <: r"[\s\S]*\.\s*findMany",
+    $args <: contains JsPropertyObjectMember(name = r"cursor") as $member where {
+        not $member <: within JsPropertyObjectMember(name = r"where")
+    },
+    register_diagnostic(span = $call, message = "Prisma's `cursor` sends a findMany with no LIMIT under a multi-column order: write the cursor row's place into the `where` (src/lib/keyset.ts).")
+}

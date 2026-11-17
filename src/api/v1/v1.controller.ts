@@ -353,7 +353,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         limit: t.Optional(
           t.String({
             description:
-              "Optional max number of conversations to return, parsed as an integer.",
+              "Page size: an integer, 1 or more (default 50). A page holds at most 100 conversations, so a larger value is served as 100.",
           }),
         ),
         cursor: t.Optional(

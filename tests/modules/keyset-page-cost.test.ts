@@ -224,3 +224,90 @@ describe.skipIf(!dbUp)("keyset pages read one page", () => {
     }
   });
 });
+
+// At the route's cap, on a list long enough that the rest of it is a thousand pages, a page after a
+// cursor costs the process what the first page costs. Process time is compared against the first page
+// of the same list in the same run, so the bound holds on any machine: reading the rest of the list
+// costs several times the first page, and reading one page costs about the same.
+const LONG = 100_000;
+const CAP = 100;
+let longTenant = 0n;
+const longCtx = (): TenantContext => ({
+  tenantId: longTenant,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
+async function processMs(read: () => Promise<unknown>): Promise<number> {
+  const before = process.cpuUsage();
+  await read();
+  const spent = process.cpuUsage(before);
+  return (spent.user + spent.system) / 1000;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] as number;
+}
+
+describe.skipIf(!dbUp)("a page at the cap on a long list", () => {
+  beforeAll(async () => {
+    longTenant = (
+      await suDb.tenant.create({
+        data: { name: "KeysetLong", slug: `keyset-long-${process.pid}` },
+      })
+    ).id;
+    const inst = (
+      await seedChatwootInstance(suDb, {
+        tenantId: longTenant,
+        accountId: 17602,
+        baseUrl: "https://cw.example",
+        adminToken: "enc",
+      })
+    ).id;
+    const t = String(longTenant);
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO conversations (tenant_id, chatwoot_instance_id, chatwoot_conversation_id, status,
+                                  thread_id, last_event_at, updated_at)
+       SELECT ${t}, ${inst}, g, 'open', '${t}:${inst}:' || g,
+              timestamp '2026-11-01' - (g || ' seconds')::interval, now()
+         FROM generate_series(1, ${LONG}) g`,
+    );
+  });
+
+  afterAll(async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM conversations WHERE tenant_id = ${longTenant}`,
+    );
+    await suDb.chatwootInstance.deleteMany({ where: { tenantId: longTenant } });
+    await suDb.chatwootDeployment.deleteMany({
+      where: { tenantId: longTenant },
+    });
+    await suDb.tenant.delete({ where: { id: longTenant } });
+  });
+
+  test("a page after a cursor costs the process about what the first page costs", async () => {
+    const first = await listConversations(longCtx(), { limit: CAP }, appDb);
+    expect(first.items).toHaveLength(CAP);
+    const cursor = BigInt(first.nextCursor as string);
+    const firstMs: number[] = [];
+    const afterMs: number[] = [];
+    const afterRows: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      firstMs.push(
+        await processMs(() =>
+          listConversations(longCtx(), { limit: CAP }, appDb),
+        ),
+      );
+      rowsPerStatement = [];
+      afterMs.push(
+        await processMs(() =>
+          listConversations(longCtx(), { limit: CAP, cursor }, appDb),
+        ),
+      );
+      afterRows.push(Math.max(...rowsPerStatement));
+    }
+    expect(median(afterMs)).toBeLessThan(3 * median(firstMs));
+    expect(Math.max(...afterRows)).toBeLessThanOrEqual(CAP);
+  });
+});

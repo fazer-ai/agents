@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
 import config from "@/config";
 import { isDraining } from "@/lib/shutdown";
+import { tickFailures } from "@/lib/tick-failure";
 import { runWithWorkLabel } from "@/lib/work-label";
 import {
   type AlertSendDeps,
@@ -262,6 +263,8 @@ export async function pruneInstanceAlertDeliveries(
   );
 }
 
+const instanceAlertFailures = tickFailures();
+
 // Its own loop, guard and client, apart from the tenant alert worker: a slow instance destination
 // holds no tenant alert back, and a saturated main pool holds no instance alert back.
 export async function instanceAlertTick(): Promise<void> {
@@ -277,8 +280,14 @@ export async function instanceAlertTick(): Promise<void> {
         s.dead,
       );
     }
+    instanceAlertFailures.succeeded();
   } catch (err) {
-    logger.error("Instance alert tick failed: %s", alertErrMsg(err));
+    instanceAlertFailures.failed(
+      err,
+      {},
+      "Instance alert tick failed: %s",
+      alertErrMsg(err),
+    );
   }
 }
 

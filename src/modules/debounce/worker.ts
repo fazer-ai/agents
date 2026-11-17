@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import config, { debounceTurnSlots } from "@/config";
 import { modelPermitReading } from "@/graph/model-limit";
 import { asSuperAdminOn } from "@/lib/tenancy";
+import { tickFailures } from "@/lib/tick-failure";
 import { runWithWorkLabel } from "@/lib/work-label";
 import {
   type CapacityOccupancy,
@@ -347,13 +348,17 @@ export function startDebounceWorker(opts: StartOptions = {}): () => void {
     const base = opts.base ?? basePrisma;
     const intervalMs = opts.intervalMs ?? config.debounceWorker.intervalMs;
     const slots = opts.slots ?? debounceTurnSlots();
+    const failures = tickFailures();
     h.timer = setInterval(() => {
       // NOTE: `running` covers the CLAIM only, so two claims never overlap. The tick resolves once its
       // jobs have started, and the next tick fills whatever slots have freed by then.
       if (h.running) return;
       h.running = true;
       void runDebounceTick(base, slots, opts.deps)
-        .catch((e) => logger.error({ err: e }, "debounce tick failed"))
+        .then(
+          () => failures.succeeded(),
+          (e) => failures.failed(e, { err: e }, "debounce tick failed"),
+        )
         .finally(() => {
           h.running = false;
         });

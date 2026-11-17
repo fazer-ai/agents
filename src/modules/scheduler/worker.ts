@@ -10,6 +10,7 @@ import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
+import { tickFailures } from "@/lib/tick-failure";
 import { runWithWorkLabel } from "@/lib/work-label";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
@@ -1019,6 +1020,9 @@ export function startScheduler(opts: StartOptions = {}): () => void {
     // ONE bound for both drains: an observation takes a permit the shared tick's follow-ups would
     // otherwise use, never one on top of them.
     const gate = new Semaphore(providerConcurrency);
+    const schedulerFailures = tickFailures();
+    const observeFailures = tickFailures();
+    const trafficFailures = tickFailures();
     h.timer = setInterval(() => {
       if (h.running) return;
       h.running = true;
@@ -1031,7 +1035,11 @@ export function startScheduler(opts: StartOptions = {}): () => void {
         claimTraffic: false,
         ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
       })
-        .catch((err) => logger.error({ err }, "scheduler tick failed"))
+        .then(
+          () => schedulerFailures.succeeded(),
+          (err) =>
+            schedulerFailures.failed(err, { err }, "scheduler tick failed"),
+        )
         .finally(() => {
           h.running = false;
         });
@@ -1052,7 +1060,10 @@ export function startScheduler(opts: StartOptions = {}): () => void {
         onFreed: drainObserve,
         ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
       })
-        .catch((err) => logger.error({ err }, "observe tick failed"))
+        .then(
+          () => observeFailures.succeeded(),
+          (err) => observeFailures.failed(err, { err }, "observe tick failed"),
+        )
         .finally(() => {
           h.observing = false;
           if (h.observeAgain) drainObserve();
@@ -1099,7 +1110,10 @@ export function startScheduler(opts: StartOptions = {}): () => void {
             }, waitMs);
           }
         })
-        .catch((err) => logger.error({ err }, "traffic tick failed"))
+        .then(
+          () => trafficFailures.succeeded(),
+          (err) => trafficFailures.failed(err, { err }, "traffic tick failed"),
+        )
         .finally(() => {
           h.draining = false;
           if (h.drainAgain) drainTraffic();

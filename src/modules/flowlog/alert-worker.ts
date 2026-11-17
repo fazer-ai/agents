@@ -5,6 +5,7 @@ import config from "@/config";
 import { runInPoolClass } from "@/lib/pool-class";
 import { isDraining } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { tickFailures } from "@/lib/tick-failure";
 import { runWithWorkLabel } from "@/lib/work-label";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { alertErrMsg, loadAlertContext, sendAlert } from "./alert-send";
@@ -350,6 +351,8 @@ function workerState(): WorkerState {
   return g[WORKER_KEY] as WorkerState;
 }
 
+const alertTickFailures = tickFailures();
+
 async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
   if (state.running) return; // single-replica reentrancy guard
   state.running = true;
@@ -365,8 +368,14 @@ async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
         summary.dead,
       );
     }
+    alertTickFailures.succeeded();
   } catch (err) {
-    logger.error("Alert tick failed: %s", alertErrMsg(err));
+    alertTickFailures.failed(
+      err,
+      {},
+      "Alert tick failed: %s",
+      alertErrMsg(err),
+    );
   } finally {
     state.running = false;
   }

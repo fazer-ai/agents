@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { tickFailures } from "@/lib/tick-failure";
 import { runWithWorkLabel } from "@/lib/work-label";
 import { kindsInLane } from "@/modules/scheduler/lanes";
 import {
@@ -134,11 +135,15 @@ export function startCompactionWorker(opts: StartOptions = {}): () => void {
         config.agent.modelConcurrency,
       );
     }
+    const failures = tickFailures();
     h.timer = setInterval(() => {
       if (h.running) return;
       h.running = true;
       void runCompactionTick(base, batchSize, {}, staleMs)
-        .catch((e) => logger.error({ err: e }, "compaction tick failed"))
+        .then(
+          () => failures.succeeded(),
+          (e) => failures.failed(e, { err: e }, "compaction tick failed"),
+        )
         .finally(() => {
           h.running = false;
         });

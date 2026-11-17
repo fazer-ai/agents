@@ -139,6 +139,16 @@ const PROBES: Record<string, string> = {
   [P("cursor-column.ts")]:
     'declare const db: { c: { findMany(a: object): unknown } };\nexport const a = db.c.findMany({ where: { cursor: 1 }, take: 2 });\nexport const payload = { cursor: { appId: "1" } };\n',
 
+  // no-raw-tick-failure-log
+  [P("tick-error-object.ts")]:
+    'declare const logger: { error: (...a: unknown[]) => void };\ndeclare const err: unknown;\nexport const a = () => logger.error({ err }, "observe tick failed");\n',
+  [P("tick-error-format.ts")]:
+    'declare const logger: { error: (...a: unknown[]) => void };\nexport const a = () =>\n  logger.error(\n    "Alert tick failed: %s",\n    "x",\n  );\n',
+  [P("tick-warn.ts")]:
+    'declare const logger: { warn: (...a: unknown[]) => void };\nexport const a = () => logger.warn("database screen tick failed");\n',
+  [P("tick-error-other.ts")]:
+    'declare const logger: { error: (...a: unknown[]) => void };\nexport const a = () => logger.error("delivery failed");\n',
+
   // no-bigint-cast
   [P("bigint-param.ts")]:
     "declare const params: { id: string };\nexport const a = BigInt(params.id);\n",
@@ -299,6 +309,7 @@ const RULES = {
   timer: "A recurring timer runs under a work label",
   drop: "A pool survives a dropped connection",
   cursor: "Prisma's `cursor` sends a findMany with no LIMIT",
+  tick: "A failed tick is reported through `tickFailures`",
 } as const;
 type Rule = keyof typeof RULES;
 
@@ -495,6 +506,20 @@ describe("no-raw-violation-code", () => {
   test("another Prisma code, and a comment naming one, pass", () => {
     expect(of(P("violation-other-code.ts"), "violation")).toBe(0);
     expect(of(P("violation-comment.ts"), "violation")).toBe(0);
+  });
+});
+
+describe("no-raw-tick-failure-log", () => {
+  test.each([["tick-error-object.ts"], ["tick-error-format.ts"]])(
+    "a failed tick logged straight at error is refused (%s)",
+    (name) => {
+      expect(of(P(name), "tick")).toBe(1);
+    },
+  );
+
+  test("a warn, and an error that is not a tick, pass", () => {
+    expect(of(P("tick-warn.ts"), "tick")).toBe(0);
+    expect(of(P("tick-error-other.ts"), "tick")).toBe(0);
   });
 });
 

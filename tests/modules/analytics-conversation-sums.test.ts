@@ -5,6 +5,7 @@ import { USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { getLabelOutcomes } from "@/modules/analytics/activity";
 import { getBreakdown } from "@/modules/analytics/breakdown";
+import { settleConversationMarks } from "@/modules/analytics/conversation-sums";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { drillDownPageIds } from "@/modules/analytics/drilldown";
 import type { DashboardFilter } from "@/modules/analytics/filter";
@@ -602,7 +603,7 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
     }
   });
 
-  test("a turn by an agent already kept still marks a conversation whose runs are pending a rebuild", async () => {
+  test("every agent turn marks its counted conversation, an agent already kept included", async () => {
     const [kept] = await suDb.$queryRaw<
       { conversation_id: bigint; agent_id: bigint }[]
     >(Prisma.sql`
@@ -625,17 +626,90 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
           model: "m1",
         },
       });
-    // The run is kept and nothing is pending: the turn moves nothing.
+    // A kept run proves nothing to a turn: a rebuild may be dropping it in a transaction the turn
+    // cannot see yet.
     await turn();
-    expect(await marksOf()).toBe(0);
-    // A rebuild is pending (a removed turn marked the conversation): the turn marks it again, so the
-    // rebuild that clears the first mark cannot clear the turn with it.
-    await suDb.conversationSumMark.create({
-      data: { tenantId: fx.tenantId, conversationId: k.conversation_id },
-    });
+    expect(await marksOf()).toBe(1);
     await turn();
     expect(await marksOf()).toBe(2);
     await sumUp(fx.tenantId);
+  });
+
+  test("a turn written while the agent's last turn is removed keeps the conversation involved", async () => {
+    const t = await seedTenant("race");
+    // A transaction held open until released, once its write is in.
+    const held = (
+      write: (tx: Prisma.TransactionClient) => Promise<unknown>,
+    ) => {
+      let release: () => void = () => {};
+      const released = new Promise<void>((r) => {
+        release = r;
+      });
+      let wrote: () => void = () => {};
+      const written = new Promise<void>((r) => {
+        wrote = r;
+      });
+      const done = suDb.$transaction(
+        async (tx) => {
+          await write(tx);
+          wrote();
+          await released;
+        },
+        { timeout: 60_000, maxWait: 5_000 },
+      );
+      return written.then(() => ({ release, done }));
+    };
+    try {
+      const c = await suDb.conversation.create({
+        data: {
+          tenantId: t.tenantId,
+          chatwootInstanceId: t.instanceId,
+          inboxId: t.inboxes[0],
+          chatwootConversationId: seq++,
+          status: "open",
+          threadId: `${t.tenantId}:${t.instanceId}:${seq}`,
+          createdAt: new Date(NOW - DAY),
+        },
+      });
+      const turn = {
+        tenantId: t.tenantId,
+        conversationId: c.id,
+        agentId: t.agents[0],
+        source: "inbox",
+        node: "agent",
+        model: "m1",
+      } as const;
+      const old = await suDb.llmUsage.create({
+        data: { ...turn, createdAt: new Date(NOW - DAY + HOUR) },
+      });
+      await sumUp(t.tenantId);
+      // A removes the agent's only turn, B writes a new one, each unseen by the other. A commits, and
+      // the rebuild runs before B commits.
+      const a = await held((tx) =>
+        tx.llmUsage.delete({ where: { id: old.id } }),
+      );
+      const b = await held((tx) => tx.llmUsage.create({ data: turn }));
+      a.release();
+      await a.done;
+      const [state] = await suDb.$queryRaw<{ until: Date }[]>(Prisma.sql`
+        SELECT summed_until AS until FROM ledger_sums_state WHERE tenant_id = ${t.tenantId}`);
+      await runScopedOn(db, ctx(t.tenantId), (d) =>
+        settleConversationMarks(d, (state as { until: Date }).until),
+      );
+      b.release();
+      await b.done;
+      await sumUp(t.tenantId);
+      const kpis = await getKpis(
+        ctx(t.tenantId),
+        { since: new Date(FIRST), tz: "UTC" },
+        db,
+      );
+      expect(kpis.involved).toBe(1);
+    } finally {
+      await suDb.tenant
+        .delete({ where: { id: t.tenantId } })
+        .catch(() => undefined);
+    }
   });
 
   test("the timeseries of traffic other than real conversations has no conversations", async () => {

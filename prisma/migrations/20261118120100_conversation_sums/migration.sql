@@ -237,9 +237,8 @@ CREATE FUNCTION ledger_is_agent_turn(node text) RETURNS boolean LANGUAGE sql IMM
     'occurrence_consolidation', 'occurrence_transcription', 'occurrence_vision')
 $$;
 
--- The ledger's side. An agent turn of the inbox source (`agentTurnSql`) on a conversation counted
--- already: a first turn from an agent not yet in the conversation's runs marks its creation quarter,
--- and a rewritten or deleted agent turn marks the conversation, whose runs the job recomputes.
+-- The ledger's side. An agent turn of the inbox source (`agentTurnSql`) written, rewritten or deleted
+-- on a conversation counted already marks the conversation, whose runs the job recomputes.
 CREATE FUNCTION conversation_run_mark() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   cutoff timestamp := (clock_timestamp() AT TIME ZONE 'UTC') - interval '5 minutes';
@@ -251,14 +250,9 @@ BEGIN
     SELECT DISTINCT c.tenant_id, c.id
       FROM new_rows n JOIN conversations c ON c.id = n.conversation_id
      WHERE n.source = 'inbox' AND ledger_is_agent_turn(n.node)
-       AND c.created_at < cutoff AND EXISTS (SELECT 1 FROM tenants t WHERE t.id = n.tenant_id)
-       -- A run already kept moves nothing, unless the conversation's runs are being rebuilt: the
-       -- rebuild may be dropping that run in a transaction this one cannot see yet.
-       AND (NOT EXISTS (SELECT 1 FROM conversation_agent_runs r
-                         WHERE r.tenant_id = n.tenant_id AND r.conversation_id = n.conversation_id
-                           AND r.agent_id = COALESCE(n.agent_id, 0))
-            OR EXISTS (SELECT 1 FROM conversation_sum_marks m
-                        WHERE m.tenant_id = n.tenant_id AND m.conversation_id = n.conversation_id));
+       -- NOTE: even a turn by an agent whose run is kept. A rebuild may be dropping that run, in a
+       -- transaction this one cannot see, and commit before this turn does.
+       AND c.created_at < cutoff AND EXISTS (SELECT 1 FROM tenants t WHERE t.id = n.tenant_id);
   ELSIF TG_OP = 'UPDATE' THEN
     -- A re-price rewrites the cost of every row of a month and moves no run: only a row whose
     -- conversation, agent, node or source changed is a run that may have moved.

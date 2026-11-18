@@ -163,49 +163,67 @@ describe("the sampling decision", () => {
 
 describe("an install that never set a rate", () => {
   test("traces every turn, whole: no LANGFUSE_SAMPLE_RATE and no tenant rate resolve to 1", async () => {
-    expect(process.env.LANGFUSE_SAMPLE_RATE).toBeUndefined();
-    expect(config.langfuse.sampleRate).toBe(1);
-    const db = {
-      tenant: {
-        findUnique: async () => ({
-          settings: {
-            langfuse: {
-              enabled: true,
-              credentialRef: "vault:1",
-              sendContent: true,
+    // The config a process boots with when the variable is not set, loaded fresh so this machine's
+    // own environment does not decide the answer.
+    const env = process.env.LANGFUSE_SAMPLE_RATE;
+    delete process.env.LANGFUSE_SAMPLE_RATE;
+    let booted: number;
+    try {
+      const fresh = await import(
+        `${Bun.resolveSync("@/config", import.meta.dir)}?unset-sample-rate`
+      );
+      booted = fresh.default.langfuse.sampleRate;
+    } finally {
+      if (env !== undefined) process.env.LANGFUSE_SAMPLE_RATE = env;
+    }
+    expect(booted).toBe(1);
+    const deployment = config.langfuse.sampleRate;
+    config.langfuse.sampleRate = booted;
+    try {
+      const db = {
+        tenant: {
+          findUnique: async () => ({
+            settings: {
+              langfuse: {
+                enabled: true,
+                credentialRef: "vault:1",
+                sendContent: true,
+              },
             },
-          },
-          slug: "fresh",
-        }),
-      },
-      vaultEntry: {
-        findFirst: async () => ({
-          secret: encryptJson({
-            publicKey: "pk-lf-fresh",
-            secretKey: "sk-lf-fresh",
+            slug: "fresh",
           }),
-          kind: "langfuse",
-          baseUrl: "http://lf-fresh.test",
-          paramName: null,
-          name: "lf",
-        }),
-      },
-    } as unknown as ScopedDb;
-    const resolved = await resolveLangfuseConfig(db, 38n);
-    expect(resolved?.sampleRate).toBe(1);
-    const ids = turnIds(30, "f1");
-    for (const id of ids) {
-      await runWholeTurn(resolved as LangfuseConfig, 38n, id);
+        },
+        vaultEntry: {
+          findFirst: async () => ({
+            secret: encryptJson({
+              publicKey: "pk-lf-fresh",
+              secretKey: "sk-lf-fresh",
+            }),
+            kind: "langfuse",
+            baseUrl: "http://lf-fresh.test",
+            paramName: null,
+            name: "lf",
+          }),
+        },
+      } as unknown as ScopedDb;
+      const resolved = await resolveLangfuseConfig(db, 38n);
+      expect(resolved?.sampleRate).toBe(1);
+      const ids = turnIds(30, "f1");
+      for (const id of ids) {
+        await runWholeTurn(resolved as LangfuseConfig, 38n, id);
+      }
+      await runWholeTurn(cfg("ref", 1), 39n, ids[0] as string);
+      await shutdownLangfuseClients();
+      const perTurn = spansAt("ref").length;
+      const byTrace = new Map<string, number>();
+      for (const s of spansAt("fresh")) {
+        byTrace.set(s.traceId, (byTrace.get(s.traceId) ?? 0) + 1);
+      }
+      expect(new Set(byTrace.keys())).toEqual(new Set(ids.map(traceIdForTurn)));
+      for (const count of byTrace.values()) expect(count).toBe(perTurn);
+    } finally {
+      config.langfuse.sampleRate = deployment;
     }
-    await runWholeTurn(cfg("ref", 1), 39n, ids[0] as string);
-    await shutdownLangfuseClients();
-    const perTurn = spansAt("ref").length;
-    const byTrace = new Map<string, number>();
-    for (const s of spansAt("fresh")) {
-      byTrace.set(s.traceId, (byTrace.get(s.traceId) ?? 0) + 1);
-    }
-    expect(new Set(byTrace.keys())).toEqual(new Set(ids.map(traceIdForTurn)));
-    for (const count of byTrace.values()) expect(count).toBe(perTurn);
   });
 });
 

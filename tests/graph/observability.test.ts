@@ -182,4 +182,42 @@ describe("resolveLangfuseConfig", () => {
     const cfg = await resolveLangfuseConfig(db, 1n);
     expect(cfg?.tenantSlug).toBe("acme-co");
   });
+
+  describe("sample rate", () => {
+    const deployment = config.langfuse.sampleRate;
+    afterAll(() => {
+      config.langfuse.sampleRate = deployment;
+    });
+    const withRate = (sampleRate: unknown) =>
+      mockDb({
+        settingsBlock: { enabled: true, credentialRef: "vault:1", sampleRate },
+        vaultEntry: {
+          secret: { publicKey: "pk-1", secretKey: "sk-1" },
+          kind: "langfuse",
+          baseUrl: null,
+          paramName: null,
+          name: "lf",
+        },
+      });
+
+    test("a tenant without its own rate follows LANGFUSE_SAMPLE_RATE", async () => {
+      config.langfuse.sampleRate = 0.2;
+      expect(
+        (await resolveLangfuseConfig(withRate(null), 1n))?.sampleRate,
+      ).toBe(0.2);
+      expect(
+        (await resolveLangfuseConfig(withRate(undefined), 1n))?.sampleRate,
+      ).toBe(0.2);
+    });
+
+    test("a tenant's own rate wins over the deployment's, 0 included", async () => {
+      config.langfuse.sampleRate = 0.2;
+      expect(
+        (await resolveLangfuseConfig(withRate(0.75), 1n))?.sampleRate,
+      ).toBe(0.75);
+      expect((await resolveLangfuseConfig(withRate(0), 1n))?.sampleRate).toBe(
+        0,
+      );
+    });
+  });
 });

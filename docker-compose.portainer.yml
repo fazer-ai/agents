@@ -133,6 +133,7 @@ services:
       # The turn capacities: model permits and debounce turn slots (docs/deploy.md). Empty takes the
       # app default.
       - AGENT_MODEL_CONCURRENCY=${AGENT_MODEL_CONCURRENCY:-}
+      - LANGFUSE_SAMPLE_RATE=${LANGFUSE_SAMPLE_RATE:-}
       - DEBOUNCE_TURN_SLOTS=${DEBOUNCE_TURN_SLOTS:-}
       # The background share and aging bound of the model permits (docs/deploy.md).
       - AGENT_MODEL_BACKGROUND_SHARE_PERCENT=${AGENT_MODEL_BACKGROUND_SHARE_PERCENT:-}

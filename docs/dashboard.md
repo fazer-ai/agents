@@ -2,7 +2,7 @@
 
 The operator's dashboard (`src/client/pages/DashboardPage.tsx`, blocks under `src/client/pages/dashboard/`) is organised by the question an operator brings, not by the table the data lives in: is the agent doing its job, why does it hand over and what are people asking, what does it cost, is it healthy, and what else does it do on its own. This page maps every block to the query behind it, so the next change does not reintroduce a second source.
 
-**Every figure comes from this app's own records.** Money is `llm_usage.cost_usd`, priced when the call was written and re-priceable after (`scripts/reprice-usage.ts`). No figure is read from Langfuse: it samples traces on the client, prices only at ingestion and delivers best-effort, so its sum is not a total. Langfuse appears only as the "Open in Langfuse" link (`DashboardCosts.langfuse`), and the page renders the same numbers with it unreachable.
+**Every figure comes from this app's own records.** Money is `llm_usage.cost_usd`, priced when the call was written and re-priceable after (`scripts/reprice-usage.ts`). No figure is read from Langfuse: it holds only the turns that were traced, which can be a share of them (`docs/graph.md`, Langfuse tracing), prices only at ingestion and delivers best-effort, so its sum is not a total. Langfuse appears only as the "Open in Langfuse" link (`DashboardCosts.langfuse`), and the page renders the same numbers with it unreachable.
 
 ## The one filter
 

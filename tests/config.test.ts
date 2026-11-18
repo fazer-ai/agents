@@ -673,3 +673,40 @@ describe("database screen settings in the deploy composes", () => {
     }
   });
 });
+
+describe("LANGFUSE_SAMPLE_RATE", () => {
+  const rateOf = async (raw: string | undefined) =>
+    (
+      (await loadConfig({ ...UNSET, LANGFUSE_SAMPLE_RATE: raw })).langfuse as {
+        sampleRate: number;
+      }
+    ).sampleRate;
+
+  test("unset traces every turn, and a share from 0 to 1 is read as written", async () => {
+    expect(await rateOf(undefined)).toBe(1);
+    expect(await rateOf("")).toBe(1);
+    expect(await rateOf("0.05")).toBe(0.05);
+    expect(await rateOf("0")).toBe(0);
+    expect(await rateOf("1")).toBe(1);
+  });
+
+  test("anything else refuses to boot, naming the variable", async () => {
+    for (const raw of ["abc", "1.5", "-0.2", "5%", "Infinity"]) {
+      expect(
+        await refusalOf({ ...UNSET, LANGFUSE_SAMPLE_RATE: raw }),
+      ).toStartWith("LANGFUSE_SAMPLE_RATE must be a number between 0 and 1");
+    }
+  });
+
+  test("every deploy compose forwards it, empty taking the app default", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      expect(readFileSync(file, "utf8")).toMatch(
+        /- LANGFUSE_SAMPLE_RATE=\$\{LANGFUSE_SAMPLE_RATE:-\}\n/,
+      );
+    }
+  });
+});

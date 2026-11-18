@@ -78,6 +78,7 @@ const {
   HUB_UPDATES_TTL_MS,
   AGENT_MODEL_CONCURRENCY,
   AGENT_MODEL_CALL_TIMEOUT_MS,
+  LANGFUSE_SAMPLE_RATE,
   AGENT_CAPACITY_WAIT_ALERT_MS,
   CLIENT_TURN_SUSPEND_TIMEOUT_MS,
   AGENT_MODEL_BACKGROUND_SHARE_PERCENT,
@@ -232,6 +233,23 @@ export const parseIntSetting = (
   if (!Number.isInteger(value) || value < minimum || value > upperBound) {
     throw new Error(
       `${envName} must be a whole number between ${minimum} and ${upperBound} (got "${raw}"). ${consequence}`,
+    );
+  }
+  return value;
+};
+
+// A share between 0 and 1, both included. Garbage throws for the same reason as parseIntSetting.
+export const parseFractionSetting = (
+  raw: string | undefined,
+  envName: string,
+  fallback: number,
+  consequence: string,
+): number => {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(
+      `${envName} must be a number between 0 and 1 (got "${raw}"). ${consequence}`,
     );
   }
   return value;
@@ -663,6 +681,15 @@ const config = {
   // guard + interval; see docs/deploy.md "Single replica" for the leader pattern when scaling).
   // The tick claims due deliveries (FOR UPDATE SKIP LOCKED), POSTs them signed, and retries
   // with full-jitter backoff. Disable for CLIs/one-off scripts that import the app graph.
+  langfuse: {
+    // The share of turns traced for a tenant that did not set its own rate.
+    sampleRate: parseFractionSetting(
+      LANGFUSE_SAMPLE_RATE,
+      "LANGFUSE_SAMPLE_RATE",
+      1,
+      "It is the share of turns traced to Langfuse for a tenant that did not set its own rate.",
+    ),
+  },
   webhookWorker: {
     enabled: WEBHOOK_WORKER_ENABLED !== "false",
     intervalMs: parseIntSetting(

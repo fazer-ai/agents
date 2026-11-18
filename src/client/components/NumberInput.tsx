@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -117,12 +118,56 @@ export function useHoldSave(held: boolean): void {
   useEffect(() => () => holds?.report(id, false), [holds, id]);
 }
 
+// Text no number is written with. Typed into the field, Chrome and Safari drop it without an input
+// event and Firefox keeps it as unreadable text, so either way the person typed something the field
+// does not hold.
+const NOT_NUMBER_TEXT = /[^0-9eE+\-.,\s]/;
+
 export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
-  ({ range, value, optional = false, step, errorMessage, ...props }, ref) => {
+  (
+    {
+      range,
+      value,
+      optional = false,
+      step,
+      errorMessage,
+      onInput,
+      onKeyDown,
+      onPaste,
+      ...props
+    },
+    ref,
+  ) => {
     const { t } = useTranslation();
     const id = useId();
     const holds = useContext(RangeHoldsContext);
-    const problem = numberProblem(value, range, optional);
+    // A browser reports text it cannot read as a number ("1e", "abc" pasted) as an empty value, which
+    // an optional field would otherwise save as "not set". Whether such text is on screen is read
+    // from the element itself, after every render and on every edit, so whatever replaces the text
+    // (an edit, a value set from outside, a consumer's fallback) is what releases the hold.
+    const own = useRef<HTMLInputElement | null>(null);
+    const [unreadable, setUnreadable] = useState(false);
+    const readScreen = useCallback(() => {
+      const el = own.current;
+      setUnreadable(el?.value === "" && el.validity?.badInput === true);
+    }, []);
+    useLayoutEffect(readScreen);
+    // A keystroke or paste the browser dropped leaves the field as it was, so nothing on the element
+    // tells it apart from no edit at all. It holds until the field really changes: an edit, a value
+    // set from outside, or clearing a field that is already empty.
+    const [dropped, setDropped] = useState(false);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: a new value is what releases the hold
+    useEffect(() => setDropped(false), [value]);
+    const setRefs = useCallback(
+      (el: HTMLInputElement | null) => {
+        own.current = el;
+        if (typeof ref === "function") ref(el);
+        else if (ref) ref.current = el;
+      },
+      [ref],
+    );
+    const problem =
+      unreadable || dropped ? "range" : numberProblem(value, range, optional);
     // `disabled` is a field the operator cannot change right now, so it holds nothing.
     const held = problem !== null && !props.disabled;
     useEffect(() => {
@@ -140,7 +185,7 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
             });
     return (
       <Input
-        ref={ref}
+        ref={setRefs}
         type="number"
         min={range.min}
         max={range.max}
@@ -148,6 +193,46 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         inputMode={range.int ? "numeric" : "decimal"}
         value={value ?? ""}
         errorMessage={held ? message : errorMessage}
+        // NOTE: on the native input event, which fires on every edit: React's onChange skips an edit
+        // that leaves the reported value as it was, and unreadable text and an empty field both
+        // report "".
+        onInput={(e) => {
+          // Browsers still fire input events for text they drop, with the field unchanged: Safari
+          // for each letter typed (data "" or the letter), Chrome for a paste (data null). So an
+          // edit releases the hold only when it inserted text a number can hold, or deleted some.
+          const edit = e.nativeEvent as InputEvent;
+          const inserted =
+            edit.data || edit.dataTransfer?.getData("text") || "";
+          if (inserted) setDropped(NOT_NUMBER_TEXT.test(inserted));
+          else if (edit.inputType?.startsWith("delete")) setDropped(false);
+          readScreen();
+          onInput?.(e);
+        }}
+        onKeyDown={(e) => {
+          const el = e.currentTarget;
+          if (
+            e.key.length === 1 &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            NOT_NUMBER_TEXT.test(e.key)
+          ) {
+            setDropped(true);
+          } else if (
+            (e.key === "Backspace" || e.key === "Delete") &&
+            el.value === "" &&
+            el.validity?.badInput !== true
+          ) {
+            setDropped(false);
+          }
+          onKeyDown?.(e);
+        }}
+        onPaste={(e) => {
+          // Decided here, where the text is: the input event Chrome fires after a paste carries
+          // neither data nor dataTransfer.
+          const text = e.clipboardData?.getData("text") ?? "";
+          if (text) setDropped(NOT_NUMBER_TEXT.test(text));
+          onPaste?.(e);
+        }}
         {...props}
       />
     );

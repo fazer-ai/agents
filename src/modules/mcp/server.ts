@@ -42,6 +42,7 @@ import {
   CHUNK_SIZE_RANGE,
   SYNC_INTERVAL_MINUTES,
 } from "@/modules/rag/ranges";
+import { LANGFUSE_SAMPLE_RATE_RANGE } from "@/modules/tenant-settings/service";
 import { hasReservedFieldName } from "@/modules/tool-definitions/normalize";
 import { MODEL_RESPONSE_CHAR_RANGE } from "@/modules/tool-definitions/response-template";
 import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveries";
@@ -3423,7 +3424,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "tenant_settings_update",
       {
         description:
-          "Update the tenant's embedding and/or Langfuse settings. credential_ref values are vault entry NAMES (resolved server-side; null clears). embedding accepts { credential_ref }; langfuse accepts { enabled, credential_ref, send_content, debug }. debug attaches the full tool schemas to every trace (heavy; tool names are always sent). Previews and applies NOTHING unless dry_run is false.",
+          "Update the tenant's embedding and/or Langfuse settings. credential_ref values are vault entry NAMES (resolved server-side; null clears). debug attaches the full tool schemas to every trace (heavy; tool names are always sent). sample_rate is the share of turns traced, each whole or not at all; null follows LANGFUSE_SAMPLE_RATE. Previews and applies NOTHING unless dry_run is false.",
         inputSchema: {
           embedding: z
             .object({ credential_ref: z.string().nullable().optional() })
@@ -3434,6 +3435,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               credential_ref: z.string().nullable().optional(),
               send_content: z.boolean().optional(),
               debug: z.boolean().optional(),
+              sample_rate: ranged(LANGFUSE_SAMPLE_RATE_RANGE)
+                .nullable()
+                .optional(),
             })
             .optional(),
           price_overrides: z
@@ -3473,6 +3477,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             credential_ref?: string | null;
             send_content?: boolean;
             debug?: boolean;
+            sample_rate?: number | null;
           };
           price_overrides?: McpPriceOverride[];
           approval_link?: McpApprovalLink;

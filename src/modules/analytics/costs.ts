@@ -23,8 +23,8 @@ export function quarterSql(column: Prisma.Sql): Prisma.Sql {
 // THE DASHBOARD'S MONEY, FROM THE LEDGER. Every billed call writes its `llm_usage` row
 // synchronously, priced at capture and re-priceable after (`scripts/reprice-usage.ts`), so the cost
 // is summed over the same rows and filters as the requests beside it. Langfuse is not asked for a
-// figure: it samples traces on the client, prices only at ingestion and delivers best-effort, so its
-// sum was a fraction of the bill on a sampled install. It stays as the place to open a trace.
+// figure: it holds only the turns that were traced, which can be a share of them, prices only at
+// ingestion and delivers best-effort, so its sum is a fraction of the bill on a sampled install. It stays as the place to open a trace.
 
 export interface CostDay {
   date: string;

@@ -3,7 +3,8 @@
  * tracer provider per process and every tenant traces into its own Langfuse project, so the provider's
  * only span processor is a router: each span goes to the destination of the handler that started it,
  * a span started outside a handler is dropped, and content is redacted in the router before a span
- * reaches any processor when the tenant did not opt into sending it.
+ * reaches any processor when the tenant did not opt into sending it. A turn is traced whole or not
+ * at all, by its trace id against the rate of the destination armed at each span's start.
  */
 
 import { LangfuseSpanProcessor } from "@langfuse/otel";
@@ -26,6 +27,9 @@ import {
   type IdGenerator,
   RandomIdGenerator,
   type ReadableSpan,
+  type Sampler,
+  SamplingDecision,
+  type SamplingResult,
   type Span,
   type SpanExporter,
   type SpanProcessor,
@@ -48,7 +52,25 @@ export interface LangfuseRoute {
   secretKey: string;
   baseUrl?: string;
   sendContent?: boolean;
+  /** Share of turns traced, 0 to 1. Absent traces every turn. */
+  sampleRate?: number;
   tenantId: bigint;
+}
+
+// The low 13 hex digits (52 bits) of a trace id, which a double holds exactly. A turn's trace id is a random UUID or
+// a SHA-256 digest, so these bits are uniform.
+const SAMPLE_DIGITS = 13;
+const SAMPLE_SPACE = 2 ** (SAMPLE_DIGITS * 4);
+
+/**
+ * Whether a turn whose trace id this is gets traced at `rate`. The answer depends only on the id and
+ * the rate, so every span of the turn, started in any order and by any handler, gets the same one,
+ * and a turn traced at a rate is also traced at every higher rate.
+ */
+export function traceSampled(traceId: string, rate: number): boolean {
+  const low = Number.parseInt(traceId.slice(-SAMPLE_DIGITS), 16);
+  // NOTE: low / SAMPLE_SPACE is in [0, 1), so a rate of 0 keeps nothing and a rate of 1 keeps all.
+  return low / SAMPLE_SPACE < rate;
 }
 
 // How a failed export is retried: three more tries, three seconds apart, on a network error, a 429
@@ -345,6 +367,8 @@ class TurnTraceIdGenerator implements IdGenerator {
 
 interface RootEntry {
   rootSpanId?: string;
+  /** Whether this turn is traced, taken at its first span so a rate changed mid-turn splits nothing. */
+  sampled?: boolean;
   at: number;
 }
 
@@ -450,6 +474,31 @@ class TenantSpanRouter implements SpanProcessor {
   }
 }
 
+/**
+ * Leaves a span of a turn that is not sampled unrecorded, so it reaches no processor and nothing is
+ * serialized or posted for it. A span started with nothing armed is recorded and dropped by the router.
+ */
+class TurnSampler implements Sampler {
+  constructor(private readonly router: TenantSpanRouter) {}
+
+  shouldSample(_context: unknown, traceId: string): SamplingResult {
+    const armed = this.router.armed;
+    if (!armed) return { decision: SamplingDecision.RECORD_AND_SAMPLED };
+    const entry = this.router.root(traceId, armed.routeKey);
+    const rate = armed.route.sampleRate;
+    entry.sampled ??= rate === undefined || traceSampled(traceId, rate);
+    return {
+      decision: entry.sampled
+        ? SamplingDecision.RECORD_AND_SAMPLED
+        : SamplingDecision.NOT_RECORD,
+    };
+  }
+
+  toString(): string {
+    return "TurnSampler";
+  }
+}
+
 interface TracingState {
   router: TenantSpanRouter;
   ids: TurnTraceIdGenerator;
@@ -470,6 +519,7 @@ function state(): TracingState {
     const ids = new TurnTraceIdGenerator();
     const provider = new BasicTracerProvider({
       idGenerator: ids,
+      sampler: new TurnSampler(router),
       spanProcessors: [router],
     });
     setLangfuseTracerProvider(provider);

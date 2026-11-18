@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import jpeg from "jpeg-js";
 import {
+  convertInline,
   MediaConversionError,
   runMediaConverter,
   type WholeJpegDecode,
@@ -104,7 +105,7 @@ describe("a JPEG over the edge is decoded a band at a time", () => {
   test("the conversion takes the band decoder and sends the same JPEG as before", async () => {
     const bytes = read("amostragem-2x2.jpg");
     const decodeWholeJpeg = refusingWholeDecode();
-    const out = await runMediaConverter("jpeg-fit", ab(bytes), {
+    const out = await convertInline("jpeg-fit", ab(bytes), {
       decodeWholeJpeg,
     });
     expect(decodeWholeJpeg).not.toHaveBeenCalled();
@@ -122,7 +123,7 @@ describe("a JPEG over the edge is decoded a band at a time", () => {
       (data: Uint8Array, opts: Parameters<WholeJpegDecode>[1]) =>
         jpeg.decode(data, opts),
     );
-    await runMediaConverter("jpeg-fit", ab(read(name)), {
+    await convertInline("jpeg-fit", ab(read(name)), {
       decodeWholeJpeg,
     }).catch(() => undefined);
     expect(decodeWholeJpeg).toHaveBeenCalledTimes(1);
@@ -210,7 +211,7 @@ describe("a JPEG over the edge is decoded a band at a time", () => {
     "a file %s is refused without the whole-image decode",
     async (_, damage) => {
       const decodeWholeJpeg = refusingWholeDecode();
-      const outcome = runMediaConverter(
+      const outcome = convertInline(
         "jpeg-fit",
         ab(damage(read("amostragem-2x2.jpg"))),
         { decodeWholeJpeg },

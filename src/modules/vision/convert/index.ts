@@ -2,6 +2,7 @@
 // to be importable by the frontend (its sibling `document-support` already is); this file is where
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
+import { SHARE_ENV } from "node:worker_threads";
 import { inflateSync } from "node:zlib";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
@@ -58,9 +59,9 @@ export class MediaTooLargeError extends MediaConversionError {
 // PIXELS and not on the file, because HEIC's whole point is that the file is small — the 25 MB
 // download ceiling in the Chatwoot client admits a 100 MP image at phone compression.
 //
-// It is also the only time bound there is. The decode is CPU inside WASM and nothing can interrupt
-// it once entered, so an `AbortSignal` here would be decoration; bounding the pixels is what bounds
-// the milliseconds (~450ms at 12 MP, measured).
+// It also bounds the time. The decode is CPU inside WASM and nothing inside the thread can interrupt
+// it once entered, so an `AbortSignal` here would be decoration: bounding the pixels is what bounds
+// the milliseconds, and `CONVERSION_TIMEOUT_MS` is the backstop that ends the thread.
 export const MAX_SOURCE_PIXELS = 50_000_000;
 
 // Over the cap, a GRID image is still read: it is decoded tile by tile into the output, so memory is
@@ -104,10 +105,11 @@ const MAX_OUTPUT_EDGE = 1568;
 // heavy compression (docs: "heavy JPEG compression can make text difficult to read").
 const JPEG_QUALITY = 82;
 
-// ONE CONVERSION AT A TIME, process-wide. A message may carry eight attachments and the webhook
-// extracts them in PARALLEL (the `Promise.all` in `handleVisualAttachments`), so without this gate
-// eight HEICs hold eight RGBA buffers at once: 384 MB for eight 12 MP photos, on a VPS that also
-// runs Postgres and Redis. Serialising costs about half a second per extra photo, which is invisible
+// ONE CONVERSION THREAD AT A TIME, process-wide. A message may carry eight attachments and the
+// webhook extracts them in PARALLEL (the `Promise.all` in `handleVisualAttachments`), so without this
+// gate eight HEICs hold eight RGBA buffers and eight libheif heaps at once: 384 MB of RGBA alone for
+// eight 12 MP photos, on a VPS that also runs Postgres and Redis. Serialising costs one conversion
+// per extra photo, which the event loop no longer pays (the work runs in the thread), and which sits
 // next to the provider round trip each one is waiting for anyway.
 let gate: Promise<unknown> = Promise.resolve();
 
@@ -499,13 +501,15 @@ const IMPLS: Record<
 // the module's single-catch contract would hold for the refusals it writes itself and leak for
 // everything underneath. The original is kept as `cause`, and its message is carried through because
 // it is the only thing that says WHICH file failed.
-export async function runMediaConverter(
+// Runs on the CALLING thread: this is what the conversion thread (./worker.ts) runs, and what a
+// battery that stands in for a decoder calls, since a function cannot cross into a thread.
+export async function convertInline(
   id: MediaConverterId,
   bytes: ArrayBuffer,
   opts: ConvertOptions = {},
 ): Promise<ArrayBuffer> {
   try {
-    return await serialized(() => IMPLS[id](bytes, opts));
+    return await IMPLS[id](bytes, opts);
   } catch (err) {
     if (err instanceof MediaConversionError) throw err;
     const wrapped = new MediaConversionError(
@@ -514,4 +518,146 @@ export async function runMediaConverter(
     wrapped.cause = err;
     throw wrapped;
   }
+}
+
+// The backstop for a thread that never answers. A 12 MP photo converts in about a second and the
+// 200 MP tiled ceiling in a few, so this is far past any conversion the caps admit, on a loaded host
+// too; what it bounds is a wedged decoder holding the attachment, and the gate behind it, forever.
+export const CONVERSION_TIMEOUT_MS = 60_000;
+
+const WORKER_URL = new URL("./worker.ts", import.meta.url).href;
+
+// What crosses into the thread: the limits, never the stand-ins, which are functions.
+export type ConversionLimits = Pick<
+  ConvertOptions,
+  "maxSourcePixels" | "maxTiledSourcePixels"
+>;
+
+export type RunOptions = ConversionLimits & {
+  readonly timeoutMs?: number;
+  // A battery points this at a thread that crashes or never answers.
+  readonly workerUrl?: string;
+};
+
+export type ConversionRequest = {
+  id: MediaConverterId;
+  bytes: ArrayBuffer;
+  limits: ConversionLimits;
+};
+
+export type ConversionFailure = {
+  kind: "too-large" | "mismatch" | "conversion";
+  message: string;
+  cause?: { name: string; message: string };
+};
+
+export type ConversionReply =
+  | { ok: true; bytes: ArrayBuffer }
+  | ({ ok: false } & ConversionFailure);
+
+// The refusal as data, because an Error's class does not survive `postMessage`: the caller tells a
+// mismatch (send the original) from a too-large (tell the customer) from a failure by the class.
+export function describeConversionFailure(err: unknown): ConversionFailure {
+  const kind =
+    err instanceof MediaTooLargeError
+      ? "too-large"
+      : err instanceof MediaSourceMismatchError
+        ? "mismatch"
+        : "conversion";
+  const message = err instanceof Error ? err.message : String(err);
+  const cause =
+    err instanceof Error && err.cause instanceof Error
+      ? { name: err.cause.name, message: err.cause.message }
+      : undefined;
+  return cause ? { kind, message, cause } : { kind, message };
+}
+
+function conversionError(failure: ConversionFailure): MediaConversionError {
+  const err =
+    failure.kind === "too-large"
+      ? new MediaTooLargeError(failure.message)
+      : failure.kind === "mismatch"
+        ? new MediaSourceMismatchError(failure.message)
+        : new MediaConversionError(failure.message);
+  if (failure.cause) {
+    const cause = new Error(failure.cause.message);
+    cause.name = failure.cause.name;
+    err.cause = cause;
+  }
+  return err;
+}
+
+// THE CONVERSION RUNS IN A THREAD OF ITS OWN, one per conversion. Every step is synchronous CPU (the
+// libheif decode, jpeg-js, pngjs, the fit, the encode) and holds the calling thread for as long as it
+// runs, a second or more for a phone photo: on the event loop that expires every wall-clock timer in
+// the process, the Chatwoot ack's among them. A fresh thread per conversion rather than a long-lived
+// one because a WASM heap only grows: a reused thread would keep the largest image's heap for the
+// life of the process. The bytes go in as a copy, since the caller still sends the original when
+// the declared type lied, and the copy is transferred, not cloned again.
+export function runMediaConverter(
+  id: MediaConverterId,
+  bytes: ArrayBuffer,
+  opts: RunOptions = {},
+): Promise<ArrayBuffer> {
+  return serialized(() => inThread(id, bytes, opts));
+}
+
+function inThread(
+  id: MediaConverterId,
+  bytes: ArrayBuffer,
+  opts: RunOptions,
+): Promise<ArrayBuffer> {
+  const {
+    timeoutMs = CONVERSION_TIMEOUT_MS,
+    workerUrl = WORKER_URL,
+    ...limits
+  } = opts;
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      // NOTE: SHARE_ENV, because a Bun worker created without options starts from the environment
+      // the process booted with: the libheif path override would hold only if set before boot.
+      worker = new Worker(workerUrl, { env: SHARE_ENV });
+    } catch (err) {
+      reject(
+        conversionError({
+          kind: "conversion",
+          message: `${id} failed: the conversion thread did not start (${err instanceof Error ? err.message : String(err)})`,
+        }),
+      );
+      return;
+    }
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      worker.terminate();
+      settle();
+    };
+    const fail = (message: string) =>
+      finish(() =>
+        reject(new MediaConversionError(`${id} failed: ${message}`)),
+      );
+    const killer = setTimeout(
+      () => fail(`the conversion did not finish within ${timeoutMs} ms`),
+      timeoutMs,
+    );
+    worker.onmessage = (ev: MessageEvent<ConversionReply>) => {
+      const reply = ev.data;
+      finish(() =>
+        reply.ok ? resolve(reply.bytes) : reject(conversionError(reply)),
+      );
+    };
+    worker.onerror = (ev) =>
+      fail(`the conversion thread crashed (${ev.message || "no message"})`);
+    worker.addEventListener("close", () =>
+      fail("the conversion thread exited without answering"),
+    );
+    const copy = bytes.slice(0);
+    worker.postMessage(
+      { id, bytes: copy, limits } satisfies ConversionRequest,
+      [copy],
+    );
+  });
 }

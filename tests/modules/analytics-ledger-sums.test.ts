@@ -10,6 +10,7 @@ import {
   bucketMs,
   ensureLedgerSums,
   histogramPercentile,
+  MARKED_QUARTERS_PER_STEP,
   stepLedgerSums,
   ZERO_BUCKET,
 } from "@/modules/analytics/ledger-sums";
@@ -444,6 +445,27 @@ describe.skipIf(!dbUp)("the ledger's quarter-hour sums", () => {
     expect(
       await suDb.ledgerSumMark.count({ where: { tenantId: fx.tenantId } }),
     ).toBe(0);
+    expect(await blocks(fx.tenantId, view)).toEqual(now);
+  });
+
+  test("a repricing of more quarters than a step settles is settled over steps, right all along", async () => {
+    const view = { since: new Date(FIRST), tz: "America/Sao_Paulo" };
+    await suDb.$executeRaw(Prisma.sql`
+      UPDATE llm_usage SET cost_usd = cost_usd * 3
+       WHERE tenant_id = ${fx.tenantId} AND cost_usd IS NOT NULL AND created_at < ${new Date(NOW - DAY)}`);
+    const marked = async () => {
+      const [r] = await suDb.$queryRaw<{ n: number }[]>(Prisma.sql`
+        SELECT COUNT(DISTINCT quarter)::int AS n FROM ledger_sum_marks WHERE tenant_id = ${fx.tenantId}`);
+      return r?.n ?? 0;
+    };
+    const before = await marked();
+    expect(before).toBeGreaterThan(MARKED_QUARTERS_PER_STEP);
+    await stepLedgerSums(db, fx.tenantId);
+    expect(await marked()).toBe(before - MARKED_QUARTERS_PER_STEP);
+    const now = await blocks(fx.tenantId, view);
+    expect(now).toEqual(await rawBlocks(fx.tenantId, view));
+    await sumUp(fx.tenantId);
+    expect(await marked()).toBe(0);
     expect(await blocks(fx.tenantId, view)).toEqual(now);
   });
 

@@ -6,6 +6,7 @@ import {
   runScopedOn,
   type ScopedDb,
   type TenantContext,
+  type TxBudget,
 } from "@/lib/tenancy";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import {
@@ -40,6 +41,12 @@ const SLICE_MS = DAY_MS;
 // How long one run works before it hands the lane back, far under the run's deadline
 // (worker.ts, jobDeadlineMs), and how soon it runs again.
 const RUN_BUDGET_MS = 30_000;
+// A step's transaction: the slice and the marks it settles, under the handler's budget.
+const STEP_TX: TxBudget = { maxWait: 5_000, timeout: 25_000 };
+// The marked quarters one step sums again: a day's worth, so a repricing of a month is settled over
+// steps that each fit the transaction, and every mark left waits, read from its rows meanwhile.
+export const MARKED_QUARTERS_PER_STEP = 96;
+const MARKS_PER_READ = 5000;
 const RERUN_MS = 60_000;
 const DEDUPE_KEY = "ledger-sums";
 
@@ -307,105 +314,124 @@ export async function stepLedgerSums(
   base: PrismaClient,
   tenantId: bigint,
 ): Promise<LedgerSumsStep> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const [now] = await db.$queryRaw<{ at: Date }[]>(
-      Prisma.sql`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`,
-    );
-    // The oldest transaction still running, and this step's own id, assigned after the instant above:
-    // every transaction that had an id before it has an id below it, and one that had none yet gets
-    // a larger one, so its statements run after the instant.
-    const [snap] = await db.$queryRaw<{ xmin: string; xid: string }[]>(
-      Prisma.sql`SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin,
+  return runScopedOn(
+    base,
+    sysCtx(tenantId),
+    async (db) => {
+      const [now] = await db.$queryRaw<{ at: Date }[]>(
+        Prisma.sql`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`,
+      );
+      // The oldest transaction still running, and this step's own id, assigned after the instant above:
+      // every transaction that had an id before it has an id below it, and one that had none yet gets
+      // a larger one, so its statements run after the instant.
+      const [snap] = await db.$queryRaw<{ xmin: string; xid: string }[]>(
+        Prisma.sql`SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS xmin,
                         pg_current_xact_id()::text AS xid`,
-    );
-    const takenAt = now?.at ?? new Date();
-    await db.$executeRaw(Prisma.sql`
+      );
+      const takenAt = now?.at ?? new Date();
+      await db.$executeRaw(Prisma.sql`
       INSERT INTO ledger_sums_state (tenant_id) VALUES (current_setting('app.tenant_id')::bigint)
       ON CONFLICT (tenant_id) DO NOTHING`);
-    const [state] = await db.$queryRaw<
-      {
-        summed_until: Date | null;
-        candidate_at: Date | null;
-        waited_out: boolean;
-      }[]
-    >(Prisma.sql`
+      const [state] = await db.$queryRaw<
+        {
+          summed_until: Date | null;
+          candidate_at: Date | null;
+          waited_out: boolean;
+        }[]
+      >(Prisma.sql`
       SELECT summed_until, candidate_at,
              candidate_xid IS NOT NULL AND ${snap?.xmin ?? "0"}::xid8 > candidate_xid AS waited_out
         FROM ledger_sums_state FOR UPDATE`);
-    let summedUntil = state?.summed_until ?? null;
+      let summedUntil = state?.summed_until ?? null;
 
-    // The marks first, against the mark as it stands: a marked quarter at or above it is summed
-    // from its rows when the mark gets there.
-    const marks = await db.$queryRaw<{ id: bigint; quarter: Date }[]>(
-      Prisma.sql`SELECT id, quarter FROM ledger_sum_marks ORDER BY id LIMIT 5000`,
-    );
-    const remark = new Set<number>();
-    if (summedUntil) {
-      for (const m of marks)
-        if (m.quarter.getTime() < summedUntil.getTime())
-          remark.add(m.quarter.getTime());
-    }
-    const remarkDays = new Set<number>();
-    for (const q of remark) {
-      await sumQuarters(db, new Date(q), new Date(q + QUARTER_MS));
-      await addRuns(db, new Date(q), new Date(q + QUARTER_MS));
-      const day = floorDay(q);
-      if (summedUntil && day + DAY_MS <= summedUntil.getTime())
-        remarkDays.add(day);
-    }
-    for (const d of remarkDays)
-      await sumLatencyDays(db, new Date(d), new Date(d + DAY_MS));
-    if (marks.length > 0) {
-      await db.$executeRaw(Prisma.sql`
-        DELETE FROM ledger_sum_marks WHERE id = ANY(${marks.map((m) => m.id)}::bigint[])`);
-    }
-    const settled = summedUntil
-      ? await settleConversationMarks(db, summedUntil)
-      : 0;
-
-    // Then the mark.
-    let caughtUp = false;
-    if (state?.waited_out && state.candidate_at) {
-      const target = floorQuarter(state.candidate_at.getTime() - GRACE_MS);
-      let from = summedUntil?.getTime() ?? null;
-      if (from === null) {
-        const [first] = await db.$queryRaw<{ at: Date | null }[]>(
-          Prisma.sql`SELECT LEAST((SELECT MIN(created_at) FROM llm_usage),
-                                  (SELECT MIN(created_at) FROM conversations)) AS at`,
-        );
-        from = first?.at ? floorDay(first.at.getTime()) : target;
-      }
-      const to = Math.min(target, from + SLICE_MS);
-      if (to > from) {
-        const mark = new Date(to);
-        await sumQuarters(db, new Date(from), mark);
-        await addRuns(db, new Date(from), mark);
-        await countConversations(db, new Date(from), mark, mark);
-        // The UTC days the step completed: wholly below `to`, and not wholly below `from`.
-        const firstDay = floorDay(from);
-        const lastDay = floorDay(to);
-        if (lastDay > firstDay) {
-          await sumLatencyDays(db, new Date(firstDay), new Date(lastDay));
-          await countConversationDays(
-            db,
-            new Date(firstDay),
-            new Date(lastDay),
-            mark,
-          );
+      // The marks first, against the mark as it stands: a marked quarter at or above it is summed
+      // from its rows when the mark gets there.
+      const marks = await db.$queryRaw<{ id: bigint; quarter: Date }[]>(
+        Prisma.sql`SELECT id, quarter FROM ledger_sum_marks ORDER BY id LIMIT ${MARKS_PER_READ}`,
+      );
+      const remark = new Set<number>();
+      const settledMarks: bigint[] = [];
+      for (const m of marks) {
+        const q = m.quarter.getTime();
+        // NOTE: a quarter at or above the mark is summed when the mark gets there.
+        if (!summedUntil || q >= summedUntil.getTime()) {
+          settledMarks.push(m.id);
+        } else if (remark.has(q) || remark.size < MARKED_QUARTERS_PER_STEP) {
+          remark.add(q);
+          settledMarks.push(m.id);
         }
-        summedUntil = mark;
-      } else if (summedUntil === null) {
-        summedUntil = new Date(from);
       }
-      caughtUp = to >= target;
-    }
+      const remarkDays = new Set<number>();
+      for (const q of remark) {
+        await sumQuarters(db, new Date(q), new Date(q + QUARTER_MS));
+        await addRuns(db, new Date(q), new Date(q + QUARTER_MS));
+        const day = floorDay(q);
+        if (summedUntil && day + DAY_MS <= summedUntil.getTime())
+          remarkDays.add(day);
+      }
+      for (const d of remarkDays)
+        await sumLatencyDays(db, new Date(d), new Date(d + DAY_MS));
+      if (settledMarks.length > 0) {
+        await db.$executeRaw(Prisma.sql`
+        DELETE FROM ledger_sum_marks WHERE id = ANY(${settledMarks}::bigint[])`);
+      }
+      const settle = summedUntil
+        ? await settleConversationMarks(db, summedUntil)
+        : { settled: 0, more: false };
+      const marksLeft =
+        settledMarks.length < marks.length ||
+        marks.length === MARKS_PER_READ ||
+        settle.more;
 
-    await db.$executeRaw(Prisma.sql`
+      // Then the mark.
+      let caughtUp = false;
+      if (state?.waited_out && state.candidate_at) {
+        const target = floorQuarter(state.candidate_at.getTime() - GRACE_MS);
+        let from = summedUntil?.getTime() ?? null;
+        if (from === null) {
+          const [first] = await db.$queryRaw<{ at: Date | null }[]>(
+            Prisma.sql`SELECT LEAST((SELECT MIN(created_at) FROM llm_usage),
+                                  (SELECT MIN(created_at) FROM conversations)) AS at`,
+          );
+          from = first?.at ? floorDay(first.at.getTime()) : target;
+        }
+        const to = Math.min(target, from + SLICE_MS);
+        if (to > from) {
+          const mark = new Date(to);
+          await sumQuarters(db, new Date(from), mark);
+          await addRuns(db, new Date(from), mark);
+          await countConversations(db, new Date(from), mark, mark);
+          // The UTC days the step completed: wholly below `to`, and not wholly below `from`.
+          const firstDay = floorDay(from);
+          const lastDay = floorDay(to);
+          if (lastDay > firstDay) {
+            await sumLatencyDays(db, new Date(firstDay), new Date(lastDay));
+            await countConversationDays(
+              db,
+              new Date(firstDay),
+              new Date(lastDay),
+              mark,
+            );
+          }
+          summedUntil = mark;
+        } else if (summedUntil === null) {
+          summedUntil = new Date(from);
+        }
+        caughtUp = to >= target && !marksLeft;
+      }
+
+      await db.$executeRaw(Prisma.sql`
       UPDATE ledger_sums_state
          SET summed_until = ${summedUntil}, candidate_at = ${takenAt},
              candidate_xid = ${snap?.xid ?? null}::xid8`);
-    return { summedUntil, remarked: remark.size + settled, caughtUp };
-  });
+      return {
+        summedUntil,
+        remarked: remark.size + settle.settled,
+        caughtUp,
+      };
+    },
+    STEP_TX,
+  );
 }
 
 export async function ledgerSumsHandler(

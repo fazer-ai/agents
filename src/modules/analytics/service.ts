@@ -4,6 +4,7 @@ import { badQueryParam } from "@/lib/query-param";
 import type { TenantContext } from "@/lib/tenancy";
 import { runMetricsScoped } from "./budget";
 import {
+  dividesByConversations,
   funnelCountsSql,
   responsesCtesSql,
   withRunsMark,
@@ -483,15 +484,18 @@ export async function getTimeseries(
        GROUP BY 1
        ORDER BY 1 ASC`);
     // The conversations of each day are the funnel's (the day's conversations the agent ran on),
-    // the divisor of the cost-per-conversation line (docs/dashboard.md).
+    // the divisor of the cost-per-conversation line (docs/dashboard.md). A view of other traffic
+    // than real conversations has none.
     const view = await withRunsMark(db, filter);
-    const funnel = await db.$queryRaw<{ key: string; involved: number }[]>(
-      funnelCountsSql(
-        view,
-        await sumsBounds(db, view),
-        localDaySql(Prisma.sql`v.quarter`, tz),
-      ),
-    );
+    const funnel = dividesByConversations(filter)
+      ? await db.$queryRaw<{ key: string; involved: number }[]>(
+          funnelCountsSql(
+            view,
+            await sumsBounds(db, view),
+            localDaySql(Prisma.sql`v.quarter`, tz),
+          ),
+        )
+      : [];
     const convByDay = new Map(funnel.map((r) => [r.key, Number(r.involved)]));
     const days = [
       ...new Set([...rows.map((r) => r.bucket), ...convByDay.keys()]),

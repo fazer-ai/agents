@@ -9,7 +9,7 @@ import { getDashboardCosts } from "@/modules/analytics/costs";
 import { drillDownPageIds } from "@/modules/analytics/drilldown";
 import type { DashboardFilter } from "@/modules/analytics/filter";
 import { stepLedgerSums } from "@/modules/analytics/ledger-sums";
-import { getKpis } from "@/modules/analytics/service";
+import { getKpis, getTimeseries } from "@/modules/analytics/service";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
@@ -593,6 +593,58 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
       await suDb.tenant
         .delete({ where: { id: t.tenantId } })
         .catch(() => undefined);
+    }
+  });
+
+  test("a turn by an agent already kept still marks a conversation whose runs are pending a rebuild", async () => {
+    const [kept] = await suDb.$queryRaw<
+      { conversation_id: bigint; agent_id: bigint }[]
+    >(Prisma.sql`
+      SELECT conversation_id, agent_id FROM conversation_agent_runs
+       WHERE tenant_id = ${fx.tenantId} AND agent_id <> 0 LIMIT 1`);
+    expect(kept).toBeDefined();
+    const k = kept as { conversation_id: bigint; agent_id: bigint };
+    const marksOf = () =>
+      suDb.conversationSumMark.count({
+        where: { tenantId: fx.tenantId, conversationId: k.conversation_id },
+      });
+    const turn = () =>
+      suDb.llmUsage.create({
+        data: {
+          tenantId: fx.tenantId,
+          conversationId: k.conversation_id,
+          agentId: k.agent_id,
+          source: "inbox",
+          node: "agent",
+          model: "m1",
+        },
+      });
+    // The run is kept and nothing is pending: the turn moves nothing.
+    await turn();
+    expect(await marksOf()).toBe(0);
+    // A rebuild is pending (a removed turn marked the conversation): the turn marks it again, so the
+    // rebuild that clears the first mark cannot clear the turn with it.
+    await suDb.conversationSumMark.create({
+      data: { tenantId: fx.tenantId, conversationId: k.conversation_id },
+    });
+    await turn();
+    expect(await marksOf()).toBe(2);
+    await sumUp(fx.tenantId);
+  });
+
+  test("the timeseries of traffic other than real conversations has no conversations", async () => {
+    const real = await getTimeseries(
+      ctx(fx.tenantId),
+      { since: new Date(FIRST) },
+      db,
+    );
+    expect(real.some((p) => p.conversations > 0)).toBe(true);
+    for (const f of [
+      { since: new Date(FIRST), source: "playground" as const },
+      { since: new Date(FIRST), audience: "anonymous" as const },
+    ]) {
+      const series = await getTimeseries(ctx(fx.tenantId), f, db);
+      expect(series.filter((p) => p.conversations !== 0)).toEqual([]);
     }
   });
 

@@ -7,7 +7,12 @@ import {
   type DashboardFilter,
   outcomeSql,
 } from "./filter";
-import { type SumsBounds, sumsBounds, ZERO_BUCKET } from "./ledger-sums";
+import {
+  MARKED_QUARTERS_PER_STEP,
+  type SumsBounds,
+  sumsBounds,
+  ZERO_BUCKET,
+} from "./ledger-sums";
 import { FIRST_RESPONSE_SAMPLE_SQL } from "./service";
 
 // THE CONVERSATION COUNTS (docs/dashboard.md, "Conversation sums"): conversations per
@@ -173,32 +178,58 @@ function floorDay(at: number): number {
 // The conversation marks below the mark: runs recomputed for the conversations named, and the
 // creation quarters of those and of the quarters named recounted (with their UTC day
 // when the day is complete). Returns how many marks it took.
+const MARKS_PER_READ = 5000;
+
 export async function settleConversationMarks(
   db: ScopedDb,
   mark: Date,
-): Promise<number> {
+): Promise<{ settled: number; more: boolean }> {
   const marks = await db.$queryRaw<
     { id: bigint; quarter: Date | null; conversation_id: bigint | null }[]
   >(
-    Prisma.sql`SELECT id, quarter, conversation_id FROM conversation_sum_marks ORDER BY id LIMIT 5000`,
+    Prisma.sql`SELECT id, quarter, conversation_id FROM conversation_sum_marks ORDER BY id LIMIT ${MARKS_PER_READ}`,
   );
-  if (marks.length === 0) return 0;
-  const ids = [
+  if (marks.length === 0) return { settled: 0, more: false };
+  const allIds = [
     ...new Set(
       marks
         .map((m) => m.conversation_id)
         .filter((x): x is bigint => x !== null),
     ),
   ];
-  await recomputeRuns(db, ids);
-  const quarters = new Set<number>();
-  for (const m of marks) if (m.quarter) quarters.add(m.quarter.getTime());
-  if (ids.length > 0) {
-    for (const r of await db.$queryRaw<{ quarter: Date }[]>(Prisma.sql`
-      SELECT DISTINCT ledger_quarter(created_at) AS quarter FROM conversations
-       WHERE id = ANY(${ids}::bigint[])`))
-      quarters.add(r.quarter.getTime());
+  const quarterOf = new Map<bigint, number>();
+  if (allIds.length > 0) {
+    for (const r of await db.$queryRaw<
+      { id: bigint; quarter: Date }[]
+    >(Prisma.sql`
+      SELECT id, ledger_quarter(created_at) AS quarter FROM conversations
+       WHERE id = ANY(${allIds}::bigint[])`))
+      quarterOf.set(r.id, r.quarter.getTime());
   }
+  // The marks in order, up to a day's worth of quarters below the mark; the rest wait for the next
+  // step, read from the rows meanwhile.
+  const quarters = new Set<number>();
+  const taken: typeof marks = [];
+  for (const m of marks) {
+    const q = m.quarter
+      ? m.quarter.getTime()
+      : m.conversation_id !== null
+        ? quarterOf.get(m.conversation_id)
+        : undefined;
+    const below = q !== undefined && q < mark.getTime();
+    if (below && !quarters.has(q) && quarters.size >= MARKED_QUARTERS_PER_STEP)
+      break;
+    if (below) quarters.add(q);
+    taken.push(m);
+  }
+  const ids = [
+    ...new Set(
+      taken
+        .map((m) => m.conversation_id)
+        .filter((x): x is bigint => x !== null),
+    ),
+  ];
+  await recomputeRuns(db, ids);
   const days = new Set<number>();
   for (const q of quarters) {
     if (q >= mark.getTime()) continue;
@@ -209,8 +240,11 @@ export async function settleConversationMarks(
   for (const d of days)
     await countConversationDays(db, new Date(d), new Date(d + DAY_MS), mark);
   await db.$executeRaw(Prisma.sql`
-    DELETE FROM conversation_sum_marks WHERE id = ANY(${marks.map((m) => m.id)}::bigint[])`);
-  return marks.length;
+    DELETE FROM conversation_sum_marks WHERE id = ANY(${taken.map((m) => m.id)}::bigint[])`);
+  return {
+    settled: taken.length,
+    more: taken.length < marks.length || marks.length === MARKS_PER_READ,
+  };
 }
 
 // THE READERS' SIDE.

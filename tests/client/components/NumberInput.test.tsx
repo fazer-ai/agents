@@ -252,6 +252,40 @@ describe("NumberInput", () => {
     expect(save()).not.toBeDisabled();
   });
 
+  test("an input event for a letter the browser dropped keeps the hold (Safari)", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window");
+    fireEvent.keyDown(field, { key: "a" });
+    fireEvent.input(field, {
+      target: { value: "" },
+      data: "a",
+      inputType: "insertText",
+    });
+    expect(save()).toBeDisabled();
+    fireEvent.input(field, {
+      target: { value: "4" },
+      data: "4",
+      inputType: "insertText",
+    });
+    expect(save()).not.toBeDisabled();
+  });
+
+  test("a paste of text no number has holds Save even when an input event follows it", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window");
+    fireEvent.paste(field, { clipboardData: { getData: () => "abc" } });
+    // A paste reports its text on dataTransfer, with data null.
+    const pasted = new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertFromPaste",
+    });
+    Object.defineProperty(pasted, "dataTransfer", {
+      value: { getData: () => "abc" },
+    });
+    fireEvent(field, pasted);
+    expect(save()).toBeDisabled();
+  });
+
   test("a value set from outside releases a dropped keystroke", () => {
     function Reset() {
       const [value, setValue] = useState("5");

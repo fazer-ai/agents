@@ -197,7 +197,12 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         // that leaves the reported value as it was, and unreadable text and an empty field both
         // report "".
         onInput={(e) => {
-          setDropped(false);
+          // Safari still fires an input event for a letter it drops, with the field unchanged, so an
+          // edit releases the hold only when what it inserted could be part of a number.
+          const edit = e.nativeEvent as InputEvent;
+          const inserted =
+            edit.data || edit.dataTransfer?.getData("text") || "";
+          setDropped(NOT_NUMBER_TEXT.test(inserted));
           readScreen();
           onInput?.(e);
         }}

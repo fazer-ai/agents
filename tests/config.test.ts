@@ -697,4 +697,16 @@ describe("LANGFUSE_SAMPLE_RATE", () => {
       ).toStartWith("LANGFUSE_SAMPLE_RATE must be a number between 0 and 1");
     }
   });
+
+  test("every deploy compose forwards it, empty taking the app default", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      expect(readFileSync(file, "utf8")).toMatch(
+        /- LANGFUSE_SAMPLE_RATE=\$\{LANGFUSE_SAMPLE_RATE:-\}\n/,
+      );
+    }
+  });
 });

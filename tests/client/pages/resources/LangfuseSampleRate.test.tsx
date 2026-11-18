@@ -130,6 +130,25 @@ describe("the share of turns traced", () => {
     expect(puts).toEqual([]);
   });
 
+  test("letters typed over a stored rate hold Save and keep the rate, while a real clear saves null", async () => {
+    stored = 0.25;
+    const { field, save } = await open();
+    fireEvent.input(field, { target: { value: "" } });
+    fireEvent.keyDown(field, { key: "a" });
+    fireEvent.keyDown(field, { key: "b" });
+    expect(save.disabled).toBe(true);
+    expect(field.closest("#observability")?.textContent).toContain(
+      "Between 0 and 100.",
+    );
+    fireEvent.click(save);
+    expect(puts).toEqual([]);
+    fireEvent.keyDown(field, { key: "Backspace" });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0]?.sampleRate).toBeNull();
+  });
+
   test("a value outside 0 to 100 holds Save", async () => {
     const { field, save } = await open();
     fireEvent.change(field, { target: { value: "150" } });

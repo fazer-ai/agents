@@ -210,6 +210,83 @@ describe("NumberInput", () => {
     expect(save()).not.toBeDisabled();
   });
 
+  test("a keystroke the browser drops holds Save, though the field did not change", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window");
+    fireEvent.keyDown(field, { key: "a" });
+    expect(save()).toBeDisabled();
+    expect(screen.getByText("Between 3 and 120.")).toBeInTheDocument();
+    // Clearing a field that is already empty is "not set" again.
+    fireEvent.keyDown(field, { key: "Backspace" });
+    expect(save()).not.toBeDisabled();
+  });
+
+  test("a dropped keystroke holds until a real edit, and characters of a number do not hold", () => {
+    render(<Form initial="10" optional />);
+    const field = screen.getByLabelText("window");
+    for (const key of ["5", "e", "-", ".", "Enter", "ArrowUp"]) {
+      fireEvent.keyDown(field, { key });
+      expect(save()).not.toBeDisabled();
+    }
+    fireEvent.keyDown(field, { key: "x" });
+    expect(save()).toBeDisabled();
+    // A non-empty field cleared with Backspace is an edit, not the empty-field release.
+    edit("12");
+    expect(save()).not.toBeDisabled();
+  });
+
+  test("a dropped keystroke is released by an edit that leaves the reported value empty", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window") as HTMLInputElement;
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: field.dataset.bad === "1" }),
+    });
+    fireEvent.keyDown(field, { key: "a" });
+    // "1e" typed, then deleted: two edits, and the reported value stays "" through both.
+    field.dataset.bad = "1";
+    edit("");
+    expect(save()).toBeDisabled();
+    field.dataset.bad = "0";
+    edit("");
+    expect(save()).not.toBeDisabled();
+  });
+
+  test("a value set from outside releases a dropped keystroke", () => {
+    function Reset() {
+      const [value, setValue] = useState("5");
+      return (
+        <RangeHolds>
+          <NumberInput
+            aria-label="window"
+            range={WINDOW}
+            value={value}
+            optional
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <Button onClick={() => setValue("7")}>discard</Button>
+          <Button holdOnRange>Save</Button>
+        </RangeHolds>
+      );
+    }
+    render(<Reset />);
+    fireEvent.keyDown(screen.getByLabelText("window"), { key: "a" });
+    expect(save()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "discard" }));
+    expect(save()).not.toBeDisabled();
+  });
+
+  test("a paste with text no number has holds Save; a number pasted does not", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window");
+    const paste = (text: string) =>
+      fireEvent.paste(field, { clipboardData: { getData: () => text } });
+    paste("42");
+    expect(save()).not.toBeDisabled();
+    paste("abc");
+    expect(save()).toBeDisabled();
+  });
+
   test("only a holdOnRange button is held", () => {
     render(<Form initial="-10" />);
     expect(screen.getByRole("button", { name: "Other" })).not.toBeDisabled();

@@ -118,9 +118,24 @@ export function useHoldSave(held: boolean): void {
   useEffect(() => () => holds?.report(id, false), [holds, id]);
 }
 
+// Text no number is written with. Typed into the field, Chrome and Safari drop it without an input
+// event and Firefox keeps it as unreadable text, so either way the person typed something the field
+// does not hold.
+const NOT_NUMBER_TEXT = /[^0-9eE+\-.,\s]/;
+
 export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
   (
-    { range, value, optional = false, step, errorMessage, onInput, ...props },
+    {
+      range,
+      value,
+      optional = false,
+      step,
+      errorMessage,
+      onInput,
+      onKeyDown,
+      onPaste,
+      ...props
+    },
     ref,
   ) => {
     const { t } = useTranslation();
@@ -137,6 +152,12 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
       setUnreadable(el?.value === "" && el.validity?.badInput === true);
     }, []);
     useLayoutEffect(readScreen);
+    // A keystroke or paste the browser dropped leaves the field as it was, so nothing on the element
+    // tells it apart from no edit at all. It holds until the field really changes: an edit, a value
+    // set from outside, or clearing a field that is already empty.
+    const [dropped, setDropped] = useState(false);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: a new value is what releases the hold
+    useEffect(() => setDropped(false), [value]);
     const setRefs = useCallback(
       (el: HTMLInputElement | null) => {
         own.current = el;
@@ -145,9 +166,8 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
       },
       [ref],
     );
-    const problem = unreadable
-      ? "range"
-      : numberProblem(value, range, optional);
+    const problem =
+      unreadable || dropped ? "range" : numberProblem(value, range, optional);
     // `disabled` is a field the operator cannot change right now, so it holds nothing.
     const held = problem !== null && !props.disabled;
     useEffect(() => {
@@ -177,8 +197,33 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         // that leaves the reported value as it was, and unreadable text and an empty field both
         // report "".
         onInput={(e) => {
+          setDropped(false);
           readScreen();
           onInput?.(e);
+        }}
+        onKeyDown={(e) => {
+          const el = e.currentTarget;
+          if (
+            e.key.length === 1 &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            NOT_NUMBER_TEXT.test(e.key)
+          ) {
+            setDropped(true);
+          } else if (
+            (e.key === "Backspace" || e.key === "Delete") &&
+            el.value === "" &&
+            el.validity?.badInput !== true
+          ) {
+            setDropped(false);
+          }
+          onKeyDown?.(e);
+        }}
+        onPaste={(e) => {
+          if (NOT_NUMBER_TEXT.test(e.clipboardData?.getData("text") ?? "")) {
+            setDropped(true);
+          }
+          onPaste?.(e);
         }}
         {...props}
       />

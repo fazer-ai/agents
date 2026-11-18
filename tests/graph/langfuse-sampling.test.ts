@@ -9,15 +9,19 @@ import {
 import { awaitAllCallbacks } from "@langchain/core/callbacks/promises";
 import { type RunnableConfig, RunnableLambda } from "@langchain/core/runnables";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import { traceIdForTurn, traceSampled } from "@/graph/langfuse-otel";
 import {
   buildLangfuseHandler,
   type LangfuseConfig,
   recordDirectGeneration,
+  resolveLangfuseConfig,
   setLangfuseDeliveryRetryForTest,
   shutdownLangfuseClients,
   type TraceContext,
 } from "@/graph/observability";
+import type { ScopedDb } from "@/lib/tenancy";
 import {
   type FlatSpan,
   LANGFUSE_OTLP_PATH,
@@ -154,6 +158,54 @@ describe("the sampling decision", () => {
     for (const id of ids) {
       if (traceSampled(id, 0.2)) expect(traceSampled(id, 0.6)).toBe(true);
     }
+  });
+});
+
+describe("an install that never set a rate", () => {
+  test("traces every turn, whole: no LANGFUSE_SAMPLE_RATE and no tenant rate resolve to 1", async () => {
+    expect(process.env.LANGFUSE_SAMPLE_RATE).toBeUndefined();
+    expect(config.langfuse.sampleRate).toBe(1);
+    const db = {
+      tenant: {
+        findUnique: async () => ({
+          settings: {
+            langfuse: {
+              enabled: true,
+              credentialRef: "vault:1",
+              sendContent: true,
+            },
+          },
+          slug: "fresh",
+        }),
+      },
+      vaultEntry: {
+        findFirst: async () => ({
+          secret: encryptJson({
+            publicKey: "pk-lf-fresh",
+            secretKey: "sk-lf-fresh",
+          }),
+          kind: "langfuse",
+          baseUrl: "http://lf-fresh.test",
+          paramName: null,
+          name: "lf",
+        }),
+      },
+    } as unknown as ScopedDb;
+    const resolved = await resolveLangfuseConfig(db, 38n);
+    expect(resolved?.sampleRate).toBe(1);
+    const ids = turnIds(30, "f1");
+    for (const id of ids) {
+      await runWholeTurn(resolved as LangfuseConfig, 38n, id);
+    }
+    await runWholeTurn(cfg("ref", 1), 39n, ids[0] as string);
+    await shutdownLangfuseClients();
+    const perTurn = spansAt("ref").length;
+    const byTrace = new Map<string, number>();
+    for (const s of spansAt("fresh")) {
+      byTrace.set(s.traceId, (byTrace.get(s.traceId) ?? 0) + 1);
+    }
+    expect(new Set(byTrace.keys())).toEqual(new Set(ids.map(traceIdForTurn)));
+    for (const count of byTrace.values()) expect(count).toBe(perTurn);
   });
 });
 

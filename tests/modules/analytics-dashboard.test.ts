@@ -803,8 +803,13 @@ describe.skipIf(!dbUp)("the dashboard's one view", () => {
     const h = await getHealth(ctx(fx.tenantId), WEEK, appDb);
     const m9 = h.latency.find((l) => l.model === "m9");
     expect(m9?.calls).toBe(10);
-    expect(m9?.p50Ms).toBeCloseTo(550);
-    expect(m9?.p90Ms).toBeCloseTo(910);
+    // Read from the histogram of 5%-wide buckets: within 2.5% of percentile_cont over the calls.
+    expect(Math.abs((m9?.p50Ms as number) / 550 - 1)).toBeLessThanOrEqual(
+      0.025,
+    );
+    expect(Math.abs((m9?.p90Ms as number) / 910 - 1)).toBeLessThanOrEqual(
+      0.025,
+    );
     const tool = h.problems.find((p) => p.tool === "consultar_pedido");
     expect(tool).toMatchObject({ stage: "tool", level: "warn", lines: 3 });
     expect(h.problems.find((p) => p.stage === "delivery")?.lines).toBe(2);
@@ -971,8 +976,13 @@ describe.skipIf(!dbUp)("the dashboard's one view", () => {
     await reply("d1h", 100);
     const k = await getKpis(ctx(fx.tenantId), WEEK, appDb);
     expect(k.firstResponseSampled).toBe(3);
-    expect(k.firstResponseSeconds).toBeCloseTo(20);
-    expect(k.firstResponseP90Seconds).toBeCloseTo(84);
+    // Read from the histogram of 5%-wide buckets: within 2.5% of percentile_cont over the sample.
+    expect(
+      Math.abs((k.firstResponseSeconds as number) / 20 - 1),
+    ).toBeLessThanOrEqual(0.025);
+    expect(
+      Math.abs((k.firstResponseP90Seconds as number) / 84 - 1),
+    ).toBeLessThanOrEqual(0.025);
   });
 
   test("nothing of another tenant reaches any block", async () => {
@@ -1472,21 +1482,47 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     );
     expect(u.costPerConversation).toBeNull();
     expect(u.days[0]?.costPerConversation).toBeNull();
-    // The breakdown reads the same rule: a model with no price is no cost per conversation.
-    const byModel = await getBreakdown(
+    // The breakdown reads the same rule on its agent rows: an agent whose calls were all unpriced has
+    // no cost per conversation, and one whose priced calls cost nothing has a cost of zero.
+    const twoDays: DashboardFilter = {
+      since: new Date("2026-09-10T00:00:00Z"),
+      until: new Date("2026-09-12T00:00:00Z"),
+      tz: "UTC",
+    };
+    const byAgent = await getBreakdown(
       ctx(ex.tenantId),
-      {
-        since: new Date("2026-09-10T00:00:00Z"),
-        until: new Date("2026-09-12T00:00:00Z"),
-        tz: "UTC",
-      },
-      "model",
+      twoDays,
+      "agent",
       appDb,
     );
     expect(
-      byModel.find((r) => r.key === "m-unknown")?.costPerConversation,
+      byAgent.find((r) => r.key === String(ex.a1))?.costPerConversation,
+    ).toBe(0);
+    const onlyUnpriced = await getBreakdown(
+      ctx(ex.tenantId),
+      {
+        since: new Date("2026-09-11T00:00:00Z"),
+        until: new Date("2026-09-12T00:00:00Z"),
+        tz: "UTC",
+      },
+      "agent",
+      appDb,
+    );
+    expect(
+      onlyUnpriced.find((r) => r.key === String(ex.a1))?.costPerConversation,
     ).toBeNull();
-    expect(byModel.find((r) => r.key === "m1")?.costPerConversation).toBe(0);
+    // A model has no conversations of its own: its rows carry no per-conversation figure.
+    const byModel = await getBreakdown(
+      ctx(ex.tenantId),
+      twoDays,
+      "model",
+      appDb,
+    );
+    for (const r of byModel) {
+      expect(r.conversations).toBeNull();
+      expect(r.costPerConversation).toBeNull();
+      expect(r.resolutionRate).toBeNull();
+    }
   });
 
   test("a skip_reply the schema refused silenced nothing", async () => {

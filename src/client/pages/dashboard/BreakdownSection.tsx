@@ -22,6 +22,11 @@ type SortKey =
   | "costUsd"
   | "costPerConversation"
   | "resolutionRate";
+const CONVERSATION_COLUMNS: readonly SortKey[] = [
+  "conversations",
+  "costPerConversation",
+  "resolutionRate",
+];
 
 // ONE TABLE FOR "WHERE DOES IT GO": the period's model calls grouped by agent, inbox, model or call
 // type, with the conversations they touched, the requests, the cost, the cost per conversation and
@@ -85,7 +90,9 @@ export function BreakdownSection({
     if (bv === null) return -1;
     return (av - bv) * dir;
   });
-  const columns: { key: SortKey; label: string; numeric: boolean }[] = [
+  // A model or call type has no conversations of its own, so its rows carry no conversation columns.
+  const withConversations = dimension === "agent" || dimension === "inbox";
+  const allColumns: { key: SortKey; label: string; numeric: boolean }[] = [
     { key: "label", label: dimensionLabel(), numeric: false },
     {
       key: "conversations",
@@ -109,6 +116,9 @@ export function BreakdownSection({
       numeric: true,
     },
   ];
+  const columns = allColumns.filter(
+    (c) => withConversations || !CONVERSATION_COLUMNS.includes(c.key),
+  );
   function dimensionLabel() {
     return dimension === "agent"
       ? t("dashboard.col.agent", "Agent")
@@ -118,17 +128,19 @@ export function BreakdownSection({
           ? t("dashboard.col.model", "Model")
           : t("dashboard.col.node", "Call type");
   }
+  function cell(r: Row, key: SortKey): string {
+    const v = r[key as Exclude<SortKey, "label">];
+    if (v === null) return "\u2014";
+    if (key === "costUsd" || key === "costPerConversation") return cf.format(v);
+    if (key === "resolutionRate") return pf(v);
+    return nf.format(v);
+  }
   const table: BlockTable = {
     name: `dashboard-breakdown-${dimension}`,
     header: columns.map((c) => c.label),
-    rows: rows.map((r) => [
-      nameOf(r),
-      r.conversations,
-      r.requests,
-      r.costUsd,
-      r.costPerConversation,
-      r.resolutionRate,
-    ]),
+    rows: rows.map((r) =>
+      columns.map((c) => (c.key === "label" ? nameOf(r) : r[c.key])),
+    ),
   };
   const clickable = dimension === "agent" || dimension === "inbox";
 
@@ -147,7 +159,7 @@ export function BreakdownSection({
         title={t("dashboard.breakdown.title", "Where the usage goes")}
         help={t(
           "dashboard.breakdown.help",
-          "The period's model calls grouped by the dimension you pick. Conversations are the ones those calls belonged to, and the resolution rate is the share of them the agent closed itself. Click an agent or an inbox to filter the whole page by it.",
+          "The period's model calls grouped by the dimension you pick. For an agent or an inbox, conversations are the ones created in the period that an agent ran on, counted as in the funnel, and the resolution rate is the share of them the agent closed itself. Models and call types have no conversation columns, since one conversation calls several of them. Click an agent or an inbox to filter the whole page by it.",
         )}
         table={table}
         actions={
@@ -245,25 +257,16 @@ export function BreakdownSection({
                         nameOf(r)
                       )}
                     </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {nf.format(r.conversations)}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {nf.format(r.requests)}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {cf.format(r.costUsd)}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {r.costPerConversation === null
-                        ? "\u2014"
-                        : cf.format(r.costPerConversation)}
-                    </td>
-                    <td className="py-1.5 pl-3 text-right tabular-nums">
-                      {r.resolutionRate === null
-                        ? "\u2014"
-                        : pf(r.resolutionRate)}
-                    </td>
+                    {columns
+                      .filter((c) => c.key !== "label")
+                      .map((c) => (
+                        <td
+                          key={c.key}
+                          className="py-1.5 pl-3 text-right tabular-nums"
+                        >
+                          {cell(r, c.key)}
+                        </td>
+                      ))}
                   </tr>
                 ))}
               </tbody>

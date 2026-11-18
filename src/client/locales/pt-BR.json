@@ -1007,7 +1007,7 @@
     },
     "breakdown": {
       "dimension": "Agrupar por",
-      "help": "As chamadas de modelo do período, agrupadas pela dimensão escolhida. Conversas são aquelas a que essas chamadas pertencem, e a taxa de resolução é a parte delas que o próprio agente encerrou. Clique num agente ou numa caixa de entrada para filtrar a página inteira por ele.",
+      "help": "As chamadas de modelo do período, agrupadas pela dimensão escolhida. Para um agente ou uma caixa de entrada, conversas são as criadas no período em que um agente atuou, contadas como no funil, e a taxa de resolução é a parte delas que o próprio agente encerrou. Modelo e tipo de chamada não têm colunas de conversa, porque uma conversa chama vários deles. Clique num agente ou numa caixa de entrada para filtrar a página inteira por ele.",
       "noInbox": "Sem caixa de entrada (playground)",
       "noInboxOrClient": "Sem caixa de entrada (playground ou canal cliente)",
       "title": "Para onde vai o uso"

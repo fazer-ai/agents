@@ -2,15 +2,14 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import type { TenantContext } from "@/lib/tenancy";
 import { runMetricsScoped } from "./budget";
+import { convsCtesSql, labelCtesSql, withRunsMark } from "./conversation-sums";
 import {
-  agentRanSql,
   agentTurnSql,
-  cohortWhereSql,
   type DashboardFilter,
   localDaySql,
   logWhereSql,
-  outcomeSql,
 } from "./filter";
+import { sumsBounds } from "./ledger-sums";
 import { logFactsReady } from "./log-facts";
 import { normalizeTimeZone } from "./service";
 
@@ -271,6 +270,9 @@ export async function getLabelOutcomes(
   base: PrismaClient = metricsPrisma,
 ): Promise<LabelOutcomes> {
   return runMetricsScoped(base, ctx, async (db) => {
+    // From the conversation counts per label (./conversation-sums.ts).
+    const view = await withRunsMark(db, filter);
+    const bounds = await sumsBounds(db, view);
     const rows = await db.$queryRaw<
       {
         label: string;
@@ -280,25 +282,18 @@ export async function getLabelOutcomes(
         handoff: number;
       }[]
     >(Prisma.sql`
-      WITH v AS MATERIALIZED (
-        SELECT c.id, c.labels,
-               ${outcomeSql("c")} AS outcome,
-               ${agentRanSql("c", filter.agentId)} AS ran
-          FROM conversations c
-         WHERE ${cohortWhereSql("c", filter)} AND cardinality(c.labels) > 0
-      )
-      SELECT lb.label,
-             COUNT(DISTINCT v.id)::int AS total,
-             COUNT(DISTINCT v.id) FILTER (WHERE v.ran)::int AS involved,
-             COUNT(DISTINCT v.id) FILTER (WHERE v.ran AND v.outcome = 'resolved_by_agent')::int AS resolved,
-             COUNT(DISTINCT v.id) FILTER (WHERE v.ran AND v.outcome = 'handoff')::int AS handoff
-        FROM v
-        CROSS JOIN LATERAL unnest(v.labels) AS lb(label)
+      WITH ${labelCtesSql(view, bounds)}
+      SELECT label,
+             SUM(conversations)::int AS total,
+             COALESCE(SUM(conversations) FILTER (WHERE ran), 0)::int AS involved,
+             COALESCE(SUM(conversations) FILTER (WHERE ran AND outcome = 'resolved_by_agent'), 0)::int AS resolved,
+             COALESCE(SUM(conversations) FILTER (WHERE ran AND outcome = 'handoff'), 0)::int AS handoff
+        FROM labelled
        GROUP BY 1
        ORDER BY 2 DESC, 1`);
     const [unlabeled] = await db.$queryRaw<{ n: number }[]>(Prisma.sql`
-      SELECT COUNT(*)::int AS n FROM conversations c
-       WHERE ${cohortWhereSql("c", filter)} AND cardinality(c.labels) = 0`);
+      WITH ${convsCtesSql(view, bounds, false, true)}
+      SELECT COALESCE(SUM(conversations), 0)::int AS n FROM convs WHERE NOT labeled`);
     return {
       labels: rows.map((r) => {
         const involved = Number(r.involved);

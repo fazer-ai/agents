@@ -270,7 +270,10 @@ export async function themeRowsOn(
     .filter((_, i) => i < limit);
   const ids = order.map((x) => x.id);
   const rows = ids.length
-    ? await db.occurrenceTheme.findMany({ where: { id: { in: ids } } })
+    ? await db.occurrenceTheme.findMany({
+        where: { id: { in: ids } },
+        omit: { splitPlan: true },
+      })
     : [];
   const rowOf = new Map(rows.map((r) => [r.id, r]));
   const themes = ids
@@ -460,6 +463,7 @@ export async function getTheme(
     const cfg = await monitorConfigOn(db, tenantId, monitorId);
     const found = await db.occurrenceTheme.findFirst({
       where: { id: themeId, monitorId },
+      omit: { splitPlan: true },
     });
     if (!found)
       throw new AppError(
@@ -473,6 +477,7 @@ export async function getTheme(
         ? found
         : ((await db.occurrenceTheme.findFirst({
             where: { id: found.mergedIntoId, monitorId },
+            omit: { splitPlan: true },
           })) ?? found);
     const inboxIds = cfg.inboxIds.map(BigInt);
     const span = await db.occurrenceThemeMember.aggregate({

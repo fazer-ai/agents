@@ -933,6 +933,249 @@ describe.skipIf(!dbUp)("consolidation", () => {
       (await suDb.occurrenceTheme.findUnique({ where: { id: D.id } }))?.status,
     ).toBe("split");
   });
+  // A theme above the partition's cap: two reasons interleaved in time, so the members past the
+  // cap mix both, as a large theme in production does.
+  const aboveCap = async (
+    n: number,
+    sentence = (i: number) =>
+      i % 2 ? `nao encontro o pedido ${i}` : `quando libera o pedido ${i}`,
+  ) => {
+    const a = await account();
+    const T = await a.theme("Liberacao e pedido");
+    const t0 = Date.now() - n * 1000;
+    for (let i = 0; i < n; i += 1)
+      await a.member(
+        T.id,
+        await a.conv(),
+        sentence(i),
+        new Date(t0 + i * 1000),
+      );
+    return { a, T };
+  };
+  const splitByText: Script = (step, user) =>
+    step === "consolidation"
+      ? {
+          splits: [
+            {
+              theme: user.match(/T(\d+):/)?.[0].slice(0, -1) ?? "",
+              into: [
+                "Quando o ingresso e liberado",
+                "Pedido nao encontrado na conta",
+              ],
+            },
+          ],
+        }
+      : step === "partition"
+        ? {
+            parts: numbered(user, "Sentences:").map((s, i) => ({
+              i,
+              part: s.startsWith("quando") ? 0 : 1,
+            })),
+          }
+        : nothing(step, user);
+
+  test("a theme above the partition's cap has every member placed by its reason, none unread (#461)", async () => {
+    const { a, T } = await aboveCap(450);
+    await a.round(splitByText);
+    expect(
+      (await suDb.occurrenceTheme.findUnique({ where: { id: T.id } }))?.status,
+    ).toBe("split");
+    const open = await suDb.occurrenceTheme.findMany({
+      where: { tenantId: a.tenantId, status: "open" },
+      include: { members: true },
+      orderBy: { id: "asc" },
+    });
+    expect(open.map((t) => [t.title, t.members.length])).toEqual([
+      ["Quando o ingresso e liberado", 225],
+      ["Pedido nao encontrado na conta", 225],
+    ]);
+    expect(open[0]?.members.every((m) => m.sentence.startsWith("quando"))).toBe(
+      true,
+    );
+    expect(open[1]?.members.every((m) => m.sentence.startsWith("nao"))).toBe(
+      true,
+    );
+    const partitions = a.calls.filter((c) => c.step === "partition");
+    for (const c of partitions)
+      expect(numbered(c.user, "Sentences:").length).toBeLessThanOrEqual(300);
+    expect(
+      new Set(partitions.flatMap((c) => numbered(c.user, "Sentences:"))).size,
+    ).toBe(450);
+  });
+
+  test("the batches of a split above the cap are asked side by side, not one after another (#461)", async () => {
+    const { a } = await aboveCap(650);
+    // Each partition answers only once all three are asked: one after another, the first would wait
+    // for the round's budget to end and the split would not be made.
+    let asked = 0;
+    let release = () => {};
+    const together = new Promise<void>((r) => {
+      release = r;
+    });
+    await a.round(async (step, user) => {
+      if (step !== "partition") return splitByText(step, user);
+      asked += 1;
+      if (asked === 3) release();
+      await together;
+      return splitByText(step, user);
+    });
+    expect(a.calls.filter((c) => c.step === "partition")).toHaveLength(3);
+    expect(
+      await suDb.occurrenceTheme.count({
+        where: { tenantId: a.tenantId, status: "split" },
+      }),
+    ).toBe(1);
+  });
+
+  test("a split above the cap with one batch unreadable is not made, and is asked again (#461)", async () => {
+    const { a, T } = await aboveCap(450);
+    // The batch with the newest sentence does not answer, whichever is asked first.
+    await a.round((step, user) =>
+      step === "partition" && / pedido 449$/m.test(user)
+        ? "nope"
+        : splitByText(step, user),
+    );
+    const theme = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id: T.id },
+      include: { members: true },
+    });
+    expect([theme.status, theme.members.length]).toEqual(["open", 450]);
+    expect(
+      (theme.splitPlan as { placed: unknown[] } | null)?.placed,
+    ).toHaveLength(300);
+    expect(
+      await suDb.occurrenceTheme.count({
+        where: { tenantId: a.tenantId, id: { not: T.id } },
+      }),
+    ).toBe(0);
+    expect(
+      (
+        await suDb.occurrenceRun.findFirstOrThrow({
+          where: { tenantId: a.tenantId },
+        })
+      ).consolidated,
+    ).toBe(false);
+  });
+
+  test("a split left unfinished by its round is resumed with its own parts, asking only what was not placed (#461)", async () => {
+    const { a, T } = await aboveCap(450);
+    const t0 = new Date();
+    const newest = (user: string) => / pedido 449$/m.test(user);
+    await a.round(
+      (step, user) =>
+        step === "partition" && newest(user) ? "nope" : splitByText(step, user),
+      t0,
+    );
+    const answered = a.calls.filter(
+      (c) => c.step === "partition" && !newest(c.user),
+    );
+    const placedFirst = new Set(
+      answered.flatMap((c) => numbered(c.user, "Sentences:")),
+    );
+    expect(placedFirst.size).toBe(300);
+    expect(
+      (await suDb.occurrenceTheme.findUniqueOrThrow({ where: { id: T.id } }))
+        .status,
+    ).toBe("open");
+    // The next consolidation proposes other parts and merging the theme away: the pending split
+    // keeps its own parts, and the theme is not merged.
+    const other = await a.theme("Outro tema");
+    await a.member(other.id, await a.conv(), "outro motivo");
+    const elsewhere = {
+      merges: [{ absorbed: `T${T.id}`, into: `T${other.id}` }],
+      splits: [{ theme: `T${T.id}`, into: ["Outra", "Coisa", "Mais"] }],
+    };
+    // A second round where the rest still does not answer: nothing of the answer is applied to the
+    // theme, and its plan keeps its parts.
+    await a.round(
+      (step, user) =>
+        step === "consolidation"
+          ? elsewhere
+          : step === "partition" && newest(user)
+            ? "nope"
+            : splitByText(step, user),
+      new Date(t0.getTime() + 61 * 60_000),
+    );
+    const still = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id: T.id },
+    });
+    expect(still.status).toBe("open");
+    expect((still.splitPlan as { parts: string[] }).parts).toEqual([
+      "Quando o ingresso e liberado",
+      "Pedido nao encontrado na conta",
+    ]);
+    expect(
+      await suDb.occurrenceTheme.count({
+        where: {
+          tenantId: a.tenantId,
+          title: { in: ["Outra", "Coisa", "Mais"] },
+        },
+      }),
+    ).toBe(0);
+    // The round that finishes it gets no readable consolidation answer: the pending split is resumed
+    // all the same.
+    const before = a.calls.length;
+    await a.round(
+      (step, user) =>
+        step === "consolidation" ? "nope" : splitByText(step, user),
+      new Date(t0.getTime() + 122 * 60_000),
+    );
+    const resumed = a.calls.slice(before).filter((c) => c.step === "partition");
+    const askedAgain = resumed.flatMap((c) => numbered(c.user, "Sentences:"));
+    expect(askedAgain.length).toBe(450 - placedFirst.size);
+    expect(askedAgain.some((x) => placedFirst.has(x))).toBe(false);
+    expect(
+      resumed.every((c) =>
+        c.user.includes(
+          "0. Quando o ingresso e liberado\n1. Pedido nao encontrado na conta",
+        ),
+      ),
+    ).toBe(true);
+    const theme = await suDb.occurrenceTheme.findUniqueOrThrow({
+      where: { id: T.id },
+    });
+    expect([theme.status, theme.splitPlan]).toEqual(["split", null]);
+    const open = await suDb.occurrenceTheme.findMany({
+      where: { tenantId: a.tenantId, status: "open" },
+      include: { members: true },
+      orderBy: { id: "asc" },
+    });
+    expect(open.map((x) => [x.title, x.members.length])).toEqual([
+      ["Outro tema", 1],
+      ["Quando o ingresso e liberado", 225],
+      ["Pedido nao encontrado na conta", 225],
+    ]);
+  });
+
+  test("the same sentence on both sides of the cap lands in the same part (#461)", async () => {
+    const { a } = await aboveCap(350, (i) =>
+      i === 11 || i === 333
+        ? "nao encontro meu ingresso na conta"
+        : i % 2
+          ? `nao encontro o pedido ${i}`
+          : `quando libera o pedido ${i}`,
+    );
+    await a.round(splitByText);
+    const twins = await suDb.occurrenceThemeMember.findMany({
+      where: {
+        tenantId: a.tenantId,
+        sentence: "nao encontro meu ingresso na conta",
+      },
+      include: { theme: true },
+    });
+    expect(twins.map((m) => m.theme.title)).toEqual([
+      "Pedido nao encontrado na conta",
+      "Pedido nao encontrado na conta",
+    ]);
+    // Read once: the partition never sees the same sentence twice.
+    expect(
+      a.calls
+        .filter((c) => c.step === "partition")
+        .flatMap((c) => numbered(c.user, "Sentences:"))
+        .filter((s) => s === "nao encontro meu ingresso na conta"),
+    ).toHaveLength(1);
+  });
+
   test("the three calls that make and remake themes hold the same idea of a theme, and a split may not cut one reason in two", async () => {
     const a = await account();
     const D = await a.theme("Pagamento");

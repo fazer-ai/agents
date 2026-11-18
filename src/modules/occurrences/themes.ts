@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
@@ -28,8 +28,11 @@ const CALLS_PER_ROUND = 5;
 const THEMES_SHOWN = 200;
 export const SAMPLES_PER_THEME = 3;
 const CONSOLIDATION_SAMPLES = 5;
-// The sentences a split's partition call sees.
+// The sentences one partition call sees. A larger theme is partitioned in batches of this size,
+// all against the same parts, so every member is placed by a call that read its sentence.
 const SPLIT_SENTENCES_MAX = 300;
+// The member ids one update of a split moves at a time.
+const MEMBER_UPDATE_SLICE = 5000;
 export const THEME_TITLE_MAX = 120;
 // The consolidation's one sentence on why it merged, split or renamed, kept with the event.
 export const CONSOLIDATION_REASON_MAX = 200;
@@ -80,6 +83,15 @@ const CONSOLIDATE_ANSWER = z.object({
     )
     .default([]),
 });
+
+// A split decided and not finished in its round, kept on the theme (`split_plan`): its parts, its
+// reason and the sentences already placed, each with its part.
+const SPLIT_PLAN = z.object({
+  parts: z.array(z.string()).min(2),
+  reason: z.string().nullable(),
+  placed: z.array(z.tuple([z.string(), z.number().int().min(0)])),
+});
+type SplitPlan = z.infer<typeof SPLIT_PLAN>;
 
 const PARTITION_ANSWER = z.object({
   parts: z.array(z.object({ i: z.number().int(), part: z.number().int() })),
@@ -561,7 +573,7 @@ export async function runConsolidationStep(
       ...(samples.get(t.id) ?? []).map((s) => `  - ${s}`),
     ])
     .join("\n");
-  const answer = await models.ask(
+  const asked = await models.ask(
     "consolidation",
     withCriticalSubjects(
       CONSOLIDATE_SYSTEM,
@@ -570,9 +582,27 @@ export async function runConsolidationStep(
     user,
     CONSOLIDATE_ANSWER,
   );
-  if (!answer) return { ...summary, completed: false };
+  // Without an answer nothing new is decided and the pass did not complete, but the splits pending
+  // from earlier rounds are still resumed below.
+  if (!asked) summary.completed = false;
+  const answer = asked ?? { merges: [], splits: [], renames: [] };
   const open = new Set(themes.map((t) => t.id));
   const titles = new Map(themes.map((t) => [t.id, t.title]));
+
+  // A split an earlier round decided and could not finish: resumed below with its own parts, and
+  // this round's answer neither merges that theme away nor splits it again.
+  const pending = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.occurrenceTheme.findMany({
+      where: { monitorId, status: "open", splitPlan: { not: Prisma.DbNull } },
+      select: { id: true, splitPlan: true },
+      orderBy: { id: "asc" },
+    }),
+  );
+  const plans = new Map<bigint, SplitPlan>();
+  for (const t of pending) {
+    const plan = SPLIT_PLAN.safeParse(t.splitPlan);
+    if (plan.success) plans.set(t.id, plan.data);
+  }
 
   // Merges, with the answer's own chains flattened first.
   const into = new Map<bigint, bigint>();
@@ -581,7 +611,14 @@ export async function runConsolidationStep(
   for (const merge of answer.merges) {
     const a = parseThemeRef(merge.absorbed);
     const b = parseThemeRef(merge.into);
-    if (a === null || b === null || a === b || !open.has(a) || !open.has(b))
+    if (
+      a === null ||
+      b === null ||
+      a === b ||
+      !open.has(a) ||
+      !open.has(b) ||
+      plans.has(a)
+    )
       continue;
     into.set(a, b);
     mergeReason.set(a, reasonOf(merge.reason));
@@ -613,35 +650,99 @@ export async function runConsolidationStep(
     summary.merges += 1;
   }
 
-  // Splits: the decision names the parts; a second call places each sentence in one.
+  // Splits: the decision names the parts; a second call places each sentence in one. The pending
+  // splits come first, with their own parts.
+  const splits: { id: bigint; plan: SplitPlan }[] = [];
+  const decided = new Set<bigint>();
+  for (const [id, plan] of plans) {
+    decided.add(id);
+    splits.push({ id, plan });
+  }
   for (const s of answer.splits) {
     const id = parseThemeRef(s.theme);
-    if (id === null || !open.has(id) || gone.has(id)) continue;
+    if (id === null || !open.has(id) || gone.has(id) || decided.has(id))
+      continue;
     const parts = s.into.map(titleOf).filter((t) => t !== "");
     if (parts.length < 2) continue;
+    decided.add(id);
+    splits.push({
+      id,
+      plan: { parts, reason: reasonOf(s.reason), placed: [] },
+    });
+  }
+  for (const { id, plan } of splits) {
+    const { parts } = plan;
     const members = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.occurrenceThemeMember.findMany({
         where: { themeId: id },
         select: { id: true, sentence: true },
         orderBy: { readAt: "asc" },
-        take: SPLIT_SENTENCES_MAX,
       }),
     );
-    if (members.length === 0) continue;
-    const partition = await models.ask(
-      "consolidation",
-      PARTITION_SYSTEM,
-      [
-        "Parts:",
-        ...parts.map((p, i) => `${i}. ${p}`),
-        "",
-        "Sentences:",
-        ...members.map((member, i) => `${i}. ${member.sentence}`),
-      ].join("\n"),
-      PARTITION_ANSWER,
+    if (members.length === 0) {
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.occurrenceTheme.update({
+          where: { id },
+          data: { splitPlan: Prisma.DbNull },
+          select: { id: true },
+        }),
+      );
+      continue;
+    }
+    // Each distinct sentence is read once, so the same sentence never lands in two parts, and one
+    // placed by an earlier round of this split is not asked again.
+    const placed = new Map<string, number>(
+      plan.placed.filter(([, part]) => part < parts.length),
     );
-    // The split was decided and not made: the pass did not complete, and is asked again next round.
-    if (!partition) {
+    const unplaced = [
+      ...new Set(members.map((member) => member.sentence)),
+    ].filter((sentence) => !placed.has(sentence));
+    // The batches run side by side, so a theme of a few thousand sentences takes about one call's
+    // time of the round's budget, not one per batch.
+    const batches: string[][] = [];
+    for (let at = 0; at < unplaced.length; at += SPLIT_SENTENCES_MAX)
+      batches.push(unplaced.slice(at, at + SPLIT_SENTENCES_MAX));
+    const answers = await Promise.all(
+      batches.map((batch) =>
+        models.ask(
+          "consolidation",
+          PARTITION_SYSTEM,
+          [
+            "Parts:",
+            ...parts.map((p, i) => `${i}. ${p}`),
+            "",
+            "Sentences:",
+            ...batch.map((sentence, i) => `${i}. ${sentence}`),
+          ].join("\n"),
+          PARTITION_ANSWER,
+        ),
+      ),
+    );
+    let partitioned = true;
+    for (const [b, partition] of answers.entries()) {
+      if (!partition) {
+        partitioned = false;
+        continue;
+      }
+      const batch = batches[b] ?? [];
+      const answered = new Map<number, number>();
+      for (const p of partition.parts)
+        if (p.part >= 0 && p.part < parts.length) answered.set(p.i, p.part);
+      // A sentence the answer left out goes to the first part: a member is never dropped.
+      for (const [i, sentence] of batch.entries())
+        placed.set(sentence, answered.get(i) ?? 0);
+    }
+    // Not every batch answered: the split is not made, so no member lands in a part unread. What was
+    // placed is kept on the theme and the pass did not complete, so the next round asks only the rest.
+    if (!partitioned) {
+      const next: SplitPlan = { ...plan, placed: [...placed] };
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.occurrenceTheme.update({
+          where: { id },
+          data: { splitPlan: next },
+          select: { id: true },
+        }),
+      );
       summary.completed = false;
       continue;
     }
@@ -656,29 +757,31 @@ export async function runConsolidationStep(
             })
           ).id,
         );
-      // A sentence the answer left out goes to the first part: a member is never dropped.
-      const placed = new Map<number, number>();
-      for (const p of partition.parts)
-        if (p.part >= 0 && p.part < parts.length) placed.set(p.i, p.part);
-      // One update per part, not per member, so a split at the cap stays inside the transaction.
+      // One update per part, not per member, so a large split stays inside the transaction.
       const byPart = new Map<number, bigint[]>();
-      for (const [i, member] of members.entries()) {
-        const part = placed.get(i) ?? 0;
-        byPart.set(part, [...(byPart.get(part) ?? []), member.id]);
+      for (const member of members) {
+        const part = placed.get(member.sentence) ?? 0;
+        const ofPart = byPart.get(part);
+        if (ofPart) ofPart.push(member.id);
+        else byPart.set(part, [member.id]);
       }
+      // In slices, so a part of a very large theme stays under the database's bind-parameter limit.
       for (const [part, memberIds] of byPart)
-        await db.occurrenceThemeMember.updateMany({
-          where: { id: { in: memberIds } },
-          data: { themeId: ids[part] as bigint },
-        });
-      // Members past the cap the partition saw go to the first part too.
+        for (let at = 0; at < memberIds.length; at += MEMBER_UPDATE_SLICE)
+          await db.occurrenceThemeMember.updateMany({
+            where: {
+              id: { in: memberIds.slice(at, at + MEMBER_UPDATE_SLICE) },
+            },
+            data: { themeId: ids[part] as bigint },
+          });
+      // A member that joined the theme after the read above goes to the first part, as before.
       await db.occurrenceThemeMember.updateMany({
         where: { themeId: id },
         data: { themeId: ids[0] as bigint },
       });
       await db.occurrenceTheme.update({
         where: { id },
-        data: { status: "split", flags: [] },
+        data: { status: "split", flags: [], splitPlan: Prisma.DbNull },
       });
       await db.occurrenceThemeEvent.create({
         data: {
@@ -690,7 +793,7 @@ export async function runConsolidationStep(
           detail: {
             into: ids.map(String),
             titles: parts,
-            ...withReason(s.reason),
+            ...withReason(plan.reason),
           },
         },
       });

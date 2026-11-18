@@ -27,6 +27,10 @@ export interface DashboardFilter {
   // The instant the flow log's floor is taken at (flowLogFloor); now when absent. A route that reads
   // the flow log sets it and answers the floor it gives, so the console marks the same days as no data.
   flowLogNow?: number;
+  // The tenant's sums mark, read by the route before its reads (`withRunsMark`,
+  // ./conversation-sums.ts): "the agent ran" is then read from `conversation_agent_runs` and the
+  // ledger rows the runs do not cover yet. Absent, it is read from the ledger.
+  runsMark?: Date;
 }
 
 const NON_TURN = Prisma.join(NON_AGENT_TURN_NODES.map((n) => Prisma.sql`${n}`));
@@ -60,15 +64,38 @@ function windowSql(column: Prisma.Sql, f: DashboardFilter): Prisma.Sql {
 export function agentRanSql(
   convAlias: string,
   agentId: bigint | null | undefined,
+  runsMark?: Date,
 ): Prisma.Sql {
   const c = Prisma.raw(convAlias);
   const agent = agentId ?? null;
-  return Prisma.sql`EXISTS (
+  const turn = Prisma.sql`ar.source = 'inbox'
+       AND ${agentTurnSql("ar")}
+       AND (${agent}::bigint IS NULL OR ar.agent_id = ${agent})`;
+  if (!runsMark) {
+    return Prisma.sql`EXISTS (
     SELECT 1 FROM llm_usage ar
      WHERE ar.conversation_id = ${c}.id
-       AND ar.source = 'inbox'
-       AND ${agentTurnSql("ar")}
-       AND (${agent}::bigint IS NULL OR ar.agent_id = ${agent}))`;
+       AND ${turn})`;
+  }
+  // The runs cover every ledger row below the mark outside a marked quarter, and a conversation
+  // with a mark of its own has runs being recomputed, so its rows decide. The rest of the ledger is
+  // read once per statement, as the set of conversations it ran on.
+  return Prisma.sql`((EXISTS (
+      SELECT 1 FROM conversation_agent_runs r
+       WHERE r.conversation_id = ${c}.id AND (${agent}::bigint IS NULL OR r.agent_id = ${agent}))
+     AND NOT EXISTS (SELECT 1 FROM conversation_sum_marks rm WHERE rm.conversation_id = ${c}.id))
+    OR ${c}.id IN (
+      SELECT ar.conversation_id FROM llm_usage ar WHERE ${turn} AND ar.created_at >= ${runsMark}
+      UNION ALL
+      SELECT ar.conversation_id FROM conversation_sum_marks rm
+        JOIN llm_usage ar ON ar.conversation_id = rm.conversation_id
+       WHERE ${turn}
+      UNION ALL
+      SELECT x.conversation_id FROM (SELECT DISTINCT quarter FROM ledger_sum_marks WHERE quarter < ${runsMark}) lm
+       CROSS JOIN LATERAL (
+         SELECT ar.conversation_id FROM llm_usage ar
+          WHERE ar.created_at >= lm.quarter AND ar.created_at < lm.quarter + interval '15 minutes' AND ${turn}
+         OFFSET 0) x))`;
 }
 
 // The conversations a view counts: created in the window (our row's `created_at`, the moment the
@@ -88,7 +115,7 @@ export function cohortWhereSql(
     AND (${inbox}::bigint IS NULL OR ${c}.inbox_id = ${inbox})
     AND (${agent}::bigint IS NULL
          OR EXISTS (SELECT 1 FROM inboxes bi WHERE bi.id = ${c}.inbox_id AND bi.agent_id = ${agent})
-         OR ${agentRanSql(convAlias, agent)})`;
+         OR ${agentRanSql(convAlias, agent, f.runsMark)})`;
 }
 
 // The ledger rows a view sums: billed in the window, in the segment, by the agent and in the inbox
@@ -153,7 +180,13 @@ export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
 // The local day of a `timestamp without time zone` column holding UTC wall-clock: shifted to an
 // instant first, then rendered in the zone (a single shift would read it as already local).
 export function localDaySql(column: Prisma.Sql, tz: string): Prisma.Sql {
-  return Prisma.sql`to_char(date_trunc('day', ${column} AT TIME ZONE 'UTC' AT TIME ZONE ${tz}::text), 'YYYY-MM-DD')`;
+  return Prisma.sql`to_char(${localDayStartSql(column, tz)}, 'YYYY-MM-DD')`;
+}
+
+// The local midnight, as wall-clock time, that a UTC `timestamp` falls after in `tz`: `localDaySql`
+// before it is printed, cheaper to group by.
+export function localDayStartSql(column: Prisma.Sql, tz: string): Prisma.Sql {
+  return Prisma.sql`date_trunc('day', ${column} AT TIME ZONE 'UTC' AT TIME ZONE ${tz}::text)`;
 }
 
 // classifyOutcome (src/modules/conversations/resolution-origin.ts) in SQL, so a figure can group by it.

@@ -468,12 +468,29 @@ describe("langfuse export over OTLP", () => {
       }
       return record(input, init);
     }) as typeof fetch;
+    // A task chained on itself runs once per turn of the loop, so the longest gap between two of its runs
+    // is the longest the loop was held while the batch was built and posted.
+    let draining = true;
+    let longestHoldMs = 0;
+    let lastTurn = performance.now();
+    const probe = () => {
+      const now = performance.now();
+      longestHoldMs = Math.max(longestHoldMs, now - lastTurn);
+      lastTurn = now;
+      if (draining) setImmediate(probe);
+    };
+    setImmediate(probe);
     try {
       await shutdownLangfuseClients();
     } finally {
+      // A drain that never yields ends before the probe runs once: the stretch since its last run counts.
+      longestHoldMs = Math.max(longestHoldMs, performance.now() - lastTurn);
+      draining = false;
       globalThis.fetch = record;
       serialize.mockRestore();
     }
+    // No stretch of building and posting the batch holds the loop past 50 ms.
+    expect(longestHoldMs).toBeLessThanOrEqual(50);
     const bodies = posted.filter(
       (p) => p.url === `http://lf-${tenant}.test${OTLP}`,
     );

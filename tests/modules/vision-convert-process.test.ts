@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
@@ -8,10 +8,20 @@ import {
   MediaTooLargeError,
   runMediaConverter,
 } from "@/modules/vision/convert";
+import { LIBHEIF_WASM_PATH_ENV } from "@/modules/vision/convert/heic";
 import type { MediaConverterId } from "@/modules/vision/media-conversion";
 
-const fixture = (name: string) =>
-  new URL(`../fixtures/media-thread/${name}`, import.meta.url).href;
+const child = (name: string) =>
+  `${import.meta.dir}/../fixtures/media-child/${name}`;
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const RECIBO = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
 const heic = (): ArrayBuffer =>
@@ -75,7 +85,7 @@ async function longestStall<T>(
 
 describe("a media conversion runs off the event loop", () => {
   // Relative and not a fixed number of milliseconds, so a loaded runner does not decide it: on the
-  // calling thread the longest stall IS the conversion (all of it but the awaits), and in a thread
+  // calling thread the longest stall IS the conversion (all of it but the awaits), and in a process
   // of its own the loop keeps turning for the whole of it.
   test.each<[string, MediaConverterId, () => ArrayBuffer]>([
     ["a real HEIC", "heic-to-jpeg", heic],
@@ -107,7 +117,7 @@ describe("a media conversion runs off the event loop", () => {
     expect(mismatch.byteLength).toBe(JPEG_PHOTO.byteLength);
   });
 
-  test("a refusal made in the thread comes back as the same class, with its limits applied there", async () => {
+  test("a refusal made in the child comes back as the same class, with its limits applied there", async () => {
     const err = await runMediaConverter("heic-to-jpeg", heic(), {
       maxSourcePixels: 1000,
       maxTiledSourcePixels: 1000,
@@ -117,23 +127,33 @@ describe("a media conversion runs off the event loop", () => {
   });
 });
 
-describe("a conversion thread that fails is a MediaConversionError, never a hung attachment", () => {
-  const realWorker = globalThis.Worker;
-  afterEach(() => {
-    globalThis.Worker = realWorker;
-  });
-
+describe("a conversion process that fails is a MediaConversionError, never a hung attachment", () => {
   test.each([
-    ["dies on the request", "worker-dies.ts", "crashed"],
-    ["exits without answering", "worker-exits.ts", "exited without answering"],
-    ["dies while loading", "worker-boot-fails.ts", "crashed"],
-    ["never answers", "worker-hangs.ts", "did not finish within 300 ms"],
+    [
+      "dies on the request",
+      "child-dies.ts",
+      "without answering: error: decoder gave up",
+    ],
+    [
+      "exits without answering",
+      "child-exits.ts",
+      "exited (3) without answering",
+    ],
+    [
+      "answers something that is not a header",
+      "child-garbage.ts",
+      "without answering",
+    ],
+    [
+      "announces more bytes than it writes",
+      "child-truncated.ts",
+      "without answering",
+    ],
   ])(
-    "a thread that %s",
+    "a process that %s",
     async (_, file, says) => {
       const err = await runMediaConverter("heic-to-jpeg", heic(), {
-        workerUrl: fixture(file),
-        timeoutMs: 300,
+        childScript: child(file),
       }).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(MediaConversionError);
       expect((err as Error).message).toContain(says);
@@ -144,47 +164,67 @@ describe("a conversion thread that fails is a MediaConversionError, never a hung
     30_000,
   );
 
-  test("a thread that cannot be created is refused the same way", async () => {
-    globalThis.Worker = class {
-      constructor() {
-        throw new Error("no threads here");
-      }
-    } as unknown as typeof Worker;
-    const err = await runMediaConverter("heic-to-jpeg", heic()).catch(
-      (e: unknown) => e,
-    );
+  test("a process wedged inside WASM is killed at the budget, and is gone before the next one starts", async () => {
+    const pids: number[] = [];
+    const spawn = ((opts: Parameters<typeof Bun.spawn>[0]) => {
+      const proc = Bun.spawn(opts);
+      pids.push(proc.pid);
+      return proc;
+    }) as typeof Bun.spawn;
+    const err = await runMediaConverter("heic-to-jpeg", heic(), {
+      childScript: child("child-spins-in-wasm.ts"),
+      timeoutMs: 1_000,
+      spawn,
+    }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MediaConversionError);
-    expect((err as Error).message).toContain("no threads here");
+    expect((err as Error).message).toContain("did not finish within 1000 ms");
+    expect(pids).toHaveLength(1);
+    expect(alive(pids[0] as number)).toBe(false);
+  }, 30_000);
+
+  test("a process that cannot be started is refused the same way", async () => {
+    const spawn = (() => {
+      throw new Error("no processes here");
+    }) as unknown as typeof Bun.spawn;
+    const err = await runMediaConverter("heic-to-jpeg", heic(), {
+      spawn,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MediaConversionError);
+    expect((err as Error).message).toContain("no processes here");
   });
 
-  test("a burst of conversions holds one thread at a time, and every thread is ended", async () => {
-    let alive = 0;
+  test("a burst of conversions runs one process at a time, and every one has exited", async () => {
+    let running = 0;
     let most = 0;
-    let created = 0;
-    globalThis.Worker = class extends realWorker {
-      #ended = false;
-      constructor(...args: ConstructorParameters<typeof Worker>) {
-        super(...args);
-        created++;
-        alive++;
-        most = Math.max(most, alive);
-      }
-      override terminate() {
-        if (!this.#ended) {
-          this.#ended = true;
-          alive--;
-        }
-        super.terminate();
-      }
-    } as typeof Worker;
+    let started = 0;
+    const spawn = ((opts: Parameters<typeof Bun.spawn>[0]) => {
+      const proc = Bun.spawn(opts);
+      started++;
+      running++;
+      most = Math.max(most, running);
+      void proc.exited.then(() => {
+        running--;
+      });
+      return proc;
+    }) as typeof Bun.spawn;
     const outs = await Promise.all(
       Array.from({ length: 6 }, () =>
-        runMediaConverter("heic-to-jpeg", heic()),
+        runMediaConverter("heic-to-jpeg", heic(), { spawn }),
       ),
     );
     expect(outs.every((o) => new Uint8Array(o)[0] === 0xff)).toBe(true);
-    expect(created).toBe(6);
+    expect(started).toBe(6);
     expect(most).toBe(1);
-    expect(alive).toBe(0);
+    expect(running).toBe(0);
   }, 60_000);
+
+  test("the process gets the libheif path and no other variable of the app's", async () => {
+    let env: Record<string, string | undefined> | undefined;
+    const spawn = ((opts: Parameters<typeof Bun.spawn>[0]) => {
+      env = (opts as { env?: Record<string, string | undefined> }).env;
+      return Bun.spawn(opts);
+    }) as typeof Bun.spawn;
+    await runMediaConverter("heic-to-jpeg", heic(), { spawn });
+    expect(Object.keys(env ?? {})).toEqual([LIBHEIF_WASM_PATH_ENV]);
+  });
 });

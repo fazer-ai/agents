@@ -2,7 +2,7 @@
 // to be importable by the frontend (its sibling `document-support` already is); this file is where
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
-import { SHARE_ENV } from "node:worker_threads";
+import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
@@ -13,7 +13,12 @@ import {
   readImageDimensions,
   readJpegOrientation,
 } from "./dimensions";
-import { decodeGridFitted, type HeicFrame, withHeicFrames } from "./heic";
+import {
+  decodeGridFitted,
+  type HeicFrame,
+  libheifChildEnv,
+  withHeicFrames,
+} from "./heic";
 import { decodeJpegFitted } from "./jpeg-stream";
 import {
   encodeJpeg,
@@ -59,9 +64,9 @@ export class MediaTooLargeError extends MediaConversionError {
 // PIXELS and not on the file, because HEIC's whole point is that the file is small — the 25 MB
 // download ceiling in the Chatwoot client admits a 100 MP image at phone compression.
 //
-// It also bounds the time. The decode is CPU inside WASM and nothing inside the thread can interrupt
+// It also bounds the time. The decode is CPU inside WASM and nothing inside its process can interrupt
 // it once entered, so an `AbortSignal` here would be decoration: bounding the pixels is what bounds
-// the milliseconds, and `CONVERSION_TIMEOUT_MS` is the backstop that ends the thread.
+// the milliseconds, and `CONVERSION_TIMEOUT_MS` is the backstop that kills the process.
 export const MAX_SOURCE_PIXELS = 50_000_000;
 
 // Over the cap, a GRID image is still read: it is decoded tile by tile into the output, so memory is
@@ -105,11 +110,11 @@ const MAX_OUTPUT_EDGE = 1568;
 // heavy compression (docs: "heavy JPEG compression can make text difficult to read").
 const JPEG_QUALITY = 82;
 
-// ONE CONVERSION THREAD AT A TIME, process-wide. A message may carry eight attachments and the
+// ONE CONVERSION PROCESS AT A TIME, process-wide. A message may carry eight attachments and the
 // webhook extracts them in PARALLEL (the `Promise.all` in `handleVisualAttachments`), so without this
 // gate eight HEICs hold eight RGBA buffers and eight libheif heaps at once: 384 MB of RGBA alone for
 // eight 12 MP photos, on a VPS that also runs Postgres and Redis. Serialising costs one conversion
-// per extra photo, which the event loop no longer pays (the work runs in the thread), and which sits
+// per extra photo, which the event loop does not pay (the work runs in the child), and which sits
 // next to the provider round trip each one is waiting for anyway.
 let gate: Promise<unknown> = Promise.resolve();
 
@@ -501,8 +506,8 @@ const IMPLS: Record<
 // the module's single-catch contract would hold for the refusals it writes itself and leak for
 // everything underneath. The original is kept as `cause`, and its message is carried through because
 // it is the only thing that says WHICH file failed.
-// Runs on the CALLING thread: this is what the conversion thread (./worker.ts) runs, and what a
-// battery that stands in for a decoder calls, since a function cannot cross into a thread.
+// Runs on the CALLING thread: this is what the conversion process (./child.ts) runs, and what a
+// battery that stands in for a decoder calls, since a function cannot cross into a process.
 export async function convertInline(
   id: MediaConverterId,
   bytes: ArrayBuffer,
@@ -520,14 +525,14 @@ export async function convertInline(
   }
 }
 
-// The backstop for a thread that never answers. A 12 MP photo converts in about a second and the
+// The backstop for a child that never answers. A 12 MP photo converts in about a second and the
 // 200 MP tiled ceiling in a few, so this is far past any conversion the caps admit, on a loaded host
 // too; what it bounds is a wedged decoder holding the attachment, and the gate behind it, forever.
 export const CONVERSION_TIMEOUT_MS = 60_000;
 
-const WORKER_URL = new URL("./worker.ts", import.meta.url).href;
+const CHILD_SCRIPT = fileURLToPath(new URL("./child.ts", import.meta.url));
 
-// What crosses into the thread: the limits, never the stand-ins, which are functions.
+// What crosses into the child: the limits, never the stand-ins, which are functions.
 export type ConversionLimits = Pick<
   ConvertOptions,
   "maxSourcePixels" | "maxTiledSourcePixels"
@@ -535,14 +540,10 @@ export type ConversionLimits = Pick<
 
 export type RunOptions = ConversionLimits & {
   readonly timeoutMs?: number;
-  // A battery points this at a thread that crashes or never answers.
-  readonly workerUrl?: string;
-};
-
-export type ConversionRequest = {
-  id: MediaConverterId;
-  bytes: ArrayBuffer;
-  limits: ConversionLimits;
+  // A battery points this at a child that crashes or never answers.
+  readonly childScript?: string;
+  // A battery counts the children through this.
+  readonly spawn?: typeof Bun.spawn;
 };
 
 export type ConversionFailure = {
@@ -551,12 +552,15 @@ export type ConversionFailure = {
   cause?: { name: string; message: string };
 };
 
-export type ConversionReply =
-  | { ok: true; bytes: ArrayBuffer }
+// The child's answer on stdout: this marker, one JSON line, then the JPEG's bytes when it succeeded.
+// The marker because libheif's runtime prints its own errors to stdout ahead of the answer.
+export const REPLY_MARKER = "\n<<fazer-ai-media-conversion>>\n";
+export type ConversionHeader =
+  | { ok: true; length: number }
   | ({ ok: false } & ConversionFailure);
 
-// The refusal as data, because an Error's class does not survive `postMessage`: the caller tells a
-// mismatch (send the original) from a too-large (tell the customer) from a failure by the class.
+// The refusal as data, because an Error's class does not survive a process boundary: the caller
+// tells a mismatch (send the original) from a too-large (tell the customer) from a failure by it.
 export function describeConversionFailure(err: unknown): ConversionFailure {
   const kind =
     err instanceof MediaTooLargeError
@@ -587,77 +591,117 @@ function conversionError(failure: ConversionFailure): MediaConversionError {
   return err;
 }
 
-// THE CONVERSION RUNS IN A THREAD OF ITS OWN, one per conversion. Every step is synchronous CPU (the
-// libheif decode, jpeg-js, pngjs, the fit, the encode) and holds the calling thread for as long as it
-// runs, a second or more for a phone photo: on the event loop that expires every wall-clock timer in
-// the process, the Chatwoot ack's among them. A fresh thread per conversion rather than a long-lived
-// one because a WASM heap only grows: a reused thread would keep the largest image's heap for the
-// life of the process. The bytes go in as a copy, since the caller still sends the original when
-// the declared type lied, and the copy is transferred, not cloned again.
+// THE CONVERSION RUNS IN A CHILD PROCESS, one per conversion. Every step is synchronous CPU (the
+// libheif decode, jpeg-js, pngjs, the fit, the encode) and holds the thread it runs on for a second
+// or more for a phone photo: on the event loop that expires every wall-clock timer in the process,
+// the Chatwoot ack's among them. A process and not a Worker because a Worker cannot be stopped
+// inside WASM: `terminate()` on a thread spinning in WASM leaves it spinning, so the time budget
+// would release the gate with the decoder still holding its heap and a core. A fresh process per
+// conversion also gives every heap back when it exits.
 export function runMediaConverter(
   id: MediaConverterId,
   bytes: ArrayBuffer,
   opts: RunOptions = {},
 ): Promise<ArrayBuffer> {
-  return serialized(() => inThread(id, bytes, opts));
+  return serialized(() => inChild(id, bytes, opts));
 }
 
-function inThread(
+async function inChild(
   id: MediaConverterId,
   bytes: ArrayBuffer,
   opts: RunOptions,
 ): Promise<ArrayBuffer> {
   const {
     timeoutMs = CONVERSION_TIMEOUT_MS,
-    workerUrl = WORKER_URL,
+    childScript = CHILD_SCRIPT,
+    spawn = Bun.spawn,
     ...limits
   } = opts;
-  return new Promise((resolve, reject) => {
-    let worker: Worker;
-    try {
-      // NOTE: SHARE_ENV, because a Bun worker created without options starts from the environment
-      // the process booted with: the libheif path override would hold only if set before boot.
-      worker = new Worker(workerUrl, { env: SHARE_ENV });
-    } catch (err) {
-      reject(
-        conversionError({
-          kind: "conversion",
-          message: `${id} failed: the conversion thread did not start (${err instanceof Error ? err.message : String(err)})`,
-        }),
-      );
-      return;
-    }
-    let settled = false;
-    const finish = (settle: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(killer);
-      worker.terminate();
-      settle();
-    };
-    const fail = (message: string) =>
-      finish(() =>
-        reject(new MediaConversionError(`${id} failed: ${message}`)),
-      );
-    const killer = setTimeout(
-      () => fail(`the conversion did not finish within ${timeoutMs} ms`),
-      timeoutMs,
+  const fail = (message: string) =>
+    new MediaConversionError(`${id} failed: ${message}`);
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = spawn({
+      cmd: [process.execPath, childScript, id, JSON.stringify(limits)],
+      stdin: new Uint8Array(bytes),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: libheifChildEnv(),
+    });
+  } catch (err) {
+    throw fail(
+      `the conversion process did not start (${err instanceof Error ? err.message : String(err)})`,
     );
-    worker.onmessage = (ev: MessageEvent<ConversionReply>) => {
-      const reply = ev.data;
-      finish(() =>
-        reply.ok ? resolve(reply.bytes) : reject(conversionError(reply)),
+  }
+  let timedOut = false;
+  const killer = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, timeoutMs);
+  try {
+    const [out, err, code] = await Promise.all([
+      new Response(child.stdout as ReadableStream).arrayBuffer(),
+      new Response(child.stderr as ReadableStream).text(),
+      child.exited,
+    ]);
+    if (timedOut)
+      throw fail(`the conversion did not finish within ${timeoutMs} ms`);
+    const reply = readReply(out);
+    if (reply === null)
+      throw fail(
+        `the conversion process exited (${code}) without answering${lastError(err)}`,
       );
-    };
-    worker.onerror = (ev) =>
-      fail(`the conversion thread crashed (${ev.message || "no message"})`);
-    worker.addEventListener("close", () =>
-      fail("the conversion thread exited without answering"),
+    if (!reply.header.ok) throw conversionError(reply.header);
+    return reply.body;
+  } finally {
+    clearTimeout(killer);
+  }
+}
+
+// The line of the child's stderr that says what went wrong: Bun's own `error:` line for an uncaught
+// throw, else the last line written.
+function lastError(stderr: string): string {
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const line = lines.find((l) => l.startsWith("error:")) ?? lines.at(-1);
+  return line ? `: ${line}` : "";
+}
+
+function readReply(
+  out: ArrayBuffer,
+): { header: ConversionHeader; body: ArrayBuffer } | null {
+  const bytes = new Uint8Array(out);
+  const marker = new TextEncoder().encode(REPLY_MARKER);
+  const at = indexOf(bytes, marker);
+  if (at < 0) return null;
+  const start = at + marker.byteLength;
+  const newline = bytes.indexOf(0x0a, start);
+  if (newline < 0) return null;
+  let header: ConversionHeader;
+  try {
+    header = JSON.parse(
+      new TextDecoder().decode(bytes.subarray(start, newline)),
     );
-    const copy = bytes.slice(0);
-    worker.postMessage(
-      { id, bytes: copy, limits } satisfies ConversionRequest,
-      [copy],
-    );
-  });
+  } catch {
+    return null;
+  }
+  const body = out.slice(newline + 1);
+  if (header.ok && body.byteLength !== header.length) return null;
+  return { header, body };
+}
+
+function indexOf(haystack: Uint8Array, needle: Uint8Array): number {
+  const first = needle[0] as number;
+  for (
+    let i = haystack.indexOf(first);
+    i >= 0 && i <= haystack.byteLength - needle.byteLength;
+    i = haystack.indexOf(first, i + 1)
+  ) {
+    let j = 1;
+    while (j < needle.byteLength && haystack[i + j] === needle[j]) j++;
+    if (j === needle.byteLength) return i;
+  }
+  return -1;
 }

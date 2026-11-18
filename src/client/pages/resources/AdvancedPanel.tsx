@@ -36,13 +36,15 @@ const LANGFUSE_FIELDS = ["langfuse.credentialRef"] as const;
 // The share of turns traced, as the operator types it: a percentage. Empty follows the deployment.
 const SAMPLE_PERCENT_RANGE = numberRange(0, 100);
 
+// Twelve significant digits drop the binary noise of the scaling (0.07 * 100 is 7.000000000000001)
+// and keep every rate the API accepts, however small, from rounding to 0.
 function percentOf(rate: number): string {
-  return String(Math.round(rate * 100 * 10_000) / 10_000);
+  return String(Number((rate * 100).toPrecision(12)));
 }
 
 function rateOf(percent: string): number | null {
   if (percent.trim() === "") return null;
-  return Math.round(Number(percent) * 10_000) / 1_000_000;
+  return Number((Number(percent) / 100).toPrecision(12));
 }
 
 // Pinned server-side (see updateEmbeddingSettings); shown read-only until flexible embeddings ship.

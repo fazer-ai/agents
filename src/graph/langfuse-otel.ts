@@ -367,6 +367,8 @@ class TurnTraceIdGenerator implements IdGenerator {
 
 interface RootEntry {
   rootSpanId?: string;
+  /** Whether this turn is traced, taken at its first span so a rate changed mid-turn splits nothing. */
+  sampled?: boolean;
   at: number;
 }
 
@@ -480,11 +482,16 @@ class TurnSampler implements Sampler {
   constructor(private readonly router: TenantSpanRouter) {}
 
   shouldSample(_context: unknown, traceId: string): SamplingResult {
-    const rate = this.router.armed?.route.sampleRate;
-    if (rate === undefined || traceSampled(traceId, rate)) {
-      return { decision: SamplingDecision.RECORD_AND_SAMPLED };
-    }
-    return { decision: SamplingDecision.NOT_RECORD };
+    const armed = this.router.armed;
+    if (!armed) return { decision: SamplingDecision.RECORD_AND_SAMPLED };
+    const entry = this.router.root(traceId, armed.routeKey);
+    const rate = armed.route.sampleRate;
+    entry.sampled ??= rate === undefined || traceSampled(traceId, rate);
+    return {
+      decision: entry.sampled
+        ? SamplingDecision.RECORD_AND_SAMPLED
+        : SamplingDecision.NOT_RECORD,
+    };
   }
 
   toString(): string {

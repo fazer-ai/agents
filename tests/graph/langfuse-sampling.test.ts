@@ -252,6 +252,46 @@ describe("sampled export", () => {
     for (const count of byTrace.values()) expect(count).toBe(perTurn);
   });
 
+  test("a rate changed in the middle of a turn keeps the decision its first span took", async () => {
+    const [id] = turnIds(1, "e9");
+    await runWholeTurn(cfg("full", 1), 40n, id as string);
+    await shutdownLangfuseClients();
+    const perTurn = spansAt("full").length;
+    posted.length = 0;
+
+    // Started at 0, and a later call of the same turn reads 1: nothing of the turn leaves.
+    const dropped = cfg("mid", 0);
+    await runWholeTurn(dropped, 41n, id as string);
+    recordDirectGeneration(
+      { ...dropped, sampleRate: 1 },
+      { tenantId: 41n, turnId: id as string },
+      {
+        name: "late",
+        model: "gpt-4o-mini",
+        promptTokens: 1,
+        completionTokens: 1,
+      },
+    );
+    await shutdownLangfuseClients();
+    expect(spansAt("mid")).toEqual([]);
+
+    // Started at 1, and a later call reads 0: the late call still joins the turn.
+    const kept = cfg("mid", 1);
+    await runWholeTurn(kept, 41n, id as string);
+    recordDirectGeneration(
+      { ...kept, sampleRate: 0 },
+      { tenantId: 41n, turnId: id as string },
+      {
+        name: "late",
+        model: "gpt-4o-mini",
+        promptTokens: 1,
+        completionTokens: 1,
+      },
+    );
+    await shutdownLangfuseClients();
+    expect(spansAt("mid").length).toBe(perTurn + 1);
+  });
+
   test("each tenant's rate applies to its own turns only", async () => {
     const ids = turnIds(4, "d7");
     await Promise.all(

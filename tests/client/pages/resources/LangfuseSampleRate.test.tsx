@@ -149,6 +149,25 @@ describe("the share of turns traced", () => {
     expect(puts[0]?.sampleRate).toBeNull();
   });
 
+  test("a rate is never rounded away: a tiny one round-trips and 0.07 shows as 7", async () => {
+    const first = await open();
+    fireEvent.change(first.field, { target: { value: "0.00001" } });
+    fireEvent.click(first.save);
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0]?.sampleRate).toBe(1e-7);
+    cleanup();
+    puts.length = 0;
+    stored = 1e-9;
+    const tiny = await open();
+    fireEvent.click(tiny.save);
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0]?.sampleRate).toBe(1e-9);
+    cleanup();
+    stored = 0.07;
+    const seven = await open();
+    expect(seven.field.value).toBe("7");
+  });
+
   test("a value outside 0 to 100 holds Save", async () => {
     const { field, save } = await open();
     fireEvent.change(field, { target: { value: "150" } });

@@ -45,6 +45,13 @@ elif [ -s "$list" ]; then
     --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true <"$list")
 fi
 [ -n "$CHECK_STAGED_LINT_ONLY" ] && exit 0
+# PRECOMMIT_LIGHT=1 (the agent sessions' commits) leaves the whole-project checks to CI: its build-check
+# job runs the same type-checks and the openapi drift check on every pull request, and the merge
+# needs it green. What writes a file into the commit (i18n:extract) and the staged lint stay above.
+if [ "$PRECOMMIT_LIGHT" = "1" ]; then
+  echo "[pre-commit] PRECOMMIT_LIGHT=1: type-check e lint da árvore inteira ficam para o CI"
+  exit 0
+fi
 bun run build-check
 bun run build-check:worker
 bun run openapi:check

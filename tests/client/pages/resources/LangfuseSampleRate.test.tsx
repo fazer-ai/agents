@@ -124,7 +124,7 @@ describe("the share of turns traced", () => {
       configurable: true,
       get: () => ({ badInput: true }),
     });
-    fireEvent.change(field, { target: { value: "" } });
+    fireEvent.input(field, { target: { value: "" } });
     expect(save.disabled).toBe(true);
     fireEvent.click(save);
     expect(puts).toEqual([]);

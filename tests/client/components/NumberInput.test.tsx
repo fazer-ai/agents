@@ -55,6 +55,9 @@ function Form({
 const save = () => screen.getByRole("button", { name: "Save" });
 const type = (v: string) =>
   fireEvent.change(screen.getByLabelText("window"), { target: { value: v } });
+// What a browser dispatches on every edit, also when the reported value does not change.
+const edit = (v: string) =>
+  fireEvent.input(screen.getByLabelText("window"), { target: { value: v } });
 
 describe("NumberInput", () => {
   afterEach(() => cleanup());
@@ -141,13 +144,13 @@ describe("NumberInput", () => {
       configurable: true,
       get: () => ({ badInput: field.dataset.bad === "1" }),
     });
-    type("5");
+    edit("5");
     field.dataset.bad = "1";
-    type("");
+    edit("");
     expect(save()).toBeDisabled();
+    // Deleting the unreadable text leaves the reported value "" as it was.
     field.dataset.bad = "0";
-    type("6");
-    type("");
+    edit("");
     expect(save()).not.toBeDisabled();
   });
 
@@ -174,7 +177,7 @@ describe("NumberInput", () => {
       configurable: true,
       get: () => ({ badInput: field.value === "" }),
     });
-    type("");
+    edit("");
     expect(save()).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "discard" }));
     expect(field.value).toBe("7");

@@ -119,7 +119,7 @@ export function useHoldSave(held: boolean): void {
 
 export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
   (
-    { range, value, optional = false, step, errorMessage, onChange, ...props },
+    { range, value, optional = false, step, errorMessage, onInput, ...props },
     ref,
   ) => {
     const { t } = useTranslation();
@@ -161,11 +161,15 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         inputMode={range.int ? "numeric" : "decimal"}
         value={value ?? ""}
         errorMessage={held ? message : errorMessage}
-        onChange={(e) => {
+        // NOTE: on the native input event, which fires on every edit: React's onChange skips an edit
+        // that leaves the reported value as it was, and unreadable text and an empty field both
+        // report "".
+        onInput={(e) => {
           setUnreadable(
-            e.target.value === "" && e.target.validity?.badInput === true,
+            e.currentTarget.value === "" &&
+              e.currentTarget.validity?.badInput === true,
           );
-          onChange?.(e);
+          onInput?.(e);
         }}
         {...props}
       />

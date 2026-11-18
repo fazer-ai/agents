@@ -130,6 +130,12 @@ export function libheifWasmPath(): string {
   return join(dirname(entry), "libheif.wasm");
 }
 
+// The whole environment a conversion process gets: where the library lives, resolved here and now so
+// an override set after boot holds there too, and nothing else, so no secret of the app's reaches it.
+export function libheifChildEnv(): Record<string, string> {
+  return { [LIBHEIF_WASM_PATH_ENV]: libheifWasmPath() };
+}
+
 // LAZY, and cached across calls. The binary is 1.4 MB and instantiating it costs real milliseconds,
 // which a deployment that never receives a HEIC should not pay at boot — and vision may not even be
 // enabled. The promise is memoised rather than the module, so two conversions racing the first load

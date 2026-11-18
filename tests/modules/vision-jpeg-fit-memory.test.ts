@@ -56,8 +56,8 @@ function blankPhoto(width: number, height: number): Uint8Array {
 // is VmHWM: getrusage's maxrss survives exec, so a child of a 5 GB test runner reports 5 GB.
 test("a 31 MP photo is fitted without ever being held whole", () => {
   const script = [
-    `const { runMediaConverter } = await import(${JSON.stringify(CONVERT)});`,
-    `const out = await runMediaConverter("jpeg-fit", await Bun.stdin.arrayBuffer());`,
+    `const { convertInline } = await import(${JSON.stringify(CONVERT)});`,
+    `const out = await convertInline("jpeg-fit", await Bun.stdin.arrayBuffer());`,
     `const { existsSync, readFileSync } = await import("node:fs");`,
     `const hwm = existsSync("/proc/self/status") ? readFileSync("/proc/self/status", "utf8").match(/VmHWM:\\s+(\\d+) kB/)?.[1] : undefined;`,
     "console.log(JSON.stringify({ bytes: out.byteLength, peakKB: hwm === undefined ? process.resourceUsage().maxRSS : Number(hwm) }));",

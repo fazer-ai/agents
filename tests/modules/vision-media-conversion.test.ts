@@ -12,6 +12,7 @@ import jpeg from "jpeg-js";
 import {
   __frameDimensionsForTest,
   __serializedForTest,
+  convertInline,
   MAX_SOURCE_PIXELS,
   MAX_TILED_SOURCE_PIXELS,
   MediaConversionError,
@@ -776,7 +777,7 @@ describe("heic-to-jpeg", () => {
     };
     // The real fixture's bytes, because the cap reads the declared size out of them and a synthetic
     // header declares nothing — the frames are what is being stood in for here, not the container.
-    const out = await runMediaConverter("heic-to-jpeg", heicBytes(), {
+    const out = await convertInline("heic-to-jpeg", heicBytes(), {
       withFrames: (async (_b, use) =>
         use([
           {
@@ -951,7 +952,7 @@ describe("heic-to-jpeg", () => {
     // chooses the container. Driven through the frame seam, because reaching this branch needs a file
     // that decodes to a frame AND hides its `ispe`, which is a combination no real encoder writes.
     await expect(
-      runMediaConverter("heic-to-jpeg", brandedHeic(), {
+      convertInline("heic-to-jpeg", brandedHeic(), {
         withFrames: (async (_b, use) =>
           use([
             {

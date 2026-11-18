@@ -245,11 +245,61 @@ describe("NumberInput", () => {
     fireEvent.keyDown(field, { key: "a" });
     // "1e" typed, then deleted: two edits, and the reported value stays "" through both.
     field.dataset.bad = "1";
-    edit("");
+    fireEvent.input(field, {
+      target: { value: "" },
+      data: "e",
+      inputType: "insertText",
+    });
     expect(save()).toBeDisabled();
     field.dataset.bad = "0";
-    edit("");
+    fireEvent.input(field, {
+      target: { value: "" },
+      inputType: "deleteContentBackward",
+    });
     expect(save()).not.toBeDisabled();
+  });
+
+  test("deleting unreadable text that a dropped keystroke landed on releases both", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window") as HTMLInputElement;
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: field.dataset.bad === "1" }),
+    });
+    field.dataset.bad = "1";
+    fireEvent.input(field, {
+      target: { value: "" },
+      data: "e",
+      inputType: "insertText",
+    });
+    fireEvent.keyDown(field, { key: "x" });
+    expect(save()).toBeDisabled();
+    // "1e" selected and deleted: the reported value stays "".
+    field.dataset.bad = "0";
+    fireEvent.input(field, {
+      target: { value: "" },
+      inputType: "deleteContentBackward",
+    });
+    expect(save()).not.toBeDisabled();
+  });
+
+  test("an input event that inserted nothing keeps a dropped keystroke held (Safari, Chrome paste)", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window");
+    fireEvent.keyDown(field, { key: "a" });
+    fireEvent.input(field, {
+      target: { value: "" },
+      data: "",
+      inputType: "insertText",
+    });
+    expect(save()).toBeDisabled();
+    fireEvent.paste(field, { clipboardData: { getData: () => "abc" } });
+    fireEvent.input(field, {
+      target: { value: "" },
+      data: null,
+      inputType: "insertFromPaste",
+    });
+    expect(save()).toBeDisabled();
   });
 
   test("an input event for a letter the browser dropped keeps the hold (Safari)", () => {

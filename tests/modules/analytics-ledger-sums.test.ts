@@ -425,6 +425,49 @@ describe.skipIf(!dbUp)("the ledger's quarter-hour sums", () => {
     }
   });
 
+  test("transactions that overlap without end do not hold the mark back forever", async () => {
+    const t = await seedTenant("lsums-overlap");
+    // A transaction with an id, open until released.
+    const openTx = async (model: string) => {
+      let release: () => void = () => {};
+      const released = new Promise<void>((r) => {
+        release = r;
+      });
+      let wrote: () => void = () => {};
+      const written = new Promise<void>((r) => {
+        wrote = r;
+      });
+      const done = suDb.$transaction(
+        async (tx) => {
+          await tx.llmUsage.create({
+            data: { tenantId: t.tenantId, source: "inbox", model, costUsd: 1 },
+          });
+          wrote();
+          await released;
+        },
+        { timeout: 60_000, maxWait: 5_000 },
+      );
+      await written;
+      return { release, done };
+    };
+    try {
+      const a = await openTx("m-a");
+      await stepLedgerSums(db, t.tenantId);
+      // B begins after the candidate, while A, older than it, is still open.
+      const b = await openTx("m-b");
+      await stepLedgerSums(db, t.tenantId);
+      a.release();
+      await a.done;
+      // A has ended and B is younger than the candidate: the mark moves, though B is still open.
+      await stepLedgerSums(db, t.tenantId);
+      expect(await summedUntil(t.tenantId)).not.toBeNull();
+      b.release();
+      await b.done;
+    } finally {
+      await suDb.tenant.delete({ where: { id: t.tenantId } });
+    }
+  });
+
   test("a re-price, a removal and a move of summed calls are in the figures at once and after the next run", async () => {
     const view = { since: new Date(FIRST), tz: "America/Sao_Paulo" };
     await suDb.$executeRaw(Prisma.sql`

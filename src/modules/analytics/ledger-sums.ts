@@ -336,10 +336,11 @@ export async function stepLedgerSums(
         {
           summed_until: Date | null;
           candidate_at: Date | null;
+          pending: boolean;
           waited_out: boolean;
         }[]
       >(Prisma.sql`
-      SELECT summed_until, candidate_at,
+      SELECT summed_until, candidate_at, candidate_xid IS NOT NULL AS pending,
              candidate_xid IS NOT NULL AND ${snap?.xmin ?? "0"}::xid8 > candidate_xid AS waited_out
         FROM ledger_sums_state FOR UPDATE`);
       let summedUntil = state?.summed_until ?? null;
@@ -420,10 +421,17 @@ export async function stepLedgerSums(
         caughtUp = to >= target && !marksLeft;
       }
 
-      await db.$executeRaw(Prisma.sql`
-      UPDATE ledger_sums_state
-         SET summed_until = ${summedUntil}, candidate_at = ${takenAt},
-             candidate_xid = ${snap?.xid ?? null}::xid8`);
+      // NOTE: a candidate still waiting is kept. Replaced on every step, it would never be waited out
+      // while transactions overlap without end, each older than the newest candidate.
+      if (state?.pending && !state.waited_out) {
+        await db.$executeRaw(Prisma.sql`
+          UPDATE ledger_sums_state SET summed_until = ${summedUntil}`);
+      } else {
+        await db.$executeRaw(Prisma.sql`
+          UPDATE ledger_sums_state
+             SET summed_until = ${summedUntil}, candidate_at = ${takenAt},
+                 candidate_xid = ${snap?.xid ?? null}::xid8`);
+      }
       return {
         summedUntil,
         remarked: remark.size + settle.settled,

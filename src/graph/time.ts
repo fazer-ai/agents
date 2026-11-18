@@ -14,12 +14,17 @@ export interface TimeParts {
   weekday: string;
 }
 
-// Extracts the wall-clock parts of `date` AS SEEN in `timezone` (h23 so midnight is "00", not "24").
-export function partsInTimezone(
-  date: Date,
-  timezone: string,
-  locale = "pt-BR",
-): TimeParts {
+// One formatter per (locale, timezone), shared by every call: building an `Intl.DateTimeFormat`
+// costs far more than formatting with one, and the dated history asks once per message. A timezone
+// `Intl` rejects throws from the constructor and is never stored, so it throws on every call as
+// before. The bound only matters for a caller passing many distinct spellings; clearing is enough.
+const PARTS_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+const MAX_PARTS_FORMATTERS = 512;
+
+function partsFormatter(timezone: string, locale: string): Intl.DateTimeFormat {
+  const key = `${locale}\u0000${timezone}`;
+  const cached = PARTS_FORMATTERS.get(key);
+  if (cached) return cached;
   const dtf = new Intl.DateTimeFormat(locale, {
     timeZone: timezone,
     hourCycle: "h23",
@@ -31,7 +36,18 @@ export function partsInTimezone(
     second: "2-digit",
     weekday: "long",
   });
-  const parts = dtf.formatToParts(date);
+  if (PARTS_FORMATTERS.size >= MAX_PARTS_FORMATTERS) PARTS_FORMATTERS.clear();
+  PARTS_FORMATTERS.set(key, dtf);
+  return dtf;
+}
+
+// Extracts the wall-clock parts of `date` AS SEEN in `timezone` (h23 so midnight is "00", not "24").
+export function partsInTimezone(
+  date: Date,
+  timezone: string,
+  locale = "pt-BR",
+): TimeParts {
+  const parts = partsFormatter(timezone, locale).formatToParts(date);
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((p) => p.type === type)?.value ?? "";
   return {

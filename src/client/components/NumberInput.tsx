@@ -118,11 +118,19 @@ export function useHoldSave(held: boolean): void {
 }
 
 export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
-  ({ range, value, optional = false, step, errorMessage, ...props }, ref) => {
+  (
+    { range, value, optional = false, step, errorMessage, onChange, ...props },
+    ref,
+  ) => {
     const { t } = useTranslation();
     const id = useId();
     const holds = useContext(RangeHoldsContext);
-    const problem = numberProblem(value, range, optional);
+    // A browser reports text it cannot read as a number ("1e", "abc" pasted) as an empty value, which
+    // an optional field would otherwise save as "not set".
+    const [unreadable, setUnreadable] = useState(false);
+    const problem = unreadable
+      ? "range"
+      : numberProblem(value, range, optional);
     // `disabled` is a field the operator cannot change right now, so it holds nothing.
     const held = problem !== null && !props.disabled;
     useEffect(() => {
@@ -148,6 +156,12 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         inputMode={range.int ? "numeric" : "decimal"}
         value={value ?? ""}
         errorMessage={held ? message : errorMessage}
+        onChange={(e) => {
+          setUnreadable(
+            e.target.value === "" && e.target.validity?.badInput === true,
+          );
+          onChange?.(e);
+        }}
         {...props}
       />
     );

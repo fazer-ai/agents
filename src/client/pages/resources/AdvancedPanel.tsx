@@ -10,7 +10,7 @@ import {
   FormField,
   HelpPopover,
   NumberInput,
-  numberProblem,
+  RangeHolds,
   Switch,
   useToast,
 } from "@/client/components";
@@ -309,145 +309,146 @@ export function AdvancedPanel() {
             </div>
           </Card>
 
-          <Card id="observability" className="flex scroll-mt-4 flex-col gap-4">
-            <div>
-              <h2 className="text-text-primary font-medium">
-                {t("advanced.observability.title", "Observability (Langfuse)")}
-              </h2>
-              <p className="text-text-muted mt-0.5 text-sm">
-                {t(
-                  "advanced.observability.desc",
-                  "Send agent traces to Langfuse. Content is redacted unless you opt in.",
-                )}
-              </p>
-            </div>
-            <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
-              <label
-                htmlFor={tracingId}
-                data-clickable="true"
-                className="text-text-primary text-sm font-medium"
-              >
-                {t("advanced.observability.enabled", "Enable tracing")}
-              </label>
-              <Switch
-                id={tracingId}
-                checked={lfEnabled}
-                onCheckedChange={setLfEnabled}
-              />
-            </div>
-            <FormField
-              label={t(
-                "advanced.observability.credential",
-                "Langfuse credential",
-              )}
-              group
-              description={t(
-                "advanced.observability.credentialHint",
-                "Public key, secret key and host are stored in the credential. Use the Vault tab to create or update it.",
-              )}
-              error={lfRefusal.at("langfuse.credentialRef", lfCredentialRef)}
+          <RangeHolds>
+            <Card
+              id="observability"
+              className="flex scroll-mt-4 flex-col gap-4"
             >
-              <CredentialPicker
-                value={lfCredentialRef ?? ""}
-                onChange={(v) => setLfCredentialRef(v || null)}
-                compatibleTypes={["langfuse"]}
-                allowNone
-                ariaLabel={t(
+              <div>
+                <h2 className="text-text-primary font-medium">
+                  {t(
+                    "advanced.observability.title",
+                    "Observability (Langfuse)",
+                  )}
+                </h2>
+                <p className="text-text-muted mt-0.5 text-sm">
+                  {t(
+                    "advanced.observability.desc",
+                    "Send agent traces to Langfuse. Content is redacted unless you opt in.",
+                  )}
+                </p>
+              </div>
+              <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
+                <label
+                  htmlFor={tracingId}
+                  data-clickable="true"
+                  className="text-text-primary text-sm font-medium"
+                >
+                  {t("advanced.observability.enabled", "Enable tracing")}
+                </label>
+                <Switch
+                  id={tracingId}
+                  checked={lfEnabled}
+                  onCheckedChange={setLfEnabled}
+                />
+              </div>
+              <FormField
+                label={t(
                   "advanced.observability.credential",
                   "Langfuse credential",
                 )}
-              />
-            </FormField>
-            <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
-              <div className="flex items-center gap-1.5 pr-4">
-                <label
-                  htmlFor={sendContentId}
-                  data-clickable="true"
-                  className="text-text-secondary text-sm"
-                >
-                  {t(
-                    "advanced.observability.sendContent",
-                    "Send conversation content",
-                  )}
-                </label>
-                <HelpPopover
-                  content={t(
-                    "advanced.observability.sendContentHelp",
-                    "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs.",
-                  )}
-                  label={t(
-                    "advanced.observability.sendContent",
-                    "Send conversation content",
-                  )}
-                />
-              </div>
-              <Switch
-                id={sendContentId}
-                checked={lfSendContent}
-                onCheckedChange={setLfSendContent}
-              />
-            </div>
-            <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
-              <div className="flex items-center gap-1.5 pr-4">
-                <label
-                  htmlFor={debugId}
-                  data-clickable="true"
-                  className="text-text-secondary text-sm"
-                >
-                  {t(
-                    "advanced.observability.debug",
-                    "Debug mode (tool schemas)",
-                  )}
-                </label>
-                <HelpPopover
-                  content={t(
-                    "advanced.observability.debugHelp",
-                    "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
-                  )}
-                  label={t(
-                    "advanced.observability.debug",
-                    "Debug mode (tool schemas)",
-                  )}
-                />
-              </div>
-              <Switch
-                id={debugId}
-                checked={lfDebug}
-                onCheckedChange={setLfDebug}
-              />
-            </div>
-            <FormField
-              label={t(
-                "advanced.observability.sampleRate",
-                "Share of turns traced (%)",
-              )}
-              description={t(
-                "advanced.observability.sampleRateHint",
-                "Each turn is traced whole or not at all, and a turn left out cannot be found in Langfuse. Leave it empty to follow this deployment's default ({{percent}}%).",
-                { percent: lfDefaultPercent },
-              )}
-            >
-              <NumberInput
-                range={SAMPLE_PERCENT_RANGE}
-                optional
-                value={lfSamplePercent}
-                placeholder={lfDefaultPercent}
-                onChange={(e) => setLfSamplePercent(e.target.value)}
-              />
-            </FormField>
-            <div className="flex justify-end">
-              <Button
-                onClick={saveLangfuse}
-                loading={lfSaving}
-                disabled={
-                  numberProblem(lfSamplePercent, SAMPLE_PERCENT_RANGE, true) !==
-                  null
-                }
+                group
+                description={t(
+                  "advanced.observability.credentialHint",
+                  "Public key, secret key and host are stored in the credential. Use the Vault tab to create or update it.",
+                )}
+                error={lfRefusal.at("langfuse.credentialRef", lfCredentialRef)}
               >
-                {t("common.save", "Save")}
-              </Button>
-            </div>
-          </Card>
+                <CredentialPicker
+                  value={lfCredentialRef ?? ""}
+                  onChange={(v) => setLfCredentialRef(v || null)}
+                  compatibleTypes={["langfuse"]}
+                  allowNone
+                  ariaLabel={t(
+                    "advanced.observability.credential",
+                    "Langfuse credential",
+                  )}
+                />
+              </FormField>
+              <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
+                <div className="flex items-center gap-1.5 pr-4">
+                  <label
+                    htmlFor={sendContentId}
+                    data-clickable="true"
+                    className="text-text-secondary text-sm"
+                  >
+                    {t(
+                      "advanced.observability.sendContent",
+                      "Send conversation content",
+                    )}
+                  </label>
+                  <HelpPopover
+                    content={t(
+                      "advanced.observability.sendContentHelp",
+                      "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs.",
+                    )}
+                    label={t(
+                      "advanced.observability.sendContent",
+                      "Send conversation content",
+                    )}
+                  />
+                </div>
+                <Switch
+                  id={sendContentId}
+                  checked={lfSendContent}
+                  onCheckedChange={setLfSendContent}
+                />
+              </div>
+              <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
+                <div className="flex items-center gap-1.5 pr-4">
+                  <label
+                    htmlFor={debugId}
+                    data-clickable="true"
+                    className="text-text-secondary text-sm"
+                  >
+                    {t(
+                      "advanced.observability.debug",
+                      "Debug mode (tool schemas)",
+                    )}
+                  </label>
+                  <HelpPopover
+                    content={t(
+                      "advanced.observability.debugHelp",
+                      "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
+                    )}
+                    label={t(
+                      "advanced.observability.debug",
+                      "Debug mode (tool schemas)",
+                    )}
+                  />
+                </div>
+                <Switch
+                  id={debugId}
+                  checked={lfDebug}
+                  onCheckedChange={setLfDebug}
+                />
+              </div>
+              <FormField
+                label={t(
+                  "advanced.observability.sampleRate",
+                  "Share of turns traced (%)",
+                )}
+                description={t(
+                  "advanced.observability.sampleRateHint",
+                  "Each turn is traced whole or not at all, and a turn left out cannot be found in Langfuse. Leave it empty to follow this deployment's default ({{percent}}%).",
+                  { percent: lfDefaultPercent },
+                )}
+              >
+                <NumberInput
+                  range={SAMPLE_PERCENT_RANGE}
+                  optional
+                  value={lfSamplePercent}
+                  placeholder={lfDefaultPercent}
+                  onChange={(e) => setLfSamplePercent(e.target.value)}
+                />
+              </FormField>
+              <div className="flex justify-end">
+                <Button onClick={saveLangfuse} loading={lfSaving} holdOnRange>
+                  {t("common.save", "Save")}
+                </Button>
+              </div>
+            </Card>
+          </RangeHolds>
         </div>
       </div>
     </DataBoundary>

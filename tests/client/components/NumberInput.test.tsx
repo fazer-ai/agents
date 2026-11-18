@@ -134,6 +134,23 @@ describe("NumberInput", () => {
     expect(save()).not.toBeDisabled();
   });
 
+  test("text the browser cannot read as a number holds an optional field, though its value is empty", () => {
+    render(<Form initial="" optional />);
+    const field = screen.getByLabelText("window") as HTMLInputElement;
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: field.dataset.bad === "1" }),
+    });
+    type("5");
+    field.dataset.bad = "1";
+    type("");
+    expect(save()).toBeDisabled();
+    field.dataset.bad = "0";
+    type("6");
+    type("");
+    expect(save()).not.toBeDisabled();
+  });
+
   test("only a holdOnRange button is held", () => {
     render(<Form initial="-10" />);
     expect(screen.getByRole("button", { name: "Other" })).not.toBeDisabled();

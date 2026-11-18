@@ -116,6 +116,20 @@ describe("the share of turns traced", () => {
     expect(again.field.value).toBe("12.5");
   });
 
+  test("text that is not a number holds Save instead of saving the deployment default", async () => {
+    stored = 0.25;
+    const { field, save } = await open();
+    expect(field.value).toBe("25");
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: true }),
+    });
+    fireEvent.change(field, { target: { value: "" } });
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(puts).toEqual([]);
+  });
+
   test("a value outside 0 to 100 holds Save", async () => {
     const { field, save } = await open();
     fireEvent.change(field, { target: { value: "150" } });

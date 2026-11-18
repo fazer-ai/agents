@@ -4,6 +4,13 @@
  */
 export const LANGFUSE_OTLP_PATH = "/api/public/otel/v1/traces";
 
+/** The text of a body the exporter posted, which it sends as the serializer's bytes. */
+export function otlpBodyText(body: unknown): string {
+  if (typeof body === "string") return body;
+  if (body instanceof Uint8Array) return new TextDecoder().decode(body);
+  return String(body ?? "{}");
+}
+
 export interface FlatSpan {
   traceId: string;
   spanId: string;

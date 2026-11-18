@@ -80,9 +80,13 @@ const EXPORT_ATTEMPT_TIMEOUT_MS = 10_000;
 // Every attempt and pause of one export fits in this budget, which stays under the batch processor's
 // 30-second export timeout, so the processor never gives up on an export that is still running.
 const EXPORT_BUDGET_MS = 25_000;
-// Langfuse refuses an OTLP body above its request limit, so a batch whose JSON passes this is split
+// Langfuse refuses an OTLP body above its request limit, so a body whose JSON passes this is split
 // in halves until each half fits or holds a single span.
 const MAX_EXPORT_BODY_BYTES = 3_500_000;
+// How full a body is packed, counted in the characters of its spans' text attributes. JSON escaping
+// and UTF-8 make the body longer than that text, and this leaves the room for it under the limit.
+const BODY_FILL_CHARS = 1_500_000;
+const SPAN_OVERHEAD_CHARS = 1_000;
 
 /**
  * Delivery failures are logged once per distinct message per tenant destination, so an instance that
@@ -148,6 +152,42 @@ export const TRUNCATED_MARKER =
  * trace input/output), halving the cap until the body fits, so the span still lands with its model,
  * usage and timings. Returns the body to post, or undefined when even the shortest cap does not fit.
  */
+function textChars(span: ReadableSpan): number {
+  let n = SPAN_OVERHEAD_CHARS;
+  for (const value of Object.values(span.attributes)) {
+    if (typeof value === "string") n += value.length;
+  }
+  return n;
+}
+
+/**
+ * Groups a batch into bodies of about BODY_FILL_CHARS each, in order, so each body is serialized once
+ * and on its own. Serializing the whole batch first, to learn whether it fits, costs as much as the
+ * export itself, and repeating it at every halving costs it again per level.
+ */
+function packBodies(spans: ReadableSpan[]): ReadableSpan[][] {
+  const groups: ReadableSpan[][] = [];
+  let group: ReadableSpan[] = [];
+  let chars = 0;
+  for (const span of spans) {
+    const n = textChars(span);
+    if (group.length > 0 && chars + n > BODY_FILL_CHARS) {
+      groups.push(group);
+      group = [];
+      chars = 0;
+    }
+    group.push(span);
+    chars += n;
+  }
+  if (group.length > 0) groups.push(group);
+  return groups;
+}
+
+/** Ends the current task, so the event loop runs what is waiting before the next body is built. */
+function nextTask(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function boundSpan(span: ReadableSpan): Uint8Array | undefined {
   const attrs = span.attributes as Record<string, unknown>;
   for (let cap = 1_000_000; cap >= 1_000; cap = Math.floor(cap / 2)) {
@@ -212,21 +252,29 @@ export class LangfuseFetchExporter implements SpanExporter {
     void sent.finally(() => this.inFlight.delete(sent));
   }
 
+  // A batch of spans that carry the turn's content runs to tens of MB, and building its bodies holds
+  // the event loop: each body is serialized in a task of its own, and its post starts before the next.
+  // A body past the limit goes back to the front of the work as two halves.
   private async sendAll(spans: ReadableSpan[]): Promise<boolean> {
-    if (spans.length === 0) return true;
-    const body = JsonTraceSerializer.serializeRequest(spans);
-    if (!body) return false;
-    if (body.byteLength <= MAX_EXPORT_BODY_BYTES) return this.post(body);
-    if (spans.length > 1) {
-      const half = Math.ceil(spans.length / 2);
-      const [a, b] = await Promise.all([
-        this.sendAll(spans.slice(0, half)),
-        this.sendAll(spans.slice(half)),
-      ]);
-      return a && b;
+    const work = packBodies(spans);
+    const sends: Promise<boolean>[] = [];
+    for (let first = true; work.length > 0; first = false) {
+      if (!first) await nextTask();
+      const group = work.shift() as ReadableSpan[];
+      const body = JsonTraceSerializer.serializeRequest(group);
+      if (!body) {
+        sends.push(Promise.resolve(false));
+      } else if (body.byteLength <= MAX_EXPORT_BODY_BYTES) {
+        sends.push(this.post(body));
+      } else if (group.length > 1) {
+        const half = Math.ceil(group.length / 2);
+        work.unshift(group.slice(0, half), group.slice(half));
+      } else {
+        const bounded = boundSpan(group[0] as ReadableSpan);
+        sends.push(bounded ? this.post(bounded) : Promise.resolve(false));
+      }
     }
-    const bounded = boundSpan(spans[0] as ReadableSpan);
-    return bounded ? this.post(bounded) : false;
+    return (await Promise.all(sends)).every(Boolean);
   }
 
   private async post(body: Uint8Array): Promise<boolean> {
@@ -243,7 +291,9 @@ export class LangfuseFetchExporter implements SpanExporter {
         const res = await fetch(this.url, {
           method: "POST",
           headers: this.headers,
-          body: new TextDecoder().decode(body),
+          // NOTE: the serializer's bytes, posted as they are; decoding them to a string first is
+          // another pass over the body on the event loop.
+          body: body as Uint8Array<ArrayBuffer>,
           signal: AbortSignal.timeout(
             Math.min(EXPORT_ATTEMPT_TIMEOUT_MS, remaining),
           ),

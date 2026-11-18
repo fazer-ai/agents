@@ -84,6 +84,8 @@
       "debugHelp": "Este modo inclui nos Logs a definição completa de cada ferramenta disponível.\n\nUse-o para conferir quais ferramentas o agente recebeu e como elas foram descritas.\n\nOs nomes já aparecem com o modo desligado. As definições completas aumentam o volume no Langfuse, então desligue após a investigação.",
       "desc": "Envia os traces dos agentes para o Langfuse. O conteúdo é ocultado, a menos que você opte por enviá-lo.",
       "enabled": "Ativar tracing",
+      "sampleRate": "Parcela dos turnos rastreados (%)",
+      "sampleRateHint": "Cada turno é rastreado inteiro ou não é rastreado, e um turno que ficou de fora não aparece no Langfuse. Deixe vazio para seguir o padrão desta instalação ({{percent}}%).",
       "saved": "Configuração de observabilidade salva.",
       "saveError": "Não foi possível salvar a configuração de observabilidade.",
       "sendContent": "Enviar o conteúdo das mensagens (não só a estrutura)",

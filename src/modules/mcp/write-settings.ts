@@ -442,6 +442,7 @@ export interface TenantSettingsUpdateArgs {
     credential_ref?: string | null;
     send_content?: boolean;
     debug?: boolean;
+    sample_rate?: number | null;
   };
   // The tenant's own model prices: the WHOLE list, which replaces the saved one.
   price_overrides?: McpPriceOverride[];
@@ -580,6 +581,7 @@ export async function tenantSettingsUpdate(
                   credentialRef: args.langfuse.credential_ref ?? null,
                   sendContent: args.langfuse.send_content,
                   debug: args.langfuse.debug,
+                  sampleRate: args.langfuse.sample_rate,
                 },
           priceOverrides: prices,
           approvalLink: approvalLinkProposed,
@@ -597,6 +599,7 @@ export async function tenantSettingsUpdate(
           credentialRef: langfuseRef,
           sendContent: args.langfuse.send_content,
           debug: args.langfuse.debug,
+          sampleRate: args.langfuse.sample_rate,
         },
         base,
       );

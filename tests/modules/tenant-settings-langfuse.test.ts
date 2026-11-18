@@ -2,9 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { langfuseView } from "@/api/v1/tenant-settings.controller";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   getTenantSettings,
+  LANGFUSE_DEFAULTS,
   parseLangfuseSettings,
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
@@ -18,6 +21,7 @@ describe("parseLangfuseSettings", () => {
     expect(s.enabled).toBe(false);
     expect(s.credentialRef).toBeNull();
     expect(s.sendContent).toBe(false);
+    expect(s.sampleRate).toBeNull();
   });
 
   test("parses a complete block", () => {
@@ -49,6 +53,27 @@ describe("parseLangfuseSettings", () => {
     // No legacy fields on the returned type.
     expect((s as Record<string, unknown>).baseUrl).toBeUndefined();
     expect((s as Record<string, unknown>).environment).toBeUndefined();
+  });
+});
+
+describe("the Langfuse block the routes return", () => {
+  test("carries the tenant's rate and, beside it, the deployment's", () => {
+    const deployment = config.langfuse.sampleRate;
+    try {
+      config.langfuse.sampleRate = 0.05;
+      expect(
+        langfuseView({ ...LANGFUSE_DEFAULTS, sampleRate: 0.3 }),
+      ).toMatchObject({
+        sampleRate: 0.3,
+        defaultSampleRate: 0.05,
+      });
+      expect(langfuseView(LANGFUSE_DEFAULTS)).toMatchObject({
+        sampleRate: null,
+        defaultSampleRate: 0.05,
+      });
+    } finally {
+      config.langfuse.sampleRate = deployment;
+    }
   });
 });
 
@@ -157,6 +182,36 @@ describe.skipIf(!dbUp)("updateLangfuse (DB)", () => {
     await expect(
       updateLangfuse(ctx(), { credentialRef: "vault:999999999" }, appDb),
     ).rejects.toThrow();
+  });
+
+  test("the sample rate is stored, kept when a write omits it, and null goes back to the default", async () => {
+    expect(
+      (await updateLangfuse(ctx(), { sampleRate: 0.25 }, appDb)).sampleRate,
+    ).toBe(0.25);
+    expect((await getTenantSettings(ctx(), appDb)).langfuse.sampleRate).toBe(
+      0.25,
+    );
+    expect(
+      (await updateLangfuse(ctx(), { sendContent: true }, appDb)).sampleRate,
+    ).toBe(0.25);
+    expect(
+      (await updateLangfuse(ctx(), { sampleRate: 0 }, appDb)).sampleRate,
+    ).toBe(0);
+    expect(
+      (await updateLangfuse(ctx(), { sampleRate: null }, appDb)).sampleRate,
+    ).toBeNull();
+  });
+
+  test("a sample rate outside 0 to 1 is refused and nothing is stored", async () => {
+    await updateLangfuse(ctx(), { sampleRate: 0.5 }, appDb);
+    for (const bad of [1.5, -0.1, Number.NaN]) {
+      await expect(
+        updateLangfuse(ctx(), { sampleRate: bad }, appDb),
+      ).rejects.toThrow();
+    }
+    expect((await getTenantSettings(ctx(), appDb)).langfuse.sampleRate).toBe(
+      0.5,
+    );
   });
 
   test("GET exposes credentialRef (not hasCredential/baseUrl)", async () => {

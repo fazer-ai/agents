@@ -26,8 +26,9 @@ ceiling is therefore denominated in **USD as this app priced the month's calls**
 whether or not Langfuse is configured.
 
 Until #1060 the figure came from Langfuse's metrics API, and that was the wrong place to sum money.
-The Langfuse SDK drops traces on the client under `LANGFUSE_SAMPLE_RATE`, so on a sampled install the
-ceiling read a fraction of the spend and let the month run far past the number typed; Langfuse prices
+Langfuse holds only the turns that were traced, and a tenant or deployment may trace a share of them
+(`docs/graph.md`, Langfuse tracing), so on a sampled install the ceiling would read a fraction of the
+spend and let the month run far past the number typed; Langfuse prices
 a generation at ingestion and never again, so a model registered late stayed at zero for good; its
 delivery is best-effort; and an install without it had no ceiling at all. What existed only to cope
 with a third-party figure went with it: the credential lookup, the project-switch carry, the

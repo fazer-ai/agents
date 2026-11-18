@@ -46,6 +46,8 @@ export interface LangfuseConfig {
   baseUrl?: string;
   // Opt-in to sending raw prompt/completion content. Default redacts it.
   sendContent?: boolean;
+  // Share of turns traced, 0 to 1: the tenant's own rate, else LANGFUSE_SAMPLE_RATE.
+  sampleRate?: number;
   // Debug mode: also attach the FULL tool schemas (the OpenAI tool definitions the model was given)
   // to the trace metadata. Off by default — the tool NAMES always travel; the schemas are heavy and
   // would bloat every trace. See buildToolTraceMetadata.
@@ -81,6 +83,7 @@ export async function resolveLangfuseConfig(
     secretKey: keys.data.secretKey,
     baseUrl: entry.baseUrl ?? undefined,
     sendContent: settings.sendContent,
+    sampleRate: settings.sampleRate ?? config.langfuse.sampleRate,
     debug: settings.debug,
     tenantSlug: tenant?.slug ?? undefined,
   };
@@ -123,6 +126,7 @@ function turnTraceFor(
       secretKey: cfg.secretKey,
       baseUrl: cfg.baseUrl,
       sendContent: cfg.sendContent,
+      sampleRate: cfg.sampleRate,
       tenantId,
     },
   );

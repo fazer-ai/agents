@@ -9,6 +9,8 @@ import {
   DataBoundary,
   FormField,
   HelpPopover,
+  NumberInput,
+  numberProblem,
   Switch,
   useToast,
 } from "@/client/components";
@@ -16,6 +18,7 @@ import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { SectionNav } from "@/client/pages/agents/SectionNav";
+import { numberRange } from "@/lib/number-range";
 import { PriceOverridesCard } from "./PriceOverridesCard";
 import { ProactiveBreakerCard } from "./ProactiveBreakerCard";
 import { SpendCeilingCard } from "./SpendCeilingCard";
@@ -29,6 +32,18 @@ type Settings = NonNullable<
 // hooks because they save separately: a refusal about one must not mark the other's picker.
 const EMBEDDING_FIELDS = ["embedding.credentialRef"] as const;
 const LANGFUSE_FIELDS = ["langfuse.credentialRef"] as const;
+
+// The share of turns traced, as the operator types it: a percentage. Empty follows the deployment.
+const SAMPLE_PERCENT_RANGE = numberRange(0, 100);
+
+function percentOf(rate: number): string {
+  return String(Math.round(rate * 100 * 10_000) / 10_000);
+}
+
+function rateOf(percent: string): number | null {
+  if (percent.trim() === "") return null;
+  return Math.round(Number(percent) * 10_000) / 1_000_000;
+}
 
 // Pinned server-side (see updateEmbeddingSettings); shown read-only until flexible embeddings ship.
 const EMBEDDING_MODEL = "text-embedding-3-small";
@@ -57,6 +72,8 @@ export function AdvancedPanel() {
   const [lfCredentialRef, setLfCredentialRef] = useState<string | null>(null);
   const [lfSendContent, setLfSendContent] = useState(false);
   const [lfDebug, setLfDebug] = useState(false);
+  const [lfSamplePercent, setLfSamplePercent] = useState("");
+  const [lfDefaultPercent, setLfDefaultPercent] = useState("100");
   const [lfSaving, setLfSaving] = useState(false);
   const lfRefusal = useFieldRefusal(LANGFUSE_FIELDS);
   const lfRefRef = useRef(lfCredentialRef);
@@ -75,6 +92,10 @@ export function AdvancedPanel() {
     setLfCredentialRef(s.langfuse.credentialRef);
     setLfSendContent(s.langfuse.sendContent);
     setLfDebug(s.langfuse.debug);
+    setLfSamplePercent(
+      s.langfuse.sampleRate === null ? "" : percentOf(s.langfuse.sampleRate),
+    );
+    setLfDefaultPercent(percentOf(s.langfuse.defaultSampleRate));
     setSpendCeiling(s.spendCeiling);
     setPriceOverrides(s.priceOverrides);
   }, []);
@@ -144,6 +165,7 @@ export function AdvancedPanel() {
         credentialRef: lfCredentialRef,
         sendContent: lfSendContent,
         debug: lfDebug,
+        sampleRate: rateOf(lfSamplePercent),
       });
       if (err || !data) throw err ?? new Error("no data");
       lfRefusal.clear();
@@ -394,8 +416,34 @@ export function AdvancedPanel() {
                 onCheckedChange={setLfDebug}
               />
             </div>
+            <FormField
+              label={t(
+                "advanced.observability.sampleRate",
+                "Share of turns traced (%)",
+              )}
+              description={t(
+                "advanced.observability.sampleRateHint",
+                "Each turn is traced whole or not at all, and a turn left out cannot be found in Langfuse. Leave it empty to follow this deployment's default ({{percent}}%).",
+                { percent: lfDefaultPercent },
+              )}
+            >
+              <NumberInput
+                range={SAMPLE_PERCENT_RANGE}
+                optional
+                value={lfSamplePercent}
+                placeholder={lfDefaultPercent}
+                onChange={(e) => setLfSamplePercent(e.target.value)}
+              />
+            </FormField>
             <div className="flex justify-end">
-              <Button onClick={saveLangfuse} loading={lfSaving}>
+              <Button
+                onClick={saveLangfuse}
+                loading={lfSaving}
+                disabled={
+                  numberProblem(lfSamplePercent, SAMPLE_PERCENT_RANGE, true) !==
+                  null
+                }
+              >
                 {t("common.save", "Save")}
               </Button>
             </div>

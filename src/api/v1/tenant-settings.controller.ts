@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tRanged } from "@/api/lib/ranged";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import config from "@/config";
 import {
   ForbiddenError,
   NotFoundError,
@@ -34,6 +35,8 @@ import { spendCeilingUsage } from "@/modules/spend-ceiling/service";
 import { SPEND_CEILING_RANGES } from "@/modules/spend-ceiling/settings";
 import {
   getTenantSettings,
+  LANGFUSE_SAMPLE_RATE_RANGE,
+  type LangfuseSettings,
   updateApprovalLink,
   updateCompanySettings,
   updateEmbeddingSettings,
@@ -69,6 +72,21 @@ function rateField(what: string) {
   });
 }
 
+/**
+ * The Langfuse block as GET and PUT return it, with the deployment's rate beside the tenant's so the
+ * console can show what an empty rate follows.
+ */
+export function langfuseView(langfuse: LangfuseSettings) {
+  return {
+    enabled: langfuse.enabled,
+    credentialRef: langfuse.credentialRef,
+    sendContent: langfuse.sendContent,
+    debug: langfuse.debug,
+    sampleRate: langfuse.sampleRate,
+    defaultSampleRate: config.langfuse.sampleRate,
+  };
+}
+
 export const tenantSettingsController = new Elysia({
   prefix: "/v1/tenant-settings",
   tags: ["Settings"],
@@ -92,12 +110,7 @@ export const tenantSettingsController = new Elysia({
         approvalLink,
         spendCeiling,
         priceOverrides,
-        langfuse: {
-          enabled: langfuse.enabled,
-          credentialRef: langfuse.credentialRef,
-          sendContent: langfuse.sendContent,
-          debug: langfuse.debug,
-        },
+        langfuse: langfuseView(langfuse),
       };
     },
     {
@@ -159,12 +172,7 @@ export const tenantSettingsController = new Elysia({
       const langfuse = await updateLangfuse(ctxOrThrow(tenantContext), body);
       return {
         instance: instanceIdentity,
-        langfuse: {
-          enabled: langfuse.enabled,
-          credentialRef: langfuse.credentialRef,
-          sendContent: langfuse.sendContent,
-          debug: langfuse.debug,
-        },
+        langfuse: langfuseView(langfuse),
       };
     },
     {
@@ -191,6 +199,14 @@ export const tenantSettingsController = new Elysia({
             description:
               "Debug mode: also send the full tool schemas to every trace (heavy; tool names are always sent).",
           }),
+        ),
+        sampleRate: t.Optional(
+          t.Nullable(
+            tRanged(LANGFUSE_SAMPLE_RATE_RANGE, {
+              description:
+                "Share of turns traced, from 0 to 1. A turn is traced whole or not at all. null follows the deployment's LANGFUSE_SAMPLE_RATE (returned as defaultSampleRate).",
+            }),
+          ),
         ),
       }),
       detail: doc(

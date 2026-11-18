@@ -28,6 +28,8 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
         credentialRef: null,
         sendContent: false,
         debug: false,
+        sampleRate: null,
+        defaultSampleRate: 1,
       },
       spendCeiling: {
         enabled: false,

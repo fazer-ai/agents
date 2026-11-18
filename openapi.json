@@ -33511,6 +33511,15 @@
                   "debug": {
                     "description": "Debug mode: also send the full tool schemas to every trace (heavy; tool names are always sent).",
                     "type": "boolean"
+                  },
+                  "sampleRate": {
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Share of turns traced, from 0 to 1. A turn is traced whole or not at all. null follows the deployment's LANGFUSE_SAMPLE_RATE (returned as defaultSampleRate).",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -33537,6 +33546,15 @@
                   "debug": {
                     "description": "Debug mode: also send the full tool schemas to every trace (heavy; tool names are always sent).",
                     "type": "boolean"
+                  },
+                  "sampleRate": {
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Share of turns traced, from 0 to 1. A turn is traced whole or not at all. null follows the deployment's LANGFUSE_SAMPLE_RATE (returned as defaultSampleRate).",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -33563,6 +33581,15 @@
                   "debug": {
                     "description": "Debug mode: also send the full tool schemas to every trace (heavy; tool names are always sent).",
                     "type": "boolean"
+                  },
+                  "sampleRate": {
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Share of turns traced, from 0 to 1. A turn is traced whole or not at all. null follows the deployment's LANGFUSE_SAMPLE_RATE (returned as defaultSampleRate).",
+                    "type": [
+                      "number",
+                      "null"
+                    ]
                   }
                 }
               }

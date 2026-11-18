@@ -9,6 +9,7 @@ import {
   quotingReason,
   type TranslatedParam,
 } from "@/lib/errors";
+import { numberRange } from "@/lib/number-range";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { markUndisclosed, redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
@@ -74,6 +75,9 @@ export const EMBEDDING_DEFAULTS: EmbeddingSettings = {
   baseURL: null,
 };
 
+// The share of a tenant's turns traced to Langfuse.
+export const LANGFUSE_SAMPLE_RATE_RANGE = numberRange(0, 1);
+
 export const langfuseSettingsSchema = z.object({
   enabled: z.boolean(),
   // Vault ref of a `langfuse`-kind secret holding { publicKey, secretKey } (never inline here).
@@ -84,6 +88,12 @@ export const langfuseSettingsSchema = z.object({
   // Debug mode: also send the full tool schemas to every trace (heavy; off by default). Tool names
   // always travel regardless of this flag.
   debug: z.boolean(),
+  // Share of turns traced, 0 to 1. null follows the deployment's LANGFUSE_SAMPLE_RATE.
+  sampleRate: z
+    .number()
+    .min(LANGFUSE_SAMPLE_RATE_RANGE.min)
+    .max(LANGFUSE_SAMPLE_RATE_RANGE.max)
+    .nullable(),
 });
 export type LangfuseSettings = z.infer<typeof langfuseSettingsSchema>;
 
@@ -92,6 +102,7 @@ export const LANGFUSE_DEFAULTS: LangfuseSettings = {
   credentialRef: null,
   sendContent: false,
   debug: false,
+  sampleRate: null,
 };
 
 // The tenant's own identity as it appears on a document it issues: the letterhead. Lives here
@@ -372,6 +383,8 @@ export interface LangfuseUpdateInput {
   credentialRef?: string | null;
   sendContent?: boolean;
   debug?: boolean;
+  // null goes back to the deployment's default. Absent = keep current.
+  sampleRate?: number | null;
 }
 
 // Updates the langfuse block. credentialRef, when provided non-null, is validated against the vault
@@ -446,6 +459,7 @@ export async function updateLangfuse(
           credentialRef: b.credentialRef,
           sendContent: b.sendContent,
           debug: b.debug,
+          sampleRate: b.sampleRate,
         };
       }),
     },
@@ -461,6 +475,8 @@ export async function updateLangfuse(
             : live.credentialRef,
         sendContent: input.sendContent ?? live.sendContent,
         debug: input.debug ?? live.debug,
+        sampleRate:
+          input.sampleRate !== undefined ? input.sampleRate : live.sampleRate,
       });
     },
   );

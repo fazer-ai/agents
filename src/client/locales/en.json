@@ -84,6 +84,8 @@
       "debugHelp": "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
       "desc": "Send agent traces to Langfuse. Content is redacted unless you opt in.",
       "enabled": "Enable tracing",
+      "sampleRate": "Share of turns traced (%)",
+      "sampleRateHint": "Each turn is traced whole or not at all, and a turn left out cannot be found in Langfuse. Leave it empty to follow this deployment's default ({{percent}}%).",
       "saved": "Observability settings saved.",
       "saveError": "Could not save observability settings.",
       "sendContent": "Send message content (not just structure)",

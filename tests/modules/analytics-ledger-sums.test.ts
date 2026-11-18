@@ -556,6 +556,29 @@ describe.skipIf(!dbUp)("the ledger's quarter-hour sums", () => {
     }
   });
 
+  test("a tenant whose first row is stamped ahead of the safe mark starts no further than it", async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "lsums-ahead", slug: `lsums-ahead-${process.pid}` },
+    });
+    try {
+      await suDb.llmUsage.create({
+        data: {
+          tenantId: t.id,
+          source: "inbox",
+          model: "m-ahead",
+          costUsd: 1,
+          createdAt: new Date(NOW + DAY),
+        },
+      });
+      await sumUp(t.id);
+      const at = await summedUntil(t.id);
+      expect(at).not.toBeNull();
+      expect((at as Date).getTime()).toBeLessThanOrEqual(Date.now());
+    } finally {
+      await suDb.tenant.delete({ where: { id: t.id } });
+    }
+  });
+
   test("a re-price, a removal and a move of summed calls are in the figures at once and after the next run", async () => {
     const view = { since: new Date(FIRST), tz: "America/Sao_Paulo" };
     await suDb.$executeRaw(Prisma.sql`

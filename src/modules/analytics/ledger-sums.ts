@@ -398,7 +398,10 @@ export async function stepLedgerSums(
             Prisma.sql`SELECT LEAST((SELECT MIN(created_at) FROM llm_usage),
                                   (SELECT MIN(created_at) FROM conversations)) AS at`,
           );
-          from = first?.at ? floorDay(first.at.getTime()) : target;
+          // NOTE: never past the safe target, which a first row stamped ahead of it would put it.
+          from = first?.at
+            ? Math.min(floorDay(first.at.getTime()), target)
+            : target;
         }
         const to = Math.min(target, from + SLICE_MS);
         if (to > from) {

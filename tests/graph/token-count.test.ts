@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { countMessageTokens } from "@/graph/token-count";
+import {
+  AIMessage,
+  type BaseMessage,
+  HumanMessage,
+  ToolMessage,
+} from "@langchain/core/messages";
+import { datedHistory } from "@/graph/history-dates";
+import { selectHistoryWindow } from "@/graph/history-window";
+import { sentAtStamp } from "@/graph/markers";
+import { countMessageTokens, memoizedTokenCounter } from "@/graph/token-count";
+import { estimateTokens } from "@/lib/token-estimate";
 
 describe("countMessageTokens", () => {
   test("a longer message costs more than a shorter one", () => {
@@ -91,5 +100,95 @@ describe("countMessageTokens", () => {
     const got = countMessageTokens(new HumanMessage(text));
     expect(got).toBeGreaterThan(real * 0.7);
     expect(got).toBeLessThan(real * 1.3);
+  });
+});
+
+// The history ceiling counts the whole thread on every model call, and each turn loads the thread
+// from the checkpoint as new objects. What is estimated per call has to be what is new, not the
+// whole history.
+describe("memoizedTokenCounter", () => {
+  function thread(turns: number): BaseMessage[] {
+    const t0 = Date.parse("2026-11-01T12:00:00Z");
+    return Array.from({ length: turns }, (_, t) => [
+      new HumanMessage({
+        id: `h${t}`,
+        content: `mensagem ${t} `.repeat(8),
+        additional_kwargs: sentAtStamp(new Date(t0 + t * 60_000)),
+      }),
+      new AIMessage({
+        id: `a${t}`,
+        content: "",
+        tool_calls: [{ id: `c${t}`, name: "search_kb", args: { q: `q${t}` } }],
+      }),
+      new ToolMessage({
+        id: `t${t}`,
+        tool_call_id: `c${t}`,
+        content: `resultado ${t} `.repeat(60),
+      }),
+    ]).flat();
+  }
+
+  function counting() {
+    const seen: string[] = [];
+    const count = memoizedTokenCounter((text) => {
+      seen.push(text);
+      return estimateTokens(text);
+    });
+    return { count, seen };
+  }
+
+  test("a call on a longer history estimates only the messages it has not seen", () => {
+    const { count, seen } = counting();
+    const window = (h: BaseMessage[]) =>
+      selectHistoryWindow(h, 1_000_000, (m) =>
+        count(datedHistory([m], "America/Sao_Paulo")[0] as BaseMessage),
+      );
+    const first = window(thread(10));
+    expect(seen.length).toBe(30);
+    const sizes = [20, 80, 320];
+    for (const turns of sizes) {
+      const before = seen.length;
+      const previous = (sizes[sizes.indexOf(turns) - 1] ?? 10) * 3;
+      window(thread(turns));
+      expect(seen.length - before).toBe(turns * 3 - previous);
+    }
+    const before = seen.length;
+    const again = window(thread(10));
+    expect(seen.length).toBe(before);
+    expect(again.tokens).toBe(first.tokens);
+  });
+
+  test("returns what the unmemoized estimate returns", () => {
+    const { count } = counting();
+    for (const m of thread(5)) {
+      const fresh = countMessageTokens(m);
+      expect(count(m)).toBe(fresh);
+      expect(count(m)).toBe(fresh);
+    }
+  });
+
+  test("a message edited under the same id is estimated again, at its new size", () => {
+    const { count, seen } = counting();
+    const short = count(new HumanMessage({ id: "m1", content: "oi" }));
+    const long = count(
+      new HumanMessage({ id: "m1", content: "oi, tudo bem? ".repeat(50) }),
+    );
+    expect(seen.length).toBe(2);
+    expect(long).toBeGreaterThan(short * 10);
+    expect(count(new HumanMessage({ id: "m1", content: "oi" }))).toBe(short);
+    count(new HumanMessage({ id: "m1", content: "ok" }));
+    expect(seen).toEqual(["oi", "oi, tudo bem? ".repeat(50), "ok"]);
+  });
+
+  test("tool calls that change are a new text, even with the same empty content", () => {
+    const { count, seen } = counting();
+    const call = (q: string) =>
+      new AIMessage({
+        content: "",
+        tool_calls: [{ id: "c1", name: "search_kb", args: { q } }],
+      });
+    count(call("a"));
+    count(call("a much longer question about the schedule"));
+    expect(seen.length).toBe(2);
   });
 });

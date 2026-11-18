@@ -4,6 +4,7 @@ import { runtimePoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import { instrumentPool } from "@/lib/pool-stats";
+import { checkpointTypes } from "./checkpoint-bytea";
 
 // LangGraph checkpointer: a PostgresSaver in the dedicated `langgraph` schema (created by
 // scripts/db-bootstrap.sql, owned by the non-superuser runtime role). The thread_id prefix
@@ -26,6 +27,18 @@ function holder(): Holder {
   return g[KEY];
 }
 
+// The runtime pool's options, with the blobs parsed by ./checkpoint-bytea.ts, which keeps a long
+// thread's load off the event loop.
+function checkpointPoolOptions() {
+  return {
+    ...runtimePoolOptions(
+      config.langgraphDatabaseUrl ?? "",
+      config.langgraphPoolMax,
+    ),
+    types: checkpointTypes,
+  };
+}
+
 async function init(): Promise<PostgresSaver> {
   // Build the pool ourselves (mirrors PostgresSaver.fromConnString) so we can set `max` and the
   // lock timeout. The checkpointer is touched during every graph.invoke, so it needs about the
@@ -33,12 +46,7 @@ async function init(): Promise<PostgresSaver> {
   // (config.langgraphPoolMax, which follows DB_POOL_MAX unless set).
   const pool = instrumentPool(
     "checkpointer",
-    new Pool(
-      runtimePoolOptions(
-        config.langgraphDatabaseUrl ?? "",
-        config.langgraphPoolMax,
-      ),
-    ),
+    new Pool(checkpointPoolOptions()),
   );
   const saver = new PostgresSaver(pool, undefined, { schema: "langgraph" });
   try {

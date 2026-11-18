@@ -9,6 +9,7 @@ import {
   localDaySql,
   logWhereSql,
 } from "./filter";
+import { type Grain, windowGrain } from "./grain";
 import { sumsBounds } from "./ledger-sums";
 import { logFactsReady } from "./log-facts";
 import { normalizeTimeZone } from "./service";
@@ -52,7 +53,10 @@ export const TARGET_SQL = Prisma.sql`(CASE l.detail->>'assigned'
   END)`;
 
 export interface HandoffReasons {
-  // Conversations per cause per local day. One conversation counts once per cause and day.
+  // How `days` and `silenceDays` are grouped; `date` is the first local day of its group.
+  grain: Grain;
+  // Conversations per cause per local day (or week or month). One conversation counts once per cause
+  // and group.
   days: { date: string; cause: HandoffCause; conversations: number }[];
   totals: { cause: HandoffCause; conversations: number }[];
   // skip_reply calls per reason, the silences whether or not they handed anything over. "unrecorded"
@@ -140,6 +144,7 @@ export async function getHandoffReasons(
 ): Promise<HandoffReasons> {
   const tz = normalizeTimeZone(filter.tz);
   return runMetricsScoped(base, ctx, async (db) => {
+    const grain = await windowGrain(db, filter, tz);
     // One pass over the window's transfer lines, the cause worked out once per line, grouped three
     // ways: per day (set 1), for the period (set 3) and per where it went (set 2). Only a hand-over
     // line records where it went, so the target is NULL on every other line, and that group is not a
@@ -148,14 +153,14 @@ export async function getHandoffReasons(
     const facts = await logFactsReady(db);
     const lines = facts
       ? Prisma.sql`
-        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz, grain)} AS date,
                ${FACT_CAUSE_SQL} AS cause,
                l.target,
                l.conversation_id
           FROM dashboard_log_facts l
          WHERE l.kind = 'handoff' AND ${logWhereSql("l", filter)}`
       : Prisma.sql`
-        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz, grain)} AS date,
                ${CAUSE_SQL} AS cause,
                CASE WHEN l.stage = 'handoff' THEN ${TARGET_SQL} END AS target,
                l.conversation_id
@@ -184,11 +189,11 @@ export async function getHandoffReasons(
     // one (arguments that failed the schema, a precondition that did not hold) silenced nothing.
     const silenceLines = facts
       ? Prisma.sql`
-        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date, l.reason
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz, grain)} AS date, l.reason
           FROM dashboard_log_facts l
          WHERE l.kind = 'silence' AND ${logWhereSql("l", filter)}`
       : Prisma.sql`
-        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+        SELECT ${localDaySql(Prisma.sql`l.created_at`, tz, grain)} AS date,
                COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason
           FROM execution_logs l
          WHERE ${logWhereSql("l", filter)}
@@ -212,6 +217,7 @@ export async function getHandoffReasons(
     const known = (c: string): c is HandoffCause =>
       (HANDOFF_CAUSES as readonly string[]).includes(c);
     return {
+      grain,
       days: rows
         .filter((r) => known(r.cause))
         .map((r) => ({

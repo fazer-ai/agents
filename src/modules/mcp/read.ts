@@ -1219,13 +1219,20 @@ export async function logsExport(
 
 // ── dashboard metrics ──
 
-function metricsFilter(args: {
+type MetricsArgs = {
   since?: string;
+  until?: string;
+  tz?: string;
   source?: string;
   audience?: ClientAudience;
-}): MetricsFilter {
+};
+
+// The REST routes' filter. An unknown zone is refused by the read itself, as this tool's error.
+function metricsFilter(args: MetricsArgs): MetricsFilter {
   const filter: MetricsFilter = {};
   if (args.since) filter.since = new Date(args.since);
+  if (args.until) filter.until = new Date(args.until);
+  if (args.tz !== undefined) filter.tz = args.tz;
   if (args.source) filter.source = args.source as MetricsFilter["source"];
   if (args.audience) filter.audience = args.audience;
   return filter;
@@ -1233,14 +1240,14 @@ function metricsFilter(args: {
 
 export async function metricsGet(
   principal: VerifiedToken,
-  args: { since?: string; source?: string; audience?: ClientAudience },
+  args: MetricsArgs,
   deps: WriteDeps & { signal?: AbortSignal } = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? metricsPrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const filter = metricsFilter(args);
   try {
+    const filter = metricsFilter(args);
     // A cancelled call starts no read that has not started yet.
     const [kpis, usage] = await withAbortSignal(deps.signal, () =>
       Promise.all([
@@ -1256,15 +1263,15 @@ export async function metricsGet(
 
 export async function metricsTimeseries(
   principal: VerifiedToken,
-  args: { since?: string; source?: string; audience?: ClientAudience },
+  args: MetricsArgs,
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? metricsPrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const filter = metricsFilter(args);
   try {
-    return ok({ points: await getTimeseries(ctx, filter, base) });
+    const filter = metricsFilter(args);
+    return ok({ ...(await getTimeseries(ctx, filter, base)) });
   } catch (e) {
     return failOf(e);
   }

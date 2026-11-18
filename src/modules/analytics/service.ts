@@ -16,6 +16,7 @@ import {
   localDaySql,
   outcomeSql,
 } from "./filter";
+import { type Grain, windowGrain } from "./grain";
 import { histogramPercentile, ledgerCtesSql, sumsBounds } from "./ledger-sums";
 
 // Instance metrics for the operational dashboard. LLM tokens/calls are aggregated FROM THE LOCAL
@@ -441,10 +442,11 @@ export async function getKpis(
 }
 
 export interface TimeseriesPoint {
-  // Local day key (YYYY-MM-DD) in the requested timezone. See getTimeseries.
+  // Local day key (YYYY-MM-DD) in the requested timezone, or the first day of its week or month. See
+  // getTimeseries.
   bucket: string;
   calls: number;
-  // The funnel's conversations created that local day that the agent ran on. Feeds the
+  // The funnel's conversations created in the bucket that the agent ran on. Feeds the
   // cost-per-conversation line on the dashboard chart.
   conversations: number;
   promptTokens: number;
@@ -452,8 +454,15 @@ export interface TimeseriesPoint {
   cachedReadTokens: number;
 }
 
-// Daily LLM usage series for the dashboard chart, run INSIDE the scoped tx so RLS fences llm_usage
-// (never filter tenant_id by hand). `bucket` is a local day key (YYYY-MM-DD, as text) in `filter.tz`.
+export interface Timeseries {
+  // How the points are grouped (./grain.ts), taken from the window.
+  grain: Grain;
+  points: TimeseriesPoint[];
+}
+
+// LLM usage series per local day, week or month, run INSIDE the scoped tx so RLS fences llm_usage
+// (never filter tenant_id by hand). `bucket` is a local day key (YYYY-MM-DD, as text) in `filter.tz`,
+// the first day of its group.
 // created_at is `timestamp WITHOUT time zone` holding UTC wall-clock, so it is double-shifted:
 // `AT TIME ZONE 'UTC'` makes it an instant, then `AT TIME ZONE $tz` renders it in the target zone.
 // A single shift would read the stored value as already being in $tz.
@@ -461,9 +470,10 @@ export async function getTimeseries(
   ctx: TenantContext,
   filter: MetricsFilter = {},
   base: PrismaClient = metricsPrisma,
-): Promise<TimeseriesPoint[]> {
+): Promise<Timeseries> {
   const tz = normalizeTimeZone(filter.tz);
   return runMetricsScoped(base, ctx, async (db) => {
+    const grain = await windowGrain(db, filter, tz);
     const bounds = await sumsBounds(db, filter);
     const rows = await db.$queryRaw<
       {
@@ -475,7 +485,7 @@ export async function getTimeseries(
       }[]
     >(Prisma.sql`
       WITH ${ledgerCtesSql(filter, bounds)}
-      SELECT ${localDaySql(Prisma.sql`l.quarter`, tz)} AS bucket,
+      SELECT ${localDaySql(Prisma.sql`l.quarter`, tz, grain)} AS bucket,
              COALESCE(SUM(l.requests), 0)::int AS calls,
              COALESCE(SUM(l.prompt_tokens), 0)::bigint AS prompt,
              COALESCE(SUM(l.completion_tokens), 0)::bigint AS completion,
@@ -492,7 +502,8 @@ export async function getTimeseries(
           funnelCountsSql(
             view,
             await sumsBounds(db, view),
-            localDaySql(Prisma.sql`v.quarter`, tz),
+            localDaySql(Prisma.sql`v.quarter`, tz, grain),
+            { tz, grain },
           ),
         )
       : [];
@@ -507,16 +518,19 @@ export async function getTimeseries(
       ...new Set([...rows.map((r) => r.bucket), ...convByDay.keys()]),
     ].sort();
     const byDay = new Map(rows.map((r) => [r.bucket, r]));
-    return days.map((day) => {
-      const r = byDay.get(day);
-      return {
-        bucket: day,
-        calls: Number(r?.calls ?? 0),
-        conversations: convByDay.get(day) ?? 0,
-        promptTokens: Number(r?.prompt ?? 0),
-        completionTokens: Number(r?.completion ?? 0),
-        cachedReadTokens: Number(r?.cached ?? 0),
-      };
-    });
+    return {
+      grain,
+      points: days.map((day) => {
+        const r = byDay.get(day);
+        return {
+          bucket: day,
+          calls: Number(r?.calls ?? 0),
+          conversations: convByDay.get(day) ?? 0,
+          promptTokens: Number(r?.prompt ?? 0),
+          completionTokens: Number(r?.completion ?? 0),
+          cachedReadTokens: Number(r?.cached ?? 0),
+        };
+      }),
+    };
   });
 }

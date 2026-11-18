@@ -148,6 +148,8 @@ let tenantGone: string | null = null;
 let kpisFail = false;
 // The day the fixture's handoffs fall on.
 let handoffOn = "2026-10-01";
+// The grouping the handoffs route answers with; absent, as an answer from before it had one.
+let handoffGrain: "week" | "month" | undefined;
 // Holds the filter options' answer until released, to answer the metrics routes first.
 let optionsGate: Promise<void> | null = null;
 // The tenant's first record, which an all-time view starts from; null for none.
@@ -268,6 +270,7 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
     return json({
       instance: "i",
       handoffs: {
+        ...(handoffGrain ? { grain: handoffGrain } : {}),
         days: [{ date: handoffOn, cause: "person", conversations: 2 }],
         totals: [{ cause: "person", conversations: 2 }],
         silences: [{ reason: "needs_human", turns: 3 }],
@@ -415,6 +418,7 @@ beforeEach(() => {
   tenantGone = null;
   kpisFail = false;
   handoffOn = "2026-10-01";
+  handoffGrain = undefined;
   optionsGate = null;
   firstRecordAt = null;
   logExpired = false;
@@ -1116,6 +1120,33 @@ describe("silences and where the transfers went", () => {
       ...document.querySelectorAll(".sr-only > table caption"),
     ].map((c) => c.textContent);
     expect(tables).toContain("Silences by reason");
+  });
+});
+
+describe("a long window", () => {
+  test("draws the weeks the answer grouped, one row each, named by the week", async () => {
+    handoffGrain = "week";
+    handoffOn = "2026-09-28";
+    await renderDash("/?range=12m");
+    const table = () =>
+      [...document.querySelectorAll(".sr-only > table")].find(
+        (t) => t.querySelector("caption")?.textContent === "Handoffs by cause",
+      );
+    await waitFor(() => {
+      expect(table()?.querySelectorAll("tbody tr").length ?? 0).toBeGreaterThan(
+        0,
+      );
+    });
+    const head = table()?.querySelector("thead th")?.textContent;
+    expect(head).toBe("Week (starting Monday)");
+    const rows = [...(table()?.querySelectorAll("tbody tr") ?? [])].map((r) =>
+      [...r.querySelectorAll("th, td")].map((c) => c.textContent ?? ""),
+    );
+    // 365 days are 53 or 54 weeks, each keyed by its Monday.
+    expect(rows.length === 53 || rows.length === 54).toBe(true);
+    for (const [key] of rows)
+      expect(new Date(`${key}T12:00:00Z`).getUTCDay()).toBe(1);
+    expect(rows.find(([key]) => key === "2026-09-28")?.[1]).toBe("2");
   });
 });
 

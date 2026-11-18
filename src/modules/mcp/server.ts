@@ -1539,7 +1539,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
       },
       async (
-        args: { since?: string; source?: string; audience?: ClientAudience },
+        args: {
+          since?: string;
+          until?: string;
+          tz?: string;
+          source?: string;
+          audience?: ClientAudience;
+        },
         eff,
         signal,
       ) => writeContent(await metricsGet(eff, args, { signal })),
@@ -1551,15 +1557,23 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "metrics_timeseries",
       {
         description:
-          "Get the LLM usage timeseries (per-bucket calls and token counts). Optional since (ISO), source and audience.",
+          "LLM usage per local day, week (past 92 days) or month (past 730), per `grain`; tz is an IANA zone.",
         inputSchema: {
           since: z.string().optional(),
+          until: z.string().optional(),
+          tz: z.string().optional(),
           source: z.enum(["inbox", "playground", "client"]).optional(),
           audience: z.enum(CLIENT_AUDIENCES).optional(),
         },
       },
       async (
-        args: { since?: string; source?: string; audience?: ClientAudience },
+        args: {
+          since?: string;
+          until?: string;
+          tz?: string;
+          source?: string;
+          audience?: ClientAudience;
+        },
         eff,
       ) => writeContent(await metricsTimeseries(eff, args)),
     );

@@ -9,6 +9,7 @@ import {
   withRunsMark,
 } from "./conversation-sums";
 import { type DashboardFilter, localDaySql } from "./filter";
+import { type Grain, windowGrain } from "./grain";
 import { sumsBounds } from "./ledger-sums";
 import {
   normalizeTimeZone,
@@ -17,9 +18,10 @@ import {
   toCounts,
 } from "./service";
 
-// THE FUNNEL AS A TREND. One point per local day of the conversations' creation, each point the
-// funnel tile of a one-day window over the same conversations (`funnelCountsSql`), so a single-day
-// view reads the same number on the tile and on the line. A breakdown repeats the funnel once per
+// THE FUNNEL AS A TREND. One point per local day of the conversations' creation (or per week or
+// month of a long window, ./grain.ts), each point the funnel tile of a window of that day or group
+// over the same conversations (`funnelCountsSql`), so a single-day view reads the same number on the
+// tile and on the line. A breakdown repeats the funnel once per
 // agent or inbox, with that agent or inbox as the filter, which is exactly what clicking it applies
 // (`funnelSeriesSql` computes all of them at once).
 
@@ -37,6 +39,8 @@ export interface OutcomeSeries {
 }
 
 export interface OutcomeTrend {
+  // How the days are grouped; a point's `date` is the first local day of its group.
+  grain: Grain;
   totals: OutcomeCounts;
   days: OutcomeDay[];
   // Present when a breakdown was asked: one funnel per agent or inbox that has a conversation in the
@@ -53,6 +57,8 @@ export async function getOutcomeTrend(
   const tz = normalizeTimeZone(filter.tz);
   return runMetricsScoped(base, ctx, async (db) => {
     // Every count from the conversation counts (./conversation-sums.ts).
+    const grain = await windowGrain(db, filter, tz);
+    const group = { tz, grain };
     const view = await withRunsMark(db, filter);
     const bounds = await sumsBounds(db, view);
     const [total] = await db.$queryRaw<OutcomeRow[]>(
@@ -60,18 +66,25 @@ export async function getOutcomeTrend(
     );
     const days = (
       await db.$queryRaw<OutcomeRow[]>(
-        funnelCountsSql(view, bounds, localDaySql(Prisma.sql`v.quarter`, tz)),
+        funnelCountsSql(
+          view,
+          bounds,
+          localDaySql(Prisma.sql`v.quarter`, tz, grain),
+          group,
+        ),
       )
     )
       .map((r) => ({ date: String(r.key), ...toCounts(r) }))
       .sort((a, b) => a.date.localeCompare(b.date));
-    if (!breakdown) return { totals: toCounts(total), days };
+    if (!breakdown) return { grain, totals: toCounts(total), days };
     const rows = await db.$queryRaw<(OutcomeRow & { member: string })[]>(
       funnelSeriesSql(
         view,
         bounds,
         breakdown,
-        localDaySql(Prisma.sql`r.quarter`, tz),
+        localDaySql(Prisma.sql`r.quarter`, tz, grain),
+        false,
+        group,
       ),
     );
     const ids = [...new Set(rows.map((r) => r.member))]
@@ -109,6 +122,6 @@ export async function getOutcomeTrend(
     series.sort(
       (a, b) => b.totals.total - a.totals.total || a.key.localeCompare(b.key),
     );
-    return { totals: toCounts(total), days, series };
+    return { grain, totals: toCounts(total), days, series };
   });
 }

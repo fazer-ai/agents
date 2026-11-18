@@ -1,8 +1,10 @@
 import { X } from "lucide-react";
 import {
+  createContext,
   type ReactElement,
   type RefObject,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -38,6 +40,7 @@ import {
   stackSummary,
   type TooltipSummary,
 } from "./chart-series";
+import { type Grain, periodLabels } from "./period";
 import type { DayState } from "./useMetrics";
 
 // The dashboard's charts, in their own chunk (recharts is heavy and only this page draws). Colours
@@ -216,6 +219,7 @@ function StateLegend({
   ids: { noData: string };
 }) {
   const { t } = useTranslation();
+  const grain = useContext(ChartGrain);
   const noData = data.filter((r) => r.state === "noData").length;
   if (noData === 0) return null;
   const swatch = (id: string, stroke: string) => (
@@ -235,9 +239,19 @@ function StateLegend({
       {noData > 0 && (
         <li className="inline-flex items-center gap-1.5">
           {swatch(ids.noData, p.noData)}
-          {t("dashboard.chart.noDataDays", "no data · {{count}} days", {
-            count: noData,
-          })}
+          {grain === "week"
+            ? t("dashboard.chart.noDataWeeks", "no data · {{count}} weeks", {
+                count: noData,
+              })
+            : grain === "month"
+              ? t(
+                  "dashboard.chart.noDataMonths",
+                  "no data · {{count}} months",
+                  { count: noData },
+                )
+              : t("dashboard.chart.noDataDays", "no data · {{count}} days", {
+                  count: noData,
+                })}
         </li>
       )}
     </ul>
@@ -262,9 +276,28 @@ function usePatternIds() {
   return { noData: `nodata-${id}` };
 }
 
-function dayLabel(lang: string) {
-  const f = new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" });
-  return (key: string) => f.format(new Date(`${key}T00:00:00`));
+// What one point of the chart is (a day, a week, a month) and which days of the window its edge
+// groups hold, for the labels, the totals and the no-data legend inside it.
+const ChartGrain = createContext<Grain>("day");
+
+type Bounds = { first: string | null; last: string } | null;
+
+function usePeriod(lang: string, grain: Grain, bounds: Bounds | undefined) {
+  const { t } = useTranslation();
+  // The word between the two days of a week: "Mar 9 to 15", "9 a 15 de mar.".
+  const to = t("dashboard.chart.rangeTo", "to");
+  const first = bounds?.first ?? null;
+  const last = bounds?.last ?? null;
+  return useMemo(
+    () =>
+      periodLabels(
+        lang,
+        grain,
+        last === null ? null : { first, last: last as string },
+        to,
+      ),
+    [lang, grain, first, last, to],
+  );
 }
 
 type TooltipEntry = {
@@ -275,9 +308,14 @@ type TooltipEntry = {
 
 function useChartText() {
   const { t } = useTranslation();
+  const grain = useContext(ChartGrain);
   return {
     total: (value: string) =>
-      t("dashboard.chart.total", "Day total {{value}}", { value }),
+      grain === "week"
+        ? t("dashboard.chart.weekTotal", "Week total {{value}}", { value })
+        : grain === "month"
+          ? t("dashboard.chart.monthTotal", "Month total {{value}}", { value })
+          : t("dashboard.chart.total", "Day total {{value}}", { value }),
     others: (count: number) =>
       t("dashboard.chart.otherLines", "Others ({{count}})", { count }),
     clickForAll: t("dashboard.chart.clickForAll", "Click to see every series"),
@@ -378,7 +416,7 @@ function TooltipCard({
       }}
     >
       <div className="flex items-baseline justify-between gap-4">
-        <span className="recharts-tooltip-label">{head}</span>
+        <span className="recharts-tooltip-label whitespace-nowrap">{head}</span>
         {total !== null && (
           <span className="font-medium tabular-nums">{text.total(total)}</span>
         )}
@@ -513,6 +551,8 @@ export function LineTrend({
   compareLabel,
   onPick,
   height = 260,
+  grain = "day",
+  bounds,
 }: {
   data: ChartRow[];
   series: SeriesDef[];
@@ -522,9 +562,12 @@ export function LineTrend({
   compareLabel?: string;
   onPick?: (day: string, seriesKey?: string) => void;
   height?: number;
+  // What a point is (the answer's `grain`), and the window's first and last day for the edge groups.
+  grain?: Grain;
+  bounds?: Bounds;
 }) {
   const p = useChartPalette();
-  const day = useMemo(() => dayLabel(lang), [lang]);
+  const period = usePeriod(lang, grain, bounds);
   const text = useDayStateText();
   const chartText = useChartText();
   const ids = usePatternIds();
@@ -581,135 +624,137 @@ export function LineTrend({
     />
   );
   return (
-    <div className="flex w-full flex-col gap-2">
-      <div
-        style={{ height }}
-        // A line between its points lets the click through to the day's column under it.
-        className="relative w-full [&_.recharts-line-curve]:pointer-events-none"
-        // The drawing only: a screen reader reads the block's table instead, and still reaches the
-        // legend and the day detail.
-        aria-hidden="true"
-      >
-        <StatePatterns ids={ids} p={p} />
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart
-            data={plotted(data, series)}
-            margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
-            style={onPick ? { cursor: "pointer" } : undefined}
-          >
-            <CartesianGrid
-              stroke={p.grid}
-              strokeDasharray="3 3"
-              vertical={false}
-            />
-            <XAxis
-              dataKey="day"
-              // Bands, so a single day still loading has a width to mark, and the points sit mid-band.
-              scale="band"
-              tickFormatter={day}
-              stroke={p.axis}
-              tick={{ fill: p.axis, fontSize: 11 }}
-              minTickGap={24}
-            />
-            <YAxis
-              stroke={p.axis}
-              tick={{ fill: p.axis, fontSize: 11 }}
-              tickFormatter={format}
-              width={AXIS_WIDTH}
-              domain={[0, settled]}
-            />
-            {stateBands(data, ids, p, text)}
-            <Tooltip
-              // Every series is null on a day under a band, and the tooltip is what says why.
-              filterNull={false}
-              wrapperStyle={TOOLTIP_WRAPPER}
-              content={({ active, label, payload }) => {
-                if (!active || label === undefined) return null;
-                const entries = (payload ?? []) as readonly TooltipEntry[];
-                const values = valuesOf(entries);
-                const row = entries[0]?.payload;
-                const ready = !row?.state || row.state === "ready";
-                return (
-                  <TooltipCard
-                    head={withState(
-                      day(String(label)),
-                      stateOf.get(String(label)),
-                      text,
-                    )}
-                    total={null}
-                    summary={
-                      ready
-                        ? lineSummary(
-                            arranged.kept.map((s) => {
-                              const prevKey = compare?.[s.key];
-                              return {
-                                key: s.key,
-                                label: s.label,
-                                color: colorOf(s.key),
-                                value: values.get(s.key),
-                                compared:
-                                  !!prevKey &&
-                                  !!compareLabel &&
-                                  typeof row?.[prevKey] === "number",
-                              };
-                            }),
-                            arranged.folded.length,
-                          )
-                        : null
-                    }
-                    describe={describeRow}
-                    note={(r) => compareNote(r, row)}
-                    hint={null}
-                    p={p}
-                  />
-                );
-              }}
-            />
-            {series.length === 0 && (
-              <Line
-                dataKey={NONE}
-                tooltipType="none"
-                stroke="none"
-                dot={false}
-                activeDot={false}
-                isAnimationActive={false}
+    <ChartGrain.Provider value={grain}>
+      <div className="flex w-full flex-col gap-2">
+        <div
+          style={{ height }}
+          // A line between its points lets the click through to the day's column under it.
+          className="relative w-full [&_.recharts-line-curve]:pointer-events-none"
+          // The drawing only: a screen reader reads the block's table instead, and still reaches the
+          // legend and the day detail.
+          aria-hidden="true"
+        >
+          <StatePatterns ids={ids} p={p} />
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={plotted(data, series)}
+              margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
+              style={onPick ? { cursor: "pointer" } : undefined}
+            >
+              <CartesianGrid
+                stroke={p.grid}
+                strokeDasharray="3 3"
+                vertical={false}
               />
-            )}
-            {arranged.folded.map((s) => line(s, true))}
-            {arranged.kept.map((s) => line(s, false))}
-            {onPick && (
-              <DayHits
-                days={data.map((r) => r.day)}
-                onPick={(d) => onPick(d)}
-                pad={POINT_PAD}
+              <XAxis
+                dataKey="day"
+                // Bands, so a single day still loading has a width to mark, and the points sit mid-band.
+                scale="band"
+                tickFormatter={period.tick}
+                stroke={p.axis}
+                tick={{ fill: p.axis, fontSize: 11 }}
+                minTickGap={24}
               />
-            )}
-          </LineChart>
-        </ResponsiveContainer>
+              <YAxis
+                stroke={p.axis}
+                tick={{ fill: p.axis, fontSize: 11 }}
+                tickFormatter={format}
+                width={AXIS_WIDTH}
+                domain={[0, settled]}
+              />
+              {stateBands(data, ids, p, text)}
+              <Tooltip
+                // Every series is null on a day under a band, and the tooltip is what says why.
+                filterNull={false}
+                wrapperStyle={TOOLTIP_WRAPPER}
+                content={({ active, label, payload }) => {
+                  if (!active || label === undefined) return null;
+                  const entries = (payload ?? []) as readonly TooltipEntry[];
+                  const values = valuesOf(entries);
+                  const row = entries[0]?.payload;
+                  const ready = !row?.state || row.state === "ready";
+                  return (
+                    <TooltipCard
+                      head={withState(
+                        period.long(String(label)),
+                        stateOf.get(String(label)),
+                        text,
+                      )}
+                      total={null}
+                      summary={
+                        ready
+                          ? lineSummary(
+                              arranged.kept.map((s) => {
+                                const prevKey = compare?.[s.key];
+                                return {
+                                  key: s.key,
+                                  label: s.label,
+                                  color: colorOf(s.key),
+                                  value: values.get(s.key),
+                                  compared:
+                                    !!prevKey &&
+                                    !!compareLabel &&
+                                    typeof row?.[prevKey] === "number",
+                                };
+                              }),
+                              arranged.folded.length,
+                            )
+                          : null
+                      }
+                      describe={describeRow}
+                      note={(r) => compareNote(r, row)}
+                      hint={null}
+                      p={p}
+                    />
+                  );
+                }}
+              />
+              {series.length === 0 && (
+                <Line
+                  dataKey={NONE}
+                  tooltipType="none"
+                  stroke="none"
+                  dot={false}
+                  activeDot={false}
+                  isAnimationActive={false}
+                />
+              )}
+              {arranged.folded.map((s) => line(s, true))}
+              {arranged.kept.map((s) => line(s, false))}
+              {onPick && (
+                <DayHits
+                  days={data.map((r) => r.day)}
+                  onPick={(d) => onPick(d)}
+                  pad={POINT_PAD}
+                />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <SeriesLegend
+          mark="line"
+          p={p}
+          items={[
+            ...arranged.kept.map((s) => ({
+              key: s.key,
+              label: s.label,
+              color: colorOf(s.key),
+            })),
+            ...(arranged.folded.length > 0
+              ? [
+                  {
+                    key: OTHER_KEY,
+                    label: groupName,
+                    color: p.other,
+                    members: arranged.folded,
+                  },
+                ]
+              : []),
+          ]}
+        />
+        <StateLegend data={data} p={p} ids={ids} />
       </div>
-      <SeriesLegend
-        mark="line"
-        p={p}
-        items={[
-          ...arranged.kept.map((s) => ({
-            key: s.key,
-            label: s.label,
-            color: colorOf(s.key),
-          })),
-          ...(arranged.folded.length > 0
-            ? [
-                {
-                  key: OTHER_KEY,
-                  label: groupName,
-                  color: p.other,
-                  members: arranged.folded,
-                },
-              ]
-            : []),
-        ]}
-      />
-      <StateLegend data={data} p={p} ids={ids} />
-    </div>
+    </ChartGrain.Provider>
   );
 }
 
@@ -991,6 +1036,8 @@ export function StackedBars({
   format,
   onPick,
   height = 260,
+  grain = "day",
+  bounds,
 }: {
   data: ChartRow[];
   series: SeriesDef[];
@@ -998,9 +1045,11 @@ export function StackedBars({
   format: (v: number) => string;
   onPick?: (day: string) => void;
   height?: number;
+  grain?: Grain;
+  bounds?: Bounds;
 }) {
   const p = useChartPalette();
-  const day = useMemo(() => dayLabel(lang), [lang]);
+  const period = usePeriod(lang, grain, bounds);
   const text = useDayStateText();
   const chartText = useChartText();
   const ids = usePatternIds();
@@ -1038,156 +1087,160 @@ export function StackedBars({
   };
   const pickedRow = picked ? data.find((r) => r.day === picked) : undefined;
   return (
-    <div className="flex w-full flex-col gap-2">
-      <div style={{ height }} className="relative w-full">
-        <div
-          className="absolute inset-0"
-          // The drawing only: a screen reader reads the block's table instead, and still reaches the
-          // days, the legend and the day detail.
-          aria-hidden="true"
-        >
-          <StatePatterns ids={ids} p={p} />
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              // Recharts stacks the bars in the order they first registered, so a new ranking or a new
-              // group draws a new chart rather than a legend that disagrees with the stack.
-              key={drawn.map((s) => s.key).join("|")}
-              data={plotted(arranged.rows, drawn)}
-              margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
-              style={{ cursor: "pointer" }}
-            >
-              <CartesianGrid
-                stroke={p.grid}
-                strokeDasharray="3 3"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="day"
-                tickFormatter={day}
-                stroke={p.axis}
-                tick={{ fill: p.axis, fontSize: 11 }}
-                minTickGap={24}
-              />
-              <YAxis
-                stroke={p.axis}
-                tick={{ fill: p.axis, fontSize: 11 }}
-                tickFormatter={format}
-                width={AXIS_WIDTH}
-                domain={[0, settled]}
-              />
-              {stateBands(data, ids, p, text)}
-              <Tooltip
-                // Every series is null on a day under a band, and the tooltip is what says why.
-                filterNull={false}
-                cursor={{ fill: p.grid, opacity: 0.4 }}
-                wrapperStyle={TOOLTIP_WRAPPER}
-                content={({ active, label, payload }) => {
-                  if (!active || label === undefined) return null;
-                  const entries = (payload ?? []) as readonly TooltipEntry[];
-                  const values = valuesOf(entries);
-                  const row = entries[0]?.payload;
-                  const ready = !row?.state || row.state === "ready";
-                  const total = drawn.reduce((a, s) => {
-                    const v = values.get(s.key);
-                    return a + (typeof v === "number" ? v : 0);
-                  }, 0);
-                  return (
-                    <TooltipCard
-                      head={withState(
-                        day(String(label)),
-                        stateOf.get(String(label)),
-                        text,
-                      )}
-                      total={ready && drawn.length > 0 ? format(total) : null}
-                      summary={
-                        ready
-                          ? stackSummary(
-                              arranged.kept.map((s) => ({
-                                key: s.key,
-                                label: s.label,
-                                color: colorOf(s.key),
-                                value: values.get(s.key),
-                              })),
-                              arranged.folded.length > 0
-                                ? {
-                                    count: arranged.folded.length,
-                                    value: values.get(OTHER_KEY),
-                                  }
-                                : null,
-                            )
-                          : null
-                      }
-                      describe={(r) => format(r.value ?? 0)}
-                      hint={
-                        ready && drawn.length > 0 ? chartText.clickForAll : null
-                      }
-                      p={p}
-                    />
-                  );
-                }}
-              />
-              {drawn.length === 0 && (
-                <Bar
-                  dataKey={NONE}
-                  tooltipType="none"
-                  isAnimationActive={false}
+    <ChartGrain.Provider value={grain}>
+      <div className="flex w-full flex-col gap-2">
+        <div style={{ height }} className="relative w-full">
+          <div
+            className="absolute inset-0"
+            // The drawing only: a screen reader reads the block's table instead, and still reaches the
+            // days, the legend and the day detail.
+            aria-hidden="true"
+          >
+            <StatePatterns ids={ids} p={p} />
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                // Recharts stacks the bars in the order they first registered, so a new ranking or a new
+                // group draws a new chart rather than a legend that disagrees with the stack.
+                key={drawn.map((s) => s.key).join("|")}
+                data={plotted(arranged.rows, drawn)}
+                margin={{ top: 8, right: RIGHT_MARGIN, bottom: 0, left: 0 }}
+                style={{ cursor: "pointer" }}
+              >
+                <CartesianGrid
+                  stroke={p.grid}
+                  strokeDasharray="3 3"
+                  vertical={false}
                 />
-              )}
-              {drawn.map((s) => (
-                <Bar
-                  key={s.key}
-                  dataKey={s.key}
-                  name={s.label}
-                  stackId="day"
-                  fill={colorOf(s.key)}
-                  isAnimationActive={false}
-                  // A segment sits above its day's column, so it names its day itself, from its row.
-                  onClick={(bar) => {
-                    const d = (bar as { payload?: ChartRow }).payload?.day;
-                    if (typeof d === "string") pick(d);
+                <XAxis
+                  dataKey="day"
+                  tickFormatter={period.tick}
+                  stroke={p.axis}
+                  tick={{ fill: p.axis, fontSize: 11 }}
+                  minTickGap={24}
+                />
+                <YAxis
+                  stroke={p.axis}
+                  tick={{ fill: p.axis, fontSize: 11 }}
+                  tickFormatter={format}
+                  width={AXIS_WIDTH}
+                  domain={[0, settled]}
+                />
+                {stateBands(data, ids, p, text)}
+                <Tooltip
+                  // Every series is null on a day under a band, and the tooltip is what says why.
+                  filterNull={false}
+                  cursor={{ fill: p.grid, opacity: 0.4 }}
+                  wrapperStyle={TOOLTIP_WRAPPER}
+                  content={({ active, label, payload }) => {
+                    if (!active || label === undefined) return null;
+                    const entries = (payload ?? []) as readonly TooltipEntry[];
+                    const values = valuesOf(entries);
+                    const row = entries[0]?.payload;
+                    const ready = !row?.state || row.state === "ready";
+                    const total = drawn.reduce((a, s) => {
+                      const v = values.get(s.key);
+                      return a + (typeof v === "number" ? v : 0);
+                    }, 0);
+                    return (
+                      <TooltipCard
+                        head={withState(
+                          period.long(String(label)),
+                          stateOf.get(String(label)),
+                          text,
+                        )}
+                        total={ready && drawn.length > 0 ? format(total) : null}
+                        summary={
+                          ready
+                            ? stackSummary(
+                                arranged.kept.map((s) => ({
+                                  key: s.key,
+                                  label: s.label,
+                                  color: colorOf(s.key),
+                                  value: values.get(s.key),
+                                })),
+                                arranged.folded.length > 0
+                                  ? {
+                                      count: arranged.folded.length,
+                                      value: values.get(OTHER_KEY),
+                                    }
+                                  : null,
+                              )
+                            : null
+                        }
+                        describe={(r) => format(r.value ?? 0)}
+                        hint={
+                          ready && drawn.length > 0
+                            ? chartText.clickForAll
+                            : null
+                        }
+                        p={p}
+                      />
+                    );
                   }}
                 />
-              ))}
-              <DayHits days={days} onPick={pick} />
-            </BarChart>
-          </ResponsiveContainer>
+                {drawn.length === 0 && (
+                  <Bar
+                    dataKey={NONE}
+                    tooltipType="none"
+                    isAnimationActive={false}
+                  />
+                )}
+                {drawn.map((s) => (
+                  <Bar
+                    key={s.key}
+                    dataKey={s.key}
+                    name={s.label}
+                    stackId="day"
+                    fill={colorOf(s.key)}
+                    isAnimationActive={false}
+                    // A segment sits above its day's column, so it names its day itself, from its row.
+                    onClick={(bar) => {
+                      const d = (bar as { payload?: ChartRow }).payload?.day;
+                      if (typeof d === "string") pick(d);
+                    }}
+                  />
+                ))}
+                <DayHits days={days} onPick={pick} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <DayKeys
+            days={days}
+            picked={picked}
+            label={(d) => period.long(d)}
+            onPick={pick}
+            buttons={dayButtons}
+          />
         </div>
-        <DayKeys
-          days={days}
-          picked={picked}
-          label={(d) => day(d)}
-          onPick={pick}
-          buttons={dayButtons}
-        />
-      </div>
-      <SeriesLegend
-        mark="bar"
-        p={p}
-        items={drawn.map((s) => ({
-          key: s.key,
-          label: s.label,
-          color: colorOf(s.key),
-          ...(s.key === OTHER_KEY ? { members: arranged.folded } : {}),
-        }))}
-      />
-      <StateLegend data={data} p={p} ids={ids} />
-      {pickedRow && (
-        <DayDetail
-          // A new day is a new detail: it takes the focus again, while a streamed update of the same
-          // day leaves the focus where it is.
-          key={pickedRow.day}
-          row={pickedRow}
-          head={withState(day(pickedRow.day), pickedRow.state, text)}
-          kept={arranged.kept}
-          folded={arranged.folded}
-          colorOf={colorOf}
-          format={format}
-          lang={lang}
-          onClose={closeDetail}
-          box={detailBox}
+        <SeriesLegend
+          mark="bar"
           p={p}
+          items={drawn.map((s) => ({
+            key: s.key,
+            label: s.label,
+            color: colorOf(s.key),
+            ...(s.key === OTHER_KEY ? { members: arranged.folded } : {}),
+          }))}
         />
-      )}
-    </div>
+        <StateLegend data={data} p={p} ids={ids} />
+        {pickedRow && (
+          <DayDetail
+            // A new day is a new detail: it takes the focus again, while a streamed update of the same
+            // day leaves the focus where it is.
+            key={pickedRow.day}
+            row={pickedRow}
+            head={withState(period.long(pickedRow.day), pickedRow.state, text)}
+            kept={arranged.kept}
+            folded={arranged.folded}
+            colorOf={colorOf}
+            format={format}
+            lang={lang}
+            onClose={closeDetail}
+            box={detailBox}
+            p={p}
+          />
+        )}
+      </div>
+    </ChartGrain.Provider>
   );
 }

@@ -11,6 +11,7 @@ import {
   withRunsMark,
 } from "./conversation-sums";
 import { type DashboardFilter, localDaySql, localDayStartSql } from "./filter";
+import { type Grain, windowGrain } from "./grain";
 import { ledgerCtesSql, sumsBounds } from "./ledger-sums";
 import { normalizeTimeZone, type OutcomeRow } from "./service";
 
@@ -39,6 +40,8 @@ export interface CostDay {
 }
 
 export interface DashboardCosts {
+  // How `days` and its splits are grouped (./grain.ts); `date` is the first local day of its group.
+  grain: Grain;
   totalCostUsd: number;
   // The period as a whole, from the same rows: requests, tokens, and the distinct conversations the
   // calls belonged to (and how many of them the agent resolved), so the per-conversation figures of
@@ -49,7 +52,8 @@ export interface DashboardCosts {
   resolvedConversations: number;
   costPerConversation: number | null;
   costPerResolvedConversation: number | null;
-  // Local days in the request's timezone, the same buckets as the calls series.
+  // Local days in the request's timezone, or the weeks or months of `grain`: the same buckets as the
+  // calls series.
   days: CostDay[];
   // The same days split by model and by call type (`llm_usage.node`), so a stacked chart's segments
   // add up to the day above. Only priced rows: an unpriced call has no segment to draw.
@@ -153,6 +157,7 @@ export async function getDashboardCosts(
       // offset is a whole number of quarter hours, so a quarter falls in one local day. The sums are
       // added up per (day, model, node) first, which every grouping set below is coarser than, so the
       // sets run over a few thousand rows. Sums are decimal, so adding them up again is exact.
+      const grain = await windowGrain(db, filter, tz);
       const bounds = await sumsBounds(db, filter);
       const sums = await db.$queryRaw<
         {
@@ -169,7 +174,7 @@ export async function getDashboardCosts(
       >(Prisma.sql`
         WITH ${ledgerCtesSql(filter, bounds)},
         d AS MATERIALIZED (
-          SELECT ${localDayStartSql(Prisma.sql`l.quarter`, tz)} AS day, l.model, l.node,
+          SELECT ${localDayStartSql(Prisma.sql`l.quarter`, tz, grain)} AS day, l.model, l.node,
                  SUM(l.cost_usd) AS cost,
                  SUM(l.requests) AS requests,
                  SUM(l.unpriced) AS unpriced,
@@ -199,7 +204,8 @@ export async function getDashboardCosts(
             funnelCountsSql(
               view,
               viewBounds,
-              localDaySql(Prisma.sql`v.quarter`, tz),
+              localDaySql(Prisma.sql`v.quarter`, tz, grain),
+              { tz, grain },
             ),
           )
         : [];
@@ -261,7 +267,7 @@ export async function getDashboardCosts(
         conversations: Number(wholeConvs?.conversations ?? 0),
         resolved: Number(wholeConvs?.resolved ?? 0),
       };
-      return { days, models, byModelDays, byNodeDays, period };
+      return { grain, days, models, byModelDays, byNodeDays, period };
     }),
     tenantId === null
       ? Promise.resolve(null)
@@ -306,6 +312,7 @@ export async function getDashboardCosts(
   const conversations = Number(figures.period?.conversations ?? 0);
   const resolvedConversations = Number(figures.period?.resolved ?? 0);
   return {
+    grain: figures.grain,
     totalCostUsd,
     requests: Number(figures.period?.requests ?? 0),
     tokens: {

@@ -31,14 +31,19 @@ import {
 import type { ChartRow } from "./charts";
 import {
   type DashboardFilters,
-  daysOf,
   drillDownHref,
   METRIC_DRILL,
+  periodsOf,
   type TrendMetric,
   trendPointHref,
   type Window,
 } from "./filters";
-import { dayState, useMetricsBlock, withComparison } from "./useMetrics";
+import {
+  dayState,
+  useMetricsBlock,
+  usePeriodColumn,
+  withComparison,
+} from "./useMetrics";
 
 const LineTrend = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.LineTrend })),
@@ -280,10 +285,14 @@ export function PerformanceSection({
   const periodHref = (m: Metric) =>
     drillDownHref(filters, { since: win.since, until: win.until }, DRILL[m]);
 
-  // The chart's rows: every day of the window, the previous period's value at the same position.
+  // The chart's rows: every day of the window (or week or month, as the answer says), the previous
+  // period's value at the same position.
   const tr = trend.data;
-  const days = daysOf(win, tr?.days[0]?.date ?? null);
-  const prevDays = prev ? daysOf(prev) : [];
+  const grain = tr?.grain ?? "day";
+  const bounds = { first: win.firstDay, last: win.lastDay };
+  const periodColumn = usePeriodColumn(grain);
+  const days = periodsOf(win, grain, tr?.days[0]?.date ?? null);
+  const prevDays = prev ? periodsOf(prev, prevTrend.data?.grain ?? grain) : [];
   const prevByDay = new Map(prevTrend.data?.days.map((d) => [d.date, d]) ?? []);
   const byDay = new Map(tr?.days.map((d) => [d.date, d]) ?? []);
   const seriesDefs =
@@ -296,7 +305,7 @@ export function PerformanceSection({
     const row: ChartRow = {
       day,
       prevDay: prevDays[i] ?? null,
-      state: dayState(trend.coverage, day),
+      state: dayState(trend.coverage, day, grain),
     };
     if (breakdown === "none") {
       for (const m of [
@@ -333,7 +342,7 @@ export function PerformanceSection({
   const table: BlockTable = {
     name: "dashboard-outcomes",
     header: [
-      t("dashboard.col.day", "Day"),
+      periodColumn,
       ...seriesDefs.map((s) => s.label),
       ...(compare
         ? seriesDefs.map((s) =>
@@ -590,7 +599,7 @@ export function PerformanceSection({
         title={t("dashboard.trend.title", "Funnel over time")}
         help={t(
           "dashboard.trend.help",
-          "One point per day of the conversations that started that day, so a one-day period shows the same rate on the tile and on the line. Click a point to open those conversations. A day with no conversations has no rate and is left blank.",
+          "One point per day of the conversations that started that day, so a one-day period shows the same rate on the tile and on the line. Click a point to open those conversations. A day with no conversations has no rate and is left blank. Past 92 days a point is a week, starting on Monday, and past two years a month.",
         )}
         chart
         table={table}
@@ -644,9 +653,14 @@ export function PerformanceSection({
               format={(v) => pf(v)}
               compare={compare}
               compareLabel={t("dashboard.previousPeriod", "previous period")}
+              grain={grain}
+              bounds={bounds}
               onPick={(day, seriesKey) =>
                 navigate(
-                  trendPointHref(filters, day, breakdown, metric, seriesKey),
+                  trendPointHref(filters, day, breakdown, metric, seriesKey, {
+                    grain,
+                    bounds,
+                  }),
                 )
               }
             />

@@ -14,6 +14,7 @@ import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import {
   dashboardFilterQuery,
+  GRAIN_NOTE,
   METRICS_NOTE,
   parseDashboardFilter,
 } from "@/api/v1/dashboard.controller";
@@ -849,11 +850,11 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/timeseries",
     async ({ tenantContext, query }) => {
-      const points = await getTimeseries(
+      const series = await getTimeseries(
         ctxOrThrow(tenantContext),
         parseDashboardFilter(query),
       );
-      return { instance: instanceIdentity, points };
+      return { instance: instanceIdentity, ...series };
     },
     {
       query: t.Object(dashboardFilterQuery),
@@ -861,7 +862,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       detail: {
         ...doc(
           "Metrics timeseries",
-          "Returns a timeseries of instance metrics since an optional start time, scoped by usage source.",
+          `Returns the LLM usage per local day, week or month since an optional start time, scoped by usage source. ${GRAIN_NOTE}`,
         ),
         tags: ["Dashboard"],
       },
@@ -882,7 +883,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       detail: {
         ...doc(
           "Cost metrics",
-          `Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured. ${METRICS_NOTE}`,
+          `Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, week or month, per model, the calls no price covered, and the Langfuse link when configured. ${GRAIN_NOTE} ${METRICS_NOTE}`,
         ),
         tags: ["Dashboard"],
       },

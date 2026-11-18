@@ -151,6 +151,36 @@ describe("NumberInput", () => {
     expect(save()).not.toBeDisabled();
   });
 
+  test("unreadable text replaced by a value set from outside holds nothing", () => {
+    function Reset() {
+      const [value, setValue] = useState("5");
+      return (
+        <RangeHolds>
+          <NumberInput
+            aria-label="window"
+            range={WINDOW}
+            value={value}
+            optional
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <Button onClick={() => setValue("7")}>discard</Button>
+          <Button holdOnRange>Save</Button>
+        </RangeHolds>
+      );
+    }
+    render(<Reset />);
+    const field = screen.getByLabelText("window") as HTMLInputElement;
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: field.value === "" }),
+    });
+    type("");
+    expect(save()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "discard" }));
+    expect(field.value).toBe("7");
+    expect(save()).not.toBeDisabled();
+  });
+
   test("only a holdOnRange button is held", () => {
     render(<Form initial="-10" />);
     expect(screen.getByRole("button", { name: "Other" })).not.toBeDisabled();

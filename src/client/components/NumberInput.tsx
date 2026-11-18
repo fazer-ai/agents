@@ -126,8 +126,13 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
     const id = useId();
     const holds = useContext(RangeHoldsContext);
     // A browser reports text it cannot read as a number ("1e", "abc" pasted) as an empty value, which
-    // an optional field would otherwise save as "not set".
+    // an optional field would otherwise save as "not set". The text stays on screen only while the
+    // value stays empty: a value set from outside (a discard, a reload) replaces it.
     const [unreadable, setUnreadable] = useState(false);
+    const empty = value === null || value === undefined || value === "";
+    useEffect(() => {
+      if (!empty) setUnreadable(false);
+    }, [empty]);
     const problem = unreadable
       ? "range"
       : numberProblem(value, range, optional);

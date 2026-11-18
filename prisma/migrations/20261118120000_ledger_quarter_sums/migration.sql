@@ -26,7 +26,7 @@ $$;
 -- The histogram bucket of a call's duration: buckets 5% wide, so a percentile read from them is within
 -- 5% of the exact one. Bucket 0 holds every call of 1 ms or less.
 CREATE FUNCTION ledger_latency_bucket(ms integer) RETURNS integer LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-  SELECT CASE WHEN ms <= 1 THEN 0 ELSE 1 + floor(ln(ms::float8) / ln(1.05::float8))::integer END
+  SELECT CASE WHEN ms <= 0 THEN -100000 ELSE 1 + floor(ln(ms::float8) / ln(1.05::float8))::integer END
 $$;
 
 CREATE TABLE "ledger_quarter_sums" (

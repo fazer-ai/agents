@@ -10,11 +10,13 @@ import {
   bucketMs,
   ensureLedgerSums,
   histogramPercentile,
+  ledgerSumsHandler,
   MARKED_QUARTERS_PER_STEP,
   stepLedgerSums,
   ZERO_BUCKET,
 } from "@/modules/analytics/ledger-sums";
 import { getInstanceMetrics, getTimeseries } from "@/modules/analytics/service";
+import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 
@@ -269,7 +271,7 @@ beforeAll(async () => {
   await seedCalls(other, 12, 400);
   await sumUp(fx.tenantId);
   await sumUp(other.tenantId);
-});
+}, 120_000);
 
 afterAll(async () => {
   if (dbUp) {
@@ -463,6 +465,86 @@ describe.skipIf(!dbUp)("the ledger's quarter-hour sums", () => {
       expect(await summedUntil(t.tenantId)).not.toBeNull();
       b.release();
       await b.done;
+    } finally {
+      await suDb.tenant.delete({ where: { id: t.tenantId } });
+    }
+  });
+
+  test("a job step that waits on an older open transaction gives its time back instead of polling", async () => {
+    const t = await seedTenant("lsums-wait");
+    await suDb.llmUsage.create({
+      data: {
+        tenantId: t.tenantId,
+        source: "inbox",
+        model: "m-w",
+        costUsd: 1,
+        createdAt: new Date(NOW - DAY),
+      },
+    });
+    await sumUp(t.tenantId);
+    let release: () => void = () => {};
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    let wrote: () => void = () => {};
+    const written = new Promise<void>((r) => {
+      wrote = r;
+    });
+    const open = suDb.$transaction(
+      async (tx) => {
+        await tx.llmUsage.create({
+          data: {
+            tenantId: t.tenantId,
+            source: "inbox",
+            model: "m-w",
+            costUsd: 1,
+          },
+        });
+        wrote();
+        await released;
+      },
+      { timeout: 60_000, maxWait: 5_000 },
+    );
+    try {
+      await written;
+      // A candidate taken while the transaction is open, which the handler then waits on.
+      await stepLedgerSums(db, t.tenantId);
+      expect(await summedUntil(t.tenantId)).not.toBeNull();
+      const started = Date.now();
+      const result = await ledgerSumsHandler(
+        { tenantId: t.tenantId } as unknown as ClaimedJob,
+        db,
+      );
+      expect(result.outcome).toBe("reschedule");
+      expect(Date.now() - started).toBeLessThan(3_000);
+    } finally {
+      release();
+      await open;
+      await suDb.tenant.delete({ where: { id: t.tenantId } });
+    }
+  });
+
+  test("calls of zero milliseconds keep a bucket of their own", async () => {
+    const t = await seedTenant("lsums-zero");
+    try {
+      const at = new Date(NOW - 2 * DAY);
+      await suDb.llmUsage.createMany({
+        data: [...Array(9).fill(0), 1].map((ms: number) => ({
+          tenantId: t.tenantId,
+          source: "inbox",
+          model: "m-zero",
+          durationMs: ms,
+          createdAt: at,
+        })),
+      });
+      await sumUp(t.tenantId);
+      const view = { since: new Date(FIRST), tz: "UTC" };
+      const health = await getHealth(ctx(t.tenantId), view, db);
+      const row = health.latency.find((r) => r.model === "m-zero");
+      expect(row?.p50Ms).toBe(0);
+      expect((await blocks(t.tenantId, view)).health).toEqual(
+        (await rawBlocks(t.tenantId, view)).health,
+      );
     } finally {
       await suDb.tenant.delete({ where: { id: t.tenantId } });
     }

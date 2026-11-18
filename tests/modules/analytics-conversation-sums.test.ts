@@ -278,7 +278,7 @@ beforeAll(async () => {
   fx = await seedTenant("csums");
   await seedConversations(fx, 21, 220);
   await sumUp(fx.tenantId);
-});
+}, 120_000);
 
 afterAll(async () => {
   if (dbUp && fx)

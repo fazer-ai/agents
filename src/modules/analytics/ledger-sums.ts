@@ -205,7 +205,8 @@ export function bucketMs(bucket: number): number {
   return bucket === ZERO_BUCKET ? 0 : 1.05 ** (bucket - 0.5);
 }
 
-// The bucket of a duration of zero, which no 5%-wide bucket holds.
+// The bucket of a duration of zero, which no 5%-wide bucket holds (`ledger_latency_bucket` writes it
+// as a literal).
 export const ZERO_BUCKET = -100_000;
 
 export type HistogramBucket = {
@@ -300,6 +301,9 @@ export interface LedgerSumsStep {
   remarked: number;
   // Whether the sums reached the latest safe mark, so the next step has nothing to catch up.
   caughtUp: boolean;
+  // Whether the step waited on a candidate an older transaction still holds: another step now
+  // would wait the same.
+  waiting: boolean;
 }
 
 // ONE STEP OF A TENANT'S SUMS, in one transaction: recompute the marked quarters below the mark, move
@@ -436,6 +440,7 @@ export async function stepLedgerSums(
         summedUntil,
         remarked: remark.size + settle.settled,
         caughtUp,
+        waiting: Boolean(state?.pending && !state.waited_out),
       };
     },
     STEP_TX,
@@ -450,7 +455,7 @@ export async function ledgerSumsHandler(
   const stopAt = Date.now() + RUN_BUDGET_MS;
   while (Date.now() < stopAt && !ctx?.signal.aborted) {
     const step = await stepLedgerSums(base, job.tenantId);
-    if (step.caughtUp || step.summedUntil === null) break;
+    if (step.caughtUp || step.waiting || step.summedUntil === null) break;
   }
   return { outcome: "reschedule", runAt: new Date(Date.now() + RERUN_MS) };
 }

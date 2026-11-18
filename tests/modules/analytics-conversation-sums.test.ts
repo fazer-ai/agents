@@ -13,6 +13,7 @@ import { getKpis, getTimeseries } from "@/modules/analytics/service";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
+import { until } from "@/tests/utils/poll";
 
 // THE CONVERSATION COUNTS (docs/dashboard.md, "Conversation sums"): the funnel, the KPIs, the agent
 // and inbox splits, the label outcomes, the drill-down and the cost block's divisors read the same
@@ -187,12 +188,17 @@ async function seedConversations(f: Fx, seed: number, count: number) {
   await suDb.llmUsage.createMany({ data: usage });
 }
 
+// Steps until caught up. A transaction of another test file, open on the same server, holds the
+// mark back while it lasts, so a step that waits on one is retried a moment later.
 async function sumUp(tenantId: bigint): Promise<void> {
-  for (let i = 0; i < 40; i++) {
-    const s = await stepLedgerSums(db, tenantId);
-    if (s.caughtUp && s.summedUntil) return;
-  }
-  throw new Error("the sums never caught up");
+  await until(
+    "the sums to catch up",
+    async () => {
+      const s = await stepLedgerSums(db, tenantId);
+      return s.caughtUp && s.summedUntil !== null;
+    },
+    { everyMs: 50, deadlineMs: 60_000 },
+  );
 }
 
 async function blocks(tenantId: bigint, f: DashboardFilter) {
@@ -646,6 +652,20 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
       const series = await getTimeseries(ctx(fx.tenantId), f, db);
       expect(series.filter((p) => p.conversations !== 0)).toEqual([]);
     }
+  });
+
+  test("the inbox breakdown counts the conversations with no inbox in its no-inbox row", async () => {
+    const view = { since: new Date(FIRST), tz: "UTC" };
+    const rows = await getBreakdown(ctx(fx.tenantId), view, "inbox", db);
+    const none = rows.find((r) => r.key === null);
+    const [expected] = await suDb.$queryRaw<{ n: number }[]>(Prisma.sql`
+      SELECT COUNT(*)::int AS n FROM conversations c
+       WHERE c.tenant_id = ${fx.tenantId} AND c.inbox_id IS NULL AND NOT c.sweep_only
+         AND c.created_at >= ${view.since}
+         AND EXISTS (SELECT 1 FROM llm_usage u WHERE u.conversation_id = c.id AND u.source = 'inbox'
+                       AND ledger_is_agent_turn(u.node))`);
+    expect(expected?.n).toBeGreaterThan(0);
+    expect(none?.conversations).toBe(expected?.n);
   });
 
   test("the database's idea of an agent turn is the app's", async () => {

@@ -571,9 +571,10 @@ export async function funnelByKey(
     }[]
   >(funnelSeriesSql(f, b, dimension));
   const out = new Map<string, { conversations: number; resolved: number }>();
+  // NOTE: conversations with no inbox are the inbox breakdown's null row, which it looks up as "".
   for (const r of rows)
-    if (r.key === null && r.member !== null)
-      out.set(r.member, {
+    if (r.key === null)
+      out.set(r.member ?? "", {
         conversations: Number(r.involved),
         resolved: Number(r.resolved),
       });

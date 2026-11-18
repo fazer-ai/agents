@@ -19,6 +19,7 @@ import { getInstanceMetrics, getTimeseries } from "@/modules/analytics/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
+import { until } from "@/tests/utils/poll";
 
 // THE LEDGER'S QUARTER-HOUR SUMS (docs/dashboard.md, "Ledger sums"): every ledger block reads the
 // same figures from the sums as from the rows, a row written below the mark by any route reaches the
@@ -179,12 +180,17 @@ async function seedCalls(f: Fx, seed: number, count: number) {
 
 // Steps the job until its sums reach the latest mark it can take: the first step only takes a
 // candidate, and a step waits while a transaction older than the candidate is still open.
+// Steps until caught up. A transaction of another test file, open on the same server, holds the
+// mark back while it lasts, so a step that waits on one is retried a moment later.
 async function sumUp(tenantId: bigint): Promise<void> {
-  for (let i = 0; i < 40; i++) {
-    const s = await stepLedgerSums(db, tenantId);
-    if (s.caughtUp && s.summedUntil) return;
-  }
-  throw new Error("the sums never caught up");
+  await until(
+    "the sums to catch up",
+    async () => {
+      const s = await stepLedgerSums(db, tenantId);
+      return s.caughtUp && s.summedUntil !== null;
+    },
+    { everyMs: 50, deadlineMs: 60_000 },
+  );
 }
 
 async function summedUntil(tenantId: bigint): Promise<Date | null> {

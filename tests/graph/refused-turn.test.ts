@@ -5,6 +5,9 @@ import {
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { MemorySaver } from "@langchain/langgraph";
+import { recoveredDraftOf } from "@/graph/graph";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import {
   calledOffToolResult,
   memoryHeadMessage,
@@ -15,9 +18,11 @@ import {
   planReactiveTurnRollback,
   planTurnRollback,
   type RollbackPlan,
+  rememberWhatWasSent,
   turnActedBeforeItsReply,
 } from "@/graph/refused-turn";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 
 // The decision, as a table. `undoRefusedTurn` does the reading and the writing; everything that is a
 // JUDGEMENT is here, because the write is a checkpointer round trip and a rule proven through one
@@ -664,5 +669,161 @@ describe("actedToolNames", () => {
       toolResult("t1", "ok", "calendar_create_event"),
     ];
     expect(actedToolNames(produced)).toEqual([]);
+  });
+});
+
+// The write itself, through a real checkpointer: what the next turn reads after a screening changed
+// the reply (docs/graph.md, "The thread holds what was sent").
+describe("rememberWhatWasSent", () => {
+  const seeded = async (thread: string, messages: BaseMessage[]) => {
+    const cp = new MemorySaver();
+    await buildThreadStateGraph(cp).updateState(
+      { configurable: { thread_id: thread } },
+      { messages },
+      THREAD_STATE_NODE,
+    );
+    return cp;
+  };
+  const read = async (cp: MemorySaver, thread: string) =>
+    (
+      (
+        await buildThreadStateGraph(cp).getState({
+          configurable: { thread_id: thread },
+        })
+      ).values as { messages: BaseMessage[] }
+    ).messages;
+  const shape = (msgs: BaseMessage[]) =>
+    msgs.map((m) => {
+      const calls = ((m as AIMessage).tool_calls ?? []).map((c) => c.name);
+      const text = typeof m.content === "string" ? m.content : "";
+      return `${m.getType()}:${text}${calls.length ? `[${calls.join(",")}]` : ""}`;
+    });
+
+  test("the text that went out takes the draft's place, and the rest of the turn stays", async () => {
+    const produced = [
+      h("h1", "oi"),
+      calling("t1", "resolve_conversation"),
+      new ToolMessage({ id: "r1", content: "ok", tool_call_id: "t1-c" }),
+      a("f1", "RASCUNHO"),
+    ];
+    const cp = await seeded("th-a", produced);
+    const plan = await rememberWhatWasSent({
+      checkpointer: cp,
+      graphThreadId: "th-a",
+      produced,
+      sent: "ENVIADO",
+      logPrefix: "test",
+    });
+    expect(plan?.action).toBe("remove");
+    expect(shape(await read(cp, "th-a"))).toEqual([
+      "human:oi",
+      "ai:[resolve_conversation]",
+      "tool:ok",
+      "ai:ENVIADO",
+    ]);
+  });
+
+  test("nothing sent leaves nothing in the draft's place", async () => {
+    const produced = [h("h1", "oi"), a("f1", "RASCUNHO")];
+    const cp = await seeded("th-b", produced);
+    await rememberWhatWasSent({
+      checkpointer: cp,
+      graphThreadId: "th-b",
+      produced,
+      sent: "",
+      logPrefix: "test",
+    });
+    expect(shape(await read(cp, "th-b"))).toEqual(["human:oi"]);
+  });
+
+  test("a draft written beside a tool call loses its text, and the call stays", async () => {
+    const beside = new AIMessage({
+      id: "t1",
+      content: "RASCUNHO-AO-LADO",
+      tool_calls: [{ id: "t1-c", name: "resolve_conversation", args: {} }],
+    });
+    const produced = [
+      h("h1", "oi"),
+      beside,
+      new ToolMessage({ id: "r1", content: "ok", tool_call_id: "t1-c" }),
+      a("f1", ""),
+    ];
+    const cp = await seeded("th-c", produced);
+    await rememberWhatWasSent({
+      checkpointer: cp,
+      graphThreadId: "th-c",
+      produced,
+      sent: "ENVIADO",
+      draftBeside: recoveredDraftOf(produced),
+      logPrefix: "test",
+    });
+    const after = await read(cp, "th-c");
+    expect(shape(after)).toEqual([
+      "human:oi",
+      "ai:[resolve_conversation]",
+      "tool:ok",
+      "ai:ENVIADO",
+    ]);
+    expect(JSON.stringify(after[1]?.content)).not.toContain("RASCUNHO");
+  });
+
+  test("a message that took the draft's id with other words is not blanked", async () => {
+    const beside = new AIMessage({
+      id: "t1",
+      content: "RASCUNHO-AO-LADO",
+      tool_calls: [{ id: "t1-c", name: "resolve_conversation", args: {} }],
+    });
+    const produced = [
+      h("h1", "oi"),
+      beside,
+      new ToolMessage({ id: "r1", content: "ok", tool_call_id: "t1-c" }),
+      a("f1", ""),
+    ];
+    const cp = await seeded("th-e", [
+      h("h1", "oi"),
+      new AIMessage({
+        id: "t1",
+        content: "OUTRA-COISA",
+        tool_calls: [{ id: "t1-c", name: "resolve_conversation", args: {} }],
+      }),
+      new ToolMessage({ id: "r1", content: "ok", tool_call_id: "t1-c" }),
+      a("f1", ""),
+    ]);
+    await rememberWhatWasSent({
+      checkpointer: cp,
+      graphThreadId: "th-e",
+      produced,
+      sent: "ENVIADO",
+      draftBeside: recoveredDraftOf(produced),
+      logPrefix: "test",
+    });
+    expect(shape(await read(cp, "th-e"))).toEqual([
+      "human:oi",
+      "ai:OUTRA-COISA[resolve_conversation]",
+      "tool:ok",
+      "ai:ENVIADO",
+    ]);
+  });
+
+  test("an invoke reading the thread keeps the draft rather than racing it", async () => {
+    const produced = [h("h1", "oi"), a("f1", "RASCUNHO")];
+    const cp = await seeded("th-d", produced);
+    markTurnInFlight("th-d");
+    try {
+      const plan = await rememberWhatWasSent({
+        checkpointer: cp,
+        graphThreadId: "th-d",
+        produced,
+        sent: "ENVIADO",
+        logPrefix: "test",
+      });
+      expect(plan).toEqual({
+        action: "keep",
+        reason: "another-invoke-is-reading",
+      });
+    } finally {
+      clearTurnInFlight("th-d");
+    }
+    expect(shape(await read(cp, "th-d"))).toEqual(["human:oi", "ai:RASCUNHO"]);
   });
 });

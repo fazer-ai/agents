@@ -4816,6 +4816,71 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The bug it catches: the next turn reading the follow-up the guardrail replaced as said, while the
+  // customer read the replacement (docs/graph.md, "The thread holds what was sent").
+  test("the thread keeps the follow-up the customer read, not the draft the guardrail replaced", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(18480, null);
+        const s = stub();
+        const cp = new MemorySaver();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:18480`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "rude",
+                suggestedReply: "GEN-NUDGE-1848",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: cp,
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("messaged");
+        expect(s.messages).toEqual([[18480, "GEN-NUDGE-1848"]]);
+        const ids = Object.keys(
+          (cp as unknown as { storage: Record<string, unknown> }).storage,
+        );
+        expect(ids).toHaveLength(1);
+        const st = await buildThreadStateGraph(cp).getState({
+          configurable: { thread_id: ids[0] as string },
+        });
+        const said = (
+          (st.values as { messages?: BaseMessage[] }).messages ?? []
+        )
+          .filter((m) => m.getType() === "ai")
+          .map((m) => String(m.content))
+          .filter(Boolean);
+        expect(said).toEqual(["GEN-NUDGE-1848"]);
+      },
+    );
+  });
+
   test("the follow-up's fallback lines name their own model and raise one alarm", async () => {
     await seedConv(7113, null);
     const deps = await graphDepsOf(() =>

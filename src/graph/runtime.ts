@@ -132,6 +132,7 @@ import {
 } from "./checkpointer";
 import {
   lastAssistantText,
+  recoveredDraftOf,
   recursionLimitFor,
   replyWrittenThisTurn,
   type SilenceRetryOutcome,
@@ -162,6 +163,7 @@ import {
 } from "./prepare";
 import {
   actedToolNames,
+  rememberWhatWasSent,
   rollBackRefusedTurn,
   type Settled,
   settlement,
@@ -1699,6 +1701,13 @@ async function runTurnBody(
   // The reply is text an earlier message of this turn carried; it rides on the closing line
   // only if it reached the customer.
   let replyRecovered = false;
+  // The reply came from a message that also called a tool, whether or not that text went out: a
+  // rewrite of the thread has to take it out of that message too.
+  let draftWasRecovered = false;
+  // The operator's or the screening's text that went out in the model's reply's place. Written into
+  // the thread in the `finally`, after the claims a rewrite stands down on are released.
+  let sentInDraftsPlace: string | null = null;
+  let replacedProduced: BaseMessage[] | null = null;
 
   // The contact's voice preference now: `set_voice_preference` writes it during the invoke.
   // Best-effort, falling back to the snapshot, because the closing line must leave even when the
@@ -2402,6 +2411,9 @@ async function runTurnBody(
         produced: result.messages,
         kind: "reactive",
         inertTools,
+        draftBeside: draftWasRecovered
+          ? recoveredDraftOf(result.messages as BaseMessage[])
+          : null,
         // NOTE: `superseded` only, because only there does a turn come next that must tell the
         // customer. A takeover hands the conversation to a person who sees the act in
         // Chatwoot, and `stale` was called off by the operator.
@@ -2507,6 +2519,7 @@ async function runTurnBody(
         if (recovered.text) {
           reply = recovered.text;
           replyRecovered = true;
+          draftWasRecovered = true;
         }
       }
       await deliverHandoffPromise(result.messages as BaseMessage[]);
@@ -2589,6 +2602,8 @@ async function runTurnBody(
         ),
       );
       const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
+      // The reply as the model left it in the thread, before any screening stood something else in.
+      const draftedReply = reply;
       // A factual-grounding trip under `template` or `handoff` (or a revise that wrote nothing)
       // decides the reply in place of the screening, unless a transfer completed, with its own line
       // or with none: the conversation is a person's now, and nothing of the model's goes out.
@@ -2635,6 +2650,7 @@ async function runTurnBody(
           if (replacement === null) return refused("blocked");
           reply = replacement;
         }
+        sentInDraftsPlace = reply && reply !== draftedReply ? reply : null;
         replyRecovered = false;
         replyByOperator = screenedByOperator(decision);
         return null;
@@ -2946,6 +2962,8 @@ async function runTurnBody(
       return settled("posted");
     };
     const ended = await afterGeneration();
+    if (!ended.undo && sentInDraftsPlace !== null)
+      replacedProduced = result.messages as BaseMessage[];
     // NOTE: A record for whoever reads the conversation, at `info`: the next turn tells the customer
     // from the note, so there is nothing to alert on. Read off the same slice the rollback reads, so
     // the two cannot disagree.
@@ -3009,6 +3027,25 @@ async function runTurnBody(
     // `markTurnOwning` on `graphThreadId`, a different key whenever there is a contact-inbox.
     // Earlier, the rollback reads this turn's own claim and silently keeps. Tests without a
     // contact-inbox collapse the two keys and cannot catch the order.
+    if (replacedProduced && sentInDraftsPlace !== null) {
+      const plan = await rememberWhatWasSent({
+        checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+        graphThreadId,
+        produced: replacedProduced,
+        sent: sentInDraftsPlace,
+        draftBeside: draftWasRecovered
+          ? recoveredDraftOf(replacedProduced)
+          : null,
+        owner: graphOwner,
+        base,
+        logPrefix: "turn",
+      });
+      if (plan?.action === "remove")
+        logger.info(
+          "turn put what was sent in the screened draft's place: conv=%s",
+          String(conversationId),
+        );
+    }
     if (silenceProduced) {
       const produced = silenceProduced;
       try {

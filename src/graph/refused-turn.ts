@@ -1,5 +1,5 @@
 import {
-  type AIMessage,
+  AIMessage,
   type BaseMessage,
   RemoveMessage,
 } from "@langchain/core/messages";
@@ -255,6 +255,9 @@ export async function undoRefusedTurn(params: {
   // What stands in the removed reply's place whatever the turn did before it: the template the
   // customer read instead, or the note that the draft never reached them. Built on the same id.
   replacement?: (id: string) => BaseMessage;
+  // A reply recovered from a message that also called a tool (`recoveredDraftOf`): that message sits
+  // outside the removable run, so its text is taken out in the same write, and its calls stay.
+  draftBeside?: { original: BaseMessage; textless: BaseMessage } | null;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -293,6 +296,17 @@ export async function undoRefusedTurn(params: {
           | undefined
       )?.messages ?? []) as BaseMessage[];
       const decided = plan(produced, current, params.inertTools ?? new Set());
+      const beside = params.draftBeside;
+      const blanked =
+        decided.action === "remove" &&
+        beside &&
+        current.some(
+          (m) =>
+            m.id === beside.original.id &&
+            isStillTheSameMessage(m, beside.original),
+        )
+          ? [beside.textless]
+          : [];
       if (decided.action === "remove") {
         const [first, ...rest] = decided.ids;
         const note =
@@ -307,9 +321,12 @@ export async function undoRefusedTurn(params: {
         await graph.updateState(
           threadCfg,
           {
-            messages: note
-              ? [note, ...rest.map((id) => new RemoveMessage({ id }))]
-              : decided.ids.map((id) => new RemoveMessage({ id })),
+            messages: [
+              ...blanked,
+              ...(note
+                ? [note, ...rest.map((id) => new RemoveMessage({ id }))]
+                : decided.ids.map((id) => new RemoveMessage({ id }))),
+            ],
           },
           THREAD_STATE_NODE,
         );
@@ -391,4 +408,46 @@ export async function rollBackRefusedTurn<O extends string>(
     );
   }
   return outcome;
+}
+
+// What the thread keeps as the agent's reply once a screening changed what goes out: the text the
+// customer received, in the draft's place, or nothing when nothing was sent. The next turn builds on
+// the thread, so a draft left there is a message the customer never read and the model reasons from.
+// Same write, queue and claims as a refused turn (`undoRefusedTurn`), the reactive plan: the turn's
+// tool calls and their results stay, only the unsent sentence changes. Called after the turn
+// released its own claim, like every rewrite of the channel. Best-effort and loud: a failed write
+// leaves the draft and says so, and never fails a turn that already reached the customer.
+export async function rememberWhatWasSent(params: {
+  checkpointer: BaseCheckpointSaver;
+  graphThreadId: string;
+  produced: readonly BaseMessage[];
+  // What reached the customer in the reply's place; empty when nothing did.
+  sent: string;
+  draftBeside?: { original: BaseMessage; textless: BaseMessage } | null;
+  owner?: ThreadOwner | null;
+  base?: PrismaClient;
+  logPrefix: string;
+}): Promise<RollbackPlan | null> {
+  const { sent, logPrefix, ...rest } = params;
+  const plan = await undoRefusedTurn({
+    ...rest,
+    kind: "reactive",
+    ...(sent
+      ? { replacement: (id: string) => new AIMessage({ content: sent, id }) }
+      : {}),
+  }).catch((err) => {
+    logger.warn(
+      { err, thread: params.graphThreadId },
+      `${logPrefix}: could not put what was sent in the draft's place`,
+    );
+    return null;
+  });
+  if (plan && plan.action !== "remove") {
+    logger.warn(
+      `${logPrefix} left the screened draft in the thread: thread=%s reason=%s`,
+      params.graphThreadId,
+      plan.reason,
+    );
+  }
+  return plan;
 }

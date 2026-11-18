@@ -619,6 +619,77 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     ]);
   });
 
+  // The bug it catches: the next simulated turn reading the reply the endpoint refused as said, while
+  // the simulated customer read the endpoint's text (docs/graph.md, "The thread holds what was sent").
+  test("the thread keeps the external check's replacement, and a reload shows it", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentExternal,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: models({ violated: false }).make,
+        checkpointer: cp,
+        externalCheck: {
+          assertSafe: async (u: string) => new URL(u),
+          fetchImpl: (async (_u: string, init: RequestInit) => {
+            const b = JSON.parse(String(init.body)) as { candidateId: string };
+            return new Response(
+              JSON.stringify({
+                decision: "replace",
+                candidateId: b.candidateId,
+                text: "SUBSTITUTO-PG-1848",
+              }),
+            );
+          }) as unknown as typeof fetch,
+        },
+      },
+    });
+    expect(r.reply).toBe("SUBSTITUTO-PG-1848");
+    const messages = (
+      (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+        ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+    )?.messages as BaseMessage[];
+    expect(
+      messages
+        .filter((m) => m.getType() === "ai")
+        .map((m) => String(m.content)),
+    ).toEqual(["SUBSTITUTO-PG-1848"]);
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(messages),
+      await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:oi",
+      "assistant:SUBSTITUTO-PG-1848",
+    ]);
+  });
+
+  // The bug it catches: a reply the built-in judge silenced staying in the simulated thread, which
+  // production takes out (docs/graph.md, "The thread holds what was sent").
+  test("a reply the judge suppressed leaves the thread", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make, checkpointer: cp },
+    });
+    expect(r.suppressed).toBe(true);
+    const messages = (
+      (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+        ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+    )?.messages as BaseMessage[];
+    expect(
+      messages
+        .filter((m) => m.getType() === "ai")
+        .map((m) => String(m.content))
+        .filter(Boolean),
+    ).toEqual([]);
+  });
+
   // The bug it catches: a held turn traced as an ordinary policy hand-over, indistinguishable from a trip.
   test("under hold a reply whose judge cannot run is held, and the trace says why", async () => {
     const m = models({ violated: false, breakJudge: true });

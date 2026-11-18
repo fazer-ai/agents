@@ -66,6 +66,7 @@ The budget is 15 s, DNS lookup and body included. A timeout, a non-2xx, a body t
 
 ## What the operator sees
 
+- The agent's thread keeps what went out: after a `replace`, a block's template or hand-over line, or a held failure's line, the next turn reads that text as the agent's reply, not the draft the endpoint refused (`docs/graph.md`, "The thread holds what was sent").
 - A private note in the conversation for `replace`, `block` and a held failure, naming the external check, the decision, the latency, and the reason when there is one.
 - A `guardrail` flow line with `detail.check: "external"`: `{direction: "output", decision, latencyMs, action?}` on an answer (`info` for allow, `warn` otherwise), plus the reason: as `endpointReason` only while `observability.logToolValues` is on, since it is free text that may quote the customer, and otherwise as its length, `reasonChars` (the note and the playground trace always carry it), and `{outcome: "external_failed", cause, httpStatus?, latencyMs, unchecked | held}` on a failure. `cause` is one of `timeout`, `http_status`, `network`, `malformed`, `unverifiable`, `unsafe_url`, `secret_not_found`. The Logs page shows the line as a sentence under the row.
 - In the playground, a trace entry "External check on the reply" with the decision, the latency, and the reason or the failure.

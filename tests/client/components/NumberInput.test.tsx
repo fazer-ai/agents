@@ -184,6 +184,32 @@ describe("NumberInput", () => {
     expect(save()).not.toBeDisabled();
   });
 
+  test("a consumer that turns unreadable text into a fallback number holds nothing", () => {
+    function Fallback() {
+      const [value, setValue] = useState("5");
+      return (
+        <RangeHolds>
+          <NumberInput
+            aria-label="window"
+            range={WINDOW}
+            value={value}
+            onChange={(e) => setValue(String(Number(e.target.value) || 4))}
+          />
+          <Button holdOnRange>Save</Button>
+        </RangeHolds>
+      );
+    }
+    render(<Fallback />);
+    const field = screen.getByLabelText("window") as HTMLInputElement;
+    Object.defineProperty(field, "validity", {
+      configurable: true,
+      get: () => ({ badInput: field.value === "" }),
+    });
+    edit("");
+    expect(field.value).toBe("4");
+    expect(save()).not.toBeDisabled();
+  });
+
   test("only a holdOnRange button is held", () => {
     render(<Form initial="-10" />);
     expect(screen.getByRole("button", { name: "Other" })).not.toBeDisabled();

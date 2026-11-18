@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -126,13 +127,24 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
     const id = useId();
     const holds = useContext(RangeHoldsContext);
     // A browser reports text it cannot read as a number ("1e", "abc" pasted) as an empty value, which
-    // an optional field would otherwise save as "not set". The text stays on screen only while the
-    // value stays empty: a value set from outside (a discard, a reload) replaces it.
+    // an optional field would otherwise save as "not set". Whether such text is on screen is read
+    // from the element itself, after every render and on every edit, so whatever replaces the text
+    // (an edit, a value set from outside, a consumer's fallback) is what releases the hold.
+    const own = useRef<HTMLInputElement | null>(null);
     const [unreadable, setUnreadable] = useState(false);
-    const empty = value === null || value === undefined || value === "";
-    useEffect(() => {
-      if (!empty) setUnreadable(false);
-    }, [empty]);
+    const readScreen = useCallback(() => {
+      const el = own.current;
+      setUnreadable(el?.value === "" && el.validity?.badInput === true);
+    }, []);
+    useLayoutEffect(readScreen);
+    const setRefs = useCallback(
+      (el: HTMLInputElement | null) => {
+        own.current = el;
+        if (typeof ref === "function") ref(el);
+        else if (ref) ref.current = el;
+      },
+      [ref],
+    );
     const problem = unreadable
       ? "range"
       : numberProblem(value, range, optional);
@@ -153,7 +165,7 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
             });
     return (
       <Input
-        ref={ref}
+        ref={setRefs}
         type="number"
         min={range.min}
         max={range.max}
@@ -165,10 +177,7 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         // that leaves the reported value as it was, and unreadable text and an empty field both
         // report "".
         onInput={(e) => {
-          setUnreadable(
-            e.currentTarget.value === "" &&
-              e.currentTarget.validity?.badInput === true,
-          );
+          readScreen();
           onInput?.(e);
         }}
         {...props}

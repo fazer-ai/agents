@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 import {
@@ -218,13 +220,21 @@ describe("a conversion process that fails is a MediaConversionError, never a hun
     expect(running).toBe(0);
   }, 60_000);
 
-  test("the process gets the libheif path and no other variable of the app's", async () => {
-    let env: Record<string, string | undefined> | undefined;
-    const spawn = ((opts: Parameters<typeof Bun.spawn>[0]) => {
-      env = (opts as { env?: Record<string, string | undefined> }).env;
-      return Bun.spawn(opts);
-    }) as typeof Bun.spawn;
-    await runMediaConverter("heic-to-jpeg", heic(), { spawn });
-    expect(Object.keys(env ?? {})).toEqual([LIBHEIF_WASM_PATH_ENV]);
+  test("the process sees the libheif path and no other variable, not even a .env beside it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "convert-env-"));
+    try {
+      writeFileSync(join(dir, ".env"), "CANARY_SECRET=leaked\n");
+      const spawn = ((opts: object) =>
+        Bun.spawn({ ...opts, cwd: dir } as never)) as typeof Bun.spawn;
+      const err = await runMediaConverter("heic-to-jpeg", heic(), {
+        childScript: child("child-env.ts"),
+        spawn,
+      }).catch((e: unknown) => e);
+      expect(JSON.parse((err as Error).message)).toEqual([
+        LIBHEIF_WASM_PATH_ENV,
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

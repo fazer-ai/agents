@@ -622,7 +622,15 @@ async function inChild(
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = spawn({
-      cmd: [process.execPath, childScript, id, JSON.stringify(limits)],
+      // NOTE: --no-env-file, because Bun loads the `.env` of the working directory into a child
+      // whatever `env` it was given, and that file holds the app's secrets.
+      cmd: [
+        process.execPath,
+        "--no-env-file",
+        childScript,
+        id,
+        JSON.stringify(limits),
+      ],
       stdin: new Uint8Array(bytes),
       stdout: "pipe",
       stderr: "pipe",

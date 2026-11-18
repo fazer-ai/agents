@@ -227,9 +227,10 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
           onKeyDown?.(e);
         }}
         onPaste={(e) => {
-          if (NOT_NUMBER_TEXT.test(e.clipboardData?.getData("text") ?? "")) {
-            setDropped(true);
-          }
+          // Decided here, where the text is: the input event Chrome fires after a paste carries
+          // neither data nor dataTransfer.
+          const text = e.clipboardData?.getData("text") ?? "";
+          if (text) setDropped(NOT_NUMBER_TEXT.test(text));
           onPaste?.(e);
         }}
         {...props}

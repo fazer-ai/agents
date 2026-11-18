@@ -336,6 +336,20 @@ describe("NumberInput", () => {
     expect(save()).toBeDisabled();
   });
 
+  test("a number pasted over a dropped keystroke releases it, though the value is the same", () => {
+    render(<Form initial="5" optional />);
+    const field = screen.getByLabelText("window");
+    fireEvent.keyDown(field, { key: "x" });
+    expect(save()).toBeDisabled();
+    fireEvent.paste(field, { clipboardData: { getData: () => "5" } });
+    fireEvent.input(field, {
+      target: { value: "5" },
+      data: null,
+      inputType: "insertFromPaste",
+    });
+    expect(save()).not.toBeDisabled();
+  });
+
   test("a value set from outside releases a dropped keystroke", () => {
     function Reset() {
       const [value, setValue] = useState("5");

@@ -3424,7 +3424,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "tenant_settings_update",
       {
         description:
-          "Update the tenant's embedding and/or Langfuse settings. credential_ref values are vault entry NAMES (resolved server-side; null clears). embedding accepts { credential_ref }; langfuse accepts { enabled, credential_ref, send_content, debug, sample_rate }. debug attaches the full tool schemas to every trace (heavy; tool names are always sent). sample_rate is the share of turns traced, 0 to 1, each turn whole or not at all; null follows the deployment's LANGFUSE_SAMPLE_RATE. Previews and applies NOTHING unless dry_run is false.",
+          "Update the tenant's embedding and/or Langfuse settings. credential_ref values are vault entry NAMES (resolved server-side; null clears). debug attaches the full tool schemas to every trace (heavy; tool names are always sent). sample_rate is the share of turns traced, each whole or not at all; null follows LANGFUSE_SAMPLE_RATE. Previews and applies NOTHING unless dry_run is false.",
         inputSchema: {
           embedding: z
             .object({ credential_ref: z.string().nullable().optional() })

@@ -224,8 +224,9 @@ describe("MCP tool descriptions", () => {
   // on occurrences_set; 73_140 with `guardrails.factualGrounding`; 73_254 with its reference bases;
   // 73_442 with the rewrite's `reviseWithTools` and `reviseMaxToolCalls`; 73_502 with the cap's range up
   // to `limits.maxToolCalls`; 73_684 with `observability.fullDetailRetentionDays`; 73_987 with the contact gate rule's `effect`;
-  // 74_137 with `exclude_events` on the alert channel writes).
-  const totals = { desc: 34_050, schema: 74_140 };
+  // 74_137 with `exclude_events` on the alert channel writes; 74_221 with the tenant's Langfuse
+  // `sample_rate`).
+  const totals = { desc: 34_050, schema: 74_230 };
 
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema

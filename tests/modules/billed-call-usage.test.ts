@@ -29,7 +29,12 @@ import { extractInboundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { jsonAttr, LANGFUSE_OTLP_PATH, otlpSpans } from "../utils/otlp-capture";
+import {
+  jsonAttr,
+  LANGFUSE_OTLP_PATH,
+  otlpBodyText,
+  otlpSpans,
+} from "../utils/otlp-capture";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 // `LlmUsage` is the only ledger of what an install spends on models, and a call reaches it only by
@@ -340,7 +345,7 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     ) => {
       const url = String(input instanceof Request ? input.url : input);
       if (url.endsWith(LANGFUSE_OTLP_PATH)) {
-        bodies.push(String(init?.body ?? "{}"));
+        bodies.push(otlpBodyText(init?.body));
         return new Response("{}", {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -536,7 +541,7 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
       init?: RequestInit,
     ) => {
       const url = String(input instanceof Request ? input.url : input);
-      posted.push({ url, body: String(init?.body ?? "{}") });
+      posted.push({ url, body: otlpBodyText(init?.body) });
       return new Response("{}", {
         status: 200,
         headers: { "content-type": "application/json" },

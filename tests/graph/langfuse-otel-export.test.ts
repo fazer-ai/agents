@@ -26,6 +26,7 @@ import {
   jsonAttr,
   LANGFUSE_OTLP_PATH,
   meta,
+  otlpBodyText,
   otlpSpans,
 } from "../utils/otlp-capture";
 
@@ -44,6 +45,7 @@ interface Posted {
 }
 
 let posted: Posted[] = [];
+let postedAsText: boolean[] = [];
 let failWith: number | null = null;
 let answerWith: string | null = null;
 let hang = false;
@@ -58,12 +60,8 @@ beforeAll(() => {
     if (!url.startsWith("http://lf-")) return realFetch(input, init);
     const headers = new Headers(init?.headers);
     const raw = init?.body;
-    const body =
-      typeof raw === "string"
-        ? raw
-        : raw instanceof Uint8Array
-          ? new TextDecoder().decode(raw)
-          : String(raw ?? "");
+    postedAsText.push(typeof raw === "string");
+    const body = otlpBodyText(raw);
     posted.push({ url, auth: headers.get("authorization"), body });
     if (hang) {
       inFlight++;
@@ -102,6 +100,7 @@ beforeAll(() => {
 afterEach(async () => {
   await shutdownLangfuseClients();
   posted = [];
+  postedAsText = [];
   failWith = null;
   answerWith = null;
   hang = false;
@@ -435,6 +434,121 @@ describe("langfuse export over OTLP", () => {
     expect(
       spans.some((s) => s.attrs["langfuse.observation.type"] === "generation"),
     ).toBe(true);
+  });
+
+  // Turns traced with their content queue spans of hundreds of KB each, and one export carries up to
+  // a batch of them. Building every body of that export inside one task holds the event loop for as
+  // long as the whole batch takes to serialize, and every timer of the process (a webhook ack's
+  // transaction start among them) waits behind it.
+  async function drainWatchingTheLoop(tenant: string) {
+    const serializer = (await import("@opentelemetry/otlp-transformer"))
+      .JsonTraceSerializer;
+    let serializedBytes = 0;
+    const realSerialize = serializer.serializeRequest.bind(serializer);
+    const serialize = spyOn(serializer, "serializeRequest").mockImplementation(
+      (spans) => {
+        const body = realSerialize(spans);
+        serializedBytes += body?.byteLength ?? 0;
+        return body;
+      },
+    );
+    // At each post a task is queued, and whether it ran by the next post says whether the loop got a
+    // turn between the two bodies.
+    const ranBeforeNextPost: boolean[] = [];
+    let posts = 0;
+    let queuedRan = false;
+    const record = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith(`http://lf-${tenant}.test`)) {
+        if (posts++ > 0) ranBeforeNextPost.push(queuedRan);
+        queuedRan = false;
+        setImmediate(() => {
+          queuedRan = true;
+        });
+      }
+      return record(input, init);
+    }) as typeof fetch;
+    // A task chained on itself runs once per turn of the loop, so the longest gap between two of its runs
+    // is the longest the loop was held while the batch was built and posted.
+    let draining = true;
+    let longestHoldMs = 0;
+    let lastTurn = performance.now();
+    const probe = () => {
+      const now = performance.now();
+      longestHoldMs = Math.max(longestHoldMs, now - lastTurn);
+      lastTurn = now;
+      if (draining) setImmediate(probe);
+    };
+    setImmediate(probe);
+    try {
+      await shutdownLangfuseClients();
+    } finally {
+      // A drain that never yields ends before the probe runs once: the stretch since its last run counts.
+      longestHoldMs = Math.max(longestHoldMs, performance.now() - lastTurn);
+      draining = false;
+      globalThis.fetch = record;
+      serialize.mockRestore();
+    }
+    // No stretch of building and posting the batch holds the loop past 50 ms.
+    expect(longestHoldMs).toBeLessThanOrEqual(50);
+    const bodies = posted.filter(
+      (p) => p.url === `http://lf-${tenant}.test${OTLP}`,
+    );
+    for (const p of bodies) {
+      expect(Buffer.byteLength(p.body)).toBeLessThanOrEqual(3_500_000);
+    }
+    expect(ranBeforeNextPost).toHaveLength(bodies.length - 1);
+    expect(ranBeforeNextPost.every(Boolean)).toBe(true);
+    return {
+      bodies,
+      serializedBytes,
+      postedBytes: bodies.reduce((n, p) => n + Buffer.byteLength(p.body), 0),
+    };
+  }
+
+  test("a batch over the request limit is built one body at a time, giving the event loop a turn between bodies", async () => {
+    const cfg = cfgFor("a", { sendContent: true });
+    const message = 'conteúdo do turno com "aspas" e acentos. '.repeat(6_000);
+    for (let i = 0; i < 40; i++) {
+      await runTurn(
+        cfg,
+        { tenantId: 11n, threadId: "11:1:1", turnId: crypto.randomUUID() },
+        message,
+        "ok",
+      );
+    }
+    const { bodies, serializedBytes, postedBytes } =
+      await drainWatchingTheLoop("a");
+
+    expect(bodies.length).toBeGreaterThan(3);
+    expect(spansAt("a").filter((s) => s.name === "agent-turn")).toHaveLength(
+      40,
+    );
+    // Every byte is serialized about once: a batch split by halving serializes it again at each level.
+    expect(serializedBytes).toBeLessThan(postedBytes * 1.5);
+    // The serializer's bytes are posted as they are, not decoded back into a string first.
+    expect(postedAsText.some(Boolean)).toBe(false);
+  });
+
+  // Text that JSON escapes to several bytes a character fills a body past the limit while its length
+  // says it fits, so that body is split, and each half is built in a task of its own too.
+  test("a body that serializes past the limit is halved, with a turn of the loop between the halves", async () => {
+    const cfg = cfgFor("a", { sendContent: true });
+    const message = "€".repeat(400_000);
+    for (let i = 0; i < 12; i++) {
+      await runTurn(
+        cfg,
+        { tenantId: 11n, threadId: "11:1:1", turnId: crypto.randomUUID() },
+        message,
+        "ok",
+      );
+    }
+    const { bodies } = await drainWatchingTheLoop("a");
+
+    expect(bodies.length).toBeGreaterThan(3);
+    expect(spansAt("a").filter((s) => s.name === "agent-turn")).toHaveLength(
+      12,
+    );
   });
 
   test("a generation written by hand lands in the turn's trace with its model and usage", async () => {

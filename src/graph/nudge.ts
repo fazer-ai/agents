@@ -3070,6 +3070,7 @@ async function runAgentNudgeBody(
             conversationId,
             `${OUTSIDE_WINDOW_NOTE_PREFIX}${screenedIsOperator ? screened : literalForChatwoot(screened)}`,
           );
+          await rememberDraftNoted("window", screened);
           // The transfer carried no file, so the approved document is the person's to send, said
           // beside the line as on the in-window transfer.
           if (approved) {
@@ -3138,6 +3139,13 @@ async function runAgentNudgeBody(
         );
         if (attach) attach.onAttached?.();
         await recordProactiveSpeech();
+        // NOTE: a screening that sent its own text in the draft's place leaves that text in the
+        // thread, so the next turn builds on what the customer read.
+        if (screened !== reply)
+          await replaceDraft(
+            (id) => new AIMessage({ content: screened, id }),
+            "screened reply",
+          );
         logger.info(
           "agentNudge messaged: conv=%s source=%s",
           String(conversationId),

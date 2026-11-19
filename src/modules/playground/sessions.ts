@@ -67,7 +67,10 @@ function lastAi(
     const m = messages[k] as BaseMessage;
     if (msgType(m) === "ai") {
       const terminal = contentToText(m.content).trim();
-      if (!terminal) return { text: "" };
+      if (!terminal) {
+        const id = (m as unknown as { id?: unknown }).id;
+        return { text: "", id: typeof id === "string" ? id : undefined };
+      }
       const txt = contentToText(m.content).trim();
       if (txt) {
         const id = (m as unknown as { id?: unknown }).id;
@@ -160,6 +163,9 @@ export interface RebuiltTurn {
   // client renders a suppression note instead of an empty bubble, because "nothing was sent" and
   // "the agent chose silence" are different statements.
   suppressed?: boolean;
+  // A reply whose terminal message is empty, kept only so a turn note can annotate it where it
+  // happened, with its trace, sources and usage. `applyTurnNotes` drops the ones no note claims.
+  emptyReply?: true;
   // The id of the human message that opened this turn, minted by the service as the turn's own id:
   // the turn's ledger rows carry it, which is how a reopened session gives each reply its usage line.
   // A follow-up opens on its nudge, so it has one too; a legacy SystemMessage follow-up does not.
@@ -181,6 +187,9 @@ export function rebuildPlaygroundTurns(
   // granted templates produce. The live trace labels them; without them here the same result loses
   // its badge on reopen and reads as a document that was really issued.
   extraSimulated: Iterable<string> = [],
+  // Also return a turn for a reply whose terminal message is empty (`emptyReply`), for
+  // `applyTurnNotes` to annotate in place. Off for readers that want only what renders.
+  opts: { emptyReplies?: boolean } = {},
 ): RebuiltTurn[] {
   const simulated = new Set<string>([
     ...SIMULATED_TOOL_NAMES,
@@ -220,12 +229,13 @@ export function rebuildPlaygroundTurns(
       // providers reject the call — see graph.ts). renderNudge always embeds DATA_FENCE, which can't
       // be forged from user input, so it cleanly distinguishes a nudge from a real user message.
       if (isFollowup) {
-        if (reply.text)
+        if (reply.text || (opts.emptyReplies && reply.id))
           turns.push({
             role: "assistant",
             text: reply.text,
             followup: true,
             ...(reply.id ? { messageId: reply.id } : {}),
+            ...(reply.text ? {} : { emptyReply: true as const }),
             ...turn,
             trace,
             sources,
@@ -248,11 +258,12 @@ export function rebuildPlaygroundTurns(
         trace: [],
         sources: [],
       });
-      if (reply.text)
+      if (reply.text || (opts.emptyReplies && reply.id))
         turns.push({
           role: "assistant",
           text: reply.text,
           ...(reply.id ? { messageId: reply.id } : {}),
+          ...(reply.text ? {} : { emptyReply: true as const }),
           ...turn,
           trace,
           sources,
@@ -335,7 +346,7 @@ export function applyTurnNotes(
   turns: RebuiltTurn[],
   notes: LoadedTurnNote[],
 ): RebuiltTurn[] {
-  if (notes.length === 0) return turns;
+  if (notes.length === 0) return turns.filter((t) => !t.emptyReply);
   // What the transcript actually shows. An id the rebuild kept can be overridden in place; anything
   // else has to be placed, however it was stored.
   const shown = new Set(
@@ -408,7 +419,10 @@ export function applyTurnNotes(
   }
   for (const turn of turns) {
     const note = turn.messageId ? overrides.get(turn.messageId) : undefined;
-    out.push(note && turn.role === "assistant" ? annotated(note, turn) : turn);
+    if (note && turn.role === "assistant") {
+      const { emptyReply: _, ...kept } = annotated(note, turn);
+      out.push(kept);
+    } else if (!turn.emptyReply) out.push(turn);
     for (const pl of placements) {
       if (!placed.has(pl) && pl.after !== null && pl.after === turn.messageId) {
         out.push(...pl.render());
@@ -633,6 +647,7 @@ export async function getPlaygroundSessionTurns(
         .map((g) => g.documentTemplate?.slug)
         .filter((slug): slug is string => !!slug)
         .map(documentToolName),
+      { emptyReplies: true },
     ),
     await listThreadTurnNotes(base, ctx, threadId),
   );

@@ -638,8 +638,20 @@ function textlessCopy(ai: AIMessage, id: string): AIMessage {
 // The reply `replyWrittenThisTurn` would recover, taken out of the thread once a factual-grounding
 // revise replaced it, so the refused draft is neither delivered nor read by the next turn as said.
 function recoveredDraftRemoved(messages: BaseMessage[]): BaseMessage[] {
+  const draft = recoveredDraftOf(messages);
+  return draft ? [draft.textless] : [];
+}
+
+// The message whose text the recovery would deliver, with the copy that replaces it once that text
+// is not what the customer receives. Null when the turn has no recovered reply or the message has no
+// id the reducer could replace it by.
+export function recoveredDraftOf(
+  messages: BaseMessage[],
+): { original: AIMessage; textless: AIMessage } | null {
   const m = recoveredReplyMessage(messages);
-  return m && typeof m.id === "string" ? [textlessCopy(m, m.id)] : [];
+  return m && typeof m.id === "string"
+    ? { original: m, textless: textlessCopy(m, m.id) }
+    : null;
 }
 
 // Providers whose adapter re-serializes their own non-text blocks. `@langchain/openai` filters an

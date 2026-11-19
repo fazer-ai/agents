@@ -34,7 +34,7 @@ import {
   loadAgentConfig,
 } from "@/graph/prepare";
 import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
-import { undoRefusedTurn } from "@/graph/refused-turn";
+import { rememberWhatWasSent, undoRefusedTurn } from "@/graph/refused-turn";
 import {
   customerFacingReply,
   followupSilenceChannel,
@@ -170,7 +170,11 @@ async function lastRenderedMessageId(
     const st = await graph.getState({ configurable: { thread_id: threadId } });
     const msgs = st?.values?.messages;
     if (!Array.isArray(msgs) || msgs.length === 0) return null;
-    const turns = rebuildPlaygroundTurns(msgs as BaseMessage[]);
+    // The same rebuild the session loader folds the notes over, empty replies included, so the
+    // anchor is a turn that fold sees.
+    const turns = rebuildPlaygroundTurns(msgs as BaseMessage[], [], {
+      emptyReplies: true,
+    });
     // The last turn's id is enough, with no walk back to one that has an id: `messagesStateReducer`
     // stamps a uuid on every message it takes in (measured), so a turn rebuilt from a checkpointed
     // thread always carries one. The guards inside the rebuild are for the hand-built arrays that
@@ -1270,6 +1274,16 @@ async function runPlaygroundTurnOnce(
     });
     reply = screenedText(judged, reply) ?? "";
   }
+  // NOTE: the next simulated turn reads the thread as production does, so a screening that changed
+  // the reply leaves there what the simulated customer received, as in the inbox.
+  if (reply !== raw)
+    await rememberWhatWasSent({
+      checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+      graphThreadId: threadId,
+      produced: result.messages as BaseMessage[],
+      sent: reply,
+      logPrefix: "playground",
+    });
   const trace: TraceEntry[] = [
     ...gTrace.slice(0, beforeGraph),
     ...buildPlaygroundTrace(result.messages, traceLabels),
@@ -1283,10 +1297,11 @@ async function runPlaygroundTurnOnce(
     params.titleHint ?? text,
   );
 
-  // NOTE: the checkpointer holds the model's OWN reply, so every turn the guardrail RAN on gets a
-  // note, clean verdicts included (see turn-notes.ts); empty `gTrace` means it never ran. The two
-  // stores are not written atomically and cannot be: a second mount reopening the session in that
-  // seconds-long window reads the raw reply, left open deliberately (`.codex-review-waived`).
+  // NOTE: the checkpointer holds the reply and not the verdict behind it, so every turn the guardrail
+  // RAN on gets a note, clean verdicts included (see turn-notes.ts); empty `gTrace` means it never
+  // ran. The two stores are not written atomically and cannot be: a second mount reopening the
+  // session in that seconds-long window reads the raw reply, left open deliberately
+  // (`.codex-review-waived`).
   if (gTrace.length > 0) {
     await savePlaygroundTurnNote(base, {
       ctx,
@@ -1697,6 +1712,14 @@ async function runPlaygroundFollowupOnce(
     ? await screen("output", drafted)
     : ({ kind: "not-run" } as const);
   const reply = screenedText(outGuard, drafted) ?? "";
+  if (reply !== drafted)
+    await rememberWhatWasSent({
+      checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+      graphThreadId: threadId,
+      produced: result.messages as BaseMessage[],
+      sent: reply,
+      logPrefix: "playground",
+    });
   // "Nothing is sent" has two causes here and the operator needs them apart: the agent deciding a
   // follow-up is not warranted, and the guardrail removing one it did write. Reported as the
   // former, the second renders as "the agent chose not to send anything" and the verdict that

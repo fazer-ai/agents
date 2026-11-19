@@ -3,12 +3,11 @@ import logger from "@/api/lib/logger";
 import type { TraceGuardrail } from "@/graph/trace";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
-// What the OPERATOR saw for one playground turn, when that differs from what the agent remembers.
-// Production keeps them apart under moderation (an output trip posts the template and leaves the
-// model's words in the thread; an input trip never reaches it), so the screened text gets its own row
-// rather than going into the checkpointer. Written for every turn the guardrail RAN on, clean verdicts
-// included, so a reload can tell an approved reply from an unscreened one. A note that fails to write
-// costs the reload its annotation, never the turn.
+// What the OPERATOR saw for one playground turn, beside what the agent remembers. An input trip never
+// reaches the thread, and the verdict behind an output trip is not in it, so the screening gets its
+// own row rather than going into the checkpointer. Written for every turn the guardrail RAN on, clean
+// verdicts included, so a reload can tell an approved reply from an unscreened one. A note that fails
+// to write costs the reload its annotation, never the turn.
 
 // NOTE: There is deliberately no per-tenant cap here, unlike the media store. Bytes are what the
 // media cap exists to bound, and a screened session writes one short row per turn, bounded by an

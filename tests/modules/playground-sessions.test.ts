@@ -221,6 +221,51 @@ describe("applyTurnNotes", () => {
     expect(out[1]?.trace).toHaveLength(1);
   });
 
+  // An empty reply is rebuilt only so a note can annotate it where it happened.
+  test("an empty reply no note claims is dropped, with or without other notes", () => {
+    const empty = { ...turn("assistant", "", "a1"), emptyReply: true as const };
+    expect(shape(applyTurnNotes([turn("user", "oi"), empty], []))).toEqual([
+      "user:oi",
+    ]);
+    expect(
+      shape(
+        applyTurnNotes(
+          [turn("user", "oi"), empty, turn("user", "outra")],
+          [note({ messageId: "zz", userMessageId: "u9", reply: "X" })],
+        ),
+      ),
+    ).toEqual(["user:oi", "user:outra", "assistant:X"]);
+  });
+
+  test("a note on an empty reply annotates it in place, keeping its trace", () => {
+    const empty = {
+      ...turn("assistant", "", "a1"),
+      emptyReply: true as const,
+      turnId: "u1",
+      trace: [{ type: "tool_call" as const, id: "c1", name: "calc", args: {} }],
+    };
+    const out = applyTurnNotes(
+      [turn("user", "oi"), empty, turn("user", "depois")],
+      [
+        note({
+          messageId: "a1",
+          reply: "",
+          guardrails: [
+            { type: "guardrail", direction: "output", outcome: "suppressed" },
+          ],
+        }),
+      ],
+    );
+    expect(shape(out)).toEqual(["user:oi", "assistant:", "user:depois"]);
+    expect(out[1]?.suppressed).toBe(true);
+    expect(out[1]?.turnId).toBe("u1");
+    expect(out[1]?.trace.map((e) => e.type)).toEqual([
+      "tool_call",
+      "guardrail",
+    ]);
+    expect("emptyReply" in (out[1] ?? {})).toBe(false);
+  });
+
   // The blocked turn is not in the thread at all, so placement is the whole job.
   test("a thread-less note lands right after its anchor", () => {
     const out = applyTurnNotes(

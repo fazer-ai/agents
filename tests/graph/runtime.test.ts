@@ -13667,6 +13667,157 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(asked).toEqual([]);
         expect(sent).toEqual([[14111, REPLY]]);
       });
+
+      // What the next turn reads as the agent's reply is what the customer received
+      // (docs/graph.md, "The thread holds what was sent").
+      describe("the thread after a screening changed the reply", () => {
+        const threadOf = async (cp: MemorySaver) => {
+          const ids = Object.keys(
+            (cp as unknown as { storage: Record<string, unknown> }).storage,
+          );
+          expect(ids).toHaveLength(1);
+          const st = await buildThreadStateGraph(cp).getState({
+            configurable: { thread_id: ids[0] as string },
+          });
+          return ((st.values as { messages?: BaseMessage[] }).messages ??
+            []) as BaseMessage[];
+        };
+        const assistantTexts = (msgs: BaseMessage[]) =>
+          msgs
+            .filter((m) => m.getType() === "ai")
+            .map((m) => contentToText(m.content).trim())
+            .filter(Boolean);
+
+        const run = async (
+          convId: number,
+          cp: MemorySaver,
+          sent: Array<[number, string]>,
+          answer: (b: Record<string, unknown>) => Response,
+          model?: () => BaseChatModel,
+        ) =>
+          runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: model
+                ? (cfg: ResolvedModelConfig): BaseChatModel =>
+                    cfg.model === GUARD_MODEL
+                      ? guardrailModel(async () => ({ content: clean }))
+                      : model()
+                : branchingModel(clean),
+              makeClient: guardStub(sent, [], []),
+              checkpointer: cp,
+              externalCheck: endpoint([], answer),
+            },
+          });
+
+        test("a replace leaves the endpoint's text in the reply's place", async () => {
+          await withExternal({ action: "template" });
+          await seedConv(14120);
+          const cp = new MemorySaver();
+          const sent: Array<[number, string]> = [];
+          const outcome = await run(14120, cp, sent, (b) =>
+            json({
+              decision: "replace",
+              candidateId: b.candidateId,
+              text: "SUBSTITUTO-1848",
+            }),
+          );
+          expect(outcome).toBe("posted");
+          expect(sent).toEqual([[14120, "SUBSTITUTO-1848"]]);
+          expect(assistantTexts(await threadOf(cp))).toEqual([
+            "SUBSTITUTO-1848",
+          ]);
+        });
+
+        test("a block's template takes the reply's place", async () => {
+          await withExternal({ action: "template" });
+          await seedConv(14121);
+          const cp = new MemorySaver();
+          const sent: Array<[number, string]> = [];
+          await run(14121, cp, sent, (b) =>
+            json({ decision: "block", candidateId: b.candidateId }),
+          );
+          expect(sent).toEqual([[14121, "TEMPLATE-OUT"]]);
+          expect(assistantTexts(await threadOf(cp))).toEqual(["TEMPLATE-OUT"]);
+        });
+
+        test("an allowed reply stays as the model wrote it", async () => {
+          await withExternal({ action: "template" });
+          await seedConv(14122);
+          const cp = new MemorySaver();
+          const sent: Array<[number, string]> = [];
+          await run(14122, cp, sent, (b) =>
+            json({ decision: "allow", candidateId: b.candidateId }),
+          );
+          expect(sent).toEqual([[14122, REPLY]]);
+          expect(assistantTexts(await threadOf(cp))).toEqual([REPLY]);
+        });
+
+        test("a silenced reply written beside a tool call leaves that message too", async () => {
+          await withExternal({ action: "silent" });
+          await seedConv(14124);
+          const cp = new MemorySaver();
+          const sent: Array<[number, string]> = [];
+          const outcome = await run(
+            14124,
+            cp,
+            sent,
+            (b) => json({ decision: "block", candidateId: b.candidateId }),
+            () =>
+              new TextBesideToolThenEmptyModel([
+                {
+                  text: "RASCUNHO-SILENCIADO",
+                  calls: [{ name: "resolve_conversation", args: {} }],
+                },
+              ]) as unknown as BaseChatModel,
+          );
+          expect(outcome).toBe("blocked");
+          expect(sent).toEqual([]);
+          // NOTE: the refusal's rollback is queued behind the turn's own claim, so it lands after.
+          await until("the silenced draft leaves the thread", async () =>
+            assistantTexts(await threadOf(cp)).length === 0 ? true : null,
+          );
+        });
+
+        test("the turn's tool call and its result stay, and only the sentence changes", async () => {
+          await withExternal({ action: "template" });
+          await seedConv(14123);
+          const cp = new MemorySaver();
+          const sent: Array<[number, string]> = [];
+          await run(
+            14123,
+            cp,
+            sent,
+            (b) =>
+              json({
+                decision: "replace",
+                candidateId: b.candidateId,
+                text: "SUBSTITUTO-RECUPERADO",
+              }),
+            () =>
+              new TextBesideToolThenEmptyModel([
+                {
+                  text: "RASCUNHO-AO-LADO-DA-FERRAMENTA",
+                  calls: [{ name: "resolve_conversation", args: {} }],
+                },
+              ]) as unknown as BaseChatModel,
+          );
+          expect(sent).toEqual([[14123, "SUBSTITUTO-RECUPERADO"]]);
+          const msgs = await threadOf(cp);
+          expect(assistantTexts(msgs)).toEqual(["SUBSTITUTO-RECUPERADO"]);
+          const caller = msgs.find(
+            (m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0,
+          ) as AIMessage | undefined;
+          expect(caller?.tool_calls?.map((c) => c.name)).toEqual([
+            "resolve_conversation",
+          ]);
+          expect(msgs.some((m) => m.getType() === "tool")).toBe(true);
+        });
+      });
     });
   });
   // A document waiting on the team's approval is a standing fact of the conversation: every turn is

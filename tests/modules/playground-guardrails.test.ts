@@ -67,6 +67,7 @@ let agentHeldBroken = 0n;
 let agentExternal = 0n;
 let agentDeadCredential = 0n;
 let agentBoth = 0n;
+let agentSilentBoth = 0n;
 let agentInputSilent = 0n;
 
 const RAW_REPLY = "Nosso concorrente resolve isso melhor.";
@@ -84,6 +85,8 @@ function models(opts: {
   // Emits a calculator call before replying, so the graph contributes trace entries the guardrail
   // entries have to sit around. Without one in the middle, every ordering looks the same.
   toolFirst?: boolean;
+  // The text the tool-calling message carries beside its call (with `toolFirst`).
+  preamble?: string;
   // The agent answers with nothing. The rebuild drops an empty AI message by design, so this is
   // what makes an id the note points at absent from the transcript.
   emptyReply?: boolean;
@@ -119,7 +122,7 @@ function models(opts: {
               n += 1;
               return n === 1
                 ? new AIMessage({
-                    content: "",
+                    content: opts.preamble ?? "",
                     tool_calls: [
                       {
                         name: "calculator",
@@ -268,6 +271,12 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       guardrails: guardrails({
         input: dir({ enabled: true, action: "silent" }),
         output: dir(),
+      }),
+    });
+    agentSilentBoth = await mk("SilentBoth", {
+      guardrails: guardrails({
+        input: dir({ enabled: true }),
+        output: dir({ enabled: true, action: "silent" }),
       }),
     });
     agentBoth = await mk("Both", {
@@ -619,6 +628,268 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     ]);
   });
 
+  // The bug it catches: the next simulated turn reading the reply the endpoint refused as said, while
+  // the simulated customer read the endpoint's text (docs/graph.md, "The thread holds what was sent").
+  test("the thread keeps the external check's replacement, and a reload shows it", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentExternal,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: models({ violated: false }).make,
+        checkpointer: cp,
+        externalCheck: {
+          assertSafe: async (u: string) => new URL(u),
+          fetchImpl: (async (_u: string, init: RequestInit) => {
+            const b = JSON.parse(String(init.body)) as { candidateId: string };
+            return new Response(
+              JSON.stringify({
+                decision: "replace",
+                candidateId: b.candidateId,
+                text: "SUBSTITUTO-PG-1848",
+              }),
+            );
+          }) as unknown as typeof fetch,
+        },
+      },
+    });
+    expect(r.reply).toBe("SUBSTITUTO-PG-1848");
+    const messages = (
+      (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+        ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+    )?.messages as BaseMessage[];
+    expect(
+      messages
+        .filter((m) => m.getType() === "ai")
+        .map((m) => String(m.content)),
+    ).toEqual(["SUBSTITUTO-PG-1848"]);
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(messages),
+      await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:oi",
+      "assistant:SUBSTITUTO-PG-1848",
+    ]);
+  });
+
+  // The bug it catches: a reply the built-in judge silenced staying in the simulated thread, which
+  // production takes out (docs/graph.md, "The thread holds what was sent").
+  test("a reply the judge suppressed leaves the thread", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make, checkpointer: cp },
+    });
+    expect(r.suppressed).toBe(true);
+    const messages = (
+      (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+        ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+    )?.messages as BaseMessage[];
+    expect(
+      messages
+        .filter((m) => m.getType() === "ai")
+        .map((m) => String(m.content))
+        .filter(Boolean),
+    ).toEqual([]);
+  });
+
+  // The bug it catches: a reload showing the text written beside a tool call as the reply, once the
+  // suppressed reply's message is gone from the thread.
+  test("a suppressed reply after a tool call reloads as suppressed, not as the preamble", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: models({
+          violated: true,
+          toolFirst: true,
+          preamble: "PREAMBULO-1848",
+        }).make,
+        checkpointer: cp,
+      },
+    });
+    expect(r.suppressed).toBe(true);
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
+    );
+    expect(
+      turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
+    ).toEqual(["user:oi:", "assistant::s"]);
+    // The suppressed turn keeps what the live run showed beside it: the tool it called and its usage.
+    expect(
+      turns[1]?.trace.some(
+        (e) => e.type === "tool_call" && e.name === "calculator",
+      ),
+    ).toBe(true);
+    expect(turns[1]?.turnId).toBe(turns[0]?.turnId);
+  });
+
+  // The bug it catches: a suppressed follow-up's notice moving below the turns that came after it on
+  // reload, once its reply's message carries no text the rebuild can place it by.
+  test("a suppressed follow-up keeps its place on reload", async () => {
+    const cp = new MemorySaver();
+    const first = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "primeira",
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+    const followup = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make, checkpointer: cp },
+    });
+    expect(followup.suppressed).toBe(true);
+    await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "depois",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: first.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
+    );
+    expect(
+      turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
+    ).toEqual([
+      "user:primeira:",
+      `assistant:${RAW_REPLY}:`,
+      "assistant::s",
+      "user:depois:",
+      `assistant:${RAW_REPLY}:`,
+    ]);
+  });
+
+  // The bug it catches: a follow-up that opened an empty session and was suppressed moving below the
+  // turns that came after it on reload.
+  test("a suppressed follow-up that opened the session stays first on reload", async () => {
+    const cp = new MemorySaver();
+    const followup = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make, checkpointer: cp },
+    });
+    expect(followup.suppressed).toBe(true);
+    await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "depois",
+      threadId: followup.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (
+            await cp.getTuple({
+              configurable: { thread_id: followup.threadId },
+            })
+          )?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), followup.threadId),
+    );
+    expect(
+      turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
+    ).toEqual(["assistant::s", "user:depois:", `assistant:${RAW_REPLY}:`]);
+    expect(turns[0]?.followup).toBe(true);
+    expect(turns[0]?.turnId).toBeDefined();
+  });
+
+  // The bug it catches: an input-blocked turn anchored past a suppressed reply the reload keeps, so
+  // the later block renders before the earlier suppression.
+  test("a blocked turn after a suppressed reply reloads after it", async () => {
+    const cp = new MemorySaver();
+    // The judge trips on the agent's reply and on the word BLOQUEIA, and nothing else.
+    const make = ((args: { model?: string }) =>
+      args?.model === GUARD_MODEL
+        ? guardrailModel(async (msgs) => {
+            const last = String(msgs[msgs.length - 1]?.content ?? "");
+            const violated =
+              last.includes("BLOQUEIA") || last.includes(RAW_REPLY);
+            return {
+              content: JSON.stringify({
+                violated,
+                categories: violated ? ["competitor_mentions"] : [],
+                rationale: "",
+                suggestedReply: null,
+              }),
+            };
+          })
+        : (
+            models({ violated: false }).make as unknown as (
+              a: unknown,
+            ) => BaseChatModel
+          )(args)) as never;
+    const first = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilentBoth,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: make, checkpointer: cp },
+    });
+    expect(first.suppressed).toBe(true);
+    await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilentBoth,
+      message: "BLOQUEIA",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: make, checkpointer: cp },
+    });
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: first.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:oi",
+      "assistant:",
+      "user:BLOQUEIA",
+      `assistant:${TEMPLATE}`,
+    ]);
+  });
+
   // The bug it catches: a held turn traced as an ordinary policy hand-over, indistinguishable from a trip.
   test("under hold a reply whose judge cannot run is held, and the trace says why", async () => {
     const m = models({ violated: false, breakJudge: true });
@@ -873,7 +1144,19 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(rows).toHaveLength(1);
     const anchor = rows[0]?.anchorMessageId;
     expect(typeof anchor).toBe("string");
-    expect(rendered).toContain(anchor as string);
+    // Resolved against the rebuild the session loader folds the notes over, which keeps the empty
+    // reply as a turn, so the blocked turn lands right after the first exchange and not at the end.
+    const folded = rebuildPlaygroundTurns(messages, [], { emptyReplies: true });
+    expect(folded.map((t) => t.messageId)).toContain(anchor as string);
+    const turns = applyTurnNotes(
+      folded,
+      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:primeira",
+      "user:fale do concorrente",
+      `assistant:${TEMPLATE}`,
+    ]);
   });
 
   // NOTE: every tenant-scoped model is registered with the tenancy extension, which supplies

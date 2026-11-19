@@ -3,6 +3,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { NUDGE_RETRY_BACKOFF_MS, NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
+import { caseHoldOn } from "@/graph/resolve-labels";
 import { parseDbId } from "@/lib/db-id";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -41,6 +42,7 @@ import {
   TurnErrors,
 } from "@/modules/conversation-notes/turn-errors";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import { openCaseFor } from "@/modules/cross-inbox-case/service";
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import {
@@ -1504,6 +1506,32 @@ async function runAgentNudgeBody(
   // below run AFTER the model and pass the ownership re-probed then, while the contact-auth refusal
   // runs BEFORE any model work and passes the one just probed. One later shared variable would make
   // the refusal path skip this function.
+  // THE CASE HOLD on a step that closes, the same one resolve_conversation applies: its labels are
+  // what a CSAT survey keys on, and a contact still waiting on a case in the agent's case inbox gets
+  // that case's own survey when it is resolved. The close itself still happens. Unreadable holds.
+  const caseHeld = async (): Promise<boolean> => {
+    const hold = caseHoldOn(
+      cfg.resolveCaseHold,
+      instanceId,
+      cfg.chatwootContactId,
+    );
+    if (!hold) return false;
+    let heldBy: number | "unread" | null;
+    try {
+      heldBy = await openCaseFor(client, conversationId, hold);
+    } catch (err) {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: case lookup failed",
+      );
+      heldBy = "unread";
+    }
+    if (heldBy === null) return false;
+    logger.info(
+      `agentNudge: closing labels held: conv=${conversationId} case=${heldBy} inbox=${hold.targetInboxId}`,
+    );
+    return true;
+  };
   const applyPostActions = async ({
     canMessage,
     // The resolve falls with the TRANSFER, on every branch: a conversation the human queue now owns
@@ -1524,7 +1552,11 @@ async function runAgentNudgeBody(
     // claim the agent chose not to speak when the run was called off. Other ends ignore it.
     if (!(await stillWanted())) return "stale";
     const labels = actions.assignLabels?.filter((l) => l.trim());
-    if (labels && labels.length > 0) {
+    if (
+      labels &&
+      labels.length > 0 &&
+      !(allowResolve && actions.resolve && (await caseHeld()))
+    ) {
       try {
         // Inside the conversation's label queue, with `set_labels` and the observer's
         // verdict, because the endpoint replaces the whole set.

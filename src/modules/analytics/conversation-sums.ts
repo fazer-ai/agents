@@ -26,15 +26,34 @@ import { FIRST_RESPONSE_SAMPLE_SQL } from "./service";
 const QUARTER_MS = 15 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// The view with the tenant's sums mark, so `agentRanSql` and `cohortWhereSql` read the runs.
+// How far behind now the mark may be for the counts and the runs to be read: past it, the ledger
+// above the mark is too large to read as one set.
+const RUNS_MAX_LAG_MS = 60 * 60 * 1000;
+const CONVERSATION_MARKS_MAX = 5000;
+
+// The view with the tenant's sums mark, so `agentRanSql` and `cohortWhereSql` read the runs. A
+// tenant still being summed, or settling more marks than a step takes, gets no mark: its
+// conversation figures are read from the rows, the same read as before any sums.
 export async function withRunsMark(
   db: ScopedDb,
   f: DashboardFilter,
 ): Promise<DashboardFilter> {
-  const [row] = await db.$queryRaw<{ until: Date | null }[]>(
-    Prisma.sql`SELECT max(summed_until) AS until FROM ledger_sums_state`,
-  );
-  return row?.until ? { ...f, runsMark: row.until } : f;
+  const [row] = await db.$queryRaw<
+    { until: Date | null; lag: number; marked: number; cmarked: number }[]
+  >(Prisma.sql`
+    SELECT max(summed_until) AS until,
+           COALESCE(EXTRACT(EPOCH FROM (now() AT TIME ZONE 'UTC') - max(summed_until)) * 1000, 0)::float8 AS lag,
+           (SELECT count(DISTINCT quarter) FROM ledger_sum_marks)::int AS marked,
+           (SELECT count(*) FROM (SELECT 1 FROM conversation_sum_marks LIMIT ${CONVERSATION_MARKS_MAX + 1}) m)::int AS cmarked
+      FROM ledger_sums_state`);
+  if (!row?.until) return f;
+  if (
+    row.lag > RUNS_MAX_LAG_MS ||
+    row.marked > MARKED_QUARTERS_PER_STEP ||
+    row.cmarked > CONVERSATION_MARKS_MAX
+  )
+    return f;
+  return { ...f, runsMark: row.until };
 }
 
 // An agent turn of real traffic on a conversation, as the ledger row `ar`.

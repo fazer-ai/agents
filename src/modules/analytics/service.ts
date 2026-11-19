@@ -217,7 +217,7 @@ export async function getInstanceMetrics(
       await db.$queryRaw<{ status: string; count: number }[]>(Prisma.sql`
         SELECT c.status::text AS status, COUNT(*)::int AS count
           FROM conversations c
-         WHERE ${cohortWhereSql("c", { agentId: filter.agentId, inboxId: filter.inboxId, runsMark: (await withRunsMark(db, filter)).runsMark })}
+         WHERE ${cohortWhereSql("c", await withRunsMark(db, { agentId: filter.agentId, inboxId: filter.inboxId }))}
          GROUP BY 1`)
     ).map((r) => ({ status: r.status, _count: { _all: r.count } }));
 

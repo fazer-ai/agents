@@ -5,7 +5,10 @@ import { USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { getLabelOutcomes } from "@/modules/analytics/activity";
 import { getBreakdown } from "@/modules/analytics/breakdown";
-import { settleConversationMarks } from "@/modules/analytics/conversation-sums";
+import {
+  settleConversationMarks,
+  withRunsMark,
+} from "@/modules/analytics/conversation-sums";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { drillDownPageIds } from "@/modules/analytics/drilldown";
 import type { DashboardFilter } from "@/modules/analytics/filter";
@@ -336,6 +339,26 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
         expect(d.conversations).toBe(involvedOn.get(d.date) ?? 0);
     });
 
+  for (const [name, view] of VIEWS)
+    test(`a mark hours behind reads the conversations from their rows: ${name}`, async () => {
+      await suDb.$executeRaw(Prisma.sql`
+        UPDATE ledger_sums_state SET summed_until = summed_until - interval '3 hours'
+         WHERE tenant_id = ${fx.tenantId}`);
+      try {
+        const v = await runScopedOn(db, ctx(fx.tenantId), (d) =>
+          withRunsMark(d, view()),
+        );
+        expect(v.runsMark).toBeUndefined();
+        expect(await blocks(fx.tenantId, view())).toEqual(
+          await rawBlocks(fx.tenantId, view()),
+        );
+      } finally {
+        await suDb.$executeRaw(Prisma.sql`
+          UPDATE ledger_sums_state SET summed_until = summed_until + interval '3 hours'
+           WHERE tenant_id = ${fx.tenantId}`);
+      }
+    });
+
   test("a late change to a counted conversation is in the figures at once and after the next run", async () => {
     const view = { since: new Date(FIRST), tz: "UTC" };
     // Each statement changes one column the figures read, on conversations of its own, and moves a
@@ -495,6 +518,12 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
       }
       const kpis = await getKpis(ctx(t.tenantId), view, db);
       expect([kpis.totalConversations, kpis.involved]).toEqual([2, 2]);
+      // The same with the mark hours behind, read from the rows.
+      await suDb.$executeRaw(Prisma.sql`
+        UPDATE ledger_sums_state SET summed_until = summed_until - interval '3 hours'
+         WHERE tenant_id = ${t.tenantId}`);
+      const behind = await getKpis(ctx(t.tenantId), view, db);
+      expect([behind.totalConversations, behind.involved]).toEqual([2, 2]);
     } finally {
       await suDb.tenant
         .delete({ where: { id: t.tenantId } })

@@ -78,19 +78,26 @@ export function agentRanSql(
        AND ${turn})`;
   }
   // The runs cover every ledger row below the mark outside a marked quarter, and a conversation
-  // with a mark of its own has runs being recomputed, so its rows decide. The rest is looked up per
-  // conversation: read as one set, the ledger above a mark far back (a tenant still being summed) or
-  // in a month of marked quarters is millions of rows, too many to hash, and probed row by row.
-  return Prisma.sql`((EXISTS (
+  // with a mark of its own has runs being recomputed, so its rows decide. The rest of the ledger is
+  // read once per statement, as the set of conversations it ran on: small, since a route sets the
+  // mark only while it is recent and few quarters are marked (`withRunsMark`).
+  const kept = Prisma.sql`(EXISTS (
       SELECT 1 FROM conversation_agent_runs r
        WHERE r.conversation_id = ${c}.id AND (${agent}::bigint IS NULL OR r.agent_id = ${agent}))
-     AND NOT EXISTS (SELECT 1 FROM conversation_sum_marks rm WHERE rm.conversation_id = ${c}.id))
-    OR EXISTS (
-      SELECT 1 FROM llm_usage ar
-       WHERE ar.conversation_id = ${c}.id AND ${turn}
-         AND (ar.created_at >= ${runsMark}
-              OR EXISTS (SELECT 1 FROM conversation_sum_marks rm WHERE rm.conversation_id = ${c}.id)
-              OR EXISTS (SELECT 1 FROM ledger_sum_marks lm WHERE lm.quarter = ledger_quarter(ar.created_at)))))`;
+     AND NOT EXISTS (SELECT 1 FROM conversation_sum_marks rm WHERE rm.conversation_id = ${c}.id))`;
+  return Prisma.sql`(${kept}
+    OR ${c}.id IN (
+      SELECT ar.conversation_id FROM llm_usage ar WHERE ${turn} AND ar.created_at >= ${runsMark}
+      UNION ALL
+      SELECT ar.conversation_id FROM conversation_sum_marks rm
+        JOIN llm_usage ar ON ar.conversation_id = rm.conversation_id
+       WHERE ${turn}
+      UNION ALL
+      SELECT x.conversation_id FROM (SELECT DISTINCT quarter FROM ledger_sum_marks WHERE quarter < ${runsMark}) lm
+       CROSS JOIN LATERAL (
+         SELECT ar.conversation_id FROM llm_usage ar
+          WHERE ar.created_at >= lm.quarter AND ar.created_at < lm.quarter + interval '15 minutes' AND ${turn}
+         OFFSET 0) x))`;
 }
 
 // The conversations a view counts: created in the window (our row's `created_at`, the moment the

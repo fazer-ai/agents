@@ -137,13 +137,13 @@ export async function countConversations(
     ), counted AS (
       INSERT INTO conversation_quarter_sums (tenant_id, quarter, inbox_id, outcome, ran_any, ran_agents, labeled, conversations)
       SELECT current_setting('app.tenant_id')::bigint, quarter, inbox_id, outcome, cardinality(agents) > 0,
-             array_remove(agents, 0::bigint), cardinality(labels) > 0, COUNT(*)::int
+             agents, cardinality(labels) > 0, COUNT(*)::int
         FROM v GROUP BY 2, 3, 4, 5, 6, 7
       RETURNING 1
     )
     INSERT INTO conversation_label_quarter_sums (tenant_id, quarter, inbox_id, outcome, ran_any, ran_agents, label, conversations)
     SELECT current_setting('app.tenant_id')::bigint, v.quarter, v.inbox_id, v.outcome, cardinality(v.agents) > 0,
-           array_remove(v.agents, 0::bigint), lb.label, COUNT(*)::int
+           v.agents, lb.label, COUNT(*)::int
       FROM v CROSS JOIN LATERAL (SELECT DISTINCT l FROM unnest(v.labels) AS l) AS lb(label)
      WHERE (SELECT COUNT(*) FROM counted) >= 0
      GROUP BY 2, 3, 4, 5, 6, 7`);
@@ -180,7 +180,7 @@ export async function countConversationDays(
   await db.$executeRaw(Prisma.sql`
     INSERT INTO conversation_first_response_days (tenant_id, day, inbox_id, ran_any, ran_agents, bucket, conversations, min_seconds, max_seconds)
     SELECT current_setting('app.tenant_id')::bigint, day, inbox_id, cardinality(agents) > 0,
-           array_remove(agents, 0::bigint), bucket, COUNT(*)::int, MIN(seconds), MAX(seconds)
+           agents, bucket, COUNT(*)::int, MIN(seconds), MAX(seconds)
       FROM (
         SELECT date_trunc('day', c.created_at) AS day, c.inbox_id, ${countedAgentsSql(mark)} AS agents,
                ${FIRST_RESPONSE_SECONDS} AS seconds, ${secondsBucketSql(FIRST_RESPONSE_SECONDS)} AS bucket
@@ -283,7 +283,7 @@ function markedQuartersSql(b: SumsBounds): Prisma.Sql {
 }
 
 // The agents that ran on `c` now, for a conversation read from its row: its runs unless they are
-// being recomputed, and the ledger rows the runs do not cover. 0 (no agent) is left out.
+// being recomputed, and the ledger rows the runs do not cover. 0 is a legacy turn with no agent.
 function readAgentsSql(mark: Date): Prisma.Sql {
   return Prisma.sql`ARRAY(
     SELECT DISTINCT a FROM (
@@ -296,7 +296,7 @@ function readAgentsSql(mark: Date): Prisma.Sql {
          AND (ar.created_at >= ${mark}
               OR EXISTS (SELECT 1 FROM conversation_sum_marks rm WHERE rm.conversation_id = c.id)
               OR EXISTS (SELECT 1 FROM ledger_sum_marks lm WHERE lm.quarter = ledger_quarter(ar.created_at)))
-    ) x WHERE a <> 0 ORDER BY a)`;
+    ) x ORDER BY a)`;
 }
 
 // A conversation read from its row, in the shape of a counts row (one conversation). The agents that
@@ -310,8 +310,8 @@ function rawConvSelect(
     ? Prisma.sql`'{}'::bigint[]`
     : f.runsMark
       ? readAgentsSql(f.runsMark)
-      : Prisma.sql`ARRAY(SELECT DISTINCT ar.agent_id FROM llm_usage ar
-        WHERE ar.conversation_id = c.id AND ${RUN_ROW} AND ar.agent_id IS NOT NULL ORDER BY 1)`;
+      : Prisma.sql`ARRAY(SELECT DISTINCT COALESCE(ar.agent_id, 0) FROM llm_usage ar
+        WHERE ar.conversation_id = c.id AND ${RUN_ROW} ORDER BY 1)`;
   return Prisma.sql`
     SELECT ledger_quarter(c.created_at) AS quarter, c.inbox_id, ${outcomeSql("c")} AS outcome,
            ${agentRanSql("c", f.agentId, f.runsMark)} AS ran, ${agents} AS ran_agents,
@@ -534,6 +534,7 @@ export function funnelSeriesSql(
   b: SumsBounds | null,
   breakdown: "agent" | "inbox",
   day?: Prisma.Sql,
+  unattributed = false,
 ): Prisma.Sql {
   const agent = f.agentId ?? null;
   const rated =
@@ -545,7 +546,7 @@ export function funnelSeriesSql(
            SELECT DISTINCT x FROM unnest(v.ran_agents || CASE WHEN i.agent_id IS NULL THEN '{}'::bigint[]
                                                               ELSE ARRAY[i.agent_id] END) AS x
          ) AS m(member)
-         WHERE (${agent}::bigint IS NULL OR m.member = ${agent})`
+         WHERE (${agent}::bigint IS NULL OR m.member = ${agent}) AND (${unattributed}::boolean OR m.member <> 0)`
       : Prisma.sql`SELECT v.inbox_id AS member, v.*, v.ran AS member_ran FROM convs v`;
   // The day is a column of its own: a grouping expression written twice carries its zone as two
   // parameters, which GROUPING does not take for the same expression.
@@ -587,12 +588,13 @@ export async function funnelByKey(
       involved: number;
       resolved: number;
     }[]
-  >(funnelSeriesSql(f, b, dimension));
+  >(funnelSeriesSql(f, b, dimension, undefined, dimension === "agent"));
   const out = new Map<string, { conversations: number; resolved: number }>();
-  // NOTE: conversations with no inbox are the inbox breakdown's null row, which it looks up as "".
+  // NOTE: the breakdown's null row is looked up as "": conversations with no inbox, and those a legacy
+  // turn with no agent ran on (member 0).
   for (const r of rows)
     if (r.key === null)
-      out.set(r.member ?? "", {
+      out.set(r.member === null || r.member === "0" ? "" : r.member, {
         conversations: Number(r.involved),
         resolved: Number(r.resolved),
       });

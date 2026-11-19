@@ -531,6 +531,53 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
     }
   });
 
+  test("the agent breakdown's unattributed row counts the conversations a legacy turn ran on", async () => {
+    const t = await seedTenant("legacy");
+    try {
+      const at = new Date(NOW - DAY);
+      for (const agentId of [null, t.agents[0]]) {
+        const c = await suDb.conversation.create({
+          data: {
+            tenantId: t.tenantId,
+            chatwootInstanceId: t.instanceId,
+            inboxId: t.inboxes[2],
+            chatwootConversationId: seq++,
+            status: "resolved",
+            resolvedBy: "agent",
+            threadId: `${t.tenantId}:${t.instanceId}:${seq}`,
+            createdAt: at,
+          },
+        });
+        await suDb.llmUsage.create({
+          data: {
+            tenantId: t.tenantId,
+            conversationId: c.id,
+            agentId,
+            source: "inbox",
+            node: "agent",
+            model: "m1",
+            costUsd: 1,
+            createdAt: new Date(at.getTime() + HOUR),
+          },
+        });
+      }
+      const view = { since: new Date(FIRST), tz: "UTC" };
+      const row = async () =>
+        (await getBreakdown(ctx(t.tenantId), view, "agent", db)).find(
+          (r) => r.key === null,
+        );
+      // Before its first run the tenant reads from the rows.
+      const rawRow = await row();
+      await sumUp(t.tenantId);
+      for (const r of [rawRow, await row()])
+        expect([r?.conversations, r?.resolvedConversations]).toEqual([1, 1]);
+    } finally {
+      await suDb.tenant
+        .delete({ where: { id: t.tenantId } })
+        .catch(() => undefined);
+    }
+  });
+
   test("a day the job finishes summing in a step that starts inside it is written whole", async () => {
     const t = fx.tenantId;
     const dayTables = [

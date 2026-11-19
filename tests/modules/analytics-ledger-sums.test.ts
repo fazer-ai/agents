@@ -647,13 +647,43 @@ describe.skipIf(!dbUp)("the ledger's quarter-hour sums", () => {
     };
     const before = await marked();
     expect(before).toBeGreaterThan(MARKED_QUARTERS_PER_STEP);
+    // A step takes the marked quarters of the earliest marked UTC day, and no other day.
+    const [first] = await suDb.$queryRaw<{ n: number }[]>(Prisma.sql`
+      SELECT COUNT(DISTINCT quarter)::int AS n FROM ledger_sum_marks
+       WHERE tenant_id = ${fx.tenantId}
+         AND date_trunc('day', quarter) = (SELECT date_trunc('day', min(quarter)) FROM ledger_sum_marks
+                                            WHERE tenant_id = ${fx.tenantId})`);
     await stepLedgerSums(db, fx.tenantId);
-    expect(await marked()).toBe(before - MARKED_QUARTERS_PER_STEP);
+    expect(await marked()).toBe(before - (first?.n ?? 0));
     const now = await blocks(fx.tenantId, view);
     expect(now).toEqual(await rawBlocks(fx.tenantId, view));
     await sumUp(fx.tenantId);
     expect(await marked()).toBe(0);
     expect(await blocks(fx.tenantId, view)).toEqual(now);
+  });
+
+  test("a step settles the marks of one day, however sparse the marked days", async () => {
+    // One row a day repriced, on every day of the ledger: one marked quarter per day.
+    await suDb.$executeRaw(Prisma.sql`
+      UPDATE llm_usage SET cost_usd = COALESCE(cost_usd, 0) + 1
+       WHERE id IN (SELECT DISTINCT ON (date_trunc('day', created_at)) id FROM llm_usage
+                     WHERE tenant_id = ${fx.tenantId} AND created_at < ${new Date(NOW - DAY)}
+                     ORDER BY date_trunc('day', created_at), id)`);
+    const days = async () => {
+      const [r] = await suDb.$queryRaw<{ n: number }[]>(Prisma.sql`
+        SELECT COUNT(DISTINCT date_trunc('day', quarter))::int AS n FROM ledger_sum_marks
+         WHERE tenant_id = ${fx.tenantId}`);
+      return r?.n ?? 0;
+    };
+    const before = await days();
+    expect(before).toBeGreaterThan(2);
+    await stepLedgerSums(db, fx.tenantId);
+    expect(await days()).toBe(before - 1);
+    await sumUp(fx.tenantId);
+    const view = { since: new Date(FIRST), tz: "UTC" };
+    expect(await blocks(fx.tenantId, view)).toEqual(
+      await rawBlocks(fx.tenantId, view),
+    );
   });
 
   test("a removed tenant takes its sums and marks with it", async () => {

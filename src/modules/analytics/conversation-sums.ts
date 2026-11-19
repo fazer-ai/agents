@@ -30,6 +30,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // above the mark is too large to read as one set.
 const RUNS_MAX_LAG_MS = 60 * 60 * 1000;
 const CONVERSATION_MARKS_MAX = 5000;
+// The UTC days one step counts again for its conversation marks.
+const MARKED_DAYS_PER_STEP = 7;
 
 // The view with the tenant's sums mark, so `agentRanSql` and `cohortWhereSql` read the runs. A
 // tenant still being summed, or settling more marks than a step takes, gets no mark: its
@@ -96,15 +98,18 @@ async function recomputeRuns(db: ScopedDb, ids: bigint[]): Promise<void> {
     ON CONFLICT (tenant_id, conversation_id, agent_id) DO NOTHING`);
 }
 
-// The agents that ran on `c` at the moment of counting: its runs, and its agent turns at or above
-// the mark, which the runs do not hold yet. 0 is a legacy turn with no agent.
+// The agents that ran on `c` at the moment of counting: its runs, and its agent turns the runs do
+// not hold yet, at or above the mark or in a marked ledger quarter (a turn stamped back in time on a
+// conversation too young for a mark of its own). 0 is a legacy turn with no agent.
 function countedAgentsSql(mark: Date): Prisma.Sql {
   return Prisma.sql`ARRAY(
     SELECT DISTINCT a FROM (
       SELECT r.agent_id AS a FROM conversation_agent_runs r WHERE r.conversation_id = c.id
       UNION ALL
       SELECT COALESCE(ar.agent_id, 0) FROM llm_usage ar
-       WHERE ar.conversation_id = c.id AND ${RUN_ROW} AND ar.created_at >= ${mark}
+       WHERE ar.conversation_id = c.id AND ${RUN_ROW}
+         AND (ar.created_at >= ${mark}
+              OR EXISTS (SELECT 1 FROM ledger_sum_marks lm WHERE lm.quarter = ledger_quarter(ar.created_at)))
     ) x ORDER BY a)`;
 }
 
@@ -226,9 +231,10 @@ export async function settleConversationMarks(
        WHERE id = ANY(${allIds}::bigint[])`))
       quarterOf.set(r.id, r.quarter.getTime());
   }
-  // The marks in order, up to a day's worth of quarters below the mark; the rest wait for the next
-  // step, read from the rows meanwhile.
+  // The marks in order, up to a day's worth of quarters below the mark and a week of days to count
+  // again; the rest wait for the next step, read from the rows meanwhile.
   const quarters = new Set<number>();
+  const touched = new Set<number>();
   const taken: typeof marks = [];
   for (const m of marks) {
     const q = m.quarter
@@ -239,7 +245,16 @@ export async function settleConversationMarks(
     const below = q !== undefined && q < mark.getTime();
     if (below && !quarters.has(q) && quarters.size >= MARKED_QUARTERS_PER_STEP)
       break;
-    if (below) quarters.add(q);
+    if (
+      below &&
+      !touched.has(floorDay(q)) &&
+      touched.size >= MARKED_DAYS_PER_STEP
+    )
+      break;
+    if (below) {
+      quarters.add(q);
+      touched.add(floorDay(q));
+    }
     taken.push(m);
   }
   const ids = [

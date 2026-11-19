@@ -366,15 +366,19 @@ export async function stepLedgerSums(
       let summedUntil = state?.summed_until ?? null;
 
       // The marks first, against the mark as it stands: a marked quarter at or above it is summed
-      // from its rows when the mark gets there. The earliest marked quarters below it are summed
-      // again, so a repricing's quarters come in runs a statement each sums. Only the marks read
+      // from its rows when the mark gets there. The marked quarters of the earliest marked day below
+      // it are summed again, so a step rebuilds one day's histogram at most and a repricing's quarters
+      // come in runs a statement each sums. Only the marks read
       // here are deleted: one committed later may be for a row the sums below did not see.
       // Before the first sums every mark is dropped: the rows answer for everything.
       const marks = await db.$queryRaw<{ id: bigint; quarter: Date }[]>(
         summedUntil
           ? Prisma.sql`SELECT m.id, m.quarter FROM ledger_sum_marks m
               WHERE m.quarter >= ${summedUntil} OR m.quarter IN (
-                SELECT DISTINCT quarter FROM ledger_sum_marks WHERE quarter < ${summedUntil}
+                SELECT DISTINCT quarter FROM ledger_sum_marks
+                 WHERE quarter < ${summedUntil}
+                   AND quarter < (SELECT date_trunc('day', min(quarter)) + interval '1 day'
+                                    FROM ledger_sum_marks WHERE quarter < ${summedUntil})
                  ORDER BY quarter LIMIT ${MARKED_QUARTERS_PER_STEP})
               ORDER BY m.id LIMIT ${MARKS_PER_READ}`
           : Prisma.sql`SELECT id, quarter FROM ledger_sum_marks ORDER BY id LIMIT ${MARKS_PER_READ}`,

@@ -6,6 +6,8 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { getLabelOutcomes } from "@/modules/analytics/activity";
 import { getBreakdown } from "@/modules/analytics/breakdown";
 import {
+  countConversationDays,
+  countConversations,
   settleConversationMarks,
   withRunsMark,
 } from "@/modules/analytics/conversation-sums";
@@ -571,6 +573,65 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
       await sumUp(t.tenantId);
       for (const r of [rawRow, await row()])
         expect([r?.conversations, r?.resolvedConversations]).toEqual([1, 1]);
+    } finally {
+      await suDb.tenant
+        .delete({ where: { id: t.tenantId } })
+        .catch(() => undefined);
+    }
+  });
+
+  test("a turn stamped back on a conversation too young for its own mark counts it, while its ledger quarter waits", async () => {
+    const t = await seedTenant("backdated");
+    try {
+      const c = await suDb.conversation.create({
+        data: {
+          tenantId: t.tenantId,
+          chatwootInstanceId: t.instanceId,
+          inboxId: t.inboxes[0],
+          chatwootConversationId: seq++,
+          status: "open",
+          threadId: `${t.tenantId}:${t.instanceId}:${seq}`,
+          createdAt: new Date(NOW - 2 * DAY),
+        },
+      });
+      await sumUp(t.tenantId);
+      await suDb.llmUsage.create({
+        data: {
+          tenantId: t.tenantId,
+          conversationId: c.id,
+          agentId: t.agents[0],
+          source: "inbox",
+          node: "agent",
+          model: "m1",
+          createdAt: new Date(NOW - DAY),
+        },
+      });
+      // The shape of a conversation younger than the grace: the ledger quarter is marked, the
+      // conversation is not, and the mark passes it before the ledger quarter is summed again.
+      await suDb.$executeRaw(Prisma.sql`
+        DELETE FROM conversation_sum_marks WHERE tenant_id = ${t.tenantId}`);
+      const [state] = await suDb.$queryRaw<{ until: Date }[]>(Prisma.sql`
+        SELECT summed_until AS until FROM ledger_sums_state WHERE tenant_id = ${t.tenantId}`);
+      const q = Math.floor((NOW - 2 * DAY) / (15 * 60_000)) * 15 * 60_000;
+      const until = (state as { until: Date }).until;
+      const day = Math.floor(q / DAY) * DAY;
+      await runScopedOn(db, ctx(t.tenantId), async (d) => {
+        await countConversations(
+          d,
+          new Date(q),
+          new Date(q + 15 * 60_000),
+          until,
+        );
+        await countConversationDays(
+          d,
+          new Date(day),
+          new Date(day + DAY),
+          until,
+        );
+      });
+      await sumUp(t.tenantId);
+      const view = { since: new Date(FIRST), tz: "UTC" };
+      expect((await getKpis(ctx(t.tenantId), view, db)).involved).toBe(1);
     } finally {
       await suDb.tenant
         .delete({ where: { id: t.tenantId } })

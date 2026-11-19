@@ -28,6 +28,9 @@ CREATE TABLE "conversation_agent_runs" (
 CREATE UNIQUE INDEX "conversation_agent_runs_tenant_id_conversation_id_agent_id_key" ON "conversation_agent_runs"("tenant_id", "conversation_id", "agent_id");
 CREATE INDEX "conversation_agent_runs_tenant_id_agent_id_idx" ON "conversation_agent_runs"("tenant_id", "agent_id");
 
+-- CreateIndex
+CREATE INDEX "conversation_agent_runs_conversation_id_idx" ON "conversation_agent_runs"("conversation_id");
+
 CREATE TABLE "conversation_quarter_sums" (
     "id" BIGSERIAL NOT NULL,
     "tenant_id" BIGINT NOT NULL,

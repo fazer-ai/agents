@@ -3772,6 +3772,8 @@ model ConversationAgentRun {
 
   @@unique([tenantId, conversationId, agentId])
   @@index([tenantId, agentId])
+  // A conversation's removal cascades here by its id alone, outside the tenant's policy.
+  @@index([conversationId])
   @@map("conversation_agent_runs")
 }
 

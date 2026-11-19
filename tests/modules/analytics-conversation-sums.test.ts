@@ -813,6 +813,21 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
     expect(none?.conversations).toBe(expected?.n);
   });
 
+  test("every foreign key of the sums tables leads an index, so a cascade finds its rows", async () => {
+    const rows = await suDb.$queryRaw<{ fk: string }[]>(Prisma.sql`
+      SELECT con.conname AS fk FROM pg_constraint con
+       WHERE con.contype = 'f'
+         AND con.conrelid::regclass::text IN ('conversation_agent_runs', 'conversation_quarter_sums',
+           'conversation_label_quarter_sums', 'conversation_day_sums', 'conversation_label_day_sums',
+           'conversation_first_response_days', 'conversation_sum_marks', 'ledger_quarter_sums',
+           'ledger_latency_days', 'ledger_sum_marks', 'ledger_sums_state')
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_index i
+            WHERE i.indrelid = con.conrelid
+              AND (i.indkey::int2[])[0:cardinality(con.conkey) - 1] = con.conkey)`);
+    expect(rows).toEqual([]);
+  });
+
   test("the database's idea of an agent turn is the app's", async () => {
     const nodes = [...Object.keys(USAGE_NODE_IS_AGENT_TURN), null];
     const rows = await suDb.$queryRaw<{ node: string | null; turn: boolean }[]>(

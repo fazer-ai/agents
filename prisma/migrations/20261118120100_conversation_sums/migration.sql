@@ -188,15 +188,17 @@ BEGIN
 END $$;
 
 -- A conversation row: a mark for the creation quarter (old and new) of every row older than the grace
--- whose figures could have moved. The webhook rewrites a conversation on most events, and most of
+-- whose figures could have moved, and for an inserted one the conversation itself. The webhook rewrites a conversation on most events, and most of
 -- those touch no column read here, so the comparison is per row and only a real change marks.
 CREATE FUNCTION conversation_sum_mark() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   cutoff timestamp := (clock_timestamp() AT TIME ZONE 'UTC') - interval '5 minutes';
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    INSERT INTO conversation_sum_marks (tenant_id, quarter)
-    SELECT DISTINCT n.tenant_id, ledger_quarter(n.created_at) FROM new_rows n
+    -- NOTE: the conversation, not only its quarter. A row written back after its removal has lost
+    -- its runs to the cascade, while its turns are still in the ledger.
+    INSERT INTO conversation_sum_marks (tenant_id, conversation_id)
+    SELECT n.tenant_id, n.id FROM new_rows n
      WHERE n.created_at < cutoff AND EXISTS (SELECT 1 FROM tenants t WHERE t.id = n.tenant_id);
   ELSIF TG_OP = 'UPDATE' THEN
     INSERT INTO conversation_sum_marks (tenant_id, quarter)

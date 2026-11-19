@@ -530,6 +530,39 @@ describe.skipIf(!dbUp)("the ledger's quarter-hour sums", () => {
     }
   });
 
+  test("a run cut short with work left runs again at once, and a run that is done waits", async () => {
+    const t = await seedTenant("lsums-rerun");
+    try {
+      await seedCalls(t, 3, 300);
+      await sumUp(t.tenantId);
+      // A repricing marks more quarters than one step settles.
+      await suDb.$executeRaw(Prisma.sql`
+        UPDATE llm_usage SET cost_usd = COALESCE(cost_usd, 0) + 1 WHERE tenant_id = ${t.tenantId}`);
+      expect(
+        await suDb.ledgerSumMark.count({ where: { tenantId: t.tenantId } }),
+      ).toBeGreaterThan(MARKED_QUARTERS_PER_STEP);
+      // The run is stopped after its first step, as a spent budget stops it.
+      let checks = 0;
+      const signal = {
+        get aborted() {
+          return checks++ > 0;
+        },
+      } as AbortSignal;
+      const job = { tenantId: t.tenantId } as unknown as ClaimedJob;
+      const cut = await ledgerSumsHandler(job, db, { signal } as never);
+      expect(
+        cut.outcome === "reschedule" && cut.runAt.getTime(),
+      ).toBeLessThanOrEqual(Date.now());
+      await sumUp(t.tenantId);
+      const done = await ledgerSumsHandler(job, db);
+      expect(
+        done.outcome === "reschedule" && done.runAt.getTime(),
+      ).toBeGreaterThan(Date.now() + 30_000);
+    } finally {
+      await suDb.tenant.delete({ where: { id: t.tenantId } });
+    }
+  });
+
   test("calls of zero milliseconds keep a bucket of their own", async () => {
     const t = await seedTenant("lsums-zero");
     try {

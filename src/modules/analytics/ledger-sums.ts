@@ -43,8 +43,9 @@ const SLICE_MS = DAY_MS;
 const RUN_BUDGET_MS = 30_000;
 // A step's transaction: the slice and the marks it settles, under the handler's budget.
 const STEP_TX: TxBudget = { maxWait: 5_000, timeout: 25_000 };
-// The marked quarters one step sums again: a day's worth, so a repricing of a month is settled over
-// steps that each fit the transaction, and every mark left waits, read from its rows meanwhile.
+// The marked quarters one step sums again: a day's worth, as much as a slice, so a repricing of a
+// month is settled over steps that each fit the transaction, and every mark left waits, read from its
+// rows meanwhile.
 export const MARKED_QUARTERS_PER_STEP = 96;
 const MARKS_PER_READ = 5000;
 const RERUN_MS = 60_000;
@@ -294,6 +295,21 @@ function floorDay(at: number): number {
   return Math.floor(at / DAY_MS) * DAY_MS;
 }
 
+// The spans [from, to) that cover a set of quarters or days, adjacent ones merged: a repricing marks
+// every quarter of its range, which is then summed in a statement or two, not one per quarter.
+export function spansOf(
+  starts: Iterable<number>,
+  width: number,
+): [Date, Date][] {
+  const spans: [number, number][] = [];
+  for (const at of [...starts].sort((a, b) => a - b)) {
+    const last = spans[spans.length - 1];
+    if (last && last[1] === at) last[1] = at + width;
+    else spans.push([at, at + width]);
+  }
+  return spans.map(([from, to]) => [new Date(from), new Date(to)]);
+}
+
 export interface LedgerSumsStep {
   // Where the sums stand after the step, null while nothing is summed.
   summedUntil: Date | null;
@@ -350,32 +366,37 @@ export async function stepLedgerSums(
       let summedUntil = state?.summed_until ?? null;
 
       // The marks first, against the mark as it stands: a marked quarter at or above it is summed
-      // from its rows when the mark gets there.
+      // from its rows when the mark gets there. The earliest marked quarters below it are summed
+      // again, so a repricing's quarters come in runs a statement each sums. Only the marks read
+      // here are deleted: one committed later may be for a row the sums below did not see.
+      // Before the first sums every mark is dropped: the rows answer for everything.
       const marks = await db.$queryRaw<{ id: bigint; quarter: Date }[]>(
-        Prisma.sql`SELECT id, quarter FROM ledger_sum_marks ORDER BY id LIMIT ${MARKS_PER_READ}`,
+        summedUntil
+          ? Prisma.sql`SELECT m.id, m.quarter FROM ledger_sum_marks m
+              WHERE m.quarter >= ${summedUntil} OR m.quarter IN (
+                SELECT DISTINCT quarter FROM ledger_sum_marks WHERE quarter < ${summedUntil}
+                 ORDER BY quarter LIMIT ${MARKED_QUARTERS_PER_STEP})
+              ORDER BY m.id LIMIT ${MARKS_PER_READ}`
+          : Prisma.sql`SELECT id, quarter FROM ledger_sum_marks ORDER BY id LIMIT ${MARKS_PER_READ}`,
       );
-      const remark = new Set<number>();
-      const settledMarks: bigint[] = [];
-      for (const m of marks) {
-        const q = m.quarter.getTime();
-        // NOTE: a quarter at or above the mark is summed when the mark gets there.
-        if (!summedUntil || q >= summedUntil.getTime()) {
-          settledMarks.push(m.id);
-        } else if (remark.has(q) || remark.size < MARKED_QUARTERS_PER_STEP) {
-          remark.add(q);
-          settledMarks.push(m.id);
-        }
+      const settledMarks = marks.map((m) => m.id);
+      const remark = new Set(
+        marks
+          .map((m) => m.quarter.getTime())
+          .filter((q) => summedUntil && q < summedUntil.getTime()),
+      );
+      for (const [from, to] of spansOf(remark, QUARTER_MS)) {
+        await sumQuarters(db, from, to);
+        await addRuns(db, from, to);
       }
       const remarkDays = new Set<number>();
       for (const q of remark) {
-        await sumQuarters(db, new Date(q), new Date(q + QUARTER_MS));
-        await addRuns(db, new Date(q), new Date(q + QUARTER_MS));
         const day = floorDay(q);
         if (summedUntil && day + DAY_MS <= summedUntil.getTime())
           remarkDays.add(day);
       }
-      for (const d of remarkDays)
-        await sumLatencyDays(db, new Date(d), new Date(d + DAY_MS));
+      for (const [from, to] of spansOf(remarkDays, DAY_MS))
+        await sumLatencyDays(db, from, to);
       if (settledMarks.length > 0) {
         await db.$executeRaw(Prisma.sql`
         DELETE FROM ledger_sum_marks WHERE id = ANY(${settledMarks}::bigint[])`);
@@ -383,10 +404,10 @@ export async function stepLedgerSums(
       const settle = summedUntil
         ? await settleConversationMarks(db, summedUntil)
         : { settled: 0, more: false };
-      const marksLeft =
-        settledMarks.length < marks.length ||
-        marks.length === MARKS_PER_READ ||
-        settle.more;
+      const [left] = await db.$queryRaw<{ any: boolean }[]>(
+        Prisma.sql`SELECT EXISTS (SELECT 1 FROM ledger_sum_marks) AS any`,
+      );
+      const marksLeft = Boolean(left?.any) || settle.more;
 
       // Then the mark.
       let caughtUp = false;
@@ -456,11 +477,18 @@ export async function ledgerSumsHandler(
   ctx?: JobContext,
 ): Promise<JobResult> {
   const stopAt = Date.now() + RUN_BUDGET_MS;
+  let rest = false;
   while (Date.now() < stopAt && !ctx?.signal.aborted) {
     const step = await stepLedgerSums(base, job.tenantId);
-    if (step.caughtUp || step.waiting || step.summedUntil === null) break;
+    rest = step.caughtUp || step.waiting || step.summedUntil === null;
+    if (rest) break;
   }
-  return { outcome: "reschedule", runAt: new Date(Date.now() + RERUN_MS) };
+  // NOTE: a run that spent its budget with work left (a tenant being summed, a repricing being
+  // settled) runs again at once: until it is done, the figures it has not reached are read from rows.
+  return {
+    outcome: "reschedule",
+    runAt: new Date(Date.now() + (rest ? RERUN_MS : 0)),
+  };
 }
 
 let registered = false;

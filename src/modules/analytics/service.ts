@@ -496,7 +496,13 @@ export async function getTimeseries(
           ),
         )
       : [];
-    const convByDay = new Map(funnel.map((r) => [r.key, Number(r.involved)]));
+    // A day the funnel counts nobody on is no day of the series: under an agent and an inbox
+    // together the counts keep a zero row for the agent's days in other inboxes.
+    const convByDay = new Map(
+      funnel
+        .map((r) => [r.key, Number(r.involved)] as const)
+        .filter(([, n]) => n > 0),
+    );
     const days = [
       ...new Set([...rows.map((r) => r.bucket), ...convByDay.keys()]),
     ].sort();

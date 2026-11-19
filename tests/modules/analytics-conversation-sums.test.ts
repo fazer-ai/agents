@@ -441,6 +441,67 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
       );
   });
 
+  test("a counted conversation removed and written back counts as it did", async () => {
+    const view = { since: new Date(FIRST), tz: "UTC" };
+    await sumUp(fx.tenantId);
+    const before = await blocks(fx.tenantId, view);
+    const [kept] = await suDb.$queryRaw<{ id: bigint }[]>(Prisma.sql`
+      SELECT r.conversation_id AS id FROM conversation_agent_runs r
+        JOIN conversations c ON c.id = r.conversation_id
+       WHERE r.tenant_id = ${fx.tenantId} AND r.agent_id <> 0 AND c.created_at < now() - interval '1 day'
+       LIMIT 1`);
+    const id = (kept as { id: bigint }).id;
+    const [gone] = await suDb.$queryRaw<{ row: unknown }[]>(Prisma.sql`
+      WITH d AS (DELETE FROM conversations WHERE id = ${id} RETURNING *)
+      SELECT row_to_json(d) AS row FROM d`);
+    await sumUp(fx.tenantId);
+    // Its turns stay in the ledger, so written back it is the conversation the agent ran on again.
+    await suDb.$executeRaw(Prisma.sql`
+      INSERT INTO conversations SELECT * FROM json_populate_record(NULL::conversations, ${JSON.stringify((gone as { row: unknown }).row)}::json)`);
+    expect(await blocks(fx.tenantId, view)).toEqual(before);
+    await sumUp(fx.tenantId);
+    expect(await blocks(fx.tenantId, view)).toEqual(before);
+  });
+
+  test("a conversation that just arrived counts its turns at once, a turn stamped before the mark too", async () => {
+    const t = await seedTenant("fresh");
+    try {
+      await sumUp(t.tenantId);
+      const view = { since: new Date(FIRST), tz: "UTC" };
+      // Both conversations are above the mark, their own rows not yet marked: one turn written now,
+      // and one stamped a day back, which lands in a summed quarter of the ledger.
+      for (const at of [undefined, new Date(NOW - DAY)]) {
+        const c = await suDb.conversation.create({
+          data: {
+            tenantId: t.tenantId,
+            chatwootInstanceId: t.instanceId,
+            inboxId: t.inboxes[0],
+            chatwootConversationId: seq++,
+            status: "open",
+            threadId: `${t.tenantId}:${t.instanceId}:${seq}`,
+          },
+        });
+        await suDb.llmUsage.create({
+          data: {
+            tenantId: t.tenantId,
+            conversationId: c.id,
+            agentId: t.agents[0],
+            source: "inbox",
+            node: "agent",
+            model: "m1",
+            createdAt: at,
+          },
+        });
+      }
+      const kpis = await getKpis(ctx(t.tenantId), view, db);
+      expect([kpis.totalConversations, kpis.involved]).toEqual([2, 2]);
+    } finally {
+      await suDb.tenant
+        .delete({ where: { id: t.tenantId } })
+        .catch(() => undefined);
+    }
+  });
+
   test("a day the job finishes summing in a step that starts inside it is written whole", async () => {
     const t = fx.tenantId;
     const dayTables = [
@@ -725,6 +786,16 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
     ]) {
       const series = await getTimeseries(ctx(fx.tenantId), f, db);
       expect(series.filter((p) => p.conversations !== 0)).toEqual([]);
+    }
+  });
+
+  test("the timeseries of one agent in one inbox has no day without calls or conversations", async () => {
+    for (const inboxId of fx.inboxes) {
+      const f = { since: new Date(FIRST), agentId: fx.agents[0], inboxId };
+      const series = await getTimeseries(ctx(fx.tenantId), f, db);
+      expect(
+        series.filter((p) => p.calls === 0 && p.conversations === 0),
+      ).toEqual([]);
     }
   });
 

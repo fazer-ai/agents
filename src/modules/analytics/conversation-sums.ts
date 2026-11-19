@@ -10,6 +10,7 @@ import {
 import {
   MARKED_QUARTERS_PER_STEP,
   type SumsBounds,
+  spansOf,
   sumsBounds,
   ZERO_BUCKET,
 } from "./ledger-sums";
@@ -230,15 +231,14 @@ export async function settleConversationMarks(
     ),
   ];
   await recomputeRuns(db, ids);
-  const days = new Set<number>();
-  for (const q of quarters) {
-    if (q >= mark.getTime()) continue;
-    await countConversations(db, new Date(q), new Date(q + QUARTER_MS), mark);
-    const day = floorDay(q);
-    if (day + DAY_MS <= mark.getTime()) days.add(day);
-  }
-  for (const d of days)
-    await countConversationDays(db, new Date(d), new Date(d + DAY_MS), mark);
+  const below = [...quarters].filter((q) => q < mark.getTime());
+  for (const [from, to] of spansOf(below, QUARTER_MS))
+    await countConversations(db, from, to, mark);
+  const days = new Set(
+    below.map(floorDay).filter((d) => d + DAY_MS <= mark.getTime()),
+  );
+  for (const [from, to] of spansOf(days, DAY_MS))
+    await countConversationDays(db, from, to, mark);
   await db.$executeRaw(Prisma.sql`
     DELETE FROM conversation_sum_marks WHERE id = ANY(${taken.map((m) => m.id)}::bigint[])`);
   return {
@@ -276,8 +276,7 @@ function readAgentsSql(mark: Date): Prisma.Sql {
        WHERE ar.conversation_id = c.id AND ${RUN_ROW}
          AND (ar.created_at >= ${mark}
               OR EXISTS (SELECT 1 FROM conversation_sum_marks rm WHERE rm.conversation_id = c.id)
-              OR EXISTS (SELECT 1 FROM ledger_sum_marks lm
-                          WHERE ar.created_at >= lm.quarter AND ar.created_at < lm.quarter + interval '15 minutes'))
+              OR EXISTS (SELECT 1 FROM ledger_sum_marks lm WHERE lm.quarter = ledger_quarter(ar.created_at)))
     ) x WHERE a <> 0 ORDER BY a)`;
 }
 

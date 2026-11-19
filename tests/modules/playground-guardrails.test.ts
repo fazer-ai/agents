@@ -67,6 +67,7 @@ let agentHeldBroken = 0n;
 let agentExternal = 0n;
 let agentDeadCredential = 0n;
 let agentBoth = 0n;
+let agentSilentBoth = 0n;
 let agentInputSilent = 0n;
 
 const RAW_REPLY = "Nosso concorrente resolve isso melhor.";
@@ -270,6 +271,12 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       guardrails: guardrails({
         input: dir({ enabled: true, action: "silent" }),
         output: dir(),
+      }),
+    });
+    agentSilentBoth = await mk("SilentBoth", {
+      guardrails: guardrails({
+        input: dir({ enabled: true }),
+        output: dir({ enabled: true, action: "silent" }),
       }),
     });
     agentBoth = await mk("Both", {
@@ -823,6 +830,66 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(turns[0]?.turnId).toBeDefined();
   });
 
+  // The bug it catches: an input-blocked turn anchored past a suppressed reply the reload keeps, so
+  // the later block renders before the earlier suppression.
+  test("a blocked turn after a suppressed reply reloads after it", async () => {
+    const cp = new MemorySaver();
+    // The judge trips on the agent's reply and on the word BLOQUEIA, and nothing else.
+    const make = ((args: { model?: string }) =>
+      args?.model === GUARD_MODEL
+        ? guardrailModel(async (msgs) => {
+            const last = String(msgs[msgs.length - 1]?.content ?? "");
+            const violated =
+              last.includes("BLOQUEIA") || last.includes(RAW_REPLY);
+            return {
+              content: JSON.stringify({
+                violated,
+                categories: violated ? ["competitor_mentions"] : [],
+                rationale: "",
+                suggestedReply: null,
+              }),
+            };
+          })
+        : (
+            models({ violated: false }).make as unknown as (
+              a: unknown,
+            ) => BaseChatModel
+          )(args)) as never;
+    const first = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilentBoth,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: make, checkpointer: cp },
+    });
+    expect(first.suppressed).toBe(true);
+    await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilentBoth,
+      message: "BLOQUEIA",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: make, checkpointer: cp },
+    });
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: first.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:oi",
+      "assistant:",
+      "user:BLOQUEIA",
+      `assistant:${TEMPLATE}`,
+    ]);
+  });
+
   // The bug it catches: a held turn traced as an ordinary policy hand-over, indistinguishable from a trip.
   test("under hold a reply whose judge cannot run is held, and the trace says why", async () => {
     const m = models({ violated: false, breakJudge: true });
@@ -1077,7 +1144,19 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(rows).toHaveLength(1);
     const anchor = rows[0]?.anchorMessageId;
     expect(typeof anchor).toBe("string");
-    expect(rendered).toContain(anchor as string);
+    // Resolved against the rebuild the session loader folds the notes over, which keeps the empty
+    // reply as a turn, so the blocked turn lands right after the first exchange and not at the end.
+    const folded = rebuildPlaygroundTurns(messages, [], { emptyReplies: true });
+    expect(folded.map((t) => t.messageId)).toContain(anchor as string);
+    const turns = applyTurnNotes(
+      folded,
+      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:primeira",
+      "user:fale do concorrente",
+      `assistant:${TEMPLATE}`,
+    ]);
   });
 
   // NOTE: every tenant-scoped model is registered with the tenancy extension, which supplies

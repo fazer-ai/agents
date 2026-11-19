@@ -170,7 +170,11 @@ async function lastRenderedMessageId(
     const st = await graph.getState({ configurable: { thread_id: threadId } });
     const msgs = st?.values?.messages;
     if (!Array.isArray(msgs) || msgs.length === 0) return null;
-    const turns = rebuildPlaygroundTurns(msgs as BaseMessage[]);
+    // The same rebuild the session loader folds the notes over, empty replies included, so the
+    // anchor is a turn that fold sees.
+    const turns = rebuildPlaygroundTurns(msgs as BaseMessage[], [], {
+      emptyReplies: true,
+    });
     // The last turn's id is enough, with no walk back to one that has an id: `messagesStateReducer`
     // stamps a uuid on every message it takes in (measured), so a turn rebuilt from a checkpointed
     // thread always carries one. The guards inside the rebuild are for the hand-built arrays that

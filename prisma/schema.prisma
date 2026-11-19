@@ -88,6 +88,7 @@ enum SchedulerJobKind {
   OCCURRENCE_ROUND
   OCCURRENCE_SWEEP
   DASHBOARD_LOG_FACTS_BACKFILL
+  LEDGER_SUMS
 }
 
 enum SchedulerJobStatus {
@@ -198,6 +199,17 @@ model Tenant {
   clientAppSecrets              ClientAppSecret[]
   dashboardLogFacts             DashboardLogFact[]
   dashboardLogFactsState        DashboardLogFactsState?
+  ledgerQuarterSums             LedgerQuarterSum[]
+  ledgerLatencyDays             LedgerLatencyDay[]
+  ledgerSumMarks                LedgerSumMark[]
+  ledgerSumsState               LedgerSumsState?
+  conversationAgentRuns         ConversationAgentRun[]
+  conversationQuarterSums       ConversationQuarterSum[]
+  conversationLabelQuarterSums  ConversationLabelQuarterSum[]
+  conversationDaySums           ConversationDaySum[]
+  conversationLabelDaySums      ConversationLabelDaySum[]
+  conversationFirstResponseDays ConversationFirstResponseDay[]
+  conversationSumMarks          ConversationSumMark[]
   fullDetailContents            FullDetailContent[]
   fullDetailRefs                FullDetailRef[]
   dashboards                    Dashboard[]
@@ -1386,6 +1398,7 @@ model Conversation {
   readings               ConversationReading[]
   occurrenceReads        OccurrenceConversationRead[]
   occurrenceThemeMembers OccurrenceThemeMember[]
+  agentRuns              ConversationAgentRun[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
@@ -3663,6 +3676,214 @@ model DashboardLogFactsState {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("dashboard_log_facts_state")
+}
+
+// THE LEDGER'S QUARTER-HOUR SUMS (docs/dashboard.md, "Ledger sums"): `llm_usage` summed per tenant,
+// UTC quarter hour and every column a dashboard filter or grouping reads, written only by the
+// LEDGER_SUMS job (src/modules/analytics/ledger-sums.ts) for quarters below `LedgerSumsState.summedUntil`.
+// Read through raw SQL beside the rows of the quarters it does not cover. The trigger that marks
+// quarters lives in prisma/migrations/20261118120000_ledger_quarter_sums.
+model LedgerQuarterSum {
+  id                  BigInt   @id @default(autoincrement())
+  tenantId            BigInt   @map("tenant_id")
+  quarter             DateTime @map("quarter")
+  source              String
+  anonymous           Boolean
+  agentId             BigInt?  @map("agent_id")
+  inboxId             BigInt?  @map("inbox_id")
+  model               String
+  // `COALESCE(node, 'agent')`, the way every ledger reader groups a row with no node.
+  node                String
+  // Null when no call of the group was priced, never zero.
+  costUsd             Decimal? @map("cost_usd") @db.Decimal(28, 10)
+  requests            Int
+  unpriced            Int
+  promptTokens        BigInt   @map("prompt_tokens")
+  completionTokens    BigInt   @map("completion_tokens")
+  cachedReadTokens    BigInt   @map("cached_read_tokens")
+  cacheCreationTokens BigInt   @map("cache_creation_tokens")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, quarter])
+  @@map("ledger_quarter_sums")
+}
+
+// The call latency per UTC day as a histogram of 5%-wide buckets (`ledger_latency_bucket`), written
+// with the quarter sums, for the days wholly below the mark.
+model LedgerLatencyDay {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  day       DateTime
+  source    String
+  anonymous Boolean
+  agentId   BigInt?  @map("agent_id")
+  inboxId   BigInt?  @map("inbox_id")
+  model     String
+  bucket    Int
+  calls     Int
+  minMs     Int      @map("min_ms")
+  maxMs     Int      @map("max_ms")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, day])
+  @@map("ledger_latency_days")
+}
+
+// A quarter whose rows changed below what may already be summed, appended by the statement triggers
+// on `llm_usage`. The job recomputes the quarter and deletes its marks; until then readers read the
+// quarter from its rows.
+model LedgerSumMark {
+  id       BigInt   @id @default(autoincrement())
+  tenantId BigInt   @map("tenant_id")
+  quarter  DateTime
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, quarter])
+  @@map("ledger_sum_marks")
+}
+
+// Where a tenant's sums stand: every quarter below `summedUntil` has its sums, except the marked
+// ones. The candidate is the mark the previous run took, waited out by the next one.
+model LedgerSumsState {
+  tenantId     BigInt               @id @map("tenant_id")
+  summedUntil  DateTime?            @map("summed_until")
+  candidateAt  DateTime?            @map("candidate_at")
+  candidateXid Unsupported("xid8")? @map("candidate_xid")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("ledger_sums_state")
+}
+
+// The agents that took a turn on each conversation (`agentRanSql`), kept by the LEDGER_SUMS job from
+// the ledger rows it sums (src/modules/analytics/conversation-sums.ts). `agentId` 0 is a legacy row
+// with no agent, which counts as the agent running under no agent filter.
+model ConversationAgentRun {
+  id             BigInt @id @default(autoincrement())
+  tenantId       BigInt @map("tenant_id")
+  conversationId BigInt @map("conversation_id")
+  agentId        BigInt @map("agent_id")
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, conversationId, agentId])
+  @@index([tenantId, agentId])
+  // A conversation's removal cascades here by its id alone, outside the tenant's policy.
+  @@index([conversationId])
+  @@map("conversation_agent_runs")
+}
+
+// THE CONVERSATION COUNTS (docs/dashboard.md, "Conversation sums"): conversations per UTC quarter hour
+// of creation, inbox, outcome and the agents that ran on them, written by the LEDGER_SUMS job below
+// `LedgerSumsState.summedUntil`. Read through raw SQL beside the rows of the quarters they do not
+// cover. The marking triggers live in prisma/migrations/20261118120100_conversation_sums.
+model ConversationQuarterSum {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      BigInt   @map("tenant_id")
+  quarter       DateTime
+  inboxId       BigInt?  @map("inbox_id")
+  outcome       String
+  ranAny        Boolean  @map("ran_any")
+  ranAgents     BigInt[] @map("ran_agents")
+  labeled       Boolean
+  conversations Int
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, quarter])
+  @@map("conversation_quarter_sums")
+}
+
+// The same counts per label: a conversation with two labels counts under both.
+model ConversationLabelQuarterSum {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      BigInt   @map("tenant_id")
+  quarter       DateTime
+  inboxId       BigInt?  @map("inbox_id")
+  outcome       String
+  ranAny        Boolean  @map("ran_any")
+  ranAgents     BigInt[] @map("ran_agents")
+  label         String
+  conversations Int
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, quarter])
+  @@map("conversation_label_quarter_sums")
+}
+
+// The two counts above per UTC day, added up from the quarters, for the days wholly below the mark.
+model ConversationDaySum {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      BigInt   @map("tenant_id")
+  day           DateTime
+  inboxId       BigInt?  @map("inbox_id")
+  outcome       String
+  ranAny        Boolean  @map("ran_any")
+  ranAgents     BigInt[] @map("ran_agents")
+  labeled       Boolean
+  conversations Int
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, day])
+  @@map("conversation_day_sums")
+}
+
+model ConversationLabelDaySum {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      BigInt   @map("tenant_id")
+  day           DateTime
+  inboxId       BigInt?  @map("inbox_id")
+  outcome       String
+  ranAny        Boolean  @map("ran_any")
+  ranAgents     BigInt[] @map("ran_agents")
+  label         String
+  conversations Int
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, day])
+  @@map("conversation_label_day_sums")
+}
+
+// The first response time of the conversations created each UTC day, as a histogram of 5%-wide
+// buckets of seconds (`ledger_latency_bucket`).
+model ConversationFirstResponseDay {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      BigInt   @map("tenant_id")
+  day           DateTime
+  inboxId       BigInt?  @map("inbox_id")
+  ranAny        Boolean  @map("ran_any")
+  ranAgents     BigInt[] @map("ran_agents")
+  bucket        Int
+  conversations Int
+  minSeconds    Float    @map("min_seconds")
+  maxSeconds    Float    @map("max_seconds")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, day])
+  @@map("conversation_first_response_days")
+}
+
+// A creation quarter to recount, or a conversation whose runs to recompute, appended by the triggers on
+// `conversations` and `llm_usage`.
+model ConversationSumMark {
+  id             BigInt    @id @default(autoincrement())
+  tenantId       BigInt    @map("tenant_id")
+  quarter        DateTime?
+  conversationId BigInt?   @map("conversation_id")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, quarter])
+  @@index([tenantId, conversationId])
+  @@map("conversation_sum_marks")
 }
 
 // WHAT AN OBSERVER READ OFF A CONVERSATION for the account's occurrence monitor (docs/occurrences.md):

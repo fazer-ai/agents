@@ -1,5 +1,6 @@
 import { Prisma } from "@/../generated/prisma/client";
 import type { ScopedDb } from "@/lib/tenancy";
+import { withRunsMark } from "./conversation-sums";
 import {
   agentRanSql,
   cohortWhereSql,
@@ -29,7 +30,7 @@ export interface DrillDown {
 
 function outcomeFilterSql(d: DrillDown): Prisma.Sql {
   if (d.outcome === "all") return Prisma.sql`TRUE`;
-  const ran = agentRanSql("c", d.view.agentId);
+  const ran = agentRanSql("c", d.view.agentId, d.view.runsMark);
   if (d.outcome === "involved") return ran;
   return Prisma.sql`${ran} AND ${outcomeSql("c")} = ${d.outcome}`;
 }
@@ -44,6 +45,8 @@ export async function drillDownPageIds(
   d: DrillDown,
   opts: { status?: string; q?: string; cursor?: bigint; take: number },
 ): Promise<bigint[]> {
+  // The view with the tenant's sums mark, so "the agent ran" reads the runs (./conversation-sums.ts).
+  d = { ...d, view: await withRunsMark(db, d.view) };
   const status = opts.status ?? null;
   const term = opts.q?.trim() || null;
   const digits =

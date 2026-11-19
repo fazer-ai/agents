@@ -57,6 +57,7 @@ import { doc, errors, jsonResponse } from "@/api/lib/openapi";
 import { WS_CLOSE } from "@/api/lib/realtime";
 import { requireSession } from "@/api/lib/step-up";
 import config from "@/config";
+import { armLedgerSums } from "@/modules/analytics/ledger-sums";
 
 const baseAuthController = new Elysia({
   prefix: "/auth",
@@ -118,6 +119,7 @@ const baseAuthController = new Elysia({
       }
 
       completeSetup();
+      armLedgerSums(tenantId);
       await setAuthCookie(user, passwordHash, { method: "password" });
       // NOTE: Log non-PII identifiers only. `userId` is stable and audit-
       // useful, `role` confirms this was the bootstrap-ADMIN path. The email

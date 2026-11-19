@@ -2,7 +2,13 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import type { TenantContext } from "@/lib/tenancy";
 import { runMetricsScoped } from "./budget";
-import { type DashboardFilter, logWhereSql, usageWhereSql } from "./filter";
+import { type DashboardFilter, logWhereSql } from "./filter";
+import {
+  type HistogramBucket,
+  histogramPercentile,
+  latencyCtesSql,
+  sumsBounds,
+} from "./ledger-sums";
 
 // IS IT HEALTHY: how long the model calls take, and what went wrong where. Latency is the ledger's
 // own timing of each call (`llm_usage.duration_ms`); the problems are the flow log's warn and error
@@ -37,22 +43,40 @@ export async function getHealth(
   base: PrismaClient = metricsPrisma,
 ): Promise<HealthReport> {
   return runMetricsScoped(base, ctx, async (db) => {
-    const latency = await db.$queryRaw<
+    // The latency from the histogram of 5%-wide buckets (./ledger-sums.ts): each percentile is
+    // within 2.5% of the exact one, and `calls` is exact.
+    const bounds = await sumsBounds(db, filter);
+    const histogram = await db.$queryRaw<
       {
         model: string;
+        bucket: number;
         calls: number;
-        p50: number | null;
-        p90: number | null;
+        min_ms: number;
+        max_ms: number;
       }[]
     >(Prisma.sql`
-      SELECT u.model,
-             COUNT(*)::int AS calls,
-             percentile_cont(0.5) WITHIN GROUP (ORDER BY u.duration_ms)::float8 AS p50,
-             percentile_cont(0.9) WITHIN GROUP (ORDER BY u.duration_ms)::float8 AS p90
-        FROM llm_usage u
-       WHERE ${usageWhereSql("u", filter)} AND u.duration_ms IS NOT NULL
-       GROUP BY 1
-       ORDER BY 2 DESC`);
+      WITH ${latencyCtesSql(filter, bounds)}
+      SELECT model, bucket, SUM(calls)::int AS calls, MIN(min_ms)::int AS min_ms, MAX(max_ms)::int AS max_ms
+        FROM latency GROUP BY 1, 2`);
+    const byModel = new Map<string, HistogramBucket[]>();
+    for (const r of histogram) {
+      const list = byModel.get(r.model) ?? [];
+      list.push({
+        bucket: Number(r.bucket),
+        calls: Number(r.calls),
+        min: Number(r.min_ms),
+        max: Number(r.max_ms),
+      });
+      byModel.set(r.model, list);
+    }
+    const latency = [...byModel.entries()]
+      .map(([model, buckets]) => ({
+        model,
+        calls: buckets.reduce((n, b) => n + b.calls, 0),
+        p50: histogramPercentile(buckets, 0.5),
+        p90: histogramPercentile(buckets, 0.9),
+      }))
+      .sort((a, b) => b.calls - a.calls);
     const problems = await db.$queryRaw<
       {
         stage: string;

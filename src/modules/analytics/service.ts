@@ -4,12 +4,19 @@ import { badQueryParam } from "@/lib/query-param";
 import type { TenantContext } from "@/lib/tenancy";
 import { runMetricsScoped } from "./budget";
 import {
+  dividesByConversations,
+  funnelCountsSql,
+  responsesCtesSql,
+  withRunsMark,
+} from "./conversation-sums";
+import {
   agentRanSql,
   cohortWhereSql,
   type DashboardFilter,
+  localDaySql,
   outcomeSql,
-  usageWhereSql,
 } from "./filter";
+import { histogramPercentile, ledgerCtesSql, sumsBounds } from "./ledger-sums";
 
 // Instance metrics for the operational dashboard. LLM tokens/calls are aggregated FROM THE LOCAL
 // LlmUsage table (captured at the source in the model callback), never mirrored from Langfuse —
@@ -92,85 +99,103 @@ export async function getInstanceMetrics(
   filter: MetricsFilter = {},
   base: PrismaClient = metricsPrisma,
 ): Promise<InstanceMetrics> {
-  const sinceWhere = {
-    ...(filter.since || filter.until
-      ? {
-          createdAt: {
-            ...(filter.since ? { gte: filter.since } : {}),
-            ...(filter.until ? { lt: filter.until } : {}),
-          },
-        }
-      : {}),
-    ...(filter.agentId !== undefined ? { agentId: filter.agentId } : {}),
-    ...(filter.inboxId !== undefined ? { inboxId: filter.inboxId } : {}),
-  };
-  const usageWhere = {
-    ...sinceWhere,
-    ...(filter.source ? { source: filter.source } : {}),
-    ...(filter.audience
-      ? {
-          AND: [
-            { source: "client", anonymous: filter.audience === "anonymous" },
-          ],
-        }
-      : {}),
-  };
-
   return runMetricsScoped(base, ctx, async (db) => {
-    const sumSelect = {
-      promptTokens: true,
-      completionTokens: true,
-      cachedReadTokens: true,
-      cacheCreationTokens: true,
-    } as const;
-
-    const totals = await db.llmUsage.aggregate({
-      where: usageWhere,
-      _sum: sumSelect,
-      _count: { _all: true },
-    });
-
-    const perAgent = await db.llmUsage.groupBy({
-      by: ["agentId"],
-      where: usageWhere,
-      _sum: { promptTokens: true, completionTokens: true },
-      _count: { _all: true },
-      orderBy: { _sum: { promptTokens: "desc" } },
-    });
-
-    const perInbox = await db.llmUsage.groupBy({
-      by: ["inboxId"],
-      // A filtered inbox already excludes the rows with none; spreading `not: null` over it would
-      // lift the filter.
-      where:
-        filter.inboxId !== undefined
-          ? usageWhere
-          : { ...usageWhere, inboxId: { not: null } },
-      _sum: { promptTokens: true, completionTokens: true },
-      _count: { _all: true },
-      orderBy: { _sum: { promptTokens: "desc" } },
-    });
-
-    const perModel = await db.llmUsage.groupBy({
-      by: ["model"],
-      where: usageWhere,
+    // Every ledger figure from the view's quarter-hour sums (./ledger-sums.ts), grouped once.
+    const bounds = await sumsBounds(db, filter);
+    type Grouped = {
+      set: number;
+      agent_id: bigint | null;
+      inbox_id: bigint | null;
+      model: string | null;
+      prompt: bigint | number;
+      completion: bigint | number;
+      cached: bigint | number;
+      creation: bigint | number;
+      calls: number;
+    };
+    const grouped = await db.$queryRaw<Grouped[]>(Prisma.sql`
+      WITH ${ledgerCtesSql(filter, bounds)}
+      SELECT GROUPING(l.agent_id, l.inbox_id, l.model)::int AS set, l.agent_id, l.inbox_id, l.model,
+             COALESCE(SUM(l.prompt_tokens), 0)::bigint AS prompt,
+             COALESCE(SUM(l.completion_tokens), 0)::bigint AS completion,
+             COALESCE(SUM(l.cached_read_tokens), 0)::bigint AS cached,
+             COALESCE(SUM(l.cache_creation_tokens), 0)::bigint AS creation,
+             COALESCE(SUM(l.requests), 0)::int AS calls
+        FROM ledger l
+       GROUP BY GROUPING SETS ((l.agent_id), (l.inbox_id), (l.model), ())`);
+    // GROUPING's bits are (agent, inbox, model), set where the column is NOT a key of the row.
+    const of = (set: number) =>
+      grouped
+        .filter((r) => r.set === set)
+        .sort(
+          (x, y) =>
+            Number(y.prompt) - Number(x.prompt) ||
+            String(x.agent_id ?? x.inbox_id ?? x.model).localeCompare(
+              String(y.agent_id ?? y.inbox_id ?? y.model),
+            ),
+        );
+    const [whole] = of(0b111);
+    const totals = {
       _sum: {
-        promptTokens: true,
-        completionTokens: true,
-        cachedReadTokens: true,
+        promptTokens: Number(whole?.prompt ?? 0),
+        completionTokens: Number(whole?.completion ?? 0),
+        cachedReadTokens: Number(whole?.cached ?? 0),
+        cacheCreationTokens: Number(whole?.creation ?? 0),
       },
-      _count: { _all: true },
-      orderBy: { _sum: { promptTokens: "desc" } },
+      _count: { _all: Number(whole?.calls ?? 0) },
+    };
+    const sumsOf = (r: Grouped) => ({
+      _sum: {
+        promptTokens: Number(r.prompt),
+        completionTokens: Number(r.completion),
+        cachedReadTokens: Number(r.cached),
+      },
+      _count: { _all: Number(r.calls) },
     });
+    const perAgent = of(0b011).map((r) => ({
+      agentId: r.agent_id,
+      ...sumsOf(r),
+    }));
+    // A filtered inbox already excludes the rows with none.
+    const perInbox = of(0b101)
+      .filter((r) => r.inbox_id !== null)
+      .map((r) => ({ inboxId: r.inbox_id, ...sumsOf(r) }));
+    const perModel = of(0b110).map((r) => ({
+      model: r.model as string,
+      ...sumsOf(r),
+    }));
 
-    // The real-vs-playground split: ALWAYS across every source (only the `since` window applies),
-    // so the segmented control can label each option independent of the current selection.
-    const perSource = await db.llmUsage.groupBy({
-      by: ["source"],
-      where: sinceWhere,
-      _sum: { promptTokens: true, completionTokens: true },
-      _count: { _all: true },
-    });
+    // The real-vs-playground split: ALWAYS across every source (the window, the agent and the inbox
+    // apply), so the segmented control can label each option independent of the current selection.
+    const everySource = {
+      ...filter,
+      source: undefined,
+      audience: undefined,
+    };
+    const perSource = (
+      await db.$queryRaw<
+        {
+          source: string;
+          prompt: bigint | number;
+          completion: bigint | number;
+          calls: number;
+        }[]
+      >(Prisma.sql`
+        WITH ${ledgerCtesSql(everySource, await sumsBounds(db, everySource))}
+        SELECT l.source, COALESCE(SUM(l.prompt_tokens), 0)::bigint AS prompt,
+               COALESCE(SUM(l.completion_tokens), 0)::bigint AS completion,
+               COALESCE(SUM(l.requests), 0)::int AS calls
+          FROM ledger l
+         GROUP BY 1
+         ORDER BY 1`)
+    ).map((r) => ({
+      source: r.source,
+      _sum: {
+        promptTokens: Number(r.prompt),
+        completionTokens: Number(r.completion),
+      },
+      _count: { _all: Number(r.calls) },
+    }));
 
     // Resolve inbox names by id (RLS-scoped), mirroring how getKpis resolves conversations by id.
     const inboxIds = perInbox
@@ -192,7 +217,7 @@ export async function getInstanceMetrics(
       await db.$queryRaw<{ status: string; count: number }[]>(Prisma.sql`
         SELECT c.status::text AS status, COUNT(*)::int AS count
           FROM conversations c
-         WHERE ${cohortWhereSql("c", { agentId: filter.agentId, inboxId: filter.inboxId })}
+         WHERE ${cohortWhereSql("c", await withRunsMark(db, { agentId: filter.agentId, inboxId: filter.inboxId }))}
          GROUP BY 1`)
     ).map((r) => ({ status: r.status, _count: { _all: r.count } }));
 
@@ -363,29 +388,42 @@ export async function getKpis(
     // the reader that makes the second one. Vision runs on the incoming attachment before the
     // bot-ownership gate decides anything, so an image sent into a conversation a human handled start
     // to finish must not land here as bot involvement: `agentRanSql` counts agent turns only.
-    const [row] = await db.$queryRaw<OutcomeRow[]>(outcomeCountsSql(filter));
+    const view = await withRunsMark(db, filter);
+    const bounds = await sumsBounds(db, view);
+    const [row] = await db.$queryRaw<OutcomeRow[]>(
+      funnelCountsSql(view, bounds),
+    );
     const counts = toCounts(row);
-    // Raw SQL for percentile_cont (no Prisma builder), inside the scoped tx so RLS fences the rows —
-    // never filter tenant_id by hand. EPOCH of the difference: both columns are mirrored from the
-    // same Chatwoot row, so the subtraction is between two readings of one source rather than
-    // across two clocks.
-    const [responseRow] = await db.$queryRaw<
-      { median: number | null; p90: number | null; sampled: number }[]
-    >(Prisma.sql`
-      SELECT percentile_cont(0.5) WITHIN GROUP (
-               ORDER BY EXTRACT(EPOCH FROM (c.chatwoot_first_reply_at - c.chatwoot_created_at))
-             )::float8 AS median,
-             percentile_cont(0.9) WITHIN GROUP (
-               ORDER BY EXTRACT(EPOCH FROM (c.chatwoot_first_reply_at - c.chatwoot_created_at))
-             )::float8 AS p90,
-             COUNT(*)::int AS sampled
-        FROM conversations c
-       WHERE ${FIRST_RESPONSE_SAMPLE_SQL}
-         -- The same conversations the funnel counts.
-         AND ${cohortWhereSql("c", filter)}`);
-    // COUNT and the percentiles come from ONE aggregate over the same rows, so they cannot
-    // disagree: no row in the sample means `sampled` is 0 and both percentiles are NULL together.
-    const sampled = Number(responseRow?.sampled ?? 0);
+    // The first response percentiles from the histogram of 5%-wide buckets (./conversation-sums.ts),
+    // within 2.5% of the exact ones; the sample size is exact.
+    const histogram = (
+      await db.$queryRaw<
+        {
+          bucket: number;
+          conversations: number;
+          min_seconds: number;
+          max_seconds: number;
+        }[]
+      >(
+        Prisma.sql`WITH ${responsesCtesSql(view, bounds)}
+          SELECT bucket, SUM(conversations)::int AS conversations, MIN(min_seconds) AS min_seconds,
+                 MAX(max_seconds) AS max_seconds
+            FROM responses GROUP BY 1`,
+      )
+    ).map((r) => ({
+      bucket: Number(r.bucket),
+      calls: Number(r.conversations),
+      min: Number(r.min_seconds),
+      max: Number(r.max_seconds),
+    }));
+    const sampledTotal = histogram.reduce((n, h) => n + h.calls, 0);
+    const responseRow = {
+      median: histogramPercentile(histogram, 0.5),
+      p90: histogramPercentile(histogram, 0.9),
+      sampled: sampledTotal,
+    };
+    // An empty sample has no percentile: both are null together with `sampled` 0.
+    const sampled = responseRow.sampled;
     return {
       totalConversations: counts.total,
       involved: counts.involved,
@@ -406,8 +444,8 @@ export interface TimeseriesPoint {
   // Local day key (YYYY-MM-DD) in the requested timezone. See getTimeseries.
   bucket: string;
   calls: number;
-  // Distinct conversations that had LLM usage that local day (COUNT DISTINCT conversation_id, NULLs
-  // ignored). Feeds the cost-per-conversation line on the dashboard chart.
+  // The funnel's conversations created that local day that the agent ran on. Feeds the
+  // cost-per-conversation line on the dashboard chart.
   conversations: number;
   promptTokens: number;
   completionTokens: number;
@@ -426,33 +464,59 @@ export async function getTimeseries(
 ): Promise<TimeseriesPoint[]> {
   const tz = normalizeTimeZone(filter.tz);
   return runMetricsScoped(base, ctx, async (db) => {
+    const bounds = await sumsBounds(db, filter);
     const rows = await db.$queryRaw<
       {
         bucket: string;
         calls: number;
-        conversations: number;
         prompt: number;
         completion: number;
         cached: number;
       }[]
     >(Prisma.sql`
-      SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz}::text), 'YYYY-MM-DD') AS bucket,
-             COUNT(*)::int AS calls,
-             COUNT(DISTINCT conversation_id)::int AS conversations,
-             COALESCE(SUM(prompt_tokens), 0)::int AS prompt,
-             COALESCE(SUM(completion_tokens), 0)::int AS completion,
-             COALESCE(SUM(cached_read_tokens), 0)::int AS cached
-      FROM llm_usage u
-      WHERE ${usageWhereSql("u", filter)}
-      GROUP BY bucket
-      ORDER BY bucket ASC`);
-    return rows.map((r) => ({
-      bucket: r.bucket,
-      calls: Number(r.calls),
-      conversations: Number(r.conversations),
-      promptTokens: Number(r.prompt),
-      completionTokens: Number(r.completion),
-      cachedReadTokens: Number(r.cached),
-    }));
+      WITH ${ledgerCtesSql(filter, bounds)}
+      SELECT ${localDaySql(Prisma.sql`l.quarter`, tz)} AS bucket,
+             COALESCE(SUM(l.requests), 0)::int AS calls,
+             COALESCE(SUM(l.prompt_tokens), 0)::bigint AS prompt,
+             COALESCE(SUM(l.completion_tokens), 0)::bigint AS completion,
+             COALESCE(SUM(l.cached_read_tokens), 0)::bigint AS cached
+        FROM ledger l
+       GROUP BY 1
+       ORDER BY 1 ASC`);
+    // The conversations of each day are the funnel's (the day's conversations the agent ran on),
+    // the divisor of the cost-per-conversation line (docs/dashboard.md). A view of other traffic
+    // than real conversations has none.
+    const view = await withRunsMark(db, filter);
+    const funnel = dividesByConversations(filter)
+      ? await db.$queryRaw<{ key: string; involved: number }[]>(
+          funnelCountsSql(
+            view,
+            await sumsBounds(db, view),
+            localDaySql(Prisma.sql`v.quarter`, tz),
+          ),
+        )
+      : [];
+    // A day the funnel counts nobody on is no day of the series: under an agent and an inbox
+    // together the counts keep a zero row for the agent's days in other inboxes.
+    const convByDay = new Map(
+      funnel
+        .map((r) => [r.key, Number(r.involved)] as const)
+        .filter(([, n]) => n > 0),
+    );
+    const days = [
+      ...new Set([...rows.map((r) => r.bucket), ...convByDay.keys()]),
+    ].sort();
+    const byDay = new Map(rows.map((r) => [r.bucket, r]));
+    return days.map((day) => {
+      const r = byDay.get(day);
+      return {
+        bucket: day,
+        calls: Number(r?.calls ?? 0),
+        conversations: convByDay.get(day) ?? 0,
+        promptTokens: Number(r?.prompt ?? 0),
+        completionTokens: Number(r?.completion ?? 0),
+        cachedReadTokens: Number(r?.cached ?? 0),
+      };
+    });
   });
 }

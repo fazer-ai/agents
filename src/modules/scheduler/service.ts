@@ -96,7 +96,8 @@ export type SchedulerJobKind =
   | "SNOOZED_FOLLOWUP"
   | "INGEST_FALLBACK"
   | "OTHER_INBOX_SUMMARY"
-  | "DASHBOARD_LOG_FACTS_BACKFILL";
+  | "DASHBOARD_LOG_FACTS_BACKFILL"
+  | "LEDGER_SUMS";
 
 export interface ClaimedJob {
   id: bigint;

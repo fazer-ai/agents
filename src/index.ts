@@ -19,6 +19,10 @@ import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { runWithWorkLabel } from "@/lib/work-label";
 import {
+  ensureAllLedgerSums,
+  registerLedgerSumsHandler,
+} from "@/modules/analytics/ledger-sums";
+import {
   ensureAllLogFactsBackfills,
   registerLogFactsBackfillHandler,
 } from "@/modules/analytics/log-facts";
@@ -201,6 +205,7 @@ if (config.schedulerWorker.enabled) {
   registerHeartbeatHandler();
   registerFlowlogRetentionHandler();
   registerLogFactsBackfillHandler();
+  registerLedgerSumsHandler();
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
@@ -228,6 +233,10 @@ if (config.schedulerWorker.enabled) {
   // Fill the dashboard's log facts of every tenant still reading its figures from the flow log.
   void runWithWorkLabel("boot", ensureAllLogFactsBackfills).catch((error) =>
     logger.warn({ error }, "Failed to arm dashboard log facts backfills"),
+  );
+  // NOTE: every tenant's ledger sums. A tenant created later is armed where it is created.
+  void runWithWorkLabel("boot", ensureAllLedgerSums).catch((error) =>
+    logger.warn({ error }, "Failed to arm ledger sums"),
   );
   // Arm the per-tenant follow-up sweep for every existing tenant so follow-ups self-heal after the
   // sweep's row is lost (DB reset, external truncate). Same best-effort discipline as above.

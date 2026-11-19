@@ -972,7 +972,7 @@
     },
     "breakdown": {
       "dimension": "Group by",
-      "help": "The period's model calls grouped by the dimension you pick. Conversations are the ones those calls belonged to, and the resolution rate is the share of them the agent closed itself. Click an agent or an inbox to filter the whole page by it.",
+      "help": "The period's model calls grouped by the dimension you pick. For an agent or an inbox, conversations are the ones created in the period that an agent ran on, counted as in the funnel, and the resolution rate is the share of them the agent closed itself. Models and call types have no conversation columns, since one conversation calls several of them. Click an agent or an inbox to filter the whole page by it.",
       "noInbox": "No inbox (playground)",
       "noInboxOrClient": "No inbox (playground or client channel)",
       "title": "Where the usage goes"

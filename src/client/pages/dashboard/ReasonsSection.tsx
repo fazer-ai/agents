@@ -89,7 +89,7 @@ export function ReasonsSection({ win }: { win: Window }) {
   const handoffDays = new Set(h?.days.map((d) => d.date) ?? []);
   const rows: ChartRow[] = days.map((day) => {
     const gone =
-      dayState(handoffs.coverage, day, grain) === "noData" &&
+      dayState(handoffs.coverage, day, grain, bounds) === "noData" &&
       !handoffDays.has(day);
     const row: ChartRow = { day, state: gone ? "noData" : "ready" };
     for (const s of series)
@@ -137,7 +137,7 @@ export function ReasonsSection({ win }: { win: Window }) {
   const silenceHas = new Set(h?.silenceDays.map((d) => d.date) ?? []);
   const silenceRows: ChartRow[] = silenceDays.map((day) => {
     const gone =
-      dayState(handoffs.coverage, day, grain) === "noData" &&
+      dayState(handoffs.coverage, day, grain, bounds) === "noData" &&
       !silenceHas.has(day);
     const row: ChartRow = { day, state: gone ? "noData" : "ready" };
     for (const s of silenceSeries)

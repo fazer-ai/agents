@@ -135,4 +135,18 @@ describe("the groups of a window", () => {
     expect(dayState(coverage, "2026-03-09")).toBe("noData");
     expect(dayState(coverage, "2026-03-01", "month")).toBe("ready");
   });
+
+  test("a week cut by the window's end is judged by the window's last day", () => {
+    // A window from 2026-01-01 to Wednesday 2026-04-08, every day of it cleared.
+    const coverage = {
+      total: 98,
+      noData: 98,
+      none: [["2026-01-01", "2026-04-08"]] as [string, string][],
+    };
+    const bounds = { first: "2026-01-01", last: "2026-04-08" };
+    expect(dayState(coverage, "2026-04-06", "week", bounds)).toBe("noData");
+    expect(dayState(coverage, "2026-04-01", "month", bounds)).toBe("noData");
+    // Without the window, its Sunday is past the cleared days.
+    expect(dayState(coverage, "2026-04-06", "week")).toBe("ready");
+  });
 });

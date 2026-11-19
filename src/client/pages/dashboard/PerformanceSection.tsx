@@ -305,7 +305,7 @@ export function PerformanceSection({
     const row: ChartRow = {
       day,
       prevDay: prevDays[i] ?? null,
-      state: dayState(trend.coverage, day, grain),
+      state: dayState(trend.coverage, day, grain, bounds),
     };
     if (breakdown === "none") {
       for (const m of [

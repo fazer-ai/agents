@@ -200,7 +200,7 @@ export function CostSection({
   const stacked: ChartRow[] = days.map((day) => {
     const row: ChartRow = {
       day,
-      state: dayState(costs.coverage, day, grain),
+      state: dayState(costs.coverage, day, grain, bounds),
     };
     const gap = row.state === "noData";
     for (const s of segments) {
@@ -242,7 +242,7 @@ export function CostSection({
     const pd = prevDays[i] ? prevByDay.get(prevDays[i] as string) : undefined;
     return {
       day,
-      state: dayState(costs.coverage, day, grain),
+      state: dayState(costs.coverage, day, grain, bounds),
       perConversation: d?.costPerConversation ?? null,
       perResolved: d?.costPerResolvedConversation ?? null,
       perConversationPrev: pd?.costPerConversation ?? null,

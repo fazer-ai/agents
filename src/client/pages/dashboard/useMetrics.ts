@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "@/client/lib/api";
 import { failureOf } from "./Block";
 import { type apiQuery, daysOf, localDayKey, type Window } from "./filters";
-import { type Grain, lastDayOf } from "./period";
+import { type Grain, periodDays } from "./period";
 import { useBlock } from "./useBlock";
 
 // EVERY BLOCK FETCHES ITS OWN FIGURES (docs/dashboard.md, "How the console loads"). The page holds
@@ -89,14 +89,18 @@ export function inGap(coverage: BlockCoverage | null, day: string): boolean {
 
 export type DayState = "ready" | "noData";
 
-// A point's state. A week or a month is without its figures only when its last day is: a group that
-// holds the retention cutoff has the days after it, and shows them.
+// A point's state. A week or a month is without its figures only when its last day inside the window
+// is: a group that holds the retention cutoff has the days after it, and shows them, and a group cut
+// by the window's end is judged by the window's last day, not by days the view does not have.
 export function dayState(
   coverage: BlockCoverage | null,
   day: string,
   grain: Grain = "day",
+  bounds?: { first: string | null; last: string } | null,
 ): DayState {
-  return inGap(coverage, lastDayOf(day, grain)) ? "noData" : "ready";
+  return inGap(coverage, periodDays(day, grain, bounds).last)
+    ? "noData"
+    : "ready";
 }
 
 // Where a flow-log chart's axis starts in an all-time view: its first day with lines, or the first

@@ -3664,6 +3664,166 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(row?.resolvedBy).toBeNull();
   });
 
+  // THE CASE HOLD ON THE FOLLOW-UP'S CLOSE. The closing step's labels are what a CSAT survey keys on,
+  // the same as resolve_conversation's, so a contact still waiting on a case in the agent's case
+  // inbox must not get them: that case is not finished, and it gets its own survey when it is.
+  describe("the closing step's labels and the contact's open case", () => {
+    const CASE_INBOX = 40;
+    const CASE_ID = 77_001;
+    // The conversation names its case through the case attribute, the way open_case_in_inbox left
+    // it, so the lookup needs no contact row.
+    function caseClient(
+      s: ReturnType<typeof stub>,
+      caseConv: { inbox_id: number; status: string } | "throws",
+    ) {
+      const lookups: number[] = [];
+      const client = {
+        ...s.client,
+        getConversation: async (c: number) => {
+          if (c === CASE_ID) {
+            lookups.push(c);
+            if (caseConv === "throws") throw new Error("chatwoot 500");
+            return { id: c, ...caseConv };
+          }
+          return {
+            id: c,
+            status: "pending",
+            meta: {},
+            custom_attributes: { case_conversation_id: CASE_ID },
+          };
+        },
+        listContactConversations: async () => [],
+      } as unknown as ChatwootClient;
+      return { client, lookups };
+    }
+    async function withCaseInbox<T>(fn: () => Promise<T>): Promise<T> {
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: {
+          settings: {
+            crossInboxCase: {
+              targetInboxId: CASE_INBOX,
+              targetInstanceId: Number(instanceId),
+            },
+          },
+        },
+      });
+      try {
+        return await fn();
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { settings: {} },
+        });
+      }
+    }
+    async function closeStep(
+      convId: number,
+      client: ChatwootClient,
+      opts: { resolve?: boolean; postActionsOnly?: boolean } = {},
+    ) {
+      await seedConv(convId, null);
+      return runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 2 },
+        postActions: {
+          assignLabels: ["resolvido-pela-ia"],
+          resolve: opts.resolve ?? true,
+        },
+        ...(opts.postActionsOnly
+          ? { postActionsOnly: true, requireLiveBotOwnership: true }
+          : {}),
+        base: appDb,
+        deps: {
+          makeModel: () => new FakeListChatModel({ responses: [""] }),
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+    }
+
+    test("a snoozed case holds the labels and the conversation is still resolved", async () => {
+      const s = stub();
+      const c = caseClient(s, { inbox_id: CASE_INBOX, status: "snoozed" });
+      await withCaseInbox(() => closeStep(9850, c.client));
+      expect(c.lookups).toEqual([CASE_ID]);
+      expect(s.labelSets).toEqual([]);
+      expect(s.resolved).toEqual([9850]);
+    });
+
+    test("a case that cannot be read holds the labels too", async () => {
+      const s = stub();
+      const c = caseClient(s, "throws");
+      await withCaseInbox(() => closeStep(9851, c.client));
+      expect(s.labelSets).toEqual([]);
+      expect(s.resolved).toEqual([9851]);
+    });
+
+    test("a resolved case lets the labels through", async () => {
+      const s = stub();
+      const c = caseClient(s, { inbox_id: CASE_INBOX, status: "resolved" });
+      await withCaseInbox(() => closeStep(9852, c.client));
+      expect(c.lookups).toEqual([CASE_ID]);
+      expect(s.labelSets).toEqual([["resolvido-pela-ia"]]);
+      expect(s.resolved).toEqual([9852]);
+    });
+
+    test("a step that does not resolve writes its labels without looking for a case", async () => {
+      const s = stub();
+      const c = caseClient(s, { inbox_id: CASE_INBOX, status: "open" });
+      await withCaseInbox(() => closeStep(9853, c.client, { resolve: false }));
+      expect(c.lookups).toEqual([]);
+      expect(s.labelSets).toEqual([["resolvido-pela-ia"]]);
+      expect(s.resolved).toEqual([]);
+    });
+
+    // A step whose turn handed the conversation over does not close it, so nothing is surveyed
+    // here and its labels triage what the bot left behind, case or not.
+    test("a step that handed over writes its labels without looking for a case", async () => {
+      const s = stub();
+      const c = caseClient(s, { inbox_id: CASE_INBOX, status: "open" });
+      await seedConv(9855, null);
+      await withCaseInbox(() =>
+        runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9855`,
+          nudge: { source: "followup", kind: "inactivity", step: 2 },
+          postActions: { assignLabels: ["resolvido-pela-ia"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new HandoffThenReplyModel(
+                "",
+                "Um humano vai te atender.",
+              ) as never,
+            makeClient: async () => c.client,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        }),
+      );
+      expect(c.lookups).toEqual([]);
+      expect(s.labelSets).toEqual([["resolvido-pela-ia"]]);
+    });
+
+    test("the step without instructions holds the labels the same way", async () => {
+      const s = stub();
+      const c = caseClient(s, { inbox_id: CASE_INBOX, status: "open" });
+      const outcome = await withCaseInbox(() =>
+        closeStep(9854, c.client, { postActionsOnly: true }),
+      );
+      expect(outcome).toBe("silent");
+      expect(s.labelSets).toEqual([]);
+      expect(s.resolved).toEqual([9854]);
+    });
+  });
+
   // NOTE: The proactive half of "handed over is not closed". The three below share one client
   // because `stub()` throws the status away, and the question here is WHICH status was written. The
   // step's `postActions.resolve` falls with the transfer (`allowResolve: !handoffState.completed`),

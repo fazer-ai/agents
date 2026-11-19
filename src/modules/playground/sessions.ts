@@ -349,8 +349,10 @@ export function applyTurnNotes(
     } else if (n.messageId) {
       // The reply this annotates was empty, so the rebuild dropped it (an AI message with no text
       // adds no bubble). The verdict still has to reach the operator, next to the message it judged.
+      // NOTE: a follow-up has no user message, so it is placed after what the transcript showed
+      // before it ran.
       placements.push({
-        after: n.userMessageId,
+        after: n.userMessageId ?? n.anchorMessageId,
         whenUnanchored: "end",
         render: () => [annotatedReply(n)],
       });

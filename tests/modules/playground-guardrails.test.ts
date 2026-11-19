@@ -84,6 +84,8 @@ function models(opts: {
   // Emits a calculator call before replying, so the graph contributes trace entries the guardrail
   // entries have to sit around. Without one in the middle, every ordering looks the same.
   toolFirst?: boolean;
+  // The text the tool-calling message carries beside its call (with `toolFirst`).
+  preamble?: string;
   // The agent answers with nothing. The rebuild drops an empty AI message by design, so this is
   // what makes an id the note points at absent from the transcript.
   emptyReply?: boolean;
@@ -119,7 +121,7 @@ function models(opts: {
               n += 1;
               return n === 1
                 ? new AIMessage({
-                    content: "",
+                    content: opts.preamble ?? "",
                     tool_calls: [
                       {
                         name: "calculator",
@@ -688,6 +690,86 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
         .map((m) => String(m.content))
         .filter(Boolean),
     ).toEqual([]);
+  });
+
+  // The bug it catches: a reload showing the text written beside a tool call as the reply, once the
+  // suppressed reply's message is gone from the thread.
+  test("a suppressed reply after a tool call reloads as suppressed, not as the preamble", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: models({
+          violated: true,
+          toolFirst: true,
+          preamble: "PREAMBULO-1848",
+        }).make,
+        checkpointer: cp,
+      },
+    });
+    expect(r.suppressed).toBe(true);
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
+    );
+    expect(
+      turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
+    ).toEqual(["user:oi:", "assistant::s"]);
+  });
+
+  // The bug it catches: a suppressed follow-up's notice moving below the turns that came after it on
+  // reload, once its reply's message carries no text the rebuild can place it by.
+  test("a suppressed follow-up keeps its place on reload", async () => {
+    const cp = new MemorySaver();
+    const first = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "primeira",
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+    const followup = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make, checkpointer: cp },
+    });
+    expect(followup.suppressed).toBe(true);
+    await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "depois",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: first.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
+    );
+    expect(
+      turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
+    ).toEqual([
+      "user:primeira:",
+      `assistant:${RAW_REPLY}:`,
+      "assistant::s",
+      "user:depois:",
+      `assistant:${RAW_REPLY}:`,
+    ]);
   });
 
   // The bug it catches: a held turn traced as an ordinary policy hand-over, indistinguishable from a trip.

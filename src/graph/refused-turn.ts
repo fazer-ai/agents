@@ -432,9 +432,10 @@ export async function rememberWhatWasSent(params: {
   const plan = await undoRefusedTurn({
     ...rest,
     kind: "reactive",
-    ...(sent
-      ? { replacement: (id: string) => new AIMessage({ content: sent, id }) }
-      : {}),
+    // NOTE: nothing sent still leaves an empty assistant message on the draft's id: the prompt drops
+    // it, and the turn keeps its terminal message, which is what a transcript rebuilt from the
+    // thread reads as "no reply" instead of falling back to text written beside a tool call.
+    replacement: (id: string) => new AIMessage({ content: sent, id }),
   }).catch((err) => {
     logger.warn(
       { err, thread: params.graphThreadId },

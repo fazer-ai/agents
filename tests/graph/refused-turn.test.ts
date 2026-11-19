@@ -723,7 +723,7 @@ describe("rememberWhatWasSent", () => {
     ]);
   });
 
-  test("nothing sent leaves nothing in the draft's place", async () => {
+  test("nothing sent leaves an empty message in the draft's place", async () => {
     const produced = [h("h1", "oi"), a("f1", "RASCUNHO")];
     const cp = await seeded("th-b", produced);
     await rememberWhatWasSent({
@@ -733,7 +733,7 @@ describe("rememberWhatWasSent", () => {
       sent: "",
       logPrefix: "test",
     });
-    expect(shape(await read(cp, "th-b"))).toEqual(["human:oi"]);
+    expect(shape(await read(cp, "th-b"))).toEqual(["human:oi", "ai:"]);
   });
 
   test("a draft written beside a tool call loses its text, and the call stays", async () => {

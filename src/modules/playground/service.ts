@@ -1610,6 +1610,9 @@ async function runPlaygroundFollowupOnce(
     instructions: firstStep?.instructions || undefined,
   };
 
+  // Where the follow-up belongs in the rebuilt transcript when its reply ends up empty: right after
+  // what the transcript showed before it ran.
+  const followupAnchor = await lastRenderedMessageId(graph, threadId);
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   // From the loaded config, which reads this block off the SAVED bag — never from `settings` here,
   // which is the draft. Recording policy does not follow a draft (see `prepare.ts`), and this line
@@ -1734,10 +1737,9 @@ async function runPlaygroundFollowupOnce(
       agentId,
       threadId,
       messageId: lastAiMessageId(result.messages) ?? null,
-      anchorMessageId: null,
       // No user message to hang it on: a follow-up is a nudge, and the rebuild renders a nudge as
-      // an assistant turn alone. An annotation whose reply was empty therefore lands at the end,
-      // which for a follow-up is where it happened anyway.
+      // an assistant turn alone. An annotation whose reply was empty goes where the follow-up ran.
+      anchorMessageId: followupAnchor,
       userMessageId: null,
       userText: null,
       reply,

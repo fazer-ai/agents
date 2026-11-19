@@ -215,7 +215,7 @@ An agent turn that decides not to write has to say so somehow, and the shape of 
 
 ## The thread holds what was sent
 
-The next turn reads the thread as its own past, so the assistant message there has to be what the customer received. When a screening changes the reply after the model wrote it, the thread is rewritten to match: the text that went out takes the draft's place, and a reply that went out as nothing leaves.
+The next turn reads the thread as its own past, so the assistant message there has to be what the customer received. When a screening changes the reply after the model wrote it, the thread is rewritten to match: the text that went out takes the draft's place, and a reply that went out as nothing leaves an empty assistant message on its id, which the prompt drops and which keeps the turn's terminal message for a transcript rebuilt from the thread (the playground's).
 
 - **Every output screening that sends something else does it**: the external check's `replace`, the template or hand-over line of a block (external check, built-in judge, the external check's hold on a failure), the built-in judge's safe reply, and factual grounding's `template` and `handoff` (its `revise` already rewrites inside the graph). On the inbox turn, the proactive in-window send and the playground.
 - **One write, `rememberWhatWasSent`** (`refused-turn.ts`), over `undoRefusedTurn` with `replacement`: the reactive plan's trailing run of assistant text, so the turn's tool calls and their results stay and only the unsent sentence changes. A reply recovered from a message that also called a tool (`replyWrittenThisTurn`) loses its text there too (`recoveredDraftOf`), in a refusal's rollback as well. A replacement equal to the draft rewrites nothing.

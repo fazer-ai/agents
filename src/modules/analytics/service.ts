@@ -484,7 +484,7 @@ export async function getTimeseries(
         cached: number;
       }[]
     >(Prisma.sql`
-      WITH ${ledgerCtesSql(filter, bounds)}
+      WITH ${ledgerCtesSql(filter, bounds, { tz, grain })}
       SELECT ${localDaySql(Prisma.sql`l.quarter`, tz, grain)} AS bucket,
              COALESCE(SUM(l.requests), 0)::int AS calls,
              COALESCE(SUM(l.prompt_tokens), 0)::bigint AS prompt,

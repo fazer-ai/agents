@@ -479,6 +479,98 @@ describe.skipIf(!dbUp)("grouped reads over the sums (DB)", () => {
     }
   });
 
+  const bumpCost = (day: string, usd: number) =>
+    suDb.$executeRawUnsafe(
+      `UPDATE ledger_day_sums SET cost_usd = cost_usd + ${usd}
+        WHERE tenant_id = ${t} AND day = '${day}'::timestamp`,
+    );
+  const weeklyCost = async () =>
+    Object.fromEntries(
+      (
+        await getDashboardCosts(
+          ctx(t),
+          view("2026-01-01", "2026-04-30", SP),
+          appDb,
+          noFetch,
+        )
+      ).days.map((d) => [d.date, d.costUsd]),
+    );
+
+  test("the job writes a day's ledger sums as its quarters added up", async () => {
+    const [row] = await suDb.$queryRawUnsafe<
+      { day: number; quarter: number }[]
+    >(
+      `SELECT (SELECT SUM(cost_usd) FROM ledger_day_sums WHERE tenant_id = ${t})::float8 AS day,
+              (SELECT SUM(cost_usd) FROM ledger_quarter_sums WHERE tenant_id = ${t})::float8 AS quarter`,
+    );
+    expect(row?.day).toBe(7);
+    expect(row?.quarter).toBe(7);
+  });
+
+  test("a week's cost is its own, across the UTC day that holds its first instant", async () => {
+    expect(await weeklyCost()).toMatchObject({
+      "2026-03-02": 2,
+      "2026-03-09": 2,
+    });
+  });
+
+  test("a UTC day inside a week takes its cost from its day row, the day of the week's start from its quarters", async () => {
+    const before = await weeklyCost();
+    // NOTE: the day rows changed by hand, as for the conversations above.
+    await bumpCost("2026-03-11", 10);
+    await bumpCost("2026-03-09", 100);
+    try {
+      const after = await weeklyCost();
+      expect(after["2026-03-09"]).toBe((before["2026-03-09"] ?? 0) + 10);
+      expect(after["2026-03-02"]).toBe(before["2026-03-02"]);
+    } finally {
+      await bumpCost("2026-03-11", -10);
+      await bumpCost("2026-03-09", -100);
+    }
+  });
+
+  test("a marked quarter keeps its day off the day rows until the job rewrites the day", async () => {
+    await suDb.$executeRawUnsafe(
+      `UPDATE llm_usage SET cost_usd = 5 WHERE tenant_id = ${t} AND created_at = '2026-03-11T13:00:00'::timestamp`,
+    );
+    try {
+      expect((await weeklyCost())["2026-03-09"]).toBe(6);
+      await until(
+        "the job to rewrite the marked day",
+        async () => (await stepLedgerSums(appDb, t)).caughtUp,
+        { everyMs: 0, deadlineMs: 60_000 },
+      );
+      const [row] = await suDb.$queryRawUnsafe<{ usd: number }[]>(
+        `SELECT SUM(cost_usd)::float8 AS usd FROM ledger_day_sums
+          WHERE tenant_id = ${t} AND day = '2026-03-11'::timestamp`,
+      );
+      expect(row?.usd).toBe(5);
+      expect((await weeklyCost())["2026-03-09"]).toBe(6);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `UPDATE llm_usage SET cost_usd = 1 WHERE tenant_id = ${t} AND created_at = '2026-03-11T13:00:00'::timestamp`,
+      );
+      await until(
+        "the job to rewrite the day back",
+        async () => (await stepLedgerSums(appDb, t)).caughtUp,
+        { everyMs: 0, deadlineMs: 60_000 },
+      );
+    }
+  });
+
+  test("a month's cost is its own, across the UTC day that holds its first instant", async () => {
+    const c = await getDashboardCosts(
+      ctx(t),
+      view("2024-03-01", "2026-04-30", SP),
+      appDb,
+      noFetch,
+    );
+    expect(c.grain).toBe("month");
+    expect(
+      Object.fromEntries(c.days.map((d) => [d.date, d.costUsd])),
+    ).toMatchObject({ "2026-03-01": 6, "2026-04-01": 1 });
+  });
+
   test("a month's conversations are its own, across the UTC day that holds its first instant", async () => {
     const tr = await getOutcomeTrend(
       ctx(t),

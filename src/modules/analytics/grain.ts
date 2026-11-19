@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { addDays, dayCount, localDay } from "./days";
 import type { DashboardFilter } from "./filter";
 
@@ -71,4 +71,20 @@ export function groupOf(day: string, grain: Grain): string {
     return addDays(day, -((weekday + 6) % 7));
   }
   return day;
+}
+
+// A read grouped by local week or month, as the day-level sums see it.
+export interface DayGroup {
+  tz: string;
+  grain: Grain;
+}
+
+// Whether the UTC day starting at `day` lies wholly inside one local group: its first and last instant
+// fall in the same local week or month. Only such a day can stand for its quarters in a grouped read,
+// whose key is worked out from a row's start.
+export function insideOneGroupSql(g: DayGroup, day: Prisma.Sql): Prisma.Sql {
+  const unit = Prisma.raw(`'${g.grain === "month" ? "month" : "week"}'`);
+  const local = (at: Prisma.Sql) =>
+    Prisma.sql`date_trunc(${unit}, ${at} AT TIME ZONE 'UTC' AT TIME ZONE ${g.tz}::text)`;
+  return Prisma.sql`${local(day)} = ${local(Prisma.sql`(${day} + interval '1 day' - interval '1 microsecond')`)}`;
 }

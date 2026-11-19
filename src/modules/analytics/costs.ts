@@ -172,7 +172,7 @@ export async function getDashboardCosts(
           completion: bigint | number | null;
         }[]
       >(Prisma.sql`
-        WITH ${ledgerCtesSql(filter, bounds)},
+        WITH ${ledgerCtesSql(filter, bounds, { tz, grain })},
         d AS MATERIALIZED (
           SELECT ${localDayStartSql(Prisma.sql`l.quarter`, tz, grain)} AS day, l.model, l.node,
                  SUM(l.cost_usd) AS cost,

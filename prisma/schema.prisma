@@ -201,6 +201,7 @@ model Tenant {
   dashboardLogFactsState        DashboardLogFactsState?
   ledgerQuarterSums             LedgerQuarterSum[]
   ledgerLatencyDays             LedgerLatencyDay[]
+  ledgerDaySums                 LedgerDaySum[]
   ledgerSumMarks                LedgerSumMark[]
   ledgerSumsState               LedgerSumsState?
   conversationAgentRuns         ConversationAgentRun[]
@@ -3707,6 +3708,33 @@ model LedgerQuarterSum {
 
   @@index([tenantId, quarter])
   @@map("ledger_quarter_sums")
+}
+
+// The quarter sums of a UTC day added up, written by the job from `ledger_quarter_sums` for the days
+// wholly below the mark, for the reads grouped by local week or month (issue #1837).
+model LedgerDaySum {
+  id                  BigInt   @id @default(autoincrement())
+  tenantId            BigInt   @map("tenant_id")
+  day                 DateTime
+  source              String
+  anonymous           Boolean
+  agentId             BigInt?  @map("agent_id")
+  inboxId             BigInt?  @map("inbox_id")
+  model               String
+  node                String
+  // Null when no call of the group was priced, never zero.
+  costUsd             Decimal? @map("cost_usd") @db.Decimal(28, 10)
+  requests            Int
+  unpriced            Int
+  promptTokens        BigInt   @map("prompt_tokens")
+  completionTokens    BigInt   @map("completion_tokens")
+  cachedReadTokens    BigInt   @map("cached_read_tokens")
+  cacheCreationTokens BigInt   @map("cache_creation_tokens")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, day])
+  @@map("ledger_day_sums")
 }
 
 // The call latency per UTC day as a histogram of 5%-wide buckets (`ledger_latency_bucket`), written

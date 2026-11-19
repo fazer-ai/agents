@@ -7,7 +7,10 @@ import {
   type DashboardFilter,
   outcomeSql,
 } from "./filter";
-import type { Grain } from "./grain";
+import { type DayGroup, insideOneGroupSql } from "./grain";
+
+export type { DayGroup };
+
 import {
   MARKED_QUARTERS_PER_STEP,
   type SumsBounds,
@@ -387,29 +390,16 @@ function tieredSumsSql(
        WHERE NOT EXISTS (SELECT 1 FROM cdays WHERE cdays.day = g.day)`;
 }
 
-// A read grouped by local week or month (./grain.ts): its key is worked out from a row's start, so a
-// UTC day can stand for its quarters only when it lies wholly inside one local group. The day that
-// holds a group's first instant is read from its quarters.
-export interface DayGroup {
-  tz: string;
-  grain: Grain;
-}
-
-function insideOneGroupSql(g: DayGroup): Prisma.Sql {
-  const unit = Prisma.raw(`'${g.grain === "month" ? "month" : "week"}'`);
-  const local = (at: Prisma.Sql) =>
-    Prisma.sql`date_trunc(${unit}, ${at} AT TIME ZONE 'UTC' AT TIME ZONE ${g.tz}::text)`;
-  return Prisma.sql`${local(Prisma.sql`d.day`)} = ${local(Prisma.sql`(d.day + interval '1 day' - interval '1 microsecond')`)}`;
-}
-
-// The `cdays` of `tieredSumsSql`, after `cmarks`.
+// The `cdays` of `tieredSumsSql`, after `cmarks`. Under a week or month grouping only the days wholly
+// inside one local group (`insideOneGroupSql`): the day that holds a group's first instant is read from
+// its quarters.
 function cleanDaysCteSql(b: SumsBounds, group?: DayGroup): Prisma.Sql {
   const days = cleanDaysSql(b);
   if (!days) return Prisma.empty;
   return Prisma.sql`, cdays AS MATERIALIZED (
       SELECT d.day FROM generate_series(${days.lo}::timestamp, ${days.hi}::timestamp - interval '1 day', interval '1 day') AS d(day)
        WHERE NOT EXISTS (SELECT 1 FROM cmarks WHERE cmarks.quarter >= d.day AND cmarks.quarter < d.day + interval '1 day')
-         ${group ? Prisma.sql`AND ${insideOneGroupSql(group)}` : Prisma.empty}
+         ${group ? Prisma.sql`AND ${insideOneGroupSql(group, Prisma.sql`d.day`)}` : Prisma.empty}
     )`;
 }
 

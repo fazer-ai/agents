@@ -266,6 +266,38 @@ const NONE = "__none";
 // The plot's horizontal room inside the chart box: the value axis on the left, the margin on the right.
 const AXIS_WIDTH = 64;
 const RIGHT_MARGIN = 12;
+// The width of a value label's character at the axis's 11 px, a little over the digits', and the room
+// the tick and its gap take beside the label.
+const AXIS_CHAR_PX = 6.4;
+const AXIS_TICK_ROOM = 10;
+
+// The value axis wide enough for its top label, which is the longest: "US$ 500,00" needs more room
+// than a count, and a label wider than its axis is cut at the chart's left edge. The top is the
+// scale's (`niceCeil` of the highest point, or of the highest stack), which the labels below it never
+// outgrow.
+export function axisWidth(
+  rows: ChartRow[],
+  keys: string[],
+  stacked: boolean,
+  format: (v: number) => string,
+): number {
+  let top = 0;
+  for (const r of rows) {
+    let stack = 0;
+    for (const k of keys) {
+      const v = r[k];
+      if (typeof v !== "number" || !Number.isFinite(v)) continue;
+      if (stacked) stack += v;
+      else top = Math.max(top, v);
+    }
+    top = Math.max(top, stack);
+  }
+  const label = format(niceCeil(top) || 1);
+  return Math.max(
+    AXIS_WIDTH,
+    Math.ceil(label.length * AXIS_CHAR_PX) + AXIS_TICK_ROOM,
+  );
+}
 
 function plotted(data: ChartRow[], series: SeriesDef[]): ChartRow[] {
   return series.length > 0 ? data : data.map((r) => ({ ...r, [NONE]: 0 }));
@@ -576,6 +608,12 @@ export function LineTrend({
     `${data[0]?.day}|${data[data.length - 1]?.day}|${series.map((s) => s.key).join(",")}`,
   );
   const arranged = useArrangedSeries(data, series, false);
+  const yWidth = axisWidth(
+    data,
+    series.map((s) => s.key),
+    false,
+    format,
+  );
   const colorOf = (key: string) =>
     p.series[arranged.slot.get(key) ?? 0] ?? p.other;
   // Past the palette, a line keeps its place and its click but no identity: rates do not add up into
@@ -659,7 +697,7 @@ export function LineTrend({
                 stroke={p.axis}
                 tick={{ fill: p.axis, fontSize: 11 }}
                 tickFormatter={format}
-                width={AXIS_WIDTH}
+                width={yWidth}
                 domain={[0, settled]}
               />
               {stateBands(data, ids, p, text)}
@@ -812,12 +850,15 @@ function DayHits({
 // The same days for a keyboard and a screen reader: one tab stop over the plot, the arrows move
 // between days, Enter or Space opens the focused one. Invisible to the pointer, which the columns serve.
 function DayKeys({
+  left,
   days,
   picked,
   label,
   onPick,
   buttons,
 }: {
+  // The value axis's width, which the plot starts after.
+  left: number;
   days: string[];
   picked: string | null;
   label: (day: string) => string;
@@ -840,7 +881,7 @@ function DayKeys({
       aria-label={text.days}
       className="pointer-events-none absolute m-0 flex min-w-0 border-0 p-0"
       style={{
-        left: AXIS_WIDTH,
+        left,
         right: RIGHT_MARGIN,
         top: 8,
         bottom: X_AXIS_HEIGHT,
@@ -1086,6 +1127,12 @@ export function StackedBars({
     onPick?.(d);
   };
   const pickedRow = picked ? data.find((r) => r.day === picked) : undefined;
+  const yWidth = axisWidth(
+    arranged.rows,
+    drawn.map((s) => s.key),
+    true,
+    format,
+  );
   return (
     <ChartGrain.Provider value={grain}>
       <div className="flex w-full flex-col gap-2">
@@ -1122,7 +1169,7 @@ export function StackedBars({
                   stroke={p.axis}
                   tick={{ fill: p.axis, fontSize: 11 }}
                   tickFormatter={format}
-                  width={AXIS_WIDTH}
+                  width={yWidth}
                   domain={[0, settled]}
                 />
                 {stateBands(data, ids, p, text)}
@@ -1205,6 +1252,7 @@ export function StackedBars({
             </ResponsiveContainer>
           </div>
           <DayKeys
+            left={yWidth}
             days={days}
             picked={picked}
             label={(d) => period.long(d)}

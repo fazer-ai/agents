@@ -717,12 +717,21 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
           (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
             ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
         )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
       ),
       await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
     );
     expect(
       turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
     ).toEqual(["user:oi:", "assistant::s"]);
+    // The suppressed turn keeps what the live run showed beside it: the tool it called and its usage.
+    expect(
+      turns[1]?.trace.some(
+        (e) => e.type === "tool_call" && e.name === "calculator",
+      ),
+    ).toBe(true);
+    expect(turns[1]?.turnId).toBe(turns[0]?.turnId);
   });
 
   // The bug it catches: a suppressed follow-up's notice moving below the turns that came after it on
@@ -758,6 +767,8 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
           (await cp.getTuple({ configurable: { thread_id: first.threadId } }))
             ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
         )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
       ),
       await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
     );
@@ -770,6 +781,46 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       "user:depois:",
       `assistant:${RAW_REPLY}:`,
     ]);
+  });
+
+  // The bug it catches: a follow-up that opened an empty session and was suppressed moving below the
+  // turns that came after it on reload.
+  test("a suppressed follow-up that opened the session stays first on reload", async () => {
+    const cp = new MemorySaver();
+    const followup = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make, checkpointer: cp },
+    });
+    expect(followup.suppressed).toBe(true);
+    await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilent,
+      message: "depois",
+      threadId: followup.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (
+            await cp.getTuple({
+              configurable: { thread_id: followup.threadId },
+            })
+          )?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+        [],
+        { emptyReplies: true },
+      ),
+      await listThreadTurnNotes(appDb, ctx(tenantId), followup.threadId),
+    );
+    expect(
+      turns.map((t) => `${t.role}:${t.text}:${t.suppressed ? "s" : ""}`),
+    ).toEqual(["assistant::s", "user:depois:", `assistant:${RAW_REPLY}:`]);
+    expect(turns[0]?.followup).toBe(true);
+    expect(turns[0]?.turnId).toBeDefined();
   });
 
   // The bug it catches: a held turn traced as an ordinary policy hand-over, indistinguishable from a trip.

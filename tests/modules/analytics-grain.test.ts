@@ -558,6 +558,37 @@ describe.skipIf(!dbUp)("grouped reads over the sums (DB)", () => {
     }
   });
 
+  test("a quarter rewritten by another worker takes its day off the day rows until the job writes it again", async () => {
+    // A worker of the previous release rewrites quarter sums and knows nothing of the days.
+    const rewrite = (usd: number) =>
+      suDb.$executeRawUnsafe(
+        `UPDATE ledger_quarter_sums SET cost_usd = cost_usd + ${usd}
+          WHERE tenant_id = ${t} AND quarter = '2026-03-11T13:00:00'::timestamp`,
+      );
+    await rewrite(50);
+    try {
+      expect((await weeklyCost())["2026-03-09"]).toBe(52);
+      await until(
+        "the job to write the day again",
+        async () => (await stepLedgerSums(appDb, t)).caughtUp,
+        { everyMs: 0, deadlineMs: 60_000 },
+      );
+      const [row] = await suDb.$queryRawUnsafe<{ n: bigint }[]>(
+        `SELECT count(*)::bigint AS n FROM ledger_summed_days
+          WHERE tenant_id = ${t} AND day = '2026-03-11'::timestamp`,
+      );
+      expect(Number(row?.n)).toBe(1);
+      expect((await weeklyCost())["2026-03-09"]).toBe(52);
+    } finally {
+      await rewrite(-50);
+      await until(
+        "the job to write the day back",
+        async () => (await stepLedgerSums(appDb, t)).caughtUp,
+        { everyMs: 0, deadlineMs: 60_000 },
+      );
+    }
+  });
+
   test("a month's cost is its own, across the UTC day that holds its first instant", async () => {
     const c = await getDashboardCosts(
       ctx(t),

@@ -93,6 +93,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "LedgerQuarterSum",
   "LedgerLatencyDay",
   "LedgerDaySum",
+  "LedgerSummedDay",
   "LedgerSumMark",
   "LedgerSumsState",
   "ConversationAgentRun",

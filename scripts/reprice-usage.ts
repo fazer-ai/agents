@@ -105,6 +105,9 @@ const SETTLE_BUDGET_MS = 10 * 60 * 1000;
 const STEP_RETRY_MS = 1000;
 // How often a read of the marks before or after the steps is tried, a retry time apart.
 const READ_ATTEMPTS = 3;
+// The longest the client waits on one statement's answer, past every statement the run sends (a step's
+// transaction is 25 s): a connection that stops answering fails, and the read or step is retried.
+const QUERY_TIMEOUT_MS = 60_000;
 
 // A read tried up to READ_ATTEMPTS times: the error of the last attempt when none succeeds.
 export async function readWithRetry<T>(
@@ -222,7 +225,7 @@ export async function settleRepricedQuarters(
   // budget, and a tenant whose step failed waits its own retry time while the others go on.
   const errors = new Map<bigint, string>();
   const retryAt = new Map<bigint, number>();
-  let open = [...written.keys()];
+  let open = [...ours].filter(([, ids]) => ids.length > 0).map(([t]) => t);
   while (open.length > 0 && now() < deadline) {
     const next: bigint[] = [];
     let ran = false;
@@ -360,14 +363,15 @@ async function main() {
     console.error("DATABASE_URL (the runtime role) is required");
     process.exit(1);
   }
-  // The pool's lock timeout and connect bound, as the app's pool has them: a step queued behind the
-  // job's own step on the same tenant gives up in seconds and is retried, and a server that accepts
-  // the connection and never answers fails the run instead of holding it.
+  // The pool's lock timeout and connect bound, as the app's pool has them, and a bound on each answer:
+  // a step queued behind the job's own step on the same tenant gives up in seconds and is retried, and
+  // a server that stops answering fails the read instead of holding the run.
   const prisma = new PrismaClient({
     adapter: new PrismaPg({
       ...withSessionOptions(url),
       ...lockTimeoutOption(),
       ...connectTimeoutOption(),
+      query_timeout: QUERY_TIMEOUT_MS,
     }),
   });
   try {

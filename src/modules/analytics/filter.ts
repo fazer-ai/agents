@@ -4,6 +4,7 @@ import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
 import type { ClientAudience } from "@/graph/usage-sources";
 import { badQueryParam } from "@/lib/query-param";
 import { dayStart, localDay } from "./days";
+import type { Grain } from "./grain";
 
 // THE DASHBOARD'S ONE FILTER. Every block of the page reads the same window, agent, inbox and source,
 // so a number in one block can be checked against another, and the drill-down to the conversation
@@ -180,16 +181,34 @@ export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
 }
 
 // The local day of a `timestamp without time zone` column holding UTC wall-clock: shifted to an
-// instant first, then rendered in the zone (a single shift would read it as already local).
-export function localDaySql(column: Prisma.Sql, tz: string): Prisma.Sql {
-  return Prisma.sql`to_char(${localDayStartSql(column, tz)}, 'YYYY-MM-DD')`;
+// instant first, then rendered in the zone (a single shift would read it as already local). With a
+// grain, the first local day of its group (./grain.ts).
+export function localDaySql(
+  column: Prisma.Sql,
+  tz: string,
+  grain: Grain = "day",
+): Prisma.Sql {
+  return Prisma.sql`to_char(${localDayStartSql(column, tz, grain)}, 'YYYY-MM-DD')`;
 }
 
 // The local midnight, as wall-clock time, that a UTC `timestamp` falls after in `tz`: `localDaySql`
-// before it is printed, cheaper to group by.
-export function localDayStartSql(column: Prisma.Sql, tz: string): Prisma.Sql {
-  return Prisma.sql`date_trunc('day', ${column} AT TIME ZONE 'UTC' AT TIME ZONE ${tz}::text)`;
+// before it is printed, cheaper to group by. With a grain, the local midnight its group starts at:
+// Postgres's week starts on Monday.
+export function localDayStartSql(
+  column: Prisma.Sql,
+  tz: string,
+  grain: Grain = "day",
+): Prisma.Sql {
+  return Prisma.sql`date_trunc('${Prisma.raw(GRAIN_UNIT[grain])}', ${column} AT TIME ZONE 'UTC' AT TIME ZONE ${tz}::text)`;
 }
+
+// From the closed set, never from input: written into the SQL as a literal so a statement that
+// repeats the expression groups by one expression.
+const GRAIN_UNIT: Record<Grain, string> = {
+  day: "day",
+  week: "week",
+  month: "month",
+};
 
 // classifyOutcome (src/modules/conversations/resolution-origin.ts) in SQL, so a figure can group by it.
 // The order is that function's: a human owner wins over any origin. Fenced against the TS rule by

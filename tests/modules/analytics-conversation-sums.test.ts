@@ -911,7 +911,7 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
   });
 
   test("the timeseries of traffic other than real conversations has no conversations", async () => {
-    const real = await getTimeseries(
+    const { points: real } = await getTimeseries(
       ctx(fx.tenantId),
       { since: new Date(FIRST) },
       db,
@@ -921,7 +921,7 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
       { since: new Date(FIRST), source: "playground" as const },
       { since: new Date(FIRST), audience: "anonymous" as const },
     ]) {
-      const series = await getTimeseries(ctx(fx.tenantId), f, db);
+      const { points: series } = await getTimeseries(ctx(fx.tenantId), f, db);
       expect(series.filter((p) => p.conversations !== 0)).toEqual([]);
     }
   });
@@ -929,7 +929,7 @@ describe.skipIf(!dbUp)("the conversation counts", () => {
   test("the timeseries of one agent in one inbox has no day without calls or conversations", async () => {
     for (const inboxId of fx.inboxes) {
       const f = { since: new Date(FIRST), agentId: fx.agents[0], inboxId };
-      const series = await getTimeseries(ctx(fx.tenantId), f, db);
+      const { points: series } = await getTimeseries(ctx(fx.tenantId), f, db);
       expect(
         series.filter((p) => p.calls === 0 && p.conversations === 0),
       ).toEqual([]);

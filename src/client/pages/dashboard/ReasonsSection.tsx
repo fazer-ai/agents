@@ -9,8 +9,14 @@ import type {
 } from "@/modules/analytics/activity";
 import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
-import { daysOf, type Window } from "./filters";
-import { axisStart, hasNoData, inGap, useMetricsBlock } from "./useMetrics";
+import { periodsOf, type Window } from "./filters";
+import {
+  axisStart,
+  dayState,
+  hasNoData,
+  useMetricsBlock,
+  usePeriodColumn,
+} from "./useMetrics";
 
 const StackedBars = lazyWithReload(() =>
   import("./charts").then((m) => ({ default: m.StackedBars })),
@@ -69,12 +75,22 @@ export function ReasonsSection({ win }: { win: Window }) {
     raw: c,
     label: causeLabel[c] ?? c,
   }));
-  const days = daysOf(win, axisStart(handoffs.coverage, h?.days[0]?.date));
+  // A day, or the week or month of a long window: the answer says which.
+  const grain = h?.grain ?? "day";
+  const bounds = { first: win.firstDay, last: win.lastDay };
+  const periodColumn = usePeriodColumn(grain);
+  const days = periodsOf(
+    win,
+    grain,
+    axisStart(handoffs.coverage, h?.days[0]?.date),
+  );
   // A day before the retention cutoff that still has lines (the daily sweep has not reached it yet)
   // shows them, as the period's totals count them: only a day with none left reads as no data.
   const handoffDays = new Set(h?.days.map((d) => d.date) ?? []);
   const rows: ChartRow[] = days.map((day) => {
-    const gone = inGap(handoffs.coverage, day) && !handoffDays.has(day);
+    const gone =
+      dayState(handoffs.coverage, day, grain, bounds) === "noData" &&
+      !handoffDays.has(day);
     const row: ChartRow = { day, state: gone ? "noData" : "ready" };
     for (const s of series)
       row[s.key] = gone
@@ -85,7 +101,7 @@ export function ReasonsSection({ win }: { win: Window }) {
   });
   const handoffTable: BlockTable = {
     name: "dashboard-handoff-causes",
-    header: [t("dashboard.col.day", "Day"), ...series.map((s) => s.label)],
+    header: [periodColumn, ...series.map((s) => s.label)],
     rows: rows.map((r) => [
       r.day,
       ...series.map((s) => r[s.key] as number | null),
@@ -113,13 +129,16 @@ export function ReasonsSection({ win }: { win: Window }) {
   }));
   // Its own range: under "all time" the window starts at the first event, and a silence can come
   // before the first handoff.
-  const silenceDays = daysOf(
+  const silenceDays = periodsOf(
     win,
+    grain,
     axisStart(handoffs.coverage, h?.silenceDays[0]?.date),
   );
   const silenceHas = new Set(h?.silenceDays.map((d) => d.date) ?? []);
   const silenceRows: ChartRow[] = silenceDays.map((day) => {
-    const gone = inGap(handoffs.coverage, day) && !silenceHas.has(day);
+    const gone =
+      dayState(handoffs.coverage, day, grain, bounds) === "noData" &&
+      !silenceHas.has(day);
     const row: ChartRow = { day, state: gone ? "noData" : "ready" };
     for (const s of silenceSeries)
       row[s.key] = gone
@@ -130,10 +149,7 @@ export function ReasonsSection({ win }: { win: Window }) {
   });
   const silenceTable: BlockTable = {
     name: "dashboard-silences-by-reason",
-    header: [
-      t("dashboard.col.day", "Day"),
-      ...silenceSeries.map((s) => s.label),
-    ],
+    header: [periodColumn, ...silenceSeries.map((s) => s.label)],
     rows: silenceRows.map((r) => [
       r.day,
       ...silenceSeries.map((s) => r[s.key] as number | null),
@@ -178,7 +194,7 @@ export function ReasonsSection({ win }: { win: Window }) {
         title={t("dashboard.handoffs.title", "Handoffs by cause")}
         help={t(
           "dashboard.handoffs.help",
-          "Conversations that left the agent each day, by who decided: the agent itself, its silence with the reason it gave, a guardrail, or a person who replied or took the conversation. A conversation counts once per cause and day. The agent's free-text reason is in the conversation's private note, not here.",
+          "Conversations that left the agent each day, by who decided: the agent itself, its silence with the reason it gave, a guardrail, or a person who replied or took the conversation. A conversation counts once per cause and day, or per week or month in a long period. The agent's free-text reason is in the conversation's private note, not here.",
         )}
         chart
         table={handoffTable}
@@ -251,6 +267,8 @@ export function ReasonsSection({ win }: { win: Window }) {
               lang={i18n.language}
               format={(v) => nf.format(v)}
               height={220}
+              grain={grain}
+              bounds={bounds}
             />
           </Suspense>
         )}
@@ -306,6 +324,8 @@ export function ReasonsSection({ win }: { win: Window }) {
               lang={i18n.language}
               format={(v) => nf.format(v)}
               height={200}
+              grain={grain}
+              bounds={bounds}
             />
           </Suspense>
         )}

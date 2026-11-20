@@ -21,6 +21,7 @@ import {
   settleConversationMarks,
 } from "./conversation-sums";
 import { audienceSql, type DashboardFilter, usageWhereSql } from "./filter";
+import { type DayGroup, insideOneGroupSql } from "./grain";
 
 // THE LEDGER'S QUARTER-HOUR SUMS (docs/dashboard.md, "Ledger sums"). The dashboard's
 // ledger blocks read `llm_usage` summed per UTC quarter hour, and the call latency from a histogram
@@ -48,12 +49,22 @@ const STEP_TX: TxBudget = { maxWait: 5_000, timeout: 25_000 };
 // rows meanwhile.
 export const MARKED_QUARTERS_PER_STEP = 96;
 const MARKS_PER_READ = 5000;
+// The days a step writes again when their quarters were rewritten under them: a month.
+const LEDGER_DAYS_PER_STEP = 31;
 const RERUN_MS = 60_000;
 const DEDUPE_KEY = "ledger-sums";
 
 // The columns a sums row carries, in the order every source below yields them.
 const SUM_COLUMNS = Prisma.raw(
   "quarter, source, anonymous, agent_id, inbox_id, model, node, cost_usd, requests, unpriced, prompt_tokens, completion_tokens, cached_read_tokens, cache_creation_tokens",
+);
+
+// The same columns on a day sums row, the day apart, and the keys a day groups its quarters by.
+const DAY_COLUMNS = Prisma.raw(
+  "source, anonymous, agent_id, inbox_id, model, node, cost_usd, requests, unpriced, prompt_tokens, completion_tokens, cached_read_tokens, cache_creation_tokens",
+);
+const DAY_GROUP_COLUMNS = Prisma.raw(
+  "q.source, q.anonymous, q.agent_id, q.inbox_id, q.model, q.node",
 );
 
 // The rows of `u` grouped into the shape of a sums row.
@@ -119,10 +130,14 @@ export async function sumsBounds(
 // THE VIEW'S LEDGER, AS SUMS ROWS: one statement's CTEs, `marks` and a SELECT named `ledger` whose
 // rows carry `SUM_COLUMNS`. A reader sums them again by what it groups by: the cost, the tokens and the
 // counts add up exactly (the cost is decimal), and a group whose every call was unpriced keeps a null
-// cost. Without bounds every row of the window is read.
+// cost. Without bounds every row of the window is read. Given a week or month grouping, a UTC day of
+// the summed stretch wholly inside one local group, recorded as summed (`ledger_summed_days`) and with
+// no marked quarter comes from its day row, whose `quarter` is the day's start, and every other day of
+// the stretch from its quarters.
 export function ledgerCtesSql(
   f: DashboardFilter,
   b: SumsBounds | null,
+  group?: DayGroup | null,
 ): Prisma.Sql {
   const where = usageWhereSql("u", f);
   if (!b) {
@@ -130,15 +145,42 @@ export function ledgerCtesSql(
       ledger AS (${rawSumsSelect(where)})`;
   }
   const lo = b.lo ?? new Date(0);
+  const dayLo = b.lo === null ? 0 : Math.ceil(b.lo.getTime() / DAY_MS) * DAY_MS;
+  const dayHi = floorDay(b.hi.getTime());
+  const unmarked = Prisma.sql`NOT EXISTS (SELECT 1 FROM marks WHERE marks.quarter = s.quarter)`;
+  const quarters = (range: Prisma.Sql) => Prisma.sql`
+      SELECT ${SUM_COLUMNS} FROM ledger_quarter_sums s
+       WHERE ${range} AND ${unmarked} AND ${sumsFilterSql("s", f)}`;
+  const byDay = group && group.grain !== "day" && dayHi > dayLo;
+  const summed = byDay
+    ? Prisma.sql`${daySumsSql(f, new Date(dayLo), new Date(dayHi))}
+      UNION ALL
+      ${quarters(Prisma.sql`s.quarter >= ${lo} AND s.quarter < ${new Date(dayLo)}`)}
+      UNION ALL
+      ${quarters(Prisma.sql`s.quarter >= ${new Date(dayHi)} AND s.quarter < ${b.hi}`)}
+      UNION ALL
+      SELECT r.* FROM generate_series(${new Date(dayLo)}::timestamp, ${new Date(dayHi)}::timestamp - interval '1 day', interval '1 day') AS g(day)
+       CROSS JOIN LATERAL (
+         ${quarters(Prisma.sql`s.quarter >= g.day AND s.quarter < g.day + interval '1 day'`)}
+         OFFSET 0
+       ) r
+       WHERE NOT EXISTS (SELECT 1 FROM ldays WHERE ldays.day = g.day)`
+    : quarters(Prisma.sql`s.quarter >= ${lo} AND s.quarter < ${b.hi}`);
+  const ldays = byDay
+    ? Prisma.sql`ldays AS MATERIALIZED (
+      SELECT d.day FROM generate_series(${new Date(dayLo)}::timestamp, ${new Date(dayHi)}::timestamp - interval '1 day', interval '1 day') AS d(day)
+       WHERE EXISTS (SELECT 1 FROM ledger_summed_days sd WHERE sd.day = d.day)
+         AND NOT EXISTS (SELECT 1 FROM marks WHERE marks.quarter >= d.day AND marks.quarter < d.day + interval '1 day')
+         AND ${insideOneGroupSql(group, Prisma.sql`d.day`)}
+    ),`
+    : Prisma.empty;
   return Prisma.sql`marks AS MATERIALIZED (
       SELECT DISTINCT m.quarter FROM ledger_sum_marks m
        WHERE m.quarter >= ${lo} AND m.quarter < ${b.hi}
     ),
+    ${ldays}
     ledger AS (
-      SELECT ${SUM_COLUMNS} FROM ledger_quarter_sums s
-       WHERE s.quarter >= ${lo} AND s.quarter < ${b.hi}
-         AND NOT EXISTS (SELECT 1 FROM marks WHERE marks.quarter = s.quarter)
-         AND ${sumsFilterSql("s", f)}
+      ${summed}
       UNION ALL
       ${rawSumsSelect(Prisma.sql`${where} AND u.created_at >= ${b.hi}`)}
       UNION ALL
@@ -150,6 +192,15 @@ export function ledgerCtesSql(
         OFFSET 0
       ) r
     )`;
+}
+
+// The day rows of the clean days (`ldays`) in [lo, hi), in the shape of a sums row.
+function daySumsSql(f: DashboardFilter, lo: Date, hi: Date): Prisma.Sql {
+  return Prisma.sql`
+      SELECT s.day AS quarter, ${DAY_COLUMNS} FROM ledger_day_sums s
+       WHERE s.day >= ${lo} AND s.day < ${hi}
+         AND EXISTS (SELECT 1 FROM ldays WHERE ldays.day = s.day)
+         AND ${sumsFilterSql("s", f)}`;
 }
 
 // THE VIEW'S CALL LATENCY, AS HISTOGRAM ROWS (`model`, `bucket`, `calls`) under the CTE name
@@ -263,6 +314,53 @@ async function sumQuarters(db: ScopedDb, from: Date, to: Date): Promise<void> {
     INSERT INTO ledger_quarter_sums (tenant_id, ${SUM_COLUMNS})
     SELECT current_setting('app.tenant_id')::bigint, ${SUM_COLUMNS}
       FROM (${rawSumsSelect(Prisma.sql`u.created_at >= ${from} AND u.created_at < ${to}`)}) r`);
+}
+
+// Writes the day sums of the UTC days in [from, to) from their quarter sums, and records the days as
+// summed. A quarter written after this takes its day off again (the trigger on `ledger_quarter_sums`),
+// and a marked quarter left for a later step keeps its day off the reads until then.
+async function sumLedgerDays(
+  db: ScopedDb,
+  from: Date,
+  to: Date,
+): Promise<void> {
+  await db.$executeRaw(Prisma.sql`
+    DELETE FROM ledger_day_sums WHERE day >= ${from} AND day < ${to}`);
+  await db.$executeRaw(Prisma.sql`
+    INSERT INTO ledger_day_sums (tenant_id, day, ${DAY_COLUMNS})
+    SELECT current_setting('app.tenant_id')::bigint, date_trunc('day', q.quarter), ${DAY_GROUP_COLUMNS},
+           SUM(q.cost_usd), SUM(q.requests)::int, SUM(q.unpriced)::int, SUM(q.prompt_tokens)::bigint,
+           SUM(q.completion_tokens)::bigint, SUM(q.cached_read_tokens)::bigint,
+           SUM(q.cache_creation_tokens)::bigint
+      FROM ledger_quarter_sums q
+     WHERE q.quarter >= ${from} AND q.quarter < ${to}
+     GROUP BY 2, 3, 4, 5, 6, 7, 8`);
+  await db.$executeRaw(Prisma.sql`
+    INSERT INTO ledger_summed_days (tenant_id, day)
+    SELECT current_setting('app.tenant_id')::bigint, d.day
+      FROM generate_series(${from}::timestamp, ${to}::timestamp - interval '1 day', interval '1 day') AS d(day)
+    ON CONFLICT DO NOTHING`);
+}
+
+// Writes the earliest days below `below` that are not recorded as summed, a few per step: the days a
+// quarter rewrite took off (a re-price, a worker of the previous release during an upgrade). Returns
+// whether more are left.
+async function sumMissingLedgerDays(
+  db: ScopedDb,
+  below: Date,
+): Promise<boolean> {
+  const missing = await db.$queryRaw<{ day: Date }[]>(Prisma.sql`
+    SELECT d.day FROM generate_series(
+             (SELECT date_trunc('day', min(quarter)) FROM ledger_quarter_sums),
+             ${below}::timestamp - interval '1 day', interval '1 day') AS d(day)
+     WHERE NOT EXISTS (SELECT 1 FROM ledger_summed_days s WHERE s.day = d.day)
+     ORDER BY 1 LIMIT ${LEDGER_DAYS_PER_STEP + 1}`);
+  const days = missing
+    .filter((_, i) => i < LEDGER_DAYS_PER_STEP)
+    .map((m) => m.day.getTime());
+  for (const [from, to] of spansOf(days, DAY_MS))
+    await sumLedgerDays(db, from, to);
+  return missing.length > LEDGER_DAYS_PER_STEP;
 }
 
 // Writes the latency histogram of the UTC days in [from, to) from their rows.
@@ -399,8 +497,10 @@ export async function stepLedgerSums(
         if (summedUntil && day + DAY_MS <= summedUntil.getTime())
           remarkDays.add(day);
       }
-      for (const [from, to] of spansOf(remarkDays, DAY_MS))
+      for (const [from, to] of spansOf(remarkDays, DAY_MS)) {
         await sumLatencyDays(db, from, to);
+        await sumLedgerDays(db, from, to);
+      }
       if (settledMarks.length > 0) {
         await db.$executeRaw(Prisma.sql`
         DELETE FROM ledger_sum_marks WHERE id = ANY(${settledMarks}::bigint[])`);
@@ -439,6 +539,7 @@ export async function stepLedgerSums(
           const lastDay = floorDay(to);
           if (lastDay > firstDay) {
             await sumLatencyDays(db, new Date(firstDay), new Date(lastDay));
+            await sumLedgerDays(db, new Date(firstDay), new Date(lastDay));
             await countConversationDays(
               db,
               new Date(firstDay),
@@ -451,6 +552,15 @@ export async function stepLedgerSums(
           summedUntil = new Date(from);
         }
         caughtUp = to >= target && !marksLeft;
+      }
+
+      // Then the days a quarter rewrite took off, below the last whole day summed.
+      if (summedUntil) {
+        const daysLeft = await sumMissingLedgerDays(
+          db,
+          new Date(floorDay(summedUntil.getTime())),
+        );
+        if (daysLeft) caughtUp = false;
       }
 
       // NOTE: a candidate still waiting is kept. Replaced on every step, it would never be waited out

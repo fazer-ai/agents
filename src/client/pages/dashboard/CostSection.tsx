@@ -33,12 +33,17 @@ import type { ChartRow } from "./charts";
 import {
   apiQuery,
   type DashboardFilters,
-  daysOf,
+  periodsOf,
   type Source,
   type Window,
 } from "./filters";
 import { useBlock } from "./useBlock";
-import { dayState, inGap, useMetricsBlock, withComparison } from "./useMetrics";
+import {
+  dayState,
+  useMetricsBlock,
+  usePeriodColumn,
+  withComparison,
+} from "./useMetrics";
 
 const COST_TILES = ["cost", "perConversation", "cache", "tokens"] as const;
 
@@ -173,8 +178,13 @@ export function CostSection({
 
   const c = costs.data;
   const p = prevCosts.data;
-  const days = daysOf(win, c?.days[0]?.date ?? null);
-  const prevDays = prev ? daysOf(prev) : [];
+  // A day, or the week or month of a long window: the answer says which. The previous period has as
+  // many days, so the same grouping, and its group at the same position is the comparison.
+  const grain = c?.grain ?? "day";
+  const bounds = { first: win.firstDay, last: win.lastDay };
+  const periodColumn = usePeriodColumn(grain);
+  const days = periodsOf(win, grain, c?.days[0]?.date ?? null);
+  const prevDays = prev ? periodsOf(prev, p?.grain ?? grain) : [];
   const costByDay = new Map(c?.days.map((d) => [d.date, d]) ?? []);
   const prevByDay = new Map(p?.days.map((d) => [d.date, d]) ?? []);
 
@@ -188,8 +198,11 @@ export function CostSection({
     label: split === "node" ? nodeLabel(k) : k,
   }));
   const stacked: ChartRow[] = days.map((day) => {
-    const row: ChartRow = { day, state: dayState(costs.coverage, day) };
-    const gap = inGap(costs.coverage, day);
+    const row: ChartRow = {
+      day,
+      state: dayState(costs.coverage, day, grain, bounds),
+    };
+    const gap = row.state === "noData";
     for (const s of segments) {
       row[s.key] = gap
         ? null
@@ -201,19 +214,19 @@ export function CostSection({
   const stackedTable: BlockTable = {
     name: `dashboard-cost-by-${split}`,
     header: [
-      t("dashboard.col.day", "Day"),
+      periodColumn,
       ...segments.map((s) => s.label),
       t("dashboard.col.total", "Total"),
     ],
     // A day with no figures yet is blank in every column, its total too.
     rows: stacked.map((r) => {
-      if (inGap(costs.coverage, r.day))
+      if (r.state === "noData")
         return [r.day, ...segments.map(() => null), null];
       const vals = segments.map((s) => (r[s.key] as number) ?? 0);
       return [r.day, ...vals, vals.reduce((a, b) => a + b, 0)];
     }),
     display: stacked.map((r) => {
-      if (inGap(costs.coverage, r.day))
+      if (r.state === "noData")
         return [r.day, ...segments.map(() => "\u2014"), "\u2014"];
       const vals = segments.map((s) => (r[s.key] as number) ?? 0);
       return [
@@ -229,7 +242,7 @@ export function CostSection({
     const pd = prevDays[i] ? prevByDay.get(prevDays[i] as string) : undefined;
     return {
       day,
-      state: dayState(costs.coverage, day),
+      state: dayState(costs.coverage, day, grain, bounds),
       perConversation: d?.costPerConversation ?? null,
       perResolved: d?.costPerResolvedConversation ?? null,
       perConversationPrev: pd?.costPerConversation ?? null,
@@ -254,7 +267,7 @@ export function CostSection({
   const perConvTable: BlockTable = {
     name: "dashboard-cost-per-conversation",
     header: [
-      t("dashboard.col.day", "Day"),
+      periodColumn,
       ...perConvSeries.map((s) => s.label),
       ...(prev
         ? perConvSeries.map((s) =>
@@ -517,7 +530,13 @@ export function CostSection({
         loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={Coins}
-        title={t("dashboard.cost.daily", "Daily cost")}
+        title={
+          grain === "week"
+            ? t("dashboard.cost.weekly", "Weekly cost")
+            : grain === "month"
+              ? t("dashboard.cost.monthly", "Monthly cost")
+              : t("dashboard.cost.daily", "Daily cost")
+        }
         help={t(
           "dashboard.cost.dailyHelp",
           "Summed from this app's own record of every model call, priced when the call was made. Split by model, or by what the call was for: a change in the image reader and a change in the agent's prompt show up in different colors.",
@@ -549,6 +568,8 @@ export function CostSection({
               series={segments}
               lang={i18n.language}
               format={(v) => cfShort.format(v)}
+              grain={grain}
+              bounds={bounds}
             />
           </Suspense>
         )}
@@ -568,7 +589,7 @@ export function CostSection({
         )}
         help={t(
           "dashboard.cost.perConversationHelp",
-          "Each day's cost divided by the conversations that had a model call that day, and by those of them the agent resolved. A day with nothing to divide by is left blank.",
+          "Each day's cost divided by the conversations that had a model call that day, and by those of them the agent resolved. A day with nothing to divide by is left blank. Past 92 days a point is a week, and past two years a month, each divided by its own conversations.",
         )}
         chart
         table={perConvTable}
@@ -596,6 +617,8 @@ export function CostSection({
               }
               compareLabel={t("dashboard.previousPeriod", "previous period")}
               height={220}
+              grain={grain}
+              bounds={bounds}
             />
           </Suspense>
         )}

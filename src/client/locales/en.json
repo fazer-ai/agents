@@ -1003,16 +1003,23 @@
       "clickForAll": "Click to see every series",
       "closeDetail": "Close the day's detail",
       "days": "Days of the chart",
+      "monthTotal": "Month total {{value}}",
       "moreMembers_one": "and {{count}} more",
       "moreMembers_other": "and {{count}} more",
       "noData": "no data",
       "noDataDays_one": "no data · {{count}} day",
       "noDataDays_other": "no data · {{count}} days",
+      "noDataMonths_one": "no data · {{count}} month",
+      "noDataMonths_other": "no data · {{count}} months",
       "noDataTip": "no data: retention cleared this day's Logs before it was kept",
+      "noDataWeeks_one": "no data · {{count}} week",
+      "noDataWeeks_other": "no data · {{count}} weeks",
       "openDay": "Open the detail of {{day}}",
       "otherLines_one": "Others ({{count}})",
       "otherLines_other": "Others ({{count}})",
-      "total": "Day total {{value}}"
+      "rangeTo": "to",
+      "total": "Day total {{value}}",
+      "weekTotal": "Week total {{value}}"
     },
     "col": {
       "agent": "Agent",
@@ -1030,6 +1037,7 @@
       "level": "Level",
       "lines": "Log lines",
       "model": "Model",
+      "month": "Month",
       "node": "Call type",
       "percentileMs": "{{p}} (ms)",
       "previousOf": "{{label}} (previous period)",
@@ -1038,7 +1046,8 @@
       "stage": "Stage",
       "tool": "Tool",
       "total": "Total",
-      "value": "Value"
+      "value": "Value",
+      "week": "Week (starting Monday)"
     },
     "cost": {
       "acrossConversations_one": "across {{n}} conversation",
@@ -1049,12 +1058,14 @@
       "byNode": "Call type",
       "daily": "Daily cost",
       "dailyHelp": "Summed from this app's own record of every model call, priced when the call was made. Split by model, or by what the call was for: a change in the image reader and a change in the agent's prompt show up in different colors.",
+      "monthly": "Monthly cost",
       "perConversation": "Cost / conversation",
-      "perConversationHelp": "Each day's cost divided by the conversations that had a model call that day, and by those of them the agent resolved. A day with nothing to divide by is left blank.",
+      "perConversationHelp": "Each day's cost divided by the conversations that had a model call that day, and by those of them the agent resolved. A day with nothing to divide by is left blank. Past 92 days a point is a week, and past two years a month, each divided by its own conversations.",
       "perConversationTrend": "Cost per conversation",
       "perResolved": "Cost / conversation resolved by the agent",
       "splitBy": "Split the cost by",
-      "title": "Cost"
+      "title": "Cost",
+      "weekly": "Weekly cost"
     },
     "costsError": "Could not read the cost.",
     "coverage": {
@@ -1081,7 +1092,7 @@
     "funnel": "Automation funnel",
     "funnelMode": "Show the funnel as",
     "handoffs": {
-      "help": "Conversations that left the agent each day, by who decided: the agent itself, its silence with the reason it gave, a guardrail, or a person who replied or took the conversation. A conversation counts once per cause and day. The agent's free-text reason is in the conversation's private note, not here.",
+      "help": "Conversations that left the agent each day, by who decided: the agent itself, its silence with the reason it gave, a guardrail, or a person who replied or took the conversation. A conversation counts once per cause and day, or per week or month in a long period. The agent's free-text reason is in the conversation's private note, not here.",
       "none": "No handoffs in this period.",
       "targets": "Where the transfers went",
       "title": "Handoffs by cause",
@@ -1214,7 +1225,7 @@
       "breakdown": "Split by",
       "byAgent": "By agent",
       "byInbox": "By inbox",
-      "help": "One point per day of the conversations that started that day, so a one-day period shows the same rate on the tile and on the line. Click a point to open those conversations. A day with no conversations has no rate and is left blank.",
+      "help": "One point per day of the conversations that started that day, so a one-day period shows the same rate on the tile and on the line. Click a point to open those conversations. A day with no conversations has no rate and is left blank. Past 92 days a point is a week, starting on Monday, and past two years a month.",
       "metric": "Rate",
       "ofConversations_one": "{{n}} conversation",
       "ofConversations_other": "{{n}} conversations",

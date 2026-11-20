@@ -8738,7 +8738,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -8937,7 +8937,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -9065,7 +9065,7 @@
     "/v1/metrics/timeseries": {
       "get": {
         "summary": "Metrics timeseries",
-        "description": "Returns a timeseries of instance metrics since an optional start time, scoped by usage source.",
+        "description": "Returns the LLM usage per local day, week or month since an optional start time, scoped by usage source. A series has one point per local day up to 92 days, per local week (Monday first) up to 730 days, and per local month past that; `grain` says which, and each point's date is the first local day of its group. A window with no `since` starts at the account's first record.",
         "tags": [
           "Dashboard"
         ],
@@ -9136,7 +9136,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -9264,7 +9264,7 @@
     "/v1/metrics/costs": {
       "get": {
         "summary": "Cost metrics",
-        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
+        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, week or month, per model, the calls no price covered, and the Langfuse link when configured. A series has one point per local day up to 92 days, per local week (Monday first) up to 730 days, and per local month past that; `grain` says which, and each point's date is the first local day of its group. A window with no `since` starts at the account's first record. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "tags": [
           "Dashboard"
         ],
@@ -9335,7 +9335,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -39085,7 +39085,7 @@
           "Dashboard"
         ],
         "summary": "Outcome trend",
-        "description": "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
+        "description": "Involvement, resolution and handoff counts per local day, week or month over the conversations of the view, with totals, optionally repeated per agent or inbox. A series has one point per local day up to 92 days, per local week (Monday first) up to 730 days, and per local month past that; `grain` says which, and each point's date is the first local day of its group. A window with no `since` starts at the account's first record. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -39153,7 +39153,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -39387,7 +39387,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -39553,7 +39553,7 @@
           "Dashboard"
         ],
         "summary": "Handoff reasons",
-        "description": "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
+        "description": "Conversations handed over per cause per local day, week or month (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. A series has one point per local day up to 92 days, per local week (Monday first) up to 730 days, and per local month past that; `grain` says which, and each point's date is the first local day of its group. A window with no `since` starts at the account's first record. Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.",
         "parameters": [
           {
             "name": "since",
@@ -39621,7 +39621,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -39846,7 +39846,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -40071,7 +40071,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -40296,7 +40296,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -40521,7 +40521,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },

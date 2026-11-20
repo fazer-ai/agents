@@ -42,6 +42,10 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
 
 // Every block is computed when it is asked for, within the request's budget (docs/dashboard.md,
 // "How the console loads").
+
+// How a route that answers a series groups it (./grain.ts in the analytics module).
+export const GRAIN_NOTE =
+  "A series has one point per local day up to 92 days, per local week (Monday first) up to 730 days, and per local month past that; `grain` says which, and each point's date is the first local day of its group. A window with no `since` starts at the account's first record.";
 export const METRICS_NOTE =
   "Computed from the records when asked, within METRICS_TIMEOUT_MS counted from the request's arrival; a window that does not fit is refused with a 503 naming `since`.";
 
@@ -83,7 +87,7 @@ export const dashboardFilterQuery = {
   tz: t.Optional(
     t.String({
       description:
-        "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+        "IANA timezone (e.g. America/Sao_Paulo) the local days, weeks and months of a series are cut in; an unknown zone is refused with a 400.",
     }),
   ),
 };
@@ -174,7 +178,7 @@ export const dashboardController = new Elysia({
       }),
       detail: doc(
         "Outcome trend",
-        `Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox. ${METRICS_NOTE}`,
+        `Involvement, resolution and handoff counts per local day, week or month over the conversations of the view, with totals, optionally repeated per agent or inbox. ${GRAIN_NOTE} ${METRICS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },
@@ -228,7 +232,7 @@ export const dashboardController = new Elysia({
       query: filterOnly,
       detail: doc(
         "Handoff reasons",
-        `Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. ${METRICS_NOTE}`,
+        `Conversations handed over per cause per local day, week or month (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason. ${GRAIN_NOTE} ${METRICS_NOTE}`,
       ),
       response: errors(400, 401, 403, 404, 422),
     },

@@ -1040,6 +1040,7 @@
       "clickForAll": "Clique para ver todas as séries",
       "closeDetail": "Fechar o detalhe do dia",
       "days": "Dias do gráfico",
+      "monthTotal": "Total do mês {{value}}",
       "moreMembers_zero": "e mais {{count}}",
       "moreMembers_one": "e mais {{count}}",
       "moreMembers_many": "e mais {{count}}",
@@ -1049,12 +1050,22 @@
       "noDataDays_one": "sem dados · {{count}} dia",
       "noDataDays_many": "sem dados · {{count}} dias",
       "noDataDays_other": "sem dados · {{count}} dias",
+      "noDataMonths_zero": "sem dados · {{count}} meses",
+      "noDataMonths_one": "sem dados · {{count}} mês",
+      "noDataMonths_many": "sem dados · {{count}} meses",
+      "noDataMonths_other": "sem dados · {{count}} meses",
       "noDataTip": "sem dados: os Logs deste dia foram apagados pela retenção antes de ele ser guardado",
+      "noDataWeeks_zero": "sem dados · {{count}} semanas",
+      "noDataWeeks_one": "sem dados · {{count}} semana",
+      "noDataWeeks_many": "sem dados · {{count}} semanas",
+      "noDataWeeks_other": "sem dados · {{count}} semanas",
       "openDay": "Abrir o detalhe de {{day}}",
       "otherLines_one": "Outras ({{count}})",
       "otherLines_many": "Outras ({{count}})",
       "otherLines_other": "Outras ({{count}})",
-      "total": "Total do dia {{value}}"
+      "rangeTo": "a",
+      "total": "Total do dia {{value}}",
+      "weekTotal": "Total da semana {{value}}"
     },
     "col": {
       "agent": "Agente",
@@ -1072,6 +1083,7 @@
       "level": "Nível",
       "lines": "Linhas de log",
       "model": "Modelo",
+      "month": "Mês",
       "node": "Tipo de chamada",
       "percentileMs": "{{p}} (ms)",
       "previousOf": "{{label}} (período anterior)",
@@ -1080,7 +1092,8 @@
       "stage": "Etapa",
       "tool": "Ferramenta",
       "total": "Total",
-      "value": "Valor"
+      "value": "Valor",
+      "week": "Semana (a partir de segunda)"
     },
     "cost": {
       "acrossConversations_zero": "em {{n}} conversas",
@@ -1095,12 +1108,14 @@
       "byNode": "Tipo de chamada",
       "daily": "Custo diário",
       "dailyHelp": "Somado do registro que o próprio app faz de cada chamada de modelo, precificada no momento da chamada. Divida por modelo ou pelo motivo da chamada: uma troca no leitor de imagens e uma mudança no prompt do agente aparecem em cores diferentes.",
+      "monthly": "Custo mensal",
       "perConversation": "Custo / conversa",
-      "perConversationHelp": "O custo de cada dia dividido pelas conversas que tiveram chamada de modelo naquele dia, e pelas que o agente resolveu entre elas. Um dia sem nada para dividir fica em branco.",
+      "perConversationHelp": "O custo de cada dia dividido pelas conversas que tiveram chamada de modelo naquele dia, e pelas que o agente resolveu entre elas. Um dia sem nada para dividir fica em branco. Acima de 92 dias cada ponto é uma semana, e acima de dois anos um mês, cada um dividido pelas próprias conversas.",
       "perConversationTrend": "Custo por conversa",
       "perResolved": "Custo / conversa resolvida pelo agente",
       "splitBy": "Dividir o custo por",
-      "title": "Custo"
+      "title": "Custo",
+      "weekly": "Custo semanal"
     },
     "costsError": "Não foi possível ler o custo.",
     "coverage": {
@@ -1129,7 +1144,7 @@
     "funnel": "Funil de automação",
     "funnelMode": "Mostrar o funil como",
     "handoffs": {
-      "help": "Conversas que saíram do agente a cada dia, por quem decidiu: o próprio agente, o silêncio dele com o motivo que deu, um guardrail, ou uma pessoa que respondeu ou assumiu a conversa. Uma conversa conta uma vez por causa e por dia. O motivo em texto livre do agente fica na nota privada da conversa, não aqui.",
+      "help": "Conversas que saíram do agente a cada dia, por quem decidiu: o próprio agente, o silêncio dele com o motivo que deu, um guardrail, ou uma pessoa que respondeu ou assumiu a conversa. Uma conversa conta uma vez por causa e por dia, ou por semana ou mês num período longo. O motivo em texto livre do agente fica na nota privada da conversa, não aqui.",
       "none": "Nenhuma transferência neste período.",
       "targets": "Para onde foram as transferências",
       "title": "Transferências por causa",
@@ -1264,7 +1279,7 @@
       "breakdown": "Dividir por",
       "byAgent": "Por agente",
       "byInbox": "Por caixa",
-      "help": "Um ponto por dia, com as conversas iniciadas naquele dia, então um período de um dia mostra a mesma taxa no card e na linha. Clique num ponto para abrir essas conversas. Um dia sem conversas não tem taxa e fica em branco.",
+      "help": "Um ponto por dia, com as conversas iniciadas naquele dia, então um período de um dia mostra a mesma taxa no card e na linha. Clique num ponto para abrir essas conversas. Um dia sem conversas não tem taxa e fica em branco. Acima de 92 dias cada ponto é uma semana, começando na segunda, e acima de dois anos, um mês.",
       "metric": "Taxa",
       "ofConversations_zero": "{{n}} conversas",
       "ofConversations_one": "{{n}} conversa",

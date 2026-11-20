@@ -7,6 +7,10 @@ import {
   type DashboardFilter,
   outcomeSql,
 } from "./filter";
+import { type DayGroup, insideOneGroupSql } from "./grain";
+
+export type { DayGroup };
+
 import {
   MARKED_QUARTERS_PER_STEP,
   type SumsBounds,
@@ -405,13 +409,16 @@ function tieredSumsSql(
        WHERE NOT EXISTS (SELECT 1 FROM cdays WHERE cdays.day = g.day)`;
 }
 
-// The `cdays` of `tieredSumsSql`, after `cmarks`.
-function cleanDaysCteSql(b: SumsBounds): Prisma.Sql {
+// The `cdays` of `tieredSumsSql`, after `cmarks`. Under a week or month grouping only the days wholly
+// inside one local group (`insideOneGroupSql`): the day that holds a group's first instant is read from
+// its quarters.
+function cleanDaysCteSql(b: SumsBounds, group?: DayGroup): Prisma.Sql {
   const days = cleanDaysSql(b);
   if (!days) return Prisma.empty;
   return Prisma.sql`, cdays AS MATERIALIZED (
       SELECT d.day FROM generate_series(${days.lo}::timestamp, ${days.hi}::timestamp - interval '1 day', interval '1 day') AS d(day)
        WHERE NOT EXISTS (SELECT 1 FROM cmarks WHERE cmarks.quarter >= d.day AND cmarks.quarter < d.day + interval '1 day')
+         ${group ? Prisma.sql`AND ${insideOneGroupSql(group, Prisma.sql`d.day`)}` : Prisma.empty}
     )`;
 }
 
@@ -420,12 +427,13 @@ function cleanDaysCteSql(b: SumsBounds): Prisma.Sql {
 // `labeled`, `labels` (null on a counts row) and `conversations`. The cohort's rules are
 // `cohortWhereSql`'s, applied to the counts by inbox and by the agents that ran. Without bounds, or
 // without the mark on the view, every conversation is read from its row. With `byDay`, a row's
-// `quarter` may be a UTC day (`tieredSumsSql`), for a read that does not split by local day.
+// `quarter` may be a UTC day (`tieredSumsSql`), for a read that does not split by local day, or, given
+// a week or month grouping, a UTC day wholly inside one of its groups.
 export function convsCtesSql(
   f: DashboardFilter,
   b: SumsBounds | null,
   withAgents = false,
-  byDay = false,
+  byDay: boolean | DayGroup = false,
 ): Prisma.Sql {
   if (!b || !f.runsMark) {
     return Prisma.sql`convs AS MATERIALIZED (${rawConvSelect(f, Prisma.sql`true`, withAgents)})`;
@@ -445,7 +453,7 @@ export function convsCtesSql(
       );
   // Materialized: a reader's FILTERs each read `ran`, and inlined, the probe behind it would run
   // once per figure.
-  return Prisma.sql`${markedQuartersSql(b)}${byDay ? cleanDaysCteSql(b) : Prisma.empty},
+  return Prisma.sql`${markedQuartersSql(b)}${byDay ? cleanDaysCteSql(b, byDay === true ? undefined : byDay) : Prisma.empty},
     convs AS MATERIALIZED (
       ${summed}
       UNION ALL
@@ -532,12 +540,19 @@ export function responsesCtesSql(
     )`;
 }
 
+// A day grouping reads quarters only: every UTC day of a zone off UTC holds a local midnight.
+function grouped(group?: DayGroup): DayGroup | false {
+  return group && group.grain !== "day" ? group : false;
+}
+
 // THE FUNNEL'S COUNTS over `convs`, grouped by `key` when given: the same five counts
 // `outcomeCountsSql` reads from the conversations.
 export function funnelCountsSql(
   f: DashboardFilter,
   b: SumsBounds | null,
   key?: Prisma.Sql,
+  // The key's week or month grouping, so the UTC days wholly inside a group come from the day sums.
+  group?: DayGroup,
 ): Prisma.Sql {
   const counts = Prisma.sql`
            COALESCE(SUM(v.conversations), 0)::int AS total,
@@ -550,7 +565,7 @@ export function funnelCountsSql(
   }
   // NOTE: counted per quarter first, so the key is worked out once per quarter, not once per row.
   return Prisma.sql`
-    WITH ${convsCtesSql(f, b)}, byq AS MATERIALIZED (
+    WITH ${convsCtesSql(f, b, false, grouped(group))}, byq AS MATERIALIZED (
       SELECT v.quarter, ${counts} FROM convs v GROUP BY 1
     )
     SELECT ${key} AS key,
@@ -569,6 +584,7 @@ export function funnelSeriesSql(
   breakdown: "agent" | "inbox",
   day?: Prisma.Sql,
   unattributed = false,
+  group?: DayGroup,
 ): Prisma.Sql {
   const agent = f.agentId ?? null;
   const rated =
@@ -598,7 +614,7 @@ export function funnelSeriesSql(
      GROUP BY rt.member`;
   }
   return Prisma.sql`
-    WITH ${convsCtesSql(f, b, breakdown === "agent")}, rated AS (SELECT r.*, ${day} AS day FROM (${rated}) r)
+    WITH ${convsCtesSql(f, b, breakdown === "agent", grouped(group))}, rated AS (SELECT r.*, ${day} AS day FROM (${rated}) r)
     SELECT rt.member::text AS member,
            CASE WHEN GROUPING(rt.day) = 1 THEN NULL ELSE rt.day END AS key, ${counts}
       FROM rated rt

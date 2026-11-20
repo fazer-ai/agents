@@ -1,4 +1,5 @@
 import { CLIENT_AUDIENCES } from "@/graph/usage-sources";
+import { type Grain, groupOf, periodWindow } from "./period";
 
 // THE PAGE'S ONE FILTER, IN THE URL. Period, agent, inbox and source live in the query string, so a
 // view can be shared as a link and Back returns to the previous view. Every block reads the window
@@ -215,6 +216,21 @@ export function daysOf(w: Window, earliest?: string | null): string[] {
   return out;
 }
 
+// Every group of a window, in order (./period.ts), for charts that show the groups with no data as
+// zero. "All" starts at the earliest key any series has.
+export function periodsOf(
+  w: Window,
+  grain: Grain,
+  earliest?: string | null,
+): string[] {
+  const out: string[] = [];
+  for (const d of daysOf(w, earliest)) {
+    const g = groupOf(d, grain);
+    if (out[out.length - 1] !== g) out.push(g);
+  }
+  return out;
+}
+
 export const OPERATOR_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // The API query for a window and the filters: the same object for every block of the page.
@@ -286,8 +302,15 @@ export function trendPointHref(
   breakdown: "none" | "agent" | "inbox",
   metric: TrendMetric,
   seriesKey?: string,
+  // A point of a grouped chart is its week or month: the days of it inside the window.
+  group?: {
+    grain: Grain;
+    bounds: { first: string | null; last: string };
+  },
 ): string {
-  const w = dayWindow(day);
+  const w = group
+    ? periodWindow(day, group.grain, group.bounds)
+    : dayWindow(day);
   if (breakdown === "none") {
     const hit = seriesKey as TrendMetric | undefined;
     return drillDownHref(

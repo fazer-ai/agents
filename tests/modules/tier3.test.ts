@@ -3065,7 +3065,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("timeseries returns a daily cost bucket", async () => {
-      const points = await getTimeseries(ctx(tenant), {}, appDb);
+      const { points } = await getTimeseries(ctx(tenant), {}, appDb);
       expect(points.length).toBeGreaterThanOrEqual(1);
       const total = points.reduce((a, p) => a + p.calls, 0);
       expect(total).toBeGreaterThanOrEqual(1);
@@ -3159,13 +3159,22 @@ describe.skipIf(!dbUp)("timeseries day bucketing respects timezone", () => {
   });
 
   test("UTC buckets on 06-19; America/Sao_Paulo buckets on 06-18", async () => {
-    const utc = await getTimeseries(ctx(tenant), { tz: "UTC" }, appDb);
+    // A month around the row: a window that long is read by day.
+    const june = {
+      since: new Date("2026-06-01T00:00:00Z"),
+      until: new Date("2026-07-01T00:00:00Z"),
+    };
+    const { points: utc } = await getTimeseries(
+      ctx(tenant),
+      { ...june, tz: "UTC" },
+      appDb,
+    );
     expect(utc).toHaveLength(1);
     expect(utc[0]?.bucket).toBe("2026-06-19");
 
-    const brt = await getTimeseries(
+    const { points: brt } = await getTimeseries(
       ctx(tenant),
-      { tz: "America/Sao_Paulo" },
+      { ...june, tz: "America/Sao_Paulo" },
       appDb,
     );
     expect(brt).toHaveLength(1);

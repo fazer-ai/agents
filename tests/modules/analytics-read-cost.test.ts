@@ -9,6 +9,7 @@ import {
   getLabelOutcomes,
 } from "@/modules/analytics/activity";
 import type { DashboardFilter } from "@/modules/analytics/filter";
+import { getHealth } from "@/modules/analytics/health";
 import { outcomeCountsSql } from "@/modules/analytics/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 
@@ -130,13 +131,21 @@ async function planWithOnlyDashboardIndex(
 }
 
 // Every statement `read` sends that scans the flow log as its subject (alias `l`).
-async function flowLogScans(read: () => Promise<unknown>) {
+async function flowLogScans(
+  read: () => Promise<unknown>,
+  keep = "execution_logs_dashboard_lines_idx",
+) {
   statements.length = 0;
   await read();
   const sent = statements.filter((s) => /\bexecution_logs l\b/.test(s.query));
   const scans: PlanNode[] = [];
   for (const s of sent) {
-    const plan = await planWithOnlyDashboardIndex(s.query, s.params);
+    const plan = await planWithOnlyDashboardIndex(
+      s.query,
+      s.params,
+      "execution_logs",
+      keep,
+    );
     for (const n of nodes(plan))
       if (n["Relation Name"] === "execution_logs" && n.Alias === "l")
         scans.push(n);
@@ -244,6 +253,27 @@ describe.skipIf(!dbUp)("the dashboard's reads, by what they cost", () => {
     expect(scans.length).toBeGreaterThan(0);
     for (const s of scans)
       expect(s["Index Name"]).toBe("execution_logs_dashboard_lines_idx");
+  });
+
+  test("the health block's problems reach the warn and error lines through their own index", async () => {
+    const { statements: n, scans } = await flowLogScans(
+      () => getHealth(ctx(), MONTH, db),
+      "execution_logs_problem_lines_idx",
+    );
+    expect(n).toBe(1);
+    expect(scans.length).toBeGreaterThan(0);
+    for (const s of scans)
+      expect(s["Index Name"]).toBe("execution_logs_problem_lines_idx");
+  });
+
+  test("under an inbox filter the problems still reach their lines through their own index", async () => {
+    const { scans } = await flowLogScans(
+      () => getHealth(ctx(), { ...MONTH, inboxId: 1n }, db),
+      "execution_logs_problem_lines_idx",
+    );
+    expect(scans.length).toBeGreaterThan(0);
+    for (const s of scans)
+      expect(s["Index Name"]).toBe("execution_logs_problem_lines_idx");
   });
 
   test("the funnel probes the ledger once per conversation, not once per figure", async () => {

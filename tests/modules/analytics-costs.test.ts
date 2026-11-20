@@ -280,6 +280,52 @@ describe.skipIf(!dbUp)("getDashboardCosts (DB)", () => {
     expect(costs.totalCostUsd).toBeCloseTo(3.5, 6);
   });
 
+  test("a cost request holds one connection, its Langfuse link read in the same transaction", async () => {
+    // Every transaction the read opens on `appDb`, and how many were open at once.
+    let opened = 0;
+    let open = 0;
+    let most = 0;
+    const counting = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (prop !== "$extends") return v;
+        return (...args: unknown[]) => {
+          const extended = (v as (...a: unknown[]) => PrismaClient).apply(
+            target,
+            args,
+          );
+          return new Proxy(extended, {
+            get(t, p, r) {
+              const inner = Reflect.get(t, p, r);
+              if (p !== "$transaction") return inner;
+              return async (...a: unknown[]) => {
+                opened += 1;
+                open += 1;
+                most = Math.max(most, open);
+                try {
+                  return await (
+                    inner as (...x: unknown[]) => Promise<unknown>
+                  ).apply(t, a);
+                } finally {
+                  open -= 1;
+                }
+              };
+            },
+          });
+        };
+      },
+    });
+    const costs = await getDashboardCosts(
+      ctx(traced),
+      { since: new Date(Date.now() - 30 * DAY), source: "inbox" },
+      counting,
+      noFetch,
+    );
+    expect(costs.langfuse?.baseUrl).toBe("https://langfuse.example.test");
+    expect(costs.totalCostUsd).toBeCloseTo(3.5, 6);
+    expect([opened, most]).toEqual([1, 1]);
+  });
+
   test("the project link is used once Langfuse has named the project", async () => {
     // The background resolution's body, read: what is left after it is the cache write, which runs
     // in the same continuation, and one macrotask turn drains that whole.

@@ -151,8 +151,12 @@ export async function getDashboardCosts(
 ): Promise<DashboardCosts> {
   const tenantId = ctx.tenantId;
   const tz = normalizeTimeZone(filter.tz);
-  const [figures, langfuse] = await Promise.all([
-    runMetricsScoped(base, ctx, async (db) => {
+  // One transaction, so one connection of the metrics pool: the Langfuse configuration is read after
+  // the figures, in the same transaction, and a failure there leaves the figures as they are.
+  const { figures, langfuse } = await runMetricsScoped(
+    base,
+    ctx,
+    async (db) => {
       // Every figure from the view's ledger as quarter-hour sums (./ledger-sums.ts): every zone's
       // offset is a whole number of quarter hours, so a quarter falls in one local day. The sums are
       // added up per (day, model, node) first, which every grouping set below is coarser than, so the
@@ -267,12 +271,18 @@ export async function getDashboardCosts(
         conversations: Number(wholeConvs?.conversations ?? 0),
         resolved: Number(wholeConvs?.resolved ?? 0),
       };
-      return { grain, days, models, byModelDays, byNodeDays, period };
-    }),
-    tenantId === null
-      ? Promise.resolve(null)
-      : langfuseLink(base, ctx, tenantId, fetchFn),
-  ]);
+      const langfuse =
+        tenantId === null
+          ? null
+          : await langfuseLink(base, ctx, tenantId, fetchFn, (read) =>
+              read(db),
+            );
+      return {
+        figures: { grain, days, models, byModelDays, byNodeDays, period },
+        langfuse,
+      };
+    },
+  );
   const days = figures.days.map((r) => {
     const costUsd = usd(r.cost);
     const conversations = Number(r.conversations);

@@ -26,7 +26,10 @@ import { type DashboardFilter, flowLogFloor } from "@/modules/analytics/filter";
 import { getHealth } from "@/modules/analytics/health";
 import { getFilterOptions } from "@/modules/analytics/options";
 import { normalizeTimeZone } from "@/modules/analytics/service";
-import { getOutcomeTrend } from "@/modules/analytics/trends";
+import {
+  getOutcomeTrend,
+  OUTCOME_BREAKDOWNS,
+} from "@/modules/analytics/trends";
 
 // translate('errors.metricsTooSlow', 'The metrics for this period took longer than {{seconds}}s to compute. Try a shorter period, or try again in a moment.')
 
@@ -158,10 +161,11 @@ export const dashboardController = new Elysia({
       trend: await (async () => {
         const ctx = ctxOrThrow(tenantContext);
         const filter = parseDashboardFilter(query);
-        const breakdown = parseQueryEnum(query.breakdown, "breakdown", [
-          "agent",
-          "inbox",
-        ]);
+        const breakdown = parseQueryEnum(
+          query.breakdown,
+          "breakdown",
+          OUTCOME_BREAKDOWNS,
+        );
         return getOutcomeTrend(ctx, filter, breakdown);
       })(),
     }),

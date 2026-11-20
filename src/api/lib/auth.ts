@@ -5,6 +5,7 @@ import type { Prisma, UserRole } from "@/../generated/prisma/client";
 import { closeSessionSockets } from "@/api/features/realtime/realtime.service";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
+import { noteMetricsLookup } from "@/api/lib/metrics-reads";
 import mainPrisma from "@/api/lib/prisma";
 import metricsPrisma from "@/api/lib/prisma-metrics";
 import { WS_CLOSE } from "@/api/lib/realtime";
@@ -16,7 +17,13 @@ import {
   UnauthorizedError,
 } from "@/lib/errors";
 import { isForeignKeyViolation } from "@/lib/pg-error";
-import { roleAtLeast, runWithinBudgetOn, type TxBudget } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  roleAtLeast,
+  runWithinBudgetOn,
+  type ScopedDb,
+  type TxBudget,
+} from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 import {
   metricsBudget,
@@ -247,7 +254,7 @@ async function apiKeyAuthUser(
   if (!token) return null;
   let principal: Awaited<ReturnType<typeof verifyApiKey>>;
   try {
-    principal = await verifyApiKey(token, pool.db, pool.budget);
+    principal = await verifyApiKey(token, pool.db, pool.budget, pool.keyLookup);
   } catch (error) {
     // NOTE: transient, as in the session lookups below: a full pool says nothing about the key.
     logger.warn({ error }, "API key lookup failed; treating as transient");
@@ -290,6 +297,9 @@ export interface AuthPool {
   budget?: TxBudget;
   // Runs a session lookup through this pool, under its budget when it has one.
   lookup: <T>(fn: (db: Prisma.TransactionClient) => Promise<T>) => Promise<T>;
+  // Runs an API key's verification, which reads before any tenant is known, at fleet scope on this
+  // pool, under its budget when it has one.
+  keyLookup: <T>(fn: (db: ScopedDb) => Promise<T>) => Promise<T>;
   // The refusal for a lookup that failed: transient, never a signed-out session.
   unavailable: () => Error;
 }
@@ -311,6 +321,7 @@ export function authPoolFor(path: string): AuthPool {
     return {
       db: mainPrisma,
       lookup: (fn) => fn(mainPrisma),
+      keyLookup: (fn) => asSuperAdminOn(mainPrisma, fn),
       unavailable: () => new ServiceUnavailableError(),
     };
   }
@@ -319,12 +330,38 @@ export function authPoolFor(path: string): AuthPool {
   return {
     db: metricsPrisma,
     budget,
-    lookup: (fn) => runWithinBudgetOn(metricsPrisma, budget, fn),
+    lookup: (fn) =>
+      timedLookup((f) => runWithinBudgetOn(metricsPrisma, budget, f), fn),
+    keyLookup: (fn) =>
+      timedLookup((f) => asSuperAdminOn(metricsPrisma, f, budget), fn),
     unavailable: () =>
       Date.now() >= deadline
         ? metricsTooSlow(deadline)
         : new ServiceUnavailableError(),
   };
+}
+
+// A lookup on the metrics pool reports its wait for a connection and its run to the request's log
+// line (./metrics-request.ts): behind a held connection, this is where a request queues. `open`
+// runs its callback inside the lookup's transaction.
+async function timedLookup<D, T>(
+  open: (fn: (db: D) => Promise<T>) => Promise<T>,
+  fn: (db: D) => Promise<T>,
+): Promise<T> {
+  const asked = Date.now();
+  let began: number | null = null;
+  try {
+    return await open((db) => {
+      began = Date.now();
+      return fn(db);
+    });
+  } finally {
+    const ended = Date.now();
+    noteMetricsLookup(
+      (began ?? ended) - asked,
+      began === null ? 0 : ended - began,
+    );
+  }
 }
 
 const SESSION_USER = {

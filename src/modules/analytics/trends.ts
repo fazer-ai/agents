@@ -25,7 +25,8 @@ import {
 // agent or inbox, with that agent or inbox as the filter, which is exactly what clicking it applies
 // (`funnelSeriesSql` computes all of them at once).
 
-export type OutcomeBreakdown = "agent" | "inbox";
+export const OUTCOME_BREAKDOWNS = ["agent", "inbox"] as const;
+export type OutcomeBreakdown = (typeof OUTCOME_BREAKDOWNS)[number];
 
 export interface OutcomeDay extends OutcomeCounts {
   date: string;

@@ -14,7 +14,6 @@ import {
   connectTimeoutOption,
   lockTimeoutOption,
 } from "@/api/lib/pool-options";
-import config from "@/config";
 import {
   assertRuntimeRoleIsNotSuperuser,
   RuntimeIsolationError,
@@ -107,10 +106,6 @@ const SETTLE_BUDGET_MS = 10 * 60 * 1000;
 const STEP_RETRY_MS = 1000;
 // How often a read of the marks before or after the steps is tried, a retry time apart.
 const READ_ATTEMPTS = 3;
-// The longest the client waits on one statement's answer, past every statement the run sends: a write
-// batch's transaction budget (DB_TX_TIMEOUT_MS) and a step's 25 s, with room for the answer. A
-// connection that stops answering fails, and the read or step is retried.
-const QUERY_TIMEOUT_MS = Math.max(config.dbTx.timeoutMs, 25_000) + 30_000;
 
 // A read tried up to READ_ATTEMPTS times: the error of the last attempt when none succeeds.
 export async function readWithRetry<T>(
@@ -407,15 +402,14 @@ async function main() {
     console.error("DATABASE_URL (the runtime role) is required");
     process.exit(1);
   }
-  // The pool's lock timeout and connect bound, as the app's pool has them, and a bound on each answer:
-  // a step queued behind the job's own step on the same tenant gives up in seconds and is retried, and
-  // a server that stops answering fails the read instead of holding the run.
+  // The pool's lock timeout and connect bound, as the app's pool has them: a step queued behind the
+  // job's own step on the same tenant gives up in seconds and is retried, and a server that accepts
+  // the connection and never answers fails the run instead of holding it.
   const prisma = new PrismaClient({
     adapter: new PrismaPg({
       ...withSessionOptions(url),
       ...lockTimeoutOption(),
       ...connectTimeoutOption(),
-      query_timeout: QUERY_TIMEOUT_MS,
     }),
   });
   try {

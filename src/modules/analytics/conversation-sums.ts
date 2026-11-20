@@ -69,6 +69,17 @@ export function dividesByConversations(f: DashboardFilter): boolean {
 
 // THE JOB'S SIDE.
 
+// The conversations named that still exist, each held against removal until the step commits
+// (`FOR KEY SHARE`, the lock the runs' foreign key check takes, which an ordinary update does not
+// wait on). Taken before any run is written: a removal in flight is waited out here and the
+// conversation left out, where a run written for it would fail the step on the foreign key, or meet
+// the removal's cascade on the runs the other way round and deadlock.
+function liveConversationsSql(ids: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`live AS MATERIALIZED (
+      SELECT c.id FROM conversations c WHERE c.id IN (${ids}) ORDER BY c.id FOR KEY SHARE OF c
+    )`;
+}
+
 // Adds the runs of the ledger rows written in [from, to).
 export async function addRuns(
   db: ScopedDb,
@@ -76,10 +87,13 @@ export async function addRuns(
   to: Date,
 ): Promise<void> {
   await db.$executeRaw(Prisma.sql`
+    WITH ${liveConversationsSql(Prisma.sql`
+      SELECT ar.conversation_id FROM llm_usage ar
+       WHERE ar.created_at >= ${from} AND ar.created_at < ${to} AND ${RUN_ROW}`)}
     INSERT INTO conversation_agent_runs (tenant_id, conversation_id, agent_id)
     SELECT DISTINCT current_setting('app.tenant_id')::bigint, ar.conversation_id, COALESCE(ar.agent_id, 0)
       FROM llm_usage ar
-      JOIN conversations c ON c.id = ar.conversation_id
+      JOIN live ON live.id = ar.conversation_id
      WHERE ar.created_at >= ${from} AND ar.created_at < ${to} AND ${RUN_ROW}
     ON CONFLICT (tenant_id, conversation_id, agent_id) DO NOTHING`);
 }
@@ -87,14 +101,19 @@ export async function addRuns(
 // Recomputes the runs of the conversations named, from all their ledger rows.
 async function recomputeRuns(db: ScopedDb, ids: bigint[]): Promise<void> {
   if (ids.length === 0) return;
+  const live = (
+    await db.$queryRaw<{ id: bigint }[]>(Prisma.sql`
+      WITH ${liveConversationsSql(Prisma.sql`SELECT unnest(${ids}::bigint[])`)}
+      SELECT id FROM live`)
+  ).map((r) => r.id);
   await db.$executeRaw(Prisma.sql`
     DELETE FROM conversation_agent_runs WHERE conversation_id = ANY(${ids}::bigint[])`);
+  if (live.length === 0) return;
   await db.$executeRaw(Prisma.sql`
     INSERT INTO conversation_agent_runs (tenant_id, conversation_id, agent_id)
     SELECT DISTINCT current_setting('app.tenant_id')::bigint, ar.conversation_id, COALESCE(ar.agent_id, 0)
       FROM llm_usage ar
-      JOIN conversations c ON c.id = ar.conversation_id
-     WHERE ar.conversation_id = ANY(${ids}::bigint[]) AND ${RUN_ROW}
+     WHERE ar.conversation_id = ANY(${live}::bigint[]) AND ${RUN_ROW}
     ON CONFLICT (tenant_id, conversation_id, agent_id) DO NOTHING`);
 }
 

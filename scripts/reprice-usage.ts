@@ -111,14 +111,14 @@ export interface SettledTenant {
   tenantId: bigint;
   // Distinct quarters the repricing wrote rows in.
   quarters: number;
-  // Of those, the quarters still marked when the budget ran out.
+  // Of those, the quarters still holding a mark up to the cutoff id when the budget ran out.
   left: number;
   // Of those, the quarters at or above the tenant's sums mark (all of them before its first sums):
   // a row inside the trigger's grace is never marked, and a step drops a mark there without a sum,
   // so they are read from the rows until the job sums up to them.
   aboveMark: number;
-  // Of those, the quarters a later write marked again while the script settled: read from the rows
-  // until the job settles them.
+  // Of those, the quarters holding only marks past the cutoff when every tenant was settled: a write
+  // during the settle marked them again, and they are read from the rows until the job settles them.
   remarked: number;
   // The last error a step threw, when one did: the step is retried until the budget runs out.
   stepError?: string;
@@ -127,7 +127,8 @@ export interface SettledTenant {
 // Settles the quarters a repricing wrote, by running the LEDGER_SUMS job's own step until none of them
 // holds a mark up to `upTo`: the step recounts a marked quarter and deletes only the marks it read, so
 // a mark of concurrent traffic is never lost, and each step is one short transaction. The step relies
-// on RLS for its tenant, so it runs on a role RLS binds and never on the superuser URL.
+// on RLS for its tenant, so it runs on a role RLS binds and never on the superuser URL. What is left
+// is read for every tenant at the end, in one snapshot each, after the last tenant is settled.
 export async function settleRepricedQuarters(
   db: PrismaClient,
   written: ReadonlyMap<bigint, ReadonlySet<number>>,
@@ -136,56 +137,60 @@ export async function settleRepricedQuarters(
   step: typeof stepLedgerSums = stepLedgerSums,
 ): Promise<SettledTenant[]> {
   await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
-  const out: SettledTenant[] = [];
+  const marksOf = (tenantId: bigint, quarters: Date[]) =>
+    Prisma.sql`FROM ledger_sum_marks
+         WHERE tenant_id = ${tenantId} AND quarter = ANY(${quarters}::timestamp[])`;
+  const errors = new Map<bigint, string>();
   for (const [tenantId, set] of written) {
-    const quarters = [...set];
-    const at = quarters.map((q) => new Date(q));
-    const marked = (ids: Prisma.Sql) => Prisma.sql`FROM ledger_sum_marks
-         WHERE tenant_id = ${tenantId} AND ${ids} AND quarter = ANY(${at}::timestamp[])`;
-    const ours = marked(Prisma.sql`id <= ${upTo}`);
-    const count = async (from: Prisma.Sql) => {
-      const [row] = await asSuperAdminOn(db, (tx) =>
-        tx.$queryRaw<{ n: number }[]>(
-          Prisma.sql`SELECT COUNT(DISTINCT quarter)::int AS n ${from}`,
-        ),
-      );
-      return row?.n ?? 0;
-    };
-    const anyMarked = async () => {
+    const from = marksOf(
+      tenantId,
+      [...set].map((q) => new Date(q)),
+    );
+    const pending = async () => {
       const [row] = await asSuperAdminOn(db, (tx) =>
         tx.$queryRaw<{ any: boolean }[]>(
-          Prisma.sql`SELECT EXISTS (SELECT 1 ${ours}) AS any`,
+          Prisma.sql`SELECT EXISTS (SELECT 1 ${from} AND id <= ${upTo}) AS any`,
         ),
       );
       return Boolean(row?.any);
     };
-    let stepError: string | undefined;
-    let pending = await anyMarked();
-    while (pending && Date.now() < deadline) {
+    while (Date.now() < deadline && (await pending())) {
       try {
         await step(db, tenantId);
       } catch (err) {
         // NOTE: the job's own step on the same tenant holds the state row, and a step that waits on it
         // past its transaction budget throws. The marks are rechecked, since that step may have
         // settled them, and the step retried while the budget lasts.
-        stepError = err instanceof Error ? err.message : String(err);
+        errors.set(tenantId, err instanceof Error ? err.message : String(err));
         await Bun.sleep(STEP_RETRY_MS);
       }
-      pending = await anyMarked();
     }
-    const left = pending ? await count(ours) : 0;
-    const remarked = await count(marked(Prisma.sql`id > ${upTo}`));
-    const [state] = await asSuperAdminOn(db, (tx) =>
-      tx.$queryRaw<{ at: Date | null }[]>(Prisma.sql`
-        SELECT summed_until AS at FROM ledger_sums_state WHERE tenant_id = ${tenantId}`),
+  }
+  const out: SettledTenant[] = [];
+  for (const [tenantId, set] of written) {
+    const quarters = [...set];
+    const [row] = await asSuperAdminOn(db, (tx) =>
+      tx.$queryRaw<{ left: number; remarked: number; mark: Date | null }[]>(
+        Prisma.sql`
+        SELECT COUNT(*) FILTER (WHERE q.min_id <= ${upTo})::int AS left,
+               COUNT(*) FILTER (WHERE q.min_id > ${upTo})::int AS remarked,
+               (SELECT summed_until FROM ledger_sums_state WHERE tenant_id = ${tenantId}) AS mark
+          FROM (SELECT quarter, MIN(id) AS min_id
+                  ${marksOf(
+                    tenantId,
+                    quarters.map((q) => new Date(q)),
+                  )}
+                 GROUP BY quarter) q`,
+      ),
     );
-    const mark = state?.at?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const stepError = errors.get(tenantId);
     out.push({
       tenantId,
       quarters: quarters.length,
-      left,
+      left: row?.left ?? 0,
       aboveMark: quarters.filter((q) => q >= mark).length,
-      remarked,
+      remarked: row?.remarked ?? 0,
       ...(stepError === undefined ? {} : { stepError }),
     });
   }

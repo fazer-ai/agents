@@ -21,7 +21,7 @@ import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
 // not the rows, and reads the rows' figures.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
-const suUrl = process.env.MIGRATION_DATABASE_URL;
+const suUrl = process.env.TEST_MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: PrismaClient | undefined;
 let app: PrismaClient | undefined;
@@ -327,7 +327,7 @@ describe.skipIf(!dbUp)(
     );
 
     test(
-      "with its time spent it reports what is still marked, and a later write's mark apart, which the job then settles",
+      "with its time spent it reports what is still marked, which the job then settles",
       async () => {
         const tF = await seedTenant("r1853-f", 100);
         await sumUp(tF);
@@ -343,15 +343,10 @@ describe.skipIf(!dbUp)(
             createdAt: new Date(FIRST - 2 * DAY),
           },
         });
-        const upTo = await lastLedgerMarkId(db);
-        // A later write on a repriced row, after the settle took its last mark id.
-        await suDb.$executeRaw(Prisma.sql`
-          UPDATE llm_usage SET cost_usd = cost_usd + 1
-           WHERE id = (SELECT MIN(id) FROM llm_usage WHERE tenant_id = ${tF})`);
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
-          upTo,
+          await lastLedgerMarkId(db),
           Date.now() - 1,
         );
         expect(settled).toEqual({
@@ -359,7 +354,7 @@ describe.skipIf(!dbUp)(
           quarters: marked,
           left: marked,
           aboveMark: 0,
-          remarked: 1,
+          remarked: 0,
         });
         expect(await costs(tF)).toEqual(await rawCosts(tF));
         await sumUp(tF);
@@ -389,6 +384,38 @@ describe.skipIf(!dbUp)(
         expect(settled?.left).toBe(0);
         expect(settled?.stepError).toBe("Transaction already closed");
         expect(await markedQuarters(tA)).toBe(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "a settled tenant's quarter a write marks again while the next tenant settles is reported as marked again",
+      async () => {
+        const tG = await seedTenant("r1853-g", 50);
+        await sumUp(tG);
+        const a = await reprice(tA, 0.0135);
+        const g = await reprice(tG, 0.0135);
+        const written = new Map([...a.writtenQuarters, ...g.writtenQuarters]);
+        let wrote = false;
+        const [settledA, settledG] = await settleRepricedQuarters(
+          db,
+          written,
+          await lastLedgerMarkId(db),
+          undefined,
+          async (base, tenantId) => {
+            if (tenantId === tG && !wrote) {
+              wrote = true;
+              await suDb.$executeRaw(Prisma.sql`
+                UPDATE llm_usage SET cost_usd = cost_usd + 1
+                 WHERE id = (SELECT MIN(id) FROM llm_usage WHERE tenant_id = ${tA} AND model = ${MODEL})`);
+            }
+            return stepLedgerSums(base, tenantId);
+          },
+        );
+        expect(wrote).toBe(true);
+        expect(settledA).toMatchObject({ tenantId: tA, left: 0, remarked: 1 });
+        expect(settledG).toMatchObject({ tenantId: tG, left: 0, remarked: 0 });
+        await sumUp(tA);
       },
       TEST_TIMEOUT_MS,
     );

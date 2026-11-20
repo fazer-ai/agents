@@ -214,8 +214,6 @@ export interface RepriceReport {
   writtenQuarters: Map<bigint, Set<number>>;
 }
 
-const QUARTER_MS = 15 * 60 * 1000;
-
 type TransactionCapable = Pick<PrismaClient, "$extends" | "$transaction">;
 
 function rowFilter(opts: RepriceOptions): Prisma.LlmUsageWhereInput {
@@ -304,26 +302,23 @@ export async function runReprice(
           )
         : capturePricer(opts.provider, (t) => overrides.get(t) ?? null);
       const { updates } = planReprice(rows, pricer, groups);
-      if (opts.apply && updates.length > 0) {
-        await db.$executeRaw`
+      if (!opts.apply || updates.length === 0) return { rows, updates: 0 };
+      // The quarters come from the rows as the UPDATE wrote them, not as they were read: a row
+      // moved or deleted in between is counted where it is now, or not at all.
+      const wrote = await db.$queryRaw<{ tenant_id: bigint; quarter: Date }[]>`
           UPDATE llm_usage AS u
              SET cost_usd = v.cost::numeric, price_table = v.stamp
             FROM unnest(${updates.map((u) => u.id.toString())}::text[],
                         ${updates.map((u) => u.costUsd)}::text[],
                         ${updates.map((u) => u.priceTable)}::text[]) AS v(id, cost, stamp)
-           WHERE u.id = v.id::bigint`;
+           WHERE u.id = v.id::bigint
+       RETURNING u.tenant_id, ledger_quarter(u.created_at) AS quarter`;
+      for (const w of wrote) {
+        const quarters = writtenQuarters.get(w.tenant_id) ?? new Set<number>();
+        quarters.add(w.quarter.getTime());
+        writtenQuarters.set(w.tenant_id, quarters);
       }
-      if (opts.apply && updates.length > 0) {
-        const changed = new Set(updates.map((u) => u.id));
-        for (const r of rows) {
-          if (!changed.has(r.id)) continue;
-          const at = r.createdAt.getTime();
-          const quarters = writtenQuarters.get(r.tenantId) ?? new Set<number>();
-          quarters.add(at - (at % QUARTER_MS));
-          writtenQuarters.set(r.tenantId, quarters);
-        }
-      }
-      return { rows, updates: updates.length };
+      return { rows, updates: wrote.length };
     });
     if (opts.apply) written += read.updates;
     const last = read.rows.at(-1);

@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import {
-  lastLedgerMarkId,
   settleReport,
   settleRepricedQuarters,
 } from "@/../scripts/reprice-usage";
@@ -280,7 +279,6 @@ describe.skipIf(!dbUp)(
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
-          await lastLedgerMarkId(db),
         );
         expect(settled).toEqual({
           tenantId: tA,
@@ -317,7 +315,6 @@ describe.skipIf(!dbUp)(
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
-          await lastLedgerMarkId(db),
         );
         expect(settled).toEqual({
           tenantId: tA,
@@ -350,8 +347,7 @@ describe.skipIf(!dbUp)(
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
-          await lastLedgerMarkId(db),
-          Date.now() - 1,
+          { deadline: Date.now() - 1 },
         );
         expect(settled).toEqual({
           tenantId: tF,
@@ -373,18 +369,29 @@ describe.skipIf(!dbUp)(
         const report = await reprice(tA, 0.0246);
         expect(await markedQuarters(tA)).toBeGreaterThan(0);
         let calls = 0;
+        const ended: number[] = [];
+        const started: number[] = [];
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
-          await lastLedgerMarkId(db),
-          undefined,
-          async (base, tenantId) => {
-            calls += 1;
-            if (calls === 1) throw new Error("Transaction already closed");
-            return stepLedgerSums(base, tenantId);
+          {
+            step: async (base, tenantId) => {
+              calls += 1;
+              started.push(Date.now());
+              try {
+                if (calls === 1) throw new Error("Transaction already closed");
+                return await stepLedgerSums(base, tenantId);
+              } finally {
+                ended.push(Date.now());
+              }
+            },
           },
         );
-        expect(calls).toBeGreaterThan(1);
+        expect(calls).toBeGreaterThan(2);
+        // The round after the failure waits, and the rounds after a success do not.
+        expect((started[1] ?? 0) - (ended[0] ?? 0)).toBeGreaterThanOrEqual(900);
+        for (let k = 2; k < calls; k++)
+          expect((started[k] ?? 0) - (ended[k - 1] ?? 0)).toBeLessThan(900);
         expect(settled?.left).toBe(0);
         expect(settled?.stepError).toBe("Transaction already closed");
         expect(await markedQuarters(tA)).toBe(0);
@@ -433,16 +440,11 @@ describe.skipIf(!dbUp)(
         const g = await reprice(tG, 0.0135);
         const written = new Map([...a.writtenQuarters, ...g.writtenQuarters]);
         let wrote = false;
-        const upTo = await lastLedgerMarkId(db);
         // One step per tenant per round: two steps of the second tenant in a row mean the first one
         // has left the rounds, settled.
         let last: bigint | undefined;
-        const [settledA, settledG] = await settleRepricedQuarters(
-          db,
-          written,
-          upTo,
-          undefined,
-          async (base, tenantId) => {
+        const [settledA, settledG] = await settleRepricedQuarters(db, written, {
+          step: async (base, tenantId) => {
             if (tenantId === tG && last === tG && !wrote) {
               wrote = true;
               commit();
@@ -451,11 +453,42 @@ describe.skipIf(!dbUp)(
             last = tenantId;
             return stepLedgerSums(base, tenantId);
           },
-        );
+        });
         expect(wrote).toBe(true);
         expect(settledA).toMatchObject({ tenantId: tA, left: 0, remarked: 1 });
         expect(settledG).toMatchObject({ tenantId: tG, left: 0, remarked: 0 });
         await sumUp(tA);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "no step starts after the budget runs out, even inside a round",
+      async () => {
+        const tI = await seedTenant("r1853-i", 20, NOW - DAY);
+        await sumUp(tI);
+        const a = await reprice(tA, 0.0468);
+        const i = await reprice(tI, 0.0468);
+        const stepped: bigint[] = [];
+        // A clock the step moves past the deadline, as a step that outlasts the budget does.
+        let clock = 0;
+        const [, settledI] = await settleRepricedQuarters(
+          db,
+          new Map([...a.writtenQuarters, ...i.writtenQuarters]),
+          {
+            now: () => clock,
+            deadline: 100,
+            step: async (base, tenantId) => {
+              stepped.push(tenantId);
+              clock = 200;
+              return stepLedgerSums(base, tenantId);
+            },
+          },
+        );
+        expect(stepped).toEqual([tA]);
+        expect(settledI?.left).toBeGreaterThan(0);
+        await sumUp(tA);
+        await sumUp(tI);
       },
       TEST_TIMEOUT_MS,
     );
@@ -467,38 +500,26 @@ describe.skipIf(!dbUp)(
         await sumUp(tH);
         const a = await reprice(tA, 0.0357);
         const h = await reprice(tH, 0.0357);
+        let failures = 0;
         const [settledA, settledH] = await settleRepricedQuarters(
           db,
           new Map([...a.writtenQuarters, ...h.writtenQuarters]),
-          await lastLedgerMarkId(db),
-          Date.now() + 5_000,
-          async (base, tenantId) => {
-            if (tenantId === tA) throw new Error("Transaction already closed");
-            return stepLedgerSums(base, tenantId);
+          {
+            deadline: Date.now() + 5_000,
+            step: async (base, tenantId) => {
+              if (tenantId === tA) {
+                failures += 1;
+                throw new Error("Transaction already closed");
+              }
+              return stepLedgerSums(base, tenantId);
+            },
           },
         );
         expect(settledH).toMatchObject({ tenantId: tH, left: 0 });
+        // A failed round waits before the next, rather than spinning on the failing tenant.
+        expect(failures).toBeLessThanOrEqual(6);
         expect(settledA?.left).toBeGreaterThan(0);
         expect(settledA?.stepError).toBe("Transaction already closed");
-        await sumUp(tA);
-      },
-      TEST_TIMEOUT_MS,
-    );
-
-    test(
-      "it settles the marks up to the id it is given and leaves later ones to the job",
-      async () => {
-        const upTo = await lastLedgerMarkId(db);
-        const report = await reprice(tA, 0.0987);
-        const marked = await markedQuarters(tA);
-        expect(marked).toBeGreaterThan(0);
-        const [settled] = await settleRepricedQuarters(
-          db,
-          report.writtenQuarters,
-          upTo,
-        );
-        expect(settled?.left).toBe(0);
-        expect(await markedQuarters(tA)).toBe(marked);
         await sumUp(tA);
       },
       TEST_TIMEOUT_MS,
@@ -569,7 +590,6 @@ describe.skipIf(!dbUp)(
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
-          await lastLedgerMarkId(db),
         );
         expect(settled).toEqual({
           tenantId: tD,
@@ -604,11 +624,7 @@ describe.skipIf(!dbUp)(
         const marked = await markedQuarters(tA);
         expect(marked).toBeGreaterThan(0);
         await expect(
-          settleRepricedQuarters(
-            suDb,
-            report.writtenQuarters,
-            await lastLedgerMarkId(db),
-          ),
+          settleRepricedQuarters(suDb, report.writtenQuarters),
         ).rejects.toBeInstanceOf(SuperuserRuntimeError);
         expect(await markedQuarters(tA)).toBe(marked);
         await sumUp(tA);

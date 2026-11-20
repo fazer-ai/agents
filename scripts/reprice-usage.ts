@@ -97,75 +97,83 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
 const SETTLE_BUDGET_MS = 10 * 60 * 1000;
 const STEP_RETRY_MS = 1000;
 
-// The newest mark id: a mark appended after the settle starts is later traffic, which the job settles.
-export async function lastLedgerMarkId(db: PrismaClient): Promise<bigint> {
-  const [row] = await asSuperAdminOn(db, (tx) =>
-    tx.$queryRaw<{ id: bigint }[]>(
-      Prisma.sql`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM ledger_sum_marks`,
-    ),
-  );
-  return row?.id ?? 0n;
-}
-
 export interface SettledTenant {
   tenantId: bigint;
   // Distinct quarters the repricing wrote rows in.
   quarters: number;
-  // Of those, the quarters still holding a mark up to the cutoff id when the budget ran out.
+  // Of those, the quarters still holding a mark the settle found when it began, once the budget ran
+  // out.
   left: number;
   // Of those, the quarters at or above the tenant's sums mark (all of them before its first sums):
   // a row inside the trigger's grace is never marked, and a step drops a mark there without a sum,
   // so they are read from the rows until the job sums up to them.
   aboveMark: number;
-  // Of those, the quarters marked when every tenant was settled by a write that committed after their
-  // marks up to the cutoff were seen gone (or holding only marks past it): read from the rows until
-  // the job settles them.
+  // Of those, the quarters holding only marks that became visible after the settle began, when every
+  // tenant was settled: read from the rows until the job settles them.
   remarked: number;
   // The last error a step threw, when one did: the step is retried until the budget runs out.
   stepError?: string;
 }
 
-// Settles the quarters a repricing wrote, by running the LEDGER_SUMS job's own step until none of them
-// holds a mark up to `upTo`: the step recounts a marked quarter and deletes only the marks it read, so
-// a mark of concurrent traffic is never lost, and each step is one short transaction. The step relies
-// on RLS for its tenant, so it runs on a role RLS binds and never on the superuser URL. What is left
-// is read for every tenant at the end, in one snapshot each, after the last tenant is settled.
+// Settles the quarters a repricing wrote, by running the LEDGER_SUMS job's own step until none of the
+// marks visible on them when it begins is left: the step recounts a marked quarter and deletes only
+// the marks it read, so a mark of concurrent traffic is never lost, and each step is one short
+// transaction. The step relies on RLS for its tenant, so it runs on a role RLS binds and never on the
+// superuser URL. What is left is read for every tenant at the end, after the last one is settled.
 export async function settleRepricedQuarters(
   db: PrismaClient,
   written: ReadonlyMap<bigint, ReadonlySet<number>>,
-  upTo: bigint,
-  deadline: number = Date.now() + SETTLE_BUDGET_MS,
-  step: typeof stepLedgerSums = stepLedgerSums,
+  {
+    now = Date.now,
+    deadline = now() + SETTLE_BUDGET_MS,
+    step = stepLedgerSums,
+  }: {
+    now?: () => number;
+    deadline?: number;
+    step?: typeof stepLedgerSums;
+  } = {},
 ): Promise<SettledTenant[]> {
   await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
-  const marksOf = (tenantId: bigint, quarters: Date[]) =>
+  const onQuarters = (tenantId: bigint) =>
     Prisma.sql`FROM ledger_sum_marks
-         WHERE tenant_id = ${tenantId} AND quarter = ANY(${quarters}::timestamp[])`;
-  const errors = new Map<bigint, string>();
-  const pending = async (tenantId: bigint) => {
-    const from = marksOf(
-      tenantId,
-      [...(written.get(tenantId) ?? [])].map((q) => new Date(q)),
+         WHERE tenant_id = ${tenantId}
+           AND quarter = ANY(${[...(written.get(tenantId) ?? [])].map((q) => new Date(q))}::timestamp[])`;
+  // The marks to settle are the ones visible now, by id: an id is taken before its write commits, so
+  // no cutoff on the id tells a mark seen now from one that becomes visible later.
+  const ours = new Map<bigint, bigint[]>();
+  for (const tenantId of written.keys()) {
+    const rows = await asSuperAdminOn(db, (tx) =>
+      tx.$queryRaw<{ id: bigint }[]>(
+        Prisma.sql`SELECT id ${onQuarters(tenantId)}`,
+      ),
     );
+    ours.set(
+      tenantId,
+      rows.map((r) => r.id),
+    );
+  }
+  const pending = async (tenantId: bigint) => {
     const [row] = await asSuperAdminOn(db, (tx) =>
       tx.$queryRaw<{ any: boolean }[]>(
-        Prisma.sql`SELECT EXISTS (SELECT 1 ${from} AND id <= ${upTo}) AS any`,
+        Prisma.sql`SELECT EXISTS (SELECT 1 FROM ledger_sum_marks
+                    WHERE id = ANY(${ours.get(tenantId) ?? []}::bigint[])) AS any`,
       ),
     );
     return Boolean(row?.any);
   };
   // One step per tenant per round, so a tenant whose steps keep failing does not spend the others'
-  // budget. A tenant seen with none of its marks up to the cutoff is done: a mark that shows up there
-  // later belongs to a write that committed after it, whatever id it was given.
-  const drained = new Set<bigint>();
+  // budget.
+  const errors = new Map<bigint, string>();
   let open = [...written.keys()];
-  while (open.length > 0 && Date.now() < deadline) {
+  while (open.length > 0 && now() < deadline) {
     const next: bigint[] = [];
+    let failed = false;
     for (const tenantId of open) {
-      if (!(await pending(tenantId))) {
-        drained.add(tenantId);
+      if (now() >= deadline) {
+        next.push(tenantId);
         continue;
       }
+      if (!(await pending(tenantId))) continue;
       try {
         await step(db, tenantId);
       } catch (err) {
@@ -173,10 +181,11 @@ export async function settleRepricedQuarters(
         // past its transaction budget throws. The tenant is retried in the next round, since that
         // step may have settled its marks, while the budget lasts.
         errors.set(tenantId, err instanceof Error ? err.message : String(err));
+        failed = true;
       }
       next.push(tenantId);
     }
-    if (next.some((t) => errors.has(t))) await Bun.sleep(STEP_RETRY_MS);
+    if (failed) await Bun.sleep(STEP_RETRY_MS);
     open = next;
   }
   const out: SettledTenant[] = [];
@@ -185,26 +194,22 @@ export async function settleRepricedQuarters(
     const [row] = await asSuperAdminOn(db, (tx) =>
       tx.$queryRaw<{ left: number; remarked: number; mark: Date | null }[]>(
         Prisma.sql`
-        SELECT COUNT(*) FILTER (WHERE q.min_id <= ${upTo})::int AS left,
-               COUNT(*) FILTER (WHERE q.min_id > ${upTo})::int AS remarked,
+        SELECT COUNT(*) FILTER (WHERE q.ours)::int AS left,
+               COUNT(*) FILTER (WHERE NOT q.ours)::int AS remarked,
                (SELECT summed_until FROM ledger_sums_state WHERE tenant_id = ${tenantId}) AS mark
-          FROM (SELECT quarter, MIN(id) AS min_id
-                  ${marksOf(
-                    tenantId,
-                    quarters.map((q) => new Date(q)),
-                  )}
+          FROM (SELECT quarter, bool_or(id = ANY(${ours.get(tenantId) ?? []}::bigint[])) AS ours
+                  ${onQuarters(tenantId)}
                  GROUP BY quarter) q`,
       ),
     );
     const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
     const stepError = errors.get(tenantId);
-    const done = drained.has(tenantId);
     out.push({
       tenantId,
       quarters: quarters.length,
-      left: done ? 0 : (row?.left ?? 0),
+      left: row?.left ?? 0,
       aboveMark: quarters.filter((q) => q >= mark).length,
-      remarked: (row?.remarked ?? 0) + (done ? (row?.left ?? 0) : 0),
+      remarked: row?.remarked ?? 0,
       ...(stepError === undefined ? {} : { stepError }),
     });
   }
@@ -292,7 +297,6 @@ async function main() {
       const settled = await settleRepricedQuarters(
         prisma,
         report.writtenQuarters,
-        await lastLedgerMarkId(prisma),
       );
       for (const t of settled) console.log(settleReport(t).join("\n"));
       if (settled.some((t) => t.left > 0)) process.exitCode = 1;

@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import {
   lastLedgerMarkId,
-  settleRepricedMarks,
+  settleRepricedQuarters,
 } from "@/../scripts/reprice-usage";
 import { SuperuserRuntimeError } from "@/lib/db-guard";
 import type { TenantContext } from "@/lib/tenancy";
@@ -216,23 +216,36 @@ describe.skipIf(!dbUp)(
     );
 
     test(
-      "it settles only the marks of the tenants it repriced, and leaves another tenant's mark to its job",
+      "it counts and settles the quarters it repriced, and leaves another tenant's mark to its job",
       async () => {
-        const before = await lastLedgerMarkId(db);
-        await reprice(tA, 0.0123);
-        // Concurrent traffic on another tenant, below its mark, during the repricing.
+        const report = await reprice(tA, 0.0123);
+        const repriced = await markedQuarters(tA);
+        expect(repriced).toBeGreaterThan(0);
+        // Concurrent traffic below the mark during the repricing: another tenant's row, and a row of
+        // the same tenant in a quarter the repricing did not write.
         await suDb.$executeRaw(Prisma.sql`
         UPDATE llm_usage SET cost_usd = cost_usd + 1
          WHERE id = (SELECT MIN(id) FROM llm_usage WHERE tenant_id = ${tB})`);
-        const upTo = await lastLedgerMarkId(db);
-        const marked = await markedQuarters(tA);
-        expect(marked).toBeGreaterThan(0);
+        await suDb.llmUsage.create({
+          data: {
+            tenantId: tA,
+            source: "playground",
+            model: "other-model",
+            costUsd: "0.5",
+            createdAt: new Date(FIRST - DAY),
+          },
+        });
+        expect(await markedQuarters(tA)).toBe(repriced + 1);
         expect(await markedQuarters(tB)).toBe(1);
 
-        const [settled] = await settleRepricedMarks(db, [tA], before, upTo);
+        const [settled] = await settleRepricedQuarters(
+          db,
+          report.writtenQuarters,
+          await lastLedgerMarkId(db),
+        );
         expect(settled).toEqual({
           tenantId: tA,
-          quarters: marked,
+          quarters: repriced,
           left: 0,
           aboveMark: 0,
         });
@@ -246,28 +259,111 @@ describe.skipIf(!dbUp)(
     );
 
     test(
-      "with its time spent it reports what is still marked, which the job then settles",
+      "a repriced row inside the trigger's grace leaves no mark, and its quarter is reported as read from the rows",
       async () => {
-        const before = await lastLedgerMarkId(db);
-        await reprice(tA, 0.0456);
-        const upTo = await lastLedgerMarkId(db);
+        await suDb.llmUsage.create({
+          data: {
+            tenantId: tA,
+            source: "playground",
+            model: MODEL,
+            promptTokens: 1_000,
+            costUsd: WRONG,
+            priceTable: "litellm@0000000old",
+            createdAt: new Date(Date.now() - 60_000),
+          },
+        });
+        const report = await reprice(tA, 0.0654);
         const marked = await markedQuarters(tA);
-        const [settled] = await settleRepricedMarks(
+        const [settled] = await settleRepricedQuarters(
           db,
-          [tA],
-          before,
-          upTo,
-          Date.now() - 1,
+          report.writtenQuarters,
+          await lastLedgerMarkId(db),
         );
         expect(settled).toEqual({
           tenantId: tA,
-          quarters: marked,
+          quarters: marked + 1,
+          left: 0,
+          aboveMark: 1,
+        });
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "with its time spent it reports what is still marked, which the job then settles",
+      async () => {
+        const report = await reprice(tA, 0.0456);
+        const marked = await markedQuarters(tA);
+        // A quarter the repricing did not write, marked by another writer: not the script's to report.
+        await suDb.llmUsage.create({
+          data: {
+            tenantId: tA,
+            source: "playground",
+            model: "other-model",
+            costUsd: "0.5",
+            createdAt: new Date(FIRST - 2 * DAY),
+          },
+        });
+        const [settled] = await settleRepricedQuarters(
+          db,
+          report.writtenQuarters,
+          await lastLedgerMarkId(db),
+          Date.now() - 1,
+        );
+        // The row inside the grace, of the test above, is repriced again and still above the mark.
+        expect(settled).toEqual({
+          tenantId: tA,
+          quarters: marked + 1,
           left: marked,
-          aboveMark: 0,
+          aboveMark: 1,
         });
         expect(await costs(tA)).toEqual(await rawCosts(tA));
         await sumUp(tA);
         expect(await markedQuarters(tA)).toBe(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "it settles the marks up to the id it is given and leaves later ones to the job",
+      async () => {
+        const upTo = await lastLedgerMarkId(db);
+        const report = await reprice(tA, 0.0987);
+        const marked = await markedQuarters(tA);
+        expect(marked).toBeGreaterThan(0);
+        const [settled] = await settleRepricedQuarters(
+          db,
+          report.writtenQuarters,
+          upTo,
+        );
+        expect(settled?.left).toBe(0);
+        expect(await markedQuarters(tA)).toBe(marked);
+        await sumUp(tA);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "only the quarters of rows it changed are the repricing's: a row already at its price is not",
+      async () => {
+        const tE = await seedTenant("r1853-e", 2);
+        await suDb.$executeRaw(Prisma.sql`
+          UPDATE llm_usage SET cost_usd = 0.0111
+           WHERE id = (SELECT MIN(id) FROM llm_usage WHERE tenant_id = ${tE})`);
+        const rows = await suDb.llmUsage.findMany({
+          where: { tenantId: tE },
+          orderBy: { id: "asc" },
+        });
+        const quarter = (at: Date) =>
+          at.getTime() - (at.getTime() % (15 * 60 * 1000));
+        expect(quarter(rows[0]?.createdAt as Date)).not.toBe(
+          quarter(rows[1]?.createdAt as Date),
+        );
+        const report = await reprice(tE, 0.0111);
+        expect(report.written).toBe(1);
+        expect([...(report.writtenQuarters.get(tE) ?? [])]).toEqual([
+          quarter(rows[1]?.createdAt as Date),
+        ]);
       },
       TEST_TIMEOUT_MS,
     );
@@ -302,21 +398,23 @@ describe.skipIf(!dbUp)(
           UPDATE ledger_sums_state
              SET summed_until = ${mid?.q}, candidate_at = now(), candidate_xid = '999999999999'::xid8
            WHERE tenant_id = ${tD}`);
-        const before = await lastLedgerMarkId(db);
-        await reprice(tD, 0.0321);
-        const upTo = await lastLedgerMarkId(db);
+        const report = await reprice(tD, 0.0321);
         const [above] = await suDb.$queryRaw<{ n: number }[]>(Prisma.sql`
           SELECT COUNT(DISTINCT quarter)::int AS n FROM ledger_sum_marks
            WHERE tenant_id = ${tD} AND quarter >= ${mid?.q}`);
         const marked = await markedQuarters(tD);
         expect(above?.n).toBeGreaterThan(0);
         expect(above?.n).toBeLessThan(marked);
-        const [settled] = await settleRepricedMarks(db, [tD], before, upTo);
+        const [settled] = await settleRepricedQuarters(
+          db,
+          report.writtenQuarters,
+          await lastLedgerMarkId(db),
+        );
         expect(settled).toEqual({
           tenantId: tD,
           quarters: marked,
           left: 0,
-          aboveMark: above?.n,
+          aboveMark: above?.n ?? -1,
         });
       },
       TEST_TIMEOUT_MS,
@@ -340,13 +438,15 @@ describe.skipIf(!dbUp)(
     test(
       "it refuses a connection RLS does not bind, before it touches a mark",
       async () => {
-        const before = await lastLedgerMarkId(db);
-        await reprice(tA, 0.0789);
-        const upTo = await lastLedgerMarkId(db);
+        const report = await reprice(tA, 0.0789);
         const marked = await markedQuarters(tA);
         expect(marked).toBeGreaterThan(0);
         await expect(
-          settleRepricedMarks(suDb, [tA], before, upTo),
+          settleRepricedQuarters(
+            suDb,
+            report.writtenQuarters,
+            await lastLedgerMarkId(db),
+          ),
         ).rejects.toBeInstanceOf(SuperuserRuntimeError);
         expect(await markedQuarters(tA)).toBe(marked);
         await sumUp(tA);

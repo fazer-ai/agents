@@ -96,8 +96,7 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
 // months on a tenant three times a large production one settles in about 70 s of steps.
 const SETTLE_BUDGET_MS = 10 * 60 * 1000;
 
-// The newest mark id: the marks a repricing wrote are the ones above the id read before it, up to the
-// one read after it.
+// The newest mark id: a mark appended after the settle starts is later traffic, which the job settles.
 export async function lastLedgerMarkId(db: PrismaClient): Promise<bigint> {
   const [row] = await asSuperAdminOn(db, (tx) =>
     tx.$queryRaw<{ id: bigint }[]>(
@@ -109,40 +108,54 @@ export async function lastLedgerMarkId(db: PrismaClient): Promise<bigint> {
 
 export interface SettledTenant {
   tenantId: bigint;
-  // Distinct quarters the repricing marked for the tenant.
+  // Distinct quarters the repricing wrote rows in.
   quarters: number;
   // Of those, the quarters still marked when the budget ran out.
   left: number;
   // Of those, the quarters at or above the tenant's sums mark (all of them before its first sums):
-  // their marks are gone, and they are read from the rows until the job sums up to them.
+  // a row inside the trigger's grace is never marked, and a step drops a mark there without a sum,
+  // so they are read from the rows until the job sums up to them.
   aboveMark: number;
 }
 
-// Settles the quarters a repricing marked, marks (after, upTo], by running the LEDGER_SUMS job's own
-// step until none of them is left: the step recounts a marked quarter and deletes only the marks it
-// read, so a mark of concurrent traffic is never lost, and each step is one short transaction. The
-// step relies on RLS for its tenant, so it runs on a role RLS binds and never on the superuser URL.
-export async function settleRepricedMarks(
+// Settles the quarters a repricing wrote, by running the LEDGER_SUMS job's own step until none of them
+// holds a mark up to `upTo`: the step recounts a marked quarter and deletes only the marks it read, so
+// a mark of concurrent traffic is never lost, and each step is one short transaction. The step relies
+// on RLS for its tenant, so it runs on a role RLS binds and never on the superuser URL.
+export async function settleRepricedQuarters(
   db: PrismaClient,
-  tenants: readonly bigint[],
-  after: bigint,
+  written: ReadonlyMap<bigint, ReadonlySet<number>>,
   upTo: bigint,
   deadline: number = Date.now() + SETTLE_BUDGET_MS,
 ): Promise<SettledTenant[]> {
   await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
-  const marked = (tenantId: bigint) =>
-    asSuperAdminOn(db, (tx) =>
-      tx.$queryRaw<{ quarter: Date }[]>(Prisma.sql`
-        SELECT DISTINCT quarter FROM ledger_sum_marks
-         WHERE tenant_id = ${tenantId} AND id > ${after} AND id <= ${upTo}`),
-    );
   const out: SettledTenant[] = [];
-  for (const tenantId of tenants) {
-    const quarters = (await marked(tenantId)).map((m) => m.quarter.getTime());
-    let left = quarters.length;
-    while (left > 0 && Date.now() < deadline) {
+  for (const [tenantId, set] of written) {
+    const quarters = [...set];
+    const at = quarters.map((q) => new Date(q));
+    const marked = Prisma.sql`FROM ledger_sum_marks
+         WHERE tenant_id = ${tenantId} AND id <= ${upTo} AND quarter = ANY(${at}::timestamp[])`;
+    const anyMarked = async () => {
+      const [row] = await asSuperAdminOn(db, (tx) =>
+        tx.$queryRaw<{ any: boolean }[]>(
+          Prisma.sql`SELECT EXISTS (SELECT 1 ${marked}) AS any`,
+        ),
+      );
+      return Boolean(row?.any);
+    };
+    let pending = await anyMarked();
+    while (pending && Date.now() < deadline) {
       await stepLedgerSums(db, tenantId);
-      left = (await marked(tenantId)).length;
+      pending = await anyMarked();
+    }
+    let left = 0;
+    if (pending) {
+      const [row] = await asSuperAdminOn(db, (tx) =>
+        tx.$queryRaw<{ n: number }[]>(
+          Prisma.sql`SELECT COUNT(DISTINCT quarter)::int AS n ${marked}`,
+        ),
+      );
+      left = row?.n ?? 0;
     }
     const [state] = await asSuperAdminOn(db, (tx) =>
       tx.$queryRaw<{ at: Date | null }[]>(Prisma.sql`
@@ -187,7 +200,6 @@ async function main() {
   try {
     if (opts.apply)
       await assertRuntimeRoleIsNotSuperuser(prisma, { allow: false });
-    const before = opts.apply ? await lastLedgerMarkId(prisma) : 0n;
     const report = await runReprice(prisma, opts);
     console.log(
       `${opts.apply ? "APPLY" : "DRY RUN"} · provider ${opts.provider} · table now ${PRICE_TABLE_VERSION}`,
@@ -215,15 +227,9 @@ async function main() {
         : "Nothing written. Re-run with --apply to write.",
     );
     if (opts.apply && report.written > 0) {
-      const tenants = [
-        ...new Set(
-          report.groups.filter((g) => g.changed > 0).map((g) => g.tenantId),
-        ),
-      ];
-      const settled = await settleRepricedMarks(
+      const settled = await settleRepricedQuarters(
         prisma,
-        tenants,
-        before,
+        report.writtenQuarters,
         await lastLedgerMarkId(prisma),
       );
       for (const t of settled)

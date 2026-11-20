@@ -210,7 +210,11 @@ export interface RepriceReport {
   groups: RepriceGroup[];
   written: number;
   applied: boolean;
+  // Per tenant, the UTC quarter hours (epoch ms) of the rows written: the dashboard sums to settle.
+  writtenQuarters: Map<bigint, Set<number>>;
 }
+
+const QUARTER_MS = 15 * 60 * 1000;
 
 type TransactionCapable = Pick<PrismaClient, "$extends" | "$transaction">;
 
@@ -249,6 +253,7 @@ export async function runReprice(
   const groups = new Map<string, RepriceGroup>();
   let cursor = 0n;
   let written = 0;
+  const writtenQuarters = new Map<bigint, Set<number>>();
   for (;;) {
     const read = await asSuperAdminOn(base, async (db) => {
       const rows = await db.llmUsage.findMany({
@@ -308,6 +313,16 @@ export async function runReprice(
                         ${updates.map((u) => u.priceTable)}::text[]) AS v(id, cost, stamp)
            WHERE u.id = v.id::bigint`;
       }
+      if (opts.apply && updates.length > 0) {
+        const changed = new Set(updates.map((u) => u.id));
+        for (const r of rows) {
+          if (!changed.has(r.id)) continue;
+          const at = r.createdAt.getTime();
+          const quarters = writtenQuarters.get(r.tenantId) ?? new Set<number>();
+          quarters.add(at - (at % QUARTER_MS));
+          writtenQuarters.set(r.tenantId, quarters);
+        }
+      }
       return { rows, updates: updates.length };
     });
     if (opts.apply) written += read.updates;
@@ -325,5 +340,6 @@ export async function runReprice(
     ),
     written,
     applied: opts.apply,
+    writtenQuarters,
   };
 }

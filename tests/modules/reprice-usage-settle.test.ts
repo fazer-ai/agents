@@ -157,6 +157,40 @@ afterAll(async () => {
   await app?.$disconnect();
 });
 
+// The script as an operator runs it, on the URL given as DATABASE_URL.
+async function runScript(tenantId: bigint, databaseUrl: string | undefined) {
+  const proc = Bun.spawn(
+    [
+      "bun",
+      "scripts/reprice-usage.ts",
+      "--tenant",
+      String(tenantId),
+      "--provider",
+      "deepseek",
+      "--model",
+      MODEL,
+      "--apply",
+    ],
+    {
+      env: { ...process.env, DATABASE_URL: databaseUrl ?? "" },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { out, err, code };
+}
+
+async function ledgerCost(tenantId: bigint): Promise<string | undefined> {
+  const [row] = await suDb.$queryRaw<{ cost: string }[]>(Prisma.sql`
+    SELECT SUM(cost_usd)::text AS cost FROM llm_usage WHERE tenant_id = ${tenantId}`);
+  return row?.cost;
+}
+
 describe.skipIf(!dbUp)(
   "the reprice script settles what it marked (issue #1853)",
   () => {
@@ -164,33 +198,7 @@ describe.skipIf(!dbUp)(
       "right after the script returns, no repriced quarter is marked and a 90-day read is the rows' figure",
       async () => {
         expect(await markedQuarters(tA)).toBe(0);
-        const proc = Bun.spawn(
-          [
-            "bun",
-            "scripts/reprice-usage.ts",
-            "--tenant",
-            String(tA),
-            "--provider",
-            "deepseek",
-            "--model",
-            MODEL,
-            "--apply",
-          ],
-          {
-            env: {
-              ...process.env,
-              MIGRATION_DATABASE_URL: suUrl,
-              DATABASE_URL: appUrl,
-            },
-            stdout: "pipe",
-            stderr: "pipe",
-          },
-        );
-        const [out, err, code] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited,
-        ]);
+        const { out, err, code } = await runScript(tA, appUrl);
         expect({ code, err }).toEqual({ code: 0, err: "" });
         expect(out).toContain("Wrote 600 rows");
         expect(await markedQuarters(tA)).toBe(0);
@@ -201,9 +209,7 @@ describe.skipIf(!dbUp)(
         );
         const read = await costs(tA);
         expect(read).toEqual(await rawCosts(tA));
-        const [rows] = await suDb.$queryRaw<{ cost: string }[]>(Prisma.sql`
-        SELECT SUM(cost_usd)::text AS cost FROM llm_usage WHERE tenant_id = ${tA}`);
-        expect(read.totalCostUsd).toBeCloseTo(Number(rows?.cost), 9);
+        expect(read.totalCostUsd).toBeCloseTo(Number(await ledgerCost(tA)), 9);
         expect(read.totalCostUsd).not.toBeCloseTo(600 * Number(WRONG), 3);
       },
       TEST_TIMEOUT_MS,
@@ -224,7 +230,12 @@ describe.skipIf(!dbUp)(
         expect(await markedQuarters(tB)).toBe(1);
 
         const [settled] = await settleRepricedMarks(db, [tA], before, upTo);
-        expect(settled).toEqual({ tenantId: tA, quarters: marked, left: 0 });
+        expect(settled).toEqual({
+          tenantId: tA,
+          quarters: marked,
+          left: 0,
+          aboveMark: 0,
+        });
         expect(await markedQuarters(tA)).toBe(0);
         expect(await costs(tA)).toEqual(await rawCosts(tA));
         expect(await markedQuarters(tB)).toBe(1);
@@ -252,6 +263,7 @@ describe.skipIf(!dbUp)(
           tenantId: tA,
           quarters: marked,
           left: marked,
+          aboveMark: 0,
         });
         expect(await costs(tA)).toEqual(await rawCosts(tA));
         await sumUp(tA);
@@ -261,41 +273,66 @@ describe.skipIf(!dbUp)(
     );
 
     test(
-      "--apply without the runtime role's URL writes nothing and says why",
+      "a tenant its job has not summed yet has its marks cleared and is reported as read from the rows",
       async () => {
-        const [before] = await suDb.$queryRaw<{ cost: string }[]>(Prisma.sql`
-        SELECT SUM(cost_usd)::text AS cost FROM llm_usage WHERE tenant_id = ${tB}`);
-        const proc = Bun.spawn(
-          [
-            "bun",
-            "scripts/reprice-usage.ts",
-            "--tenant",
-            String(tB),
-            "--provider",
-            "deepseek",
-            "--model",
-            MODEL,
-            "--apply",
-          ],
-          {
-            env: {
-              ...process.env,
-              MIGRATION_DATABASE_URL: suUrl,
-              DATABASE_URL: "",
-            },
-            stdout: "pipe",
-            stderr: "pipe",
-          },
+        const tC = await seedTenant("r1853-c", 40);
+        const { out, code } = await runScript(tC, appUrl);
+        expect(code).toBe(0);
+        expect(await markedQuarters(tC)).toBe(0);
+        const [line] = out.split("\n").filter((l) => l.includes("settled"));
+        expect(line).toMatch(
+          new RegExp(
+            `^tenant ${tC} · (\\d+) repriced quarters settled, \\1 of them above the dashboard sums' mark`,
+          ),
         );
-        const [err, code] = await Promise.all([
-          new Response(proc.stderr).text(),
-          proc.exited,
-        ]);
-        expect(code).toBe(1);
-        expect(err).toContain("DATABASE_URL");
-        const [after] = await suDb.$queryRaw<{ cost: string }[]>(Prisma.sql`
-        SELECT SUM(cost_usd)::text AS cost FROM llm_usage WHERE tenant_id = ${tB}`);
-        expect(after?.cost).toBe(before?.cost);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "a repriced quarter from the sums' mark up is reported as read from the rows, the mark's own quarter included",
+      async () => {
+        const tD = await seedTenant("r1853-d", 200);
+        await sumUp(tD);
+        // The mark held where it is: a candidate no transaction has reached yet is never waited out.
+        const [mid] = await suDb.$queryRaw<{ q: Date }[]>(Prisma.sql`
+          SELECT ledger_quarter(created_at) AS q FROM llm_usage
+           WHERE tenant_id = ${tD} ORDER BY created_at OFFSET 100 LIMIT 1`);
+        await suDb.$executeRaw(Prisma.sql`
+          UPDATE ledger_sums_state
+             SET summed_until = ${mid?.q}, candidate_at = now(), candidate_xid = '999999999999'::xid8
+           WHERE tenant_id = ${tD}`);
+        const before = await lastLedgerMarkId(db);
+        await reprice(tD, 0.0321);
+        const upTo = await lastLedgerMarkId(db);
+        const [above] = await suDb.$queryRaw<{ n: number }[]>(Prisma.sql`
+          SELECT COUNT(DISTINCT quarter)::int AS n FROM ledger_sum_marks
+           WHERE tenant_id = ${tD} AND quarter >= ${mid?.q}`);
+        const marked = await markedQuarters(tD);
+        expect(above?.n).toBeGreaterThan(0);
+        expect(above?.n).toBeLessThan(marked);
+        const [settled] = await settleRepricedMarks(db, [tD], before, upTo);
+        expect(settled).toEqual({
+          tenantId: tD,
+          quarters: marked,
+          left: 0,
+          aboveMark: above?.n,
+        });
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "without the runtime role's URL, or on a role RLS does not bind, the script writes nothing and says why",
+      async () => {
+        const cost = await ledgerCost(tB);
+        const none = await runScript(tB, undefined);
+        expect(none.code).toBe(1);
+        expect(none.err).toContain("DATABASE_URL");
+        const superuser = await runScript(tB, suUrl);
+        expect(superuser.code).toBe(1);
+        expect(superuser.err).toContain("SUPERUSER");
+        expect(await ledgerCost(tB)).toBe(cost);
       },
       TEST_TIMEOUT_MS,
     );

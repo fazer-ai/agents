@@ -113,6 +113,9 @@ export interface SettledTenant {
   quarters: number;
   // Of those, the quarters still marked when the budget ran out.
   left: number;
+  // Of those, the quarters at or above the tenant's sums mark (all of them before its first sums):
+  // their marks are gone, and they are read from the rows until the job sums up to them.
+  aboveMark: number;
 }
 
 // Settles the quarters a repricing marked, marks (after, upTo], by running the LEDGER_SUMS job's own
@@ -127,23 +130,31 @@ export async function settleRepricedMarks(
   deadline: number = Date.now() + SETTLE_BUDGET_MS,
 ): Promise<SettledTenant[]> {
   await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
-  const marked = async (tenantId: bigint) => {
-    const [row] = await asSuperAdminOn(db, (tx) =>
-      tx.$queryRaw<{ n: number }[]>(Prisma.sql`
-        SELECT COUNT(DISTINCT quarter)::int AS n FROM ledger_sum_marks
+  const marked = (tenantId: bigint) =>
+    asSuperAdminOn(db, (tx) =>
+      tx.$queryRaw<{ quarter: Date }[]>(Prisma.sql`
+        SELECT DISTINCT quarter FROM ledger_sum_marks
          WHERE tenant_id = ${tenantId} AND id > ${after} AND id <= ${upTo}`),
     );
-    return row?.n ?? 0;
-  };
   const out: SettledTenant[] = [];
   for (const tenantId of tenants) {
-    const quarters = await marked(tenantId);
-    let left = quarters;
+    const quarters = (await marked(tenantId)).map((m) => m.quarter.getTime());
+    let left = quarters.length;
     while (left > 0 && Date.now() < deadline) {
       await stepLedgerSums(db, tenantId);
-      left = await marked(tenantId);
+      left = (await marked(tenantId)).length;
     }
-    out.push({ tenantId, quarters, left });
+    const [state] = await asSuperAdminOn(db, (tx) =>
+      tx.$queryRaw<{ at: Date | null }[]>(Prisma.sql`
+        SELECT summed_until AS at FROM ledger_sums_state WHERE tenant_id = ${tenantId}`),
+    );
+    const mark = state?.at?.getTime() ?? Number.NEGATIVE_INFINITY;
+    out.push({
+      tenantId,
+      quarters: quarters.length,
+      left,
+      aboveMark: quarters.filter((q) => q >= mark).length,
+    });
   }
   return out;
 }
@@ -162,34 +173,21 @@ async function main() {
     process.exit(2);
   }
 
-  // The migration/superuser URL, like the other maintenance scripts. The runner enters the
-  // fleet role per batch, so the runtime role's DATABASE_URL reaches every tenant too.
-  const url = process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
+  // The runtime role, for the writes and the settle alike: the runner enters the fleet role per
+  // batch to reach every tenant, and the settle runs the dashboard job's step, which only RLS scopes
+  // to its tenant. One connection, so the marks it settles are the ones its writes appended.
+  const url = process.env.DATABASE_URL;
   if (!url) {
-    console.error("MIGRATION_DATABASE_URL (or DATABASE_URL) is required");
-    process.exit(1);
-  }
-  // The settle runs the dashboard job's step, which RLS scopes to its tenant: on the runtime role.
-  const runtimeUrl = process.env.DATABASE_URL;
-  if (opts.apply && !runtimeUrl) {
-    console.error(
-      "--apply needs DATABASE_URL (the runtime role) to settle the dashboard sums it changes",
-    );
+    console.error("DATABASE_URL (the runtime role) is required");
     process.exit(1);
   }
   const prisma = new PrismaClient({
     adapter: new PrismaPg(withSessionOptions(url)),
   });
-  const runtime =
-    opts.apply && runtimeUrl
-      ? new PrismaClient({
-          adapter: new PrismaPg(withSessionOptions(runtimeUrl)),
-        })
-      : null;
   try {
-    if (runtime)
-      await assertRuntimeRoleIsNotSuperuser(runtime, { allow: false });
-    const before = runtime ? await lastLedgerMarkId(runtime) : 0n;
+    if (opts.apply)
+      await assertRuntimeRoleIsNotSuperuser(prisma, { allow: false });
+    const before = opts.apply ? await lastLedgerMarkId(prisma) : 0n;
     const report = await runReprice(prisma, opts);
     console.log(
       `${opts.apply ? "APPLY" : "DRY RUN"} · provider ${opts.provider} · table now ${PRICE_TABLE_VERSION}`,
@@ -216,29 +214,30 @@ async function main() {
         ? `Wrote ${report.written} rows, each stamped with what priced it now (the tenant's own price, or ${PRICE_TABLE_VERSION}).`
         : "Nothing written. Re-run with --apply to write.",
     );
-    if (runtime && report.written > 0) {
+    if (opts.apply && report.written > 0) {
       const tenants = [
         ...new Set(
           report.groups.filter((g) => g.changed > 0).map((g) => g.tenantId),
         ),
       ];
       const settled = await settleRepricedMarks(
-        runtime,
+        prisma,
         tenants,
         before,
-        await lastLedgerMarkId(runtime),
+        await lastLedgerMarkId(prisma),
       );
       for (const t of settled)
         console.log(
-          t.left === 0
-            ? `tenant ${t.tenantId} · dashboard sums settled for ${t.quarters} repriced quarters`
-            : `tenant ${t.tenantId} · ${t.left} of ${t.quarters} repriced quarters still marked: the dashboard job settles them, read from the rows until then`,
+          t.left > 0
+            ? `tenant ${t.tenantId} · ${t.left} of ${t.quarters} repriced quarters still marked: the dashboard job settles them, read from the rows until then`
+            : t.aboveMark > 0
+              ? `tenant ${t.tenantId} · ${t.quarters} repriced quarters settled, ${t.aboveMark} of them above the dashboard sums' mark: read from the rows until the job sums up to them`
+              : `tenant ${t.tenantId} · dashboard sums settled for ${t.quarters} repriced quarters`,
         );
       if (settled.some((t) => t.left > 0)) process.exitCode = 1;
     }
   } finally {
     await prisma.$disconnect();
-    await runtime?.$disconnect();
   }
 }
 

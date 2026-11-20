@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import {
+  type SettledTenant,
   settleReport,
   settleRepricedQuarters,
 } from "@/../scripts/reprice-usage";
@@ -444,17 +445,25 @@ describe.skipIf(!dbUp)(
         // One step per tenant per round: two steps of the second tenant in a row mean the first one
         // has left the rounds, settled.
         let last: bigint | undefined;
-        const [settledA, settledG] = await settleRepricedQuarters(db, written, {
-          step: async (base, tenantId) => {
-            if (tenantId === tG && last === tG && !wrote) {
-              wrote = true;
-              commit();
-              await writer;
-            }
-            last = tenantId;
-            return stepLedgerSums(base, tenantId);
-          },
-        });
+        let settledA: SettledTenant | undefined;
+        let settledG: SettledTenant | undefined;
+        try {
+          [settledA, settledG] = await settleRepricedQuarters(db, written, {
+            step: async (base, tenantId) => {
+              if (tenantId === tG && last === tG && !wrote) {
+                wrote = true;
+                commit();
+                await writer;
+              }
+              last = tenantId;
+              return stepLedgerSums(base, tenantId);
+            },
+          });
+        } finally {
+          // Released whatever the settle did: an open writer holds back every later sum.
+          commit();
+          await writer;
+        }
         expect(wrote).toBe(true);
         expect(settledA).toMatchObject({ tenantId: tA, left: 0, remarked: 1 });
         expect(settledG).toMatchObject({ tenantId: tG, left: 0, remarked: 0 });

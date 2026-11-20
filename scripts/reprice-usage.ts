@@ -189,15 +189,15 @@ export async function settleRepricedQuarters(
         next.push(tenantId);
         continue;
       }
-      if (!(await pending(tenantId))) continue;
-      if (now() >= deadline) break;
-      ran = true;
       try {
+        if (!(await pending(tenantId))) continue;
+        if (now() >= deadline) break;
+        ran = true;
         await step(db, tenantId);
       } catch (err) {
         // NOTE: the job's own step on the same tenant holds the state row, and a step that waits on it
-        // past the lock timeout throws. That step may settle the marks, so they are read again after
-        // the tenant's retry time, while the budget lasts.
+        // past the lock timeout throws, as can the read of the marks behind a lock. The job's step may
+        // settle them, so they are read again after the tenant's retry time, while the budget lasts.
         errors.set(tenantId, err instanceof Error ? err.message : String(err));
         retryAt.set(tenantId, now() + STEP_RETRY_MS);
       }

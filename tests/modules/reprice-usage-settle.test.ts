@@ -63,7 +63,11 @@ const NINETY_DAYS = (): DashboardFilter => ({
 
 const tenants: bigint[] = [];
 
-async function seedTenant(slug: string, rows: number): Promise<bigint> {
+async function seedTenant(
+  slug: string,
+  rows: number,
+  first = FIRST,
+): Promise<bigint> {
   const t = await suDb.tenant.create({
     data: { name: slug, slug: `${slug}-${process.pid}` },
   });
@@ -81,7 +85,7 @@ async function seedTenant(slug: string, rows: number): Promise<bigint> {
       completionTokens: 200,
       costUsd: WRONG,
       priceTable: "litellm@0000000old",
-      createdAt: new Date(FIRST + Math.floor(((LAST - FIRST) * i) / rows)),
+      createdAt: new Date(first + Math.floor(((LAST - first) * i) / rows)),
     });
   await suDb.llmUsage.createMany({ data });
   return t.id;
@@ -389,32 +393,93 @@ describe.skipIf(!dbUp)(
     );
 
     test(
-      "a settled tenant's quarter a write marks again while the next tenant settles is reported as marked again",
+      "a write that commits on a settled tenant while the next one settles is reported as marked again, whatever its mark's id",
       async () => {
-        const tG = await seedTenant("r1853-g", 50);
+        // Twenty days of calls, so its steps outlast the first tenant's four days.
+        const tG = await seedTenant("r1853-g", 200, NOW - 20 * DAY);
         await sumUp(tG);
+        // A write in a quarter the repricing writes, on a row it does not, open from before the
+        // repricing: its mark's id is taken now, below the cutoff, and becomes visible when it commits.
+        const [near] = await suDb.$queryRaw<{ at: Date }[]>(Prisma.sql`
+          SELECT MIN(created_at) AS at FROM llm_usage WHERE tenant_id = ${tA} AND model = ${MODEL}`);
+        const other = await suDb.llmUsage.create({
+          data: {
+            tenantId: tA,
+            source: "playground",
+            model: "other-model",
+            costUsd: "0.5",
+            createdAt: near?.at as Date,
+          },
+        });
+        let commit = () => {};
+        const committed = new Promise<void>((r) => {
+          commit = r;
+        });
+        let opened = () => {};
+        const isOpen = new Promise<void>((r) => {
+          opened = r;
+        });
+        const writer = suDb.$transaction(
+          async (tx) => {
+            await tx.$executeRaw(Prisma.sql`
+              UPDATE llm_usage SET prompt_tokens = prompt_tokens + 1 WHERE id = ${other.id}`);
+            opened();
+            await committed;
+          },
+          { timeout: 60_000 },
+        );
+        await isOpen;
         const a = await reprice(tA, 0.0135);
         const g = await reprice(tG, 0.0135);
         const written = new Map([...a.writtenQuarters, ...g.writtenQuarters]);
         let wrote = false;
+        const upTo = await lastLedgerMarkId(db);
+        // One step per tenant per round: two steps of the second tenant in a row mean the first one
+        // has left the rounds, settled.
+        let last: bigint | undefined;
         const [settledA, settledG] = await settleRepricedQuarters(
           db,
           written,
-          await lastLedgerMarkId(db),
+          upTo,
           undefined,
           async (base, tenantId) => {
-            if (tenantId === tG && !wrote) {
+            if (tenantId === tG && last === tG && !wrote) {
               wrote = true;
-              await suDb.$executeRaw(Prisma.sql`
-                UPDATE llm_usage SET cost_usd = cost_usd + 1
-                 WHERE id = (SELECT MIN(id) FROM llm_usage WHERE tenant_id = ${tA} AND model = ${MODEL})`);
+              commit();
+              await writer;
             }
+            last = tenantId;
             return stepLedgerSums(base, tenantId);
           },
         );
         expect(wrote).toBe(true);
         expect(settledA).toMatchObject({ tenantId: tA, left: 0, remarked: 1 });
         expect(settledG).toMatchObject({ tenantId: tG, left: 0, remarked: 0 });
+        await sumUp(tA);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "a tenant whose steps keep failing does not keep another from settling",
+      async () => {
+        const tH = await seedTenant("r1853-h", 20, NOW - DAY);
+        await sumUp(tH);
+        const a = await reprice(tA, 0.0357);
+        const h = await reprice(tH, 0.0357);
+        const [settledA, settledH] = await settleRepricedQuarters(
+          db,
+          new Map([...a.writtenQuarters, ...h.writtenQuarters]),
+          await lastLedgerMarkId(db),
+          Date.now() + 5_000,
+          async (base, tenantId) => {
+            if (tenantId === tA) throw new Error("Transaction already closed");
+            return stepLedgerSums(base, tenantId);
+          },
+        );
+        expect(settledH).toMatchObject({ tenantId: tH, left: 0 });
+        expect(settledA?.left).toBeGreaterThan(0);
+        expect(settledA?.stepError).toBe("Transaction already closed");
         await sumUp(tA);
       },
       TEST_TIMEOUT_MS,

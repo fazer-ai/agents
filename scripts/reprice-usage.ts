@@ -117,8 +117,9 @@ export interface SettledTenant {
   // a row inside the trigger's grace is never marked, and a step drops a mark there without a sum,
   // so they are read from the rows until the job sums up to them.
   aboveMark: number;
-  // Of those, the quarters holding only marks past the cutoff when every tenant was settled: a write
-  // during the settle marked them again, and they are read from the rows until the job settles them.
+  // Of those, the quarters marked when every tenant was settled by a write that committed after their
+  // marks up to the cutoff were seen gone (or holding only marks past it): read from the rows until
+  // the job settles them.
   remarked: number;
   // The last error a step threw, when one did: the step is retried until the budget runs out.
   stepError?: string;
@@ -141,30 +142,42 @@ export async function settleRepricedQuarters(
     Prisma.sql`FROM ledger_sum_marks
          WHERE tenant_id = ${tenantId} AND quarter = ANY(${quarters}::timestamp[])`;
   const errors = new Map<bigint, string>();
-  for (const [tenantId, set] of written) {
+  const pending = async (tenantId: bigint) => {
     const from = marksOf(
       tenantId,
-      [...set].map((q) => new Date(q)),
+      [...(written.get(tenantId) ?? [])].map((q) => new Date(q)),
     );
-    const pending = async () => {
-      const [row] = await asSuperAdminOn(db, (tx) =>
-        tx.$queryRaw<{ any: boolean }[]>(
-          Prisma.sql`SELECT EXISTS (SELECT 1 ${from} AND id <= ${upTo}) AS any`,
-        ),
-      );
-      return Boolean(row?.any);
-    };
-    while (Date.now() < deadline && (await pending())) {
+    const [row] = await asSuperAdminOn(db, (tx) =>
+      tx.$queryRaw<{ any: boolean }[]>(
+        Prisma.sql`SELECT EXISTS (SELECT 1 ${from} AND id <= ${upTo}) AS any`,
+      ),
+    );
+    return Boolean(row?.any);
+  };
+  // One step per tenant per round, so a tenant whose steps keep failing does not spend the others'
+  // budget. A tenant seen with none of its marks up to the cutoff is done: a mark that shows up there
+  // later belongs to a write that committed after it, whatever id it was given.
+  const drained = new Set<bigint>();
+  let open = [...written.keys()];
+  while (open.length > 0 && Date.now() < deadline) {
+    const next: bigint[] = [];
+    for (const tenantId of open) {
+      if (!(await pending(tenantId))) {
+        drained.add(tenantId);
+        continue;
+      }
       try {
         await step(db, tenantId);
       } catch (err) {
         // NOTE: the job's own step on the same tenant holds the state row, and a step that waits on it
-        // past its transaction budget throws. The marks are rechecked, since that step may have
-        // settled them, and the step retried while the budget lasts.
+        // past its transaction budget throws. The tenant is retried in the next round, since that
+        // step may have settled its marks, while the budget lasts.
         errors.set(tenantId, err instanceof Error ? err.message : String(err));
-        await Bun.sleep(STEP_RETRY_MS);
       }
+      next.push(tenantId);
     }
+    if (next.some((t) => errors.has(t))) await Bun.sleep(STEP_RETRY_MS);
+    open = next;
   }
   const out: SettledTenant[] = [];
   for (const [tenantId, set] of written) {
@@ -185,12 +198,13 @@ export async function settleRepricedQuarters(
     );
     const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
     const stepError = errors.get(tenantId);
+    const done = drained.has(tenantId);
     out.push({
       tenantId,
       quarters: quarters.length,
-      left: row?.left ?? 0,
+      left: done ? 0 : (row?.left ?? 0),
       aboveMark: quarters.filter((q) => q >= mark).length,
-      remarked: row?.remarked ?? 0,
+      remarked: (row?.remarked ?? 0) + (done ? (row?.left ?? 0) : 0),
       ...(stepError === undefined ? {} : { stepError }),
     });
   }

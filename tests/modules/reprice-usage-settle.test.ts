@@ -299,9 +299,11 @@ describe.skipIf(!dbUp)(
     test(
       "a repriced row inside the trigger's grace leaves no mark, and its quarter is reported as read from the rows",
       async () => {
+        const tJ = await seedTenant("r1853-j", 50);
+        await sumUp(tJ);
         await suDb.llmUsage.create({
           data: {
-            tenantId: tA,
+            tenantId: tJ,
             source: "playground",
             model: MODEL,
             promptTokens: 1_000,
@@ -310,14 +312,14 @@ describe.skipIf(!dbUp)(
             createdAt: new Date(Date.now() - 60_000),
           },
         });
-        const report = await reprice(tA, 0.0654);
-        const marked = await markedQuarters(tA);
+        const report = await reprice(tJ, 0.0654);
+        const marked = await markedQuarters(tJ);
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
         );
         expect(settled).toEqual({
-          tenantId: tA,
+          tenantId: tJ,
           quarters: marked + 1,
           left: 0,
           aboveMark: 1,

@@ -282,8 +282,15 @@ async function main() {
     console.error("DATABASE_URL (the runtime role) is required");
     process.exit(1);
   }
+  // The pool's lock timeout and connect bound, as the app's pool has them: a step queued behind the
+  // job's own step on the same tenant gives up in seconds and is retried, and a server that accepts
+  // the connection and never answers fails the run instead of holding it.
   const prisma = new PrismaClient({
-    adapter: new PrismaPg(withSessionOptions(url)),
+    adapter: new PrismaPg({
+      ...withSessionOptions(url),
+      ...lockTimeoutOption(),
+      ...connectTimeoutOption(),
+    }),
   });
   try {
     if (opts.apply)
@@ -315,22 +322,10 @@ async function main() {
         : "Nothing written. Re-run with --apply to write.",
     );
     if (opts.apply && report.written > 0) {
-      // The settle's own client, on the same URL, with the pool's lock timeout the job's steps
-      // have: a step queued behind the job's step on the same tenant gives up in seconds and is
-      // retried in the next round, instead of holding the other tenants for its whole budget.
-      const settler = new PrismaClient({
-        adapter: new PrismaPg({
-          ...withSessionOptions(url),
-          ...lockTimeoutOption(),
-          ...connectTimeoutOption(),
-        }),
-      });
-      let settled: SettledTenant[];
-      try {
-        settled = await settleRepricedQuarters(settler, report.writtenQuarters);
-      } finally {
-        await settler.$disconnect();
-      }
+      const settled = await settleRepricedQuarters(
+        prisma,
+        report.writtenQuarters,
+      );
       for (const t of settled) console.log(settleReport(t).join("\n"));
       if (settled.some((t) => t.left > 0)) process.exitCode = 1;
     }

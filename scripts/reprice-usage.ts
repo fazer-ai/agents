@@ -100,6 +100,25 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
 // months on a tenant three times a large production one settles in about 70 s of steps.
 const SETTLE_BUDGET_MS = 10 * 60 * 1000;
 const STEP_RETRY_MS = 1000;
+// How often a read of the marks before or after the steps is tried, a retry time apart.
+const READ_ATTEMPTS = 3;
+
+// A read tried up to READ_ATTEMPTS times: the error of the last attempt when none succeeds.
+export async function readWithRetry<T>(
+  read: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = Bun.sleep,
+): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  let error = "";
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
+    try {
+      return { ok: true, value: await read() };
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      if (attempt < READ_ATTEMPTS) await sleep(STEP_RETRY_MS);
+    }
+  }
+  return { ok: false, error };
+}
 
 export interface SettledTenant {
   tenantId: bigint;
@@ -117,6 +136,8 @@ export interface SettledTenant {
   remarked: number;
   // The last error a step threw, when one did: the step is retried until the budget runs out.
   stepError?: string;
+  // Why what is left could not be read, when it could not: the counts above then say nothing.
+  unread?: string;
 }
 
 // Settles the quarters a repricing wrote, by running the LEDGER_SUMS job's own step until none of the
@@ -150,17 +171,30 @@ export async function settleRepricedQuarters(
   const pairs = [...written].flatMap(([tenantId, set]) =>
     [...set].map((q) => [tenantId, new Date(q)] as const),
   );
-  const seen = await asSuperAdminOn(db, (tx) =>
-    tx.$queryRaw<{ tenant_id: bigint; id: bigint }[]>(Prisma.sql`
-      SELECT m.tenant_id, m.id FROM ledger_sum_marks m
-        JOIN unnest(${pairs.map(([t]) => t.toString())}::bigint[],
-                    ${pairs.map(([, q]) => q)}::timestamp[]) AS w(tenant_id, quarter)
-          ON m.tenant_id = w.tenant_id AND m.quarter = w.quarter`),
+  const seen = await readWithRetry(
+    () =>
+      asSuperAdminOn(db, (tx) =>
+        tx.$queryRaw<{ tenant_id: bigint; id: bigint }[]>(Prisma.sql`
+          SELECT m.tenant_id, m.id FROM ledger_sum_marks m
+            JOIN unnest(${pairs.map(([t]) => t.toString())}::bigint[],
+                        ${pairs.map(([, q]) => q)}::timestamp[]) AS w(tenant_id, quarter)
+              ON m.tenant_id = w.tenant_id AND m.quarter = w.quarter`),
+      ),
+    sleep,
   );
+  if (!seen.ok)
+    return [...written].map(([tenantId, set]) => ({
+      tenantId,
+      quarters: set.size,
+      left: 0,
+      aboveMark: 0,
+      remarked: 0,
+      unread: seen.error,
+    }));
   const ours = new Map<bigint, bigint[]>(
     [...written.keys()].map((t) => [t, []]),
   );
-  for (const r of seen) ours.get(r.tenant_id)?.push(r.id);
+  for (const r of seen.value) ours.get(r.tenant_id)?.push(r.id);
   // The tenant's marks still there, which replace the list: it only shrinks.
   const pending = async (tenantId: bigint) => {
     const rows = await asSuperAdminOn(db, (tx) =>
@@ -212,19 +246,36 @@ export async function settleRepricedQuarters(
   const out: SettledTenant[] = [];
   for (const [tenantId, set] of written) {
     const quarters = [...set];
-    const [row] = await asSuperAdminOn(db, (tx) =>
-      tx.$queryRaw<{ left: number; remarked: number; mark: Date | null }[]>(
-        Prisma.sql`
-        SELECT COUNT(*) FILTER (WHERE q.ours)::int AS left,
-               COUNT(*) FILTER (WHERE NOT q.ours)::int AS remarked,
-               (SELECT summed_until FROM ledger_sums_state WHERE tenant_id = ${tenantId}) AS mark
-          FROM (SELECT quarter, bool_or(id = ANY(${ours.get(tenantId) ?? []}::bigint[])) AS ours
-                  ${onQuarters(tenantId)}
-                 GROUP BY quarter) q`,
-      ),
-    );
-    const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
     const stepError = errors.get(tenantId);
+    const read = await readWithRetry(
+      () =>
+        asSuperAdminOn(db, (tx) =>
+          tx.$queryRaw<{ left: number; remarked: number; mark: Date | null }[]>(
+            Prisma.sql`
+            SELECT COUNT(*) FILTER (WHERE q.ours)::int AS left,
+                   COUNT(*) FILTER (WHERE NOT q.ours)::int AS remarked,
+                   (SELECT summed_until FROM ledger_sums_state WHERE tenant_id = ${tenantId}) AS mark
+              FROM (SELECT quarter, bool_or(id = ANY(${ours.get(tenantId) ?? []}::bigint[])) AS ours
+                      ${onQuarters(tenantId)}
+                     GROUP BY quarter) q`,
+          ),
+        ),
+      sleep,
+    );
+    if (!read.ok) {
+      out.push({
+        tenantId,
+        quarters: quarters.length,
+        left: 0,
+        aboveMark: 0,
+        remarked: 0,
+        ...(stepError === undefined ? {} : { stepError }),
+        unread: read.error,
+      });
+      continue;
+    }
+    const [row] = read.value;
+    const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
     out.push({
       tenantId,
       quarters: quarters.length,
@@ -237,8 +288,18 @@ export async function settleRepricedQuarters(
   return out;
 }
 
+// Whether the run exits 1: a mark found when the settle began is still there, or what is left could
+// not be read. A quarter marked again during the settle does not count.
+export function settleFailed(settled: readonly SettledTenant[]): boolean {
+  return settled.some((t) => t.left > 0 || t.unread !== undefined);
+}
+
 // What the settle did for a tenant, as the script prints it.
 export function settleReport(t: SettledTenant): string[] {
+  if (t.unread !== undefined)
+    return [
+      `tenant ${t.tenantId} · what is still marked of ${t.quarters} repriced quarters could not be read (${t.unread}): the dashboard job settles them, read from the rows until then`,
+    ];
   const lines =
     t.left > 0
       ? [
@@ -327,7 +388,7 @@ async function main() {
         report.writtenQuarters,
       );
       for (const t of settled) console.log(settleReport(t).join("\n"));
-      if (settled.some((t) => t.left > 0)) process.exitCode = 1;
+      if (settleFailed(settled)) process.exitCode = 1;
     }
   } finally {
     await prisma.$disconnect();

@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import {
+  readWithRetry,
   type SettledTenant,
+  settleFailed,
   settleReport,
   settleRepricedQuarters,
 } from "@/../scripts/reprice-usage";
@@ -213,6 +215,21 @@ describe("what the script prints for a tenant it settled", () => {
     ]);
   });
 
+  test("what is left unread, which exits 1 like a mark left", () => {
+    expect(
+      settleReport({
+        tenantId: 7n,
+        quarters: 10,
+        left: 0,
+        aboveMark: 0,
+        remarked: 0,
+        unread: "lock timeout",
+      }),
+    ).toEqual([
+      "tenant 7 · what is still marked of 10 repriced quarters could not be read (lock timeout): the dashboard job settles them, read from the rows until then",
+    ]);
+  });
+
   test("out of time, with the step's last error", () => {
     expect(
       settleReport({
@@ -227,6 +244,55 @@ describe("what the script prints for a tenant it settled", () => {
       "tenant 7 · 4 of 10 repriced quarters still marked: the dashboard job settles them, read from the rows until then",
       "  a settle step failed and was retried: Transaction already closed",
     ]);
+  });
+});
+
+describe("the run's exit", () => {
+  const t = {
+    tenantId: 7n,
+    quarters: 10,
+    left: 0,
+    aboveMark: 3,
+    remarked: 2,
+  } satisfies SettledTenant;
+  test("is 0 with only quarters above the mark or marked again", () => {
+    expect(settleFailed([t])).toBe(false);
+  });
+  test("is 1 with a mark left, or with what is left unread", () => {
+    expect(settleFailed([t, { ...t, left: 1 }])).toBe(true);
+    expect(settleFailed([t, { ...t, unread: "lock timeout" }])).toBe(true);
+  });
+});
+
+describe("a read of the marks before or after the steps", () => {
+  test("is tried again a retry time apart, and answers once it succeeds", async () => {
+    const slept: number[] = [];
+    let tries = 0;
+    const read = await readWithRetry(
+      async () => {
+        tries += 1;
+        if (tries < 3) throw new Error("lock timeout");
+        return "marks";
+      },
+      async (ms) => {
+        slept.push(ms);
+      },
+    );
+    expect(read).toEqual({ ok: true, value: "marks" });
+    expect(slept).toEqual([1000, 1000]);
+  });
+
+  test("gives up after three tries with the last error", async () => {
+    let tries = 0;
+    const read = await readWithRetry(
+      async () => {
+        tries += 1;
+        throw new Error(`lock timeout ${tries}`);
+      },
+      async () => {},
+    );
+    expect(read).toEqual({ ok: false, error: "lock timeout 3" });
+    expect(tries).toBe(3);
   });
 });
 
@@ -437,10 +503,6 @@ describe.skipIf(!dbUp)(
           },
           { timeout: 60_000 },
         );
-        await isOpen;
-        const a = await reprice(tA, 0.0135);
-        const g = await reprice(tG, 0.0135);
-        const written = new Map([...a.writtenQuarters, ...g.writtenQuarters]);
         let wrote = false;
         // One step per tenant per round: two steps of the second tenant in a row mean the first one
         // has left the rounds, settled.
@@ -448,6 +510,11 @@ describe.skipIf(!dbUp)(
         let settledA: SettledTenant | undefined;
         let settledG: SettledTenant | undefined;
         try {
+          // The writer failing to open fails the test here, instead of a wait on a latch.
+          await Promise.race([isOpen, writer]);
+          const a = await reprice(tA, 0.0135);
+          const g = await reprice(tG, 0.0135);
+          const written = new Map([...a.writtenQuarters, ...g.writtenQuarters]);
           [settledA, settledG] = await settleRepricedQuarters(db, written, {
             step: async (base, tenantId) => {
               if (tenantId === tG && last === tG && !wrote) {

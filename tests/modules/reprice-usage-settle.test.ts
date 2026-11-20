@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import {
   lastLedgerMarkId,
+  settleReport,
   settleRepricedQuarters,
 } from "@/../scripts/reprice-usage";
 import { SuperuserRuntimeError } from "@/lib/db-guard";
@@ -191,6 +192,40 @@ async function ledgerCost(tenantId: bigint): Promise<string | undefined> {
   return row?.cost;
 }
 
+describe("what the script prints for a tenant it settled", () => {
+  test("settled, with the quarters still read from the rows named apart", () => {
+    expect(
+      settleReport({
+        tenantId: 7n,
+        quarters: 10,
+        left: 0,
+        aboveMark: 2,
+        remarked: 1,
+      }),
+    ).toEqual([
+      "tenant 7 · dashboard sums settled for 10 repriced quarters",
+      "  2 of them above the dashboard sums' mark: read from the rows until the job sums up to them",
+      "  1 of them marked again by later writes: read from the rows until the job settles them",
+    ]);
+  });
+
+  test("out of time, with the step's last error", () => {
+    expect(
+      settleReport({
+        tenantId: 7n,
+        quarters: 10,
+        left: 4,
+        aboveMark: 0,
+        remarked: 0,
+        stepError: "Transaction already closed",
+      }),
+    ).toEqual([
+      "tenant 7 · 4 of 10 repriced quarters still marked: the dashboard job settles them, read from the rows until then",
+      "  a settle step failed and was retried: Transaction already closed",
+    ]);
+  });
+});
+
 describe.skipIf(!dbUp)(
   "the reprice script settles what it marked (issue #1853)",
   () => {
@@ -248,6 +283,7 @@ describe.skipIf(!dbUp)(
           quarters: repriced,
           left: 0,
           aboveMark: 0,
+          remarked: 0,
         });
         expect(await markedQuarters(tA)).toBe(0);
         expect(await costs(tA)).toEqual(await rawCosts(tA));
@@ -284,41 +320,74 @@ describe.skipIf(!dbUp)(
           quarters: marked + 1,
           left: 0,
           aboveMark: 1,
+          remarked: 0,
         });
       },
       TEST_TIMEOUT_MS,
     );
 
     test(
-      "with its time spent it reports what is still marked, which the job then settles",
+      "with its time spent it reports what is still marked, and a later write's mark apart, which the job then settles",
       async () => {
-        const report = await reprice(tA, 0.0456);
-        const marked = await markedQuarters(tA);
+        const tF = await seedTenant("r1853-f", 100);
+        await sumUp(tF);
+        const report = await reprice(tF, 0.0456);
+        const marked = await markedQuarters(tF);
         // A quarter the repricing did not write, marked by another writer: not the script's to report.
         await suDb.llmUsage.create({
           data: {
-            tenantId: tA,
+            tenantId: tF,
             source: "playground",
             model: "other-model",
             costUsd: "0.5",
             createdAt: new Date(FIRST - 2 * DAY),
           },
         });
+        const upTo = await lastLedgerMarkId(db);
+        // A later write on a repriced row, after the settle took its last mark id.
+        await suDb.$executeRaw(Prisma.sql`
+          UPDATE llm_usage SET cost_usd = cost_usd + 1
+           WHERE id = (SELECT MIN(id) FROM llm_usage WHERE tenant_id = ${tF})`);
+        const [settled] = await settleRepricedQuarters(
+          db,
+          report.writtenQuarters,
+          upTo,
+          Date.now() - 1,
+        );
+        expect(settled).toEqual({
+          tenantId: tF,
+          quarters: marked,
+          left: marked,
+          aboveMark: 0,
+          remarked: 1,
+        });
+        expect(await costs(tF)).toEqual(await rawCosts(tF));
+        await sumUp(tF);
+        expect(await markedQuarters(tF)).toBe(0);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "a step that throws, as one waiting on the job's own step past its budget does, is retried",
+      async () => {
+        const report = await reprice(tA, 0.0246);
+        expect(await markedQuarters(tA)).toBeGreaterThan(0);
+        let calls = 0;
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
           await lastLedgerMarkId(db),
-          Date.now() - 1,
+          undefined,
+          async (base, tenantId) => {
+            calls += 1;
+            if (calls === 1) throw new Error("Transaction already closed");
+            return stepLedgerSums(base, tenantId);
+          },
         );
-        // The row inside the grace, of the test above, is repriced again and still above the mark.
-        expect(settled).toEqual({
-          tenantId: tA,
-          quarters: marked + 1,
-          left: marked,
-          aboveMark: 1,
-        });
-        expect(await costs(tA)).toEqual(await rawCosts(tA));
-        await sumUp(tA);
+        expect(calls).toBeGreaterThan(1);
+        expect(settled?.left).toBe(0);
+        expect(settled?.stepError).toBe("Transaction already closed");
         expect(await markedQuarters(tA)).toBe(0);
       },
       TEST_TIMEOUT_MS,
@@ -375,10 +444,10 @@ describe.skipIf(!dbUp)(
         const { out, code } = await runScript(tC, appUrl);
         expect(code).toBe(0);
         expect(await markedQuarters(tC)).toBe(0);
-        const [line] = out.split("\n").filter((l) => l.includes("settled"));
-        expect(line).toMatch(
+        expect(out).toMatch(
           new RegExp(
-            `^tenant ${tC} · (\\d+) repriced quarters settled, \\1 of them above the dashboard sums' mark`,
+            `^tenant ${tC} · dashboard sums settled for (\\d+) repriced quarters\\n  \\1 of them above the dashboard sums' mark`,
+            "m",
           ),
         );
       },
@@ -415,6 +484,7 @@ describe.skipIf(!dbUp)(
           quarters: marked,
           left: 0,
           aboveMark: above?.n ?? -1,
+          remarked: 0,
         });
       },
       TEST_TIMEOUT_MS,

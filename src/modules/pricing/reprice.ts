@@ -204,6 +204,9 @@ export interface RepriceOptions {
   // Overridable for tests: a table function and its stamp, which replace the capture's order.
   stamp?: string;
   price?: PriceFn;
+  // Filled batch by batch as each one commits, so a caller still has the quarters already written
+  // when a later batch fails. A new map when absent.
+  writtenQuarters?: Map<bigint, Set<number>>;
 }
 
 export interface RepriceReport {
@@ -251,7 +254,8 @@ export async function runReprice(
   const groups = new Map<string, RepriceGroup>();
   let cursor = 0n;
   let written = 0;
-  const writtenQuarters = new Map<bigint, Set<number>>();
+  const writtenQuarters =
+    opts.writtenQuarters ?? new Map<bigint, Set<number>>();
   for (;;) {
     const read = await asSuperAdminOn(base, async (db) => {
       const rows = await db.llmUsage.findMany({

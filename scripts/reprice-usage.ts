@@ -25,6 +25,7 @@ import { PRICE_OVERRIDE_PROVIDERS } from "@/modules/pricing/overrides";
 import { modelRates } from "@/modules/pricing/price";
 import {
   type RepriceOptions,
+  type RepriceReport,
   runReprice,
   UNMETERED_PRICE_TABLE,
 } from "@/modules/pricing/reprice";
@@ -308,6 +309,45 @@ export async function settleRepricedQuarters(
   });
 }
 
+// A write that failed after some batches committed, with what the settle made of those.
+export class RepriceWriteError extends Error {
+  constructor(
+    cause: unknown,
+    readonly settled: SettledTenant[],
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "RepriceWriteError";
+  }
+}
+
+// The repricing, and with `apply` the settle of the quarters it wrote. When a batch fails, the
+// batches already committed are settled before the error is thrown, since a run again skips their
+// rows, now at their price, and would leave their quarters marked.
+export async function repriceAndSettle(
+  db: PrismaClient,
+  opts: RepriceOptions,
+): Promise<{ report: RepriceReport; settled: SettledTenant[] }> {
+  const written = new Map<bigint, Set<number>>();
+  let report: RepriceReport;
+  try {
+    report = await runReprice(db, { ...opts, writtenQuarters: written });
+  } catch (err) {
+    throw new RepriceWriteError(
+      err,
+      opts.apply && written.size > 0
+        ? await settleRepricedQuarters(db, written)
+        : [],
+    );
+  }
+  return {
+    report,
+    settled:
+      opts.apply && report.written > 0
+        ? await settleRepricedQuarters(db, written)
+        : [],
+  };
+}
+
 // Whether the run exits 1: a mark found when the settle began is still there, or what is left could
 // not be read. A quarter marked again during the settle does not count.
 export function settleFailed(settled: readonly SettledTenant[]): boolean {
@@ -377,7 +417,17 @@ async function main() {
   try {
     if (opts.apply)
       await assertRuntimeRoleIsNotSuperuser(prisma, { allow: false });
-    const report = await runReprice(prisma, opts);
+    let report: RepriceReport;
+    let settled: SettledTenant[];
+    try {
+      ({ report, settled } = await repriceAndSettle(prisma, opts));
+    } catch (err) {
+      if (!(err instanceof RepriceWriteError)) throw err;
+      console.error(`The repricing stopped on an error: ${err.message}`);
+      for (const t of err.settled) console.log(settleReport(t).join("\n"));
+      process.exitCode = 1;
+      return;
+    }
     console.log(
       `${opts.apply ? "APPLY" : "DRY RUN"} · provider ${opts.provider} · table now ${PRICE_TABLE_VERSION}`,
     );
@@ -403,14 +453,8 @@ async function main() {
         ? `Wrote ${report.written} rows, each stamped with what priced it now (the tenant's own price, or ${PRICE_TABLE_VERSION}).`
         : "Nothing written. Re-run with --apply to write.",
     );
-    if (opts.apply && report.written > 0) {
-      const settled = await settleRepricedQuarters(
-        prisma,
-        report.writtenQuarters,
-      );
-      for (const t of settled) console.log(settleReport(t).join("\n"));
-      if (settleFailed(settled)) process.exitCode = 1;
-    }
+    for (const t of settled) console.log(settleReport(t).join("\n"));
+    if (settleFailed(settled)) process.exitCode = 1;
   } finally {
     await prisma.$disconnect();
   }

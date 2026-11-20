@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import {
+  RepriceWriteError,
   readWithRetry,
+  repriceAndSettle,
   type SettledTenant,
   settleFailed,
   settleReport,
@@ -655,6 +657,40 @@ describe.skipIf(!dbUp)(
         expect(settledA?.left).toBeGreaterThan(0);
         expect(settledA?.stepError).toBe("Transaction already closed");
         await sumUp(tA);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "a repricing that fails after some batches committed settles those before it throws",
+      async () => {
+        const tK = await seedTenant("r1853-k", 40);
+        await sumUp(tK);
+        let priced = 0;
+        const failed = await repriceAndSettle(db, {
+          tenant: tK,
+          provider: "deepseek",
+          model: MODEL,
+          apply: true,
+          batchSize: 10,
+          stamp: "litellm@test-partial",
+          price: () => {
+            priced += 1;
+            if (priced > 20) throw new Error("lock timeout");
+            return 0.0222;
+          },
+        }).catch((err: unknown) => err);
+        expect(failed).toBeInstanceOf(RepriceWriteError);
+        const [settled] = (failed as RepriceWriteError).settled;
+        expect(settled?.tenantId).toBe(tK);
+        expect(settled?.quarters).toBeGreaterThan(0);
+        expect(settled?.left).toBe(0);
+        const written = await suDb.llmUsage.count({
+          where: { tenantId: tK, priceTable: "litellm@test-partial" },
+        });
+        expect(written).toBe(20);
+        expect(await markedQuarters(tK)).toBe(0);
+        expect(await costs(tK)).toEqual(await rawCosts(tK));
       },
       TEST_TIMEOUT_MS,
     );

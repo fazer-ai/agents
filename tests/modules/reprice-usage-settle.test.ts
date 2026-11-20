@@ -369,29 +369,25 @@ describe.skipIf(!dbUp)(
         const report = await reprice(tA, 0.0246);
         expect(await markedQuarters(tA)).toBeGreaterThan(0);
         let calls = 0;
-        const ended: number[] = [];
-        const started: number[] = [];
+        // The steps taken before each sleep the settle asks for.
+        const slept: number[] = [];
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
           {
+            sleep: async () => {
+              slept.push(calls);
+            },
             step: async (base, tenantId) => {
               calls += 1;
-              started.push(Date.now());
-              try {
-                if (calls === 1) throw new Error("Transaction already closed");
-                return await stepLedgerSums(base, tenantId);
-              } finally {
-                ended.push(Date.now());
-              }
+              if (calls === 1) throw new Error("Transaction already closed");
+              return stepLedgerSums(base, tenantId);
             },
           },
         );
         expect(calls).toBeGreaterThan(2);
-        // The round after the failure waits, and the rounds after a success do not.
-        expect((started[1] ?? 0) - (ended[0] ?? 0)).toBeGreaterThanOrEqual(900);
-        for (let k = 2; k < calls; k++)
-          expect((started[k] ?? 0) - (ended[k - 1] ?? 0)).toBeLessThan(900);
+        // The round of the failure waits, and the rounds after a success do not.
+        expect(slept).toEqual([1]);
         expect(settled?.left).toBe(0);
         expect(settled?.stepError).toBe("Transaction already closed");
         expect(await markedQuarters(tA)).toBe(0);
@@ -489,6 +485,32 @@ describe.skipIf(!dbUp)(
         expect(settledI?.left).toBeGreaterThan(0);
         await sumUp(tA);
         await sumUp(tI);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      "a budget that runs out while it reads the marks starts no step",
+      async () => {
+        const report = await reprice(tA, 0.0579);
+        let ticks = 0;
+        let steps = 0;
+        const [settled] = await settleRepricedQuarters(
+          db,
+          report.writtenQuarters,
+          {
+            // The round's check sees time left, and the check after the read of the marks does not.
+            now: () => ticks++,
+            deadline: 1,
+            step: async (base, tenantId) => {
+              steps += 1;
+              return stepLedgerSums(base, tenantId);
+            },
+          },
+        );
+        expect(steps).toBe(0);
+        expect(settled?.left).toBeGreaterThan(0);
+        await sumUp(tA);
       },
       TEST_TIMEOUT_MS,
     );

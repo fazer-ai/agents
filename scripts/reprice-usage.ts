@@ -127,10 +127,12 @@ export async function settleRepricedQuarters(
     now = Date.now,
     deadline = now() + SETTLE_BUDGET_MS,
     step = stepLedgerSums,
+    sleep = Bun.sleep,
   }: {
     now?: () => number;
     deadline?: number;
     step?: typeof stepLedgerSums;
+    sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<SettledTenant[]> {
   await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
@@ -138,28 +140,36 @@ export async function settleRepricedQuarters(
     Prisma.sql`FROM ledger_sum_marks
          WHERE tenant_id = ${tenantId}
            AND quarter = ANY(${[...(written.get(tenantId) ?? [])].map((q) => new Date(q))}::timestamp[])`;
-  // The marks to settle are the ones visible now, by id: an id is taken before its write commits, so
-  // no cutoff on the id tells a mark seen now from one that becomes visible later.
-  const ours = new Map<bigint, bigint[]>();
-  for (const tenantId of written.keys()) {
+  // The marks to settle are the ones visible now, by id, read for every tenant in one statement: an id
+  // is taken before its write commits, so no cutoff on the id tells a mark seen now from one that
+  // becomes visible later.
+  const pairs = [...written].flatMap(([tenantId, set]) =>
+    [...set].map((q) => [tenantId, new Date(q)] as const),
+  );
+  const seen = await asSuperAdminOn(db, (tx) =>
+    tx.$queryRaw<{ tenant_id: bigint; id: bigint }[]>(Prisma.sql`
+      SELECT m.tenant_id, m.id FROM ledger_sum_marks m
+        JOIN unnest(${pairs.map(([t]) => t.toString())}::bigint[],
+                    ${pairs.map(([, q]) => q)}::timestamp[]) AS w(tenant_id, quarter)
+          ON m.tenant_id = w.tenant_id AND m.quarter = w.quarter`),
+  );
+  const ours = new Map<bigint, bigint[]>(
+    [...written.keys()].map((t) => [t, []]),
+  );
+  for (const r of seen) ours.get(r.tenant_id)?.push(r.id);
+  // The tenant's marks still there, which replace the list: it only shrinks.
+  const pending = async (tenantId: bigint) => {
     const rows = await asSuperAdminOn(db, (tx) =>
       tx.$queryRaw<{ id: bigint }[]>(
-        Prisma.sql`SELECT id ${onQuarters(tenantId)}`,
+        Prisma.sql`SELECT id FROM ledger_sum_marks
+                    WHERE id = ANY(${ours.get(tenantId) ?? []}::bigint[])`,
       ),
     );
     ours.set(
       tenantId,
       rows.map((r) => r.id),
     );
-  }
-  const pending = async (tenantId: bigint) => {
-    const [row] = await asSuperAdminOn(db, (tx) =>
-      tx.$queryRaw<{ any: boolean }[]>(
-        Prisma.sql`SELECT EXISTS (SELECT 1 FROM ledger_sum_marks
-                    WHERE id = ANY(${ours.get(tenantId) ?? []}::bigint[])) AS any`,
-      ),
-    );
-    return Boolean(row?.any);
+    return rows.length > 0;
   };
   // One step per tenant per round, so a tenant whose steps keep failing does not spend the others'
   // budget.
@@ -169,11 +179,11 @@ export async function settleRepricedQuarters(
     const next: bigint[] = [];
     let failed = false;
     for (const tenantId of open) {
+      if (!(await pending(tenantId))) continue;
       if (now() >= deadline) {
         next.push(tenantId);
         continue;
       }
-      if (!(await pending(tenantId))) continue;
       try {
         await step(db, tenantId);
       } catch (err) {
@@ -185,7 +195,7 @@ export async function settleRepricedQuarters(
       }
       next.push(tenantId);
     }
-    if (failed) await Bun.sleep(STEP_RETRY_MS);
+    if (failed) await sleep(STEP_RETRY_MS);
     open = next;
   }
   const out: SettledTenant[] = [];

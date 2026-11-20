@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
@@ -7,47 +13,39 @@ import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
 const ROOT = join(import.meta.dir, "../..");
 
 // bun gives a preload's `jest.setTimeout` to the first file of a process only, so a later file ran with
-// bun's 5 s default. The wrapper puts the suite's deadline on the command line, where it reaches every
-// file. The run here is in a directory of its own, without the suite's preload.
-let dir = "";
+// bun's 5 s default. The launcher puts the suite's deadline on the command line, where it reaches every
+// file. The `bun` it starts is a stub first on PATH that records its arguments.
+let bin = "";
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "bun-test-"));
+  bin = mkdtempSync(join(tmpdir(), "bun-test-"));
   writeFileSync(
-    join(dir, "a.test.ts"),
-    'import { test } from "bun:test";\ntest("first", () => {});\n',
+    join(bin, "bun"),
+    `#!/bin/sh\nprintf '%s\\n' "$@" > "${bin}/args"\nexit 7\n`,
   );
-  writeFileSync(
-    join(dir, "b.test.ts"),
-    [
-      'import { test } from "bun:test";',
-      'test("second, past 5 s", async () => {',
-      "  await new Promise((resolve) => setTimeout(resolve, 5_500));",
-      "});",
-      "",
-    ].join("\n"),
-  );
+  chmodSync(join(bin, "bun"), 0o755);
 });
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => rmSync(bin, { recursive: true, force: true }));
 
-describe("scripts/bun-test.sh", () => {
-  test(
-    "gives the second file of a run the suite's deadline, not bun's 5 s",
-    async () => {
-      const proc = Bun.spawn(
-        [join(ROOT, "scripts/bun-test.sh"), "./a.test.ts", "./b.test.ts"],
-        { cwd: dir, stdout: "pipe", stderr: "pipe" },
-      );
-      const [out, err, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      expect(`${out}${err}`).not.toContain("timed out");
-      expect(err).toMatch(/^ *2 pass$/m);
-      expect(code).toBe(0);
-    },
-    TEST_TIMEOUT_MS,
-  );
+describe("scripts/bun-test.ts", () => {
+  test("runs `bun test` with the suite's deadline and the arguments it was given, and exits with its code", () => {
+    const out = Bun.spawnSync(
+      [process.execPath, "scripts/bun-test.ts", "a.test.ts", "--bail"],
+      {
+        cwd: ROOT,
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      },
+    );
+
+    expect(readFileSync(join(bin, "args"), "utf8").split("\n")).toEqual([
+      "test",
+      "--timeout",
+      String(TEST_TIMEOUT_MS),
+      "a.test.ts",
+      "--bail",
+      "",
+    ]);
+    expect(out.exitCode).toBe(7);
+  });
 });

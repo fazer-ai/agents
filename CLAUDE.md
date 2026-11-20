@@ -80,7 +80,7 @@ The three operational **skills** (`.claude/skills/agents-{onboarding,operation,d
 | `bun build`                        | Build frontend assets to `dist/`                                                         |
 | `bun dev:smoke`                    | Boot the dev server and probe the SPA, asset and API routing (docs/routing.md)           |
 | `bun smoke:prod`                   | Boot the production build and probe the document, missing assets and the cache policy (after `bun build`) |
-| `bun test`                         | Run tests                                                                                |
+| `bun run test`                     | Run tests (`bun test` alone gives every file after the first bun's 5 s default per test) |
 | `bun test:coverage`                | Run tests with coverage report                                                           |
 | `bun lint`                         | Lint with Biome                                                                          |
 | `bun format`                       | Format with Biome                                                                        |

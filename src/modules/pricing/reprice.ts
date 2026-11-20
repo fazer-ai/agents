@@ -310,15 +310,23 @@ export async function runReprice(
         return { rows, updates: 0, wrote: [] };
       // The quarters come from the rows as the UPDATE wrote them, not as they were read: a row
       // moved or deleted in between is counted where it is now, or not at all.
-      const wrote = await db.$queryRaw<{ tenant_id: bigint; quarter: Date }[]>`
+      const wrote = await db.$queryRaw<
+        { tenant_id: bigint; quarter: Date; n: number }[]
+      >`
+        WITH w AS (
           UPDATE llm_usage AS u
              SET cost_usd = v.cost::numeric, price_table = v.stamp
             FROM unnest(${updates.map((u) => u.id.toString())}::text[],
                         ${updates.map((u) => u.costUsd)}::text[],
                         ${updates.map((u) => u.priceTable)}::text[]) AS v(id, cost, stamp)
            WHERE u.id = v.id::bigint
-       RETURNING u.tenant_id, ledger_quarter(u.created_at) AS quarter`;
-      return { rows, updates: wrote.length, wrote };
+       RETURNING u.tenant_id, ledger_quarter(u.created_at) AS quarter)
+        SELECT tenant_id, quarter, COUNT(*)::int AS n FROM w GROUP BY 1, 2`;
+      return {
+        rows,
+        updates: wrote.reduce((sum, w) => sum + w.n, 0),
+        wrote,
+      };
     });
     // NOTE: recorded once the batch's transaction has committed, never for one that rolled back.
     for (const w of read.wrote) {

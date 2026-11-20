@@ -696,6 +696,25 @@ describe.skipIf(!dbUp)(
     );
 
     test(
+      "on a role RLS does not bind it writes nothing, before the first batch",
+      async () => {
+        const cost = await ledgerCost(tB);
+        await expect(
+          repriceAndSettle(suDb, {
+            tenant: tB,
+            provider: "deepseek",
+            model: MODEL,
+            apply: true,
+            stamp: "litellm@test-refused",
+            price: () => 0.0333,
+          }),
+        ).rejects.toBeInstanceOf(SuperuserRuntimeError);
+        expect(await ledgerCost(tB)).toBe(cost);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
       "only the quarters of rows it changed are the repricing's: a row already at its price is not",
       async () => {
         const tE = await seedTenant("r1853-e", 2);

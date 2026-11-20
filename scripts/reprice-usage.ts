@@ -14,6 +14,7 @@ import {
   connectTimeoutOption,
   lockTimeoutOption,
 } from "@/api/lib/pool-options";
+import config from "@/config";
 import {
   assertRuntimeRoleIsNotSuperuser,
   RuntimeIsolationError,
@@ -106,9 +107,10 @@ const SETTLE_BUDGET_MS = 10 * 60 * 1000;
 const STEP_RETRY_MS = 1000;
 // How often a read of the marks before or after the steps is tried, a retry time apart.
 const READ_ATTEMPTS = 3;
-// The longest the client waits on one statement's answer, past every statement the run sends (a step's
-// transaction is 25 s): a connection that stops answering fails, and the read or step is retried.
-const QUERY_TIMEOUT_MS = 60_000;
+// The longest the client waits on one statement's answer, past every statement the run sends: a write
+// batch's transaction budget (DB_TX_TIMEOUT_MS) and a step's 25 s, with room for the answer. A
+// connection that stops answering fails, and the read or step is retried.
+const QUERY_TIMEOUT_MS = Math.max(config.dbTx.timeoutMs, 25_000) + 30_000;
 
 // A read tried up to READ_ATTEMPTS times: the error of the last attempt when none succeeds.
 export async function readWithRetry<T>(
@@ -327,6 +329,8 @@ export async function repriceAndSettle(
   db: PrismaClient,
   opts: RepriceOptions,
 ): Promise<{ report: RepriceReport; settled: SettledTenant[] }> {
+  // Before the first write: a role RLS does not bind could not settle what it writes.
+  if (opts.apply) await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
   const written = new Map<bigint, Set<number>>();
   let report: RepriceReport;
   try {
@@ -415,8 +419,6 @@ async function main() {
     }),
   });
   try {
-    if (opts.apply)
-      await assertRuntimeRoleIsNotSuperuser(prisma, { allow: false });
     let report: RepriceReport;
     let settled: SettledTenant[];
     try {

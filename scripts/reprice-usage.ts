@@ -10,7 +10,10 @@
 
 import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { lockTimeoutOption } from "@/api/lib/pool-options";
+import {
+  connectTimeoutOption,
+  lockTimeoutOption,
+} from "@/api/lib/pool-options";
 import { assertRuntimeRoleIsNotSuperuser } from "@/lib/db-guard";
 import { withSessionOptions } from "@/lib/session-zone";
 import { asSuperAdminOn } from "@/lib/tenancy";
@@ -173,29 +176,38 @@ export async function settleRepricedQuarters(
     return rows.length > 0;
   };
   // One step per tenant per round, so a tenant whose steps keep failing does not spend the others'
-  // budget.
+  // budget, and a tenant whose step failed waits its own retry time while the others go on.
   const errors = new Map<bigint, string>();
+  const retryAt = new Map<bigint, number>();
   let open = [...written.keys()];
   while (open.length > 0 && now() < deadline) {
     const next: bigint[] = [];
-    let failed = false;
+    let ran = false;
     for (const tenantId of open) {
       if (now() >= deadline) break;
+      if ((retryAt.get(tenantId) ?? 0) > now()) {
+        next.push(tenantId);
+        continue;
+      }
       if (!(await pending(tenantId))) continue;
       if (now() >= deadline) break;
+      ran = true;
       try {
         await step(db, tenantId);
       } catch (err) {
         // NOTE: the job's own step on the same tenant holds the state row, and a step that waits on it
-        // past its transaction budget throws. The tenant is retried in the next round, since that
-        // step may have settled its marks, while the budget lasts.
+        // past the lock timeout throws. That step may settle the marks, so they are read again after
+        // the tenant's retry time, while the budget lasts.
         errors.set(tenantId, err instanceof Error ? err.message : String(err));
-        failed = true;
+        retryAt.set(tenantId, now() + STEP_RETRY_MS);
       }
       next.push(tenantId);
     }
-    if (failed) await sleep(STEP_RETRY_MS);
     open = next;
+    if (!ran && open.length > 0) {
+      const at = Math.min(...open.map((t) => retryAt.get(t) ?? 0));
+      await sleep(Math.max(0, Math.min(at, deadline) - now()));
+    }
   }
   const out: SettledTenant[] = [];
   for (const [tenantId, set] of written) {
@@ -310,6 +322,7 @@ async function main() {
         adapter: new PrismaPg({
           ...withSessionOptions(url),
           ...lockTimeoutOption(),
+          ...connectTimeoutOption(),
         }),
       });
       let settled: SettledTenant[];

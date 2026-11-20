@@ -369,14 +369,17 @@ describe.skipIf(!dbUp)(
         const report = await reprice(tA, 0.0246);
         expect(await markedQuarters(tA)).toBeGreaterThan(0);
         let calls = 0;
-        // The steps taken before each sleep the settle asks for.
-        const slept: number[] = [];
+        // The steps taken before each sleep the settle asks for, on a clock the sleep moves.
+        const slept: [number, number][] = [];
+        let clock = 0;
         const [settled] = await settleRepricedQuarters(
           db,
           report.writtenQuarters,
           {
-            sleep: async () => {
-              slept.push(calls);
+            now: () => clock,
+            sleep: async (ms) => {
+              slept.push([calls, ms]);
+              clock += ms;
             },
             step: async (base, tenantId) => {
               calls += 1;
@@ -386,8 +389,8 @@ describe.skipIf(!dbUp)(
           },
         );
         expect(calls).toBeGreaterThan(2);
-        // The round of the failure waits, and the rounds after a success do not.
-        expect(slept).toEqual([1]);
+        // The tenant waits its retry time once, after the failure, and not after a success.
+        expect(slept).toEqual([[1, 1000]]);
         expect(settled?.left).toBe(0);
         expect(settled?.stepError).toBe("Transaction already closed");
         expect(await markedQuarters(tA)).toBe(0);
@@ -523,23 +526,36 @@ describe.skipIf(!dbUp)(
         const a = await reprice(tA, 0.0357);
         const h = await reprice(tH, 0.0357);
         let failures = 0;
+        let clock = 0;
+        let sleeps = 0;
+        // The sleeps the settle had asked for at each of the healthy tenant's steps.
+        const sleptBeforeH: number[] = [];
         const [settledA, settledH] = await settleRepricedQuarters(
           db,
           new Map([...a.writtenQuarters, ...h.writtenQuarters]),
           {
-            deadline: Date.now() + 5_000,
+            now: () => clock,
+            deadline: 5_000,
+            sleep: async (ms) => {
+              sleeps += 1;
+              clock += ms;
+            },
             step: async (base, tenantId) => {
               if (tenantId === tA) {
                 failures += 1;
                 throw new Error("Transaction already closed");
               }
+              sleptBeforeH.push(sleeps);
               return stepLedgerSums(base, tenantId);
             },
           },
         );
         expect(settledH).toMatchObject({ tenantId: tH, left: 0 });
-        // A failed round waits before the next, rather than spinning on the failing tenant.
-        expect(failures).toBeLessThanOrEqual(6);
+        // The healthy tenant never waits on the failing one's retry time.
+        expect(sleptBeforeH.length).toBeGreaterThan(0);
+        expect(sleptBeforeH.every((n) => n === 0)).toBe(true);
+        // The failing tenant is retried once per retry time, not in a spin.
+        expect(failures).toBe(5);
         expect(settledA?.left).toBeGreaterThan(0);
         expect(settledA?.stepError).toBe("Transaction already closed");
         await sumUp(tA);

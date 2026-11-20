@@ -382,6 +382,10 @@ export function settleReport(t: SettledTenant): string[] {
 
 const usd = (d: { toFixed(n: number): string }) => `$${d.toFixed(6)}`;
 
+// An applied run that changed no row marked no quarter, and says so rather than staying silent.
+const NOTHING_SETTLED =
+  "dashboard sums settled for 0 repriced quarters: no row changed";
+
 async function main() {
   let opts: RepriceOptions;
   try {
@@ -433,6 +437,7 @@ async function main() {
       );
     if (report.groups.length === 0) {
       console.log("No rows match.");
+      if (opts.apply) console.log(NOTHING_SETTLED);
       return;
     }
     for (const g of report.groups) {
@@ -449,6 +454,7 @@ async function main() {
         ? `Wrote ${report.written} rows, each stamped with what priced it now (the tenant's own price, or ${PRICE_TABLE_VERSION}).`
         : "Nothing written. Re-run with --apply to write.",
     );
+    if (opts.apply && settled.length === 0) console.log(NOTHING_SETTLED);
     for (const t of settled) console.log(settleReport(t).join("\n"));
     if (settleFailed(settled)) process.exitCode = 1;
   } finally {

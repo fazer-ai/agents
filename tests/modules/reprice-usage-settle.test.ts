@@ -336,6 +336,18 @@ describe.skipIf(!dbUp)(
         expect(read).toEqual(await rawCosts(tA));
         expect(read.totalCostUsd).toBeCloseTo(Number(await ledgerCost(tA)), 9);
         expect(read.totalCostUsd).not.toBeCloseTo(600 * Number(WRONG), 3);
+
+        // Run again: every row is at its price, nothing is written, and the count it prints is 0.
+        const again = await runScript(tA, appUrl);
+        expect({ code: again.code, err: again.err }).toEqual({
+          code: 0,
+          err: "",
+        });
+        expect(again.out).toContain("Wrote 0 rows");
+        expect(again.out).toContain(
+          "dashboard sums settled for 0 repriced quarters: no row changed",
+        );
+        expect(await markedQuarters(tA)).toBe(0);
       },
       TEST_TIMEOUT_MS,
     );

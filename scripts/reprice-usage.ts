@@ -10,6 +10,7 @@
 
 import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { lockTimeoutOption } from "@/api/lib/pool-options";
 import { assertRuntimeRoleIsNotSuperuser } from "@/lib/db-guard";
 import { withSessionOptions } from "@/lib/session-zone";
 import { asSuperAdminOn } from "@/lib/tenancy";
@@ -179,11 +180,9 @@ export async function settleRepricedQuarters(
     const next: bigint[] = [];
     let failed = false;
     for (const tenantId of open) {
+      if (now() >= deadline) break;
       if (!(await pending(tenantId))) continue;
-      if (now() >= deadline) {
-        next.push(tenantId);
-        continue;
-      }
+      if (now() >= deadline) break;
       try {
         await step(db, tenantId);
       } catch (err) {
@@ -304,10 +303,21 @@ async function main() {
         : "Nothing written. Re-run with --apply to write.",
     );
     if (opts.apply && report.written > 0) {
-      const settled = await settleRepricedQuarters(
-        prisma,
-        report.writtenQuarters,
-      );
+      // The settle's own client, on the same URL, with the pool's lock timeout the job's steps
+      // have: a step queued behind the job's step on the same tenant gives up in seconds and is
+      // retried in the next round, instead of holding the other tenants for its whole budget.
+      const settler = new PrismaClient({
+        adapter: new PrismaPg({
+          ...withSessionOptions(url),
+          ...lockTimeoutOption(),
+        }),
+      });
+      let settled: SettledTenant[];
+      try {
+        settled = await settleRepricedQuarters(settler, report.writtenQuarters);
+      } finally {
+        await settler.$disconnect();
+      }
       for (const t of settled) console.log(settleReport(t).join("\n"));
       if (settled.some((t) => t.left > 0)) process.exitCode = 1;
     }

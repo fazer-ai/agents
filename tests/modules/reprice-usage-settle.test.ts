@@ -499,9 +499,9 @@ describe.skipIf(!dbUp)(
           db,
           report.writtenQuarters,
           {
-            // The round's check sees time left, and the check after the read of the marks does not.
+            // The checks before the read of the marks see time left, the one after it does not.
             now: () => ticks++,
-            deadline: 1,
+            deadline: 2,
             step: async (base, tenantId) => {
               steps += 1;
               return stepLedgerSums(base, tenantId);

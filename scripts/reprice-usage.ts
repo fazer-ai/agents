@@ -1,17 +1,19 @@
 #!/usr/bin/env bun
 
 // Re-prices ledger rows (`llm_usage.cost_usd`) with the price table in the tree now, for when the
-// table that priced them was wrong. Dry run unless `--apply`.
-//
+// table that priced them was wrong. Dry run unless `--apply`, which then settles the dashboard sums it
+// changed (docs/dashboard.md, "Late changes").
 //   bun scripts/reprice-usage.ts --tenant <id|all> --provider <provider> --model <model>
 //     [--from <ISO date>] [--to <ISO date>] [--price-table <litellm@…|none>] [--apply]
-//
 // `--provider` is required because the ledger does not record it. `--from` is inclusive, `--to`
 // exclusive; `--price-table none` selects rows no table priced. Pricing order: pricing/reprice.ts.
 
 import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { assertRuntimeRoleIsNotSuperuser } from "@/lib/db-guard";
 import { withSessionOptions } from "@/lib/session-zone";
+import { asSuperAdminOn } from "@/lib/tenancy";
+import { stepLedgerSums } from "@/modules/analytics/ledger-sums";
 import { PRICE_OVERRIDE_PROVIDERS } from "@/modules/pricing/overrides";
 import { modelRates } from "@/modules/pricing/price";
 import {
@@ -20,7 +22,7 @@ import {
   UNMETERED_PRICE_TABLE,
 } from "@/modules/pricing/reprice";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
-import { PrismaClient } from "../generated/prisma/client";
+import { Prisma, PrismaClient } from "../generated/prisma/client";
 
 export class UsageError extends Error {}
 
@@ -90,6 +92,62 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
   };
 }
 
+// How long the script settles what it marked before it gives up and exits non-zero. A repricing of two
+// months on a tenant three times a large production one settles in about 70 s of steps.
+const SETTLE_BUDGET_MS = 10 * 60 * 1000;
+
+// The newest mark id: the marks a repricing wrote are the ones above the id read before it, up to the
+// one read after it.
+export async function lastLedgerMarkId(db: PrismaClient): Promise<bigint> {
+  const [row] = await asSuperAdminOn(db, (tx) =>
+    tx.$queryRaw<{ id: bigint }[]>(
+      Prisma.sql`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM ledger_sum_marks`,
+    ),
+  );
+  return row?.id ?? 0n;
+}
+
+export interface SettledTenant {
+  tenantId: bigint;
+  // Distinct quarters the repricing marked for the tenant.
+  quarters: number;
+  // Of those, the quarters still marked when the budget ran out.
+  left: number;
+}
+
+// Settles the quarters a repricing marked, marks (after, upTo], by running the LEDGER_SUMS job's own
+// step until none of them is left: the step recounts a marked quarter and deletes only the marks it
+// read, so a mark of concurrent traffic is never lost, and each step is one short transaction. The
+// step relies on RLS for its tenant, so it runs on a role RLS binds and never on the superuser URL.
+export async function settleRepricedMarks(
+  db: PrismaClient,
+  tenants: readonly bigint[],
+  after: bigint,
+  upTo: bigint,
+  deadline: number = Date.now() + SETTLE_BUDGET_MS,
+): Promise<SettledTenant[]> {
+  await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
+  const marked = async (tenantId: bigint) => {
+    const [row] = await asSuperAdminOn(db, (tx) =>
+      tx.$queryRaw<{ n: number }[]>(Prisma.sql`
+        SELECT COUNT(DISTINCT quarter)::int AS n FROM ledger_sum_marks
+         WHERE tenant_id = ${tenantId} AND id > ${after} AND id <= ${upTo}`),
+    );
+    return row?.n ?? 0;
+  };
+  const out: SettledTenant[] = [];
+  for (const tenantId of tenants) {
+    const quarters = await marked(tenantId);
+    let left = quarters;
+    while (left > 0 && Date.now() < deadline) {
+      await stepLedgerSums(db, tenantId);
+      left = await marked(tenantId);
+    }
+    out.push({ tenantId, quarters, left });
+  }
+  return out;
+}
+
 const usd = (d: { toFixed(n: number): string }) => `$${d.toFixed(6)}`;
 
 async function main() {
@@ -111,10 +169,27 @@ async function main() {
     console.error("MIGRATION_DATABASE_URL (or DATABASE_URL) is required");
     process.exit(1);
   }
+  // The settle runs the dashboard job's step, which RLS scopes to its tenant: on the runtime role.
+  const runtimeUrl = process.env.DATABASE_URL;
+  if (opts.apply && !runtimeUrl) {
+    console.error(
+      "--apply needs DATABASE_URL (the runtime role) to settle the dashboard sums it changes",
+    );
+    process.exit(1);
+  }
   const prisma = new PrismaClient({
     adapter: new PrismaPg(withSessionOptions(url)),
   });
+  const runtime =
+    opts.apply && runtimeUrl
+      ? new PrismaClient({
+          adapter: new PrismaPg(withSessionOptions(runtimeUrl)),
+        })
+      : null;
   try {
+    if (runtime)
+      await assertRuntimeRoleIsNotSuperuser(runtime, { allow: false });
+    const before = runtime ? await lastLedgerMarkId(runtime) : 0n;
     const report = await runReprice(prisma, opts);
     console.log(
       `${opts.apply ? "APPLY" : "DRY RUN"} · provider ${opts.provider} · table now ${PRICE_TABLE_VERSION}`,
@@ -141,8 +216,29 @@ async function main() {
         ? `Wrote ${report.written} rows, each stamped with what priced it now (the tenant's own price, or ${PRICE_TABLE_VERSION}).`
         : "Nothing written. Re-run with --apply to write.",
     );
+    if (runtime && report.written > 0) {
+      const tenants = [
+        ...new Set(
+          report.groups.filter((g) => g.changed > 0).map((g) => g.tenantId),
+        ),
+      ];
+      const settled = await settleRepricedMarks(
+        runtime,
+        tenants,
+        before,
+        await lastLedgerMarkId(runtime),
+      );
+      for (const t of settled)
+        console.log(
+          t.left === 0
+            ? `tenant ${t.tenantId} · dashboard sums settled for ${t.quarters} repriced quarters`
+            : `tenant ${t.tenantId} · ${t.left} of ${t.quarters} repriced quarters still marked: the dashboard job settles them, read from the rows until then`,
+        );
+      if (settled.some((t) => t.left > 0)) process.exitCode = 1;
+    }
   } finally {
     await prisma.$disconnect();
+    await runtime?.$disconnect();
   }
 }
 

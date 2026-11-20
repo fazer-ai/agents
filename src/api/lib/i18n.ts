@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createInstance } from "i18next";
+import type { MetricsReads } from "@/api/lib/metrics-reads";
 import en from "@/api/locales/en.json";
 import ptBR from "@/api/locales/pt-BR.json";
 import type { ErrorTranslationKey } from "@/lib/errors";
@@ -14,6 +15,8 @@ interface RequestContext {
   // The request's own signal, aborted when its caller goes away: a metrics read that has not
   // started yet by then does not start (src/modules/analytics/budget.ts).
   signal?: AbortSignal;
+  // A metrics request's tally of its reads, for its one log line (src/api/lib/metrics-request.ts).
+  metrics?: MetricsReads;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
@@ -63,6 +66,7 @@ export function withAbortSignal<T>(
       locale: store?.locale ?? "en",
       startedAt: store?.startedAt,
       signal: AbortSignal.any(signals),
+      metrics: store?.metrics,
     },
     fn,
   );

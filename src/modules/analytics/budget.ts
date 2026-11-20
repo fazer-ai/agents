@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { requestSignal, requestStartedAt } from "@/api/lib/i18n";
+import { noteMetricsRead } from "@/api/lib/metrics-reads";
 import config from "@/config";
 import { MetricsTooSlowError, ServiceUnavailableError } from "@/lib/errors";
 import { isPrismaTransactionError, postgresCodeOf } from "@/lib/pg-error";
@@ -61,23 +62,44 @@ export async function runMetricsScoped<T>(
 ): Promise<T> {
   const deadline = metricsDeadline();
   const signal = requestSignal();
+  // What the read spent, for the request's log line: per attempt, the wait for a connection (until
+  // the transaction is ready for the read's own statements) and the run of those statements. A retry
+  // is a second attempt with its own wait.
+  let waitMs = 0;
+  let runMs = 0;
   // Spent before the read began: asking for a connection now could only hold one past the deadline.
-  if (Date.now() >= deadline) throw metricsTooSlow(deadline);
+  if (Date.now() >= deadline) {
+    noteMetricsRead(0, 0);
+    throw metricsTooSlow(deadline);
+  }
   // A caller that went away (a console view left or replaced) while its request waited for a
   // connection gets nothing run for it: the connection goes straight back to the views still open.
   if (signal?.aborted) throw callerGone();
-  const run = (serial: boolean) =>
-    runScopedOn(
-      base,
-      ctx,
-      async (db) => {
-        if (signal?.aborted) throw callerGone();
-        if (serial)
-          await db.$executeRaw`SELECT set_config('max_parallel_workers_per_gather', '0', true)`;
-        return fn(db);
-      },
-      metricsBudget(deadline),
-    );
+  const run = async (serial: boolean) => {
+    const asked = Date.now();
+    let began: number | null = null;
+    try {
+      return await runScopedOn(
+        base,
+        ctx,
+        async (db) => {
+          began = Date.now();
+          waitMs += began - asked;
+          if (signal?.aborted) throw callerGone();
+          if (serial)
+            await db.$executeRaw`SELECT set_config('max_parallel_workers_per_gather', '0', true)`;
+          try {
+            return await fn(db);
+          } finally {
+            runMs += Date.now() - began;
+          }
+        },
+        metricsBudget(deadline),
+      );
+    } finally {
+      if (began === null) waitMs += Date.now() - asked;
+    }
+  };
   try {
     try {
       return await run(false);
@@ -90,6 +112,8 @@ export async function runMetricsScoped<T>(
   } catch (error) {
     if (isOverMetricsBudget(error)) throw metricsTooSlow(deadline);
     throw error;
+  } finally {
+    noteMetricsRead(waitMs, runMs);
   }
 }
 

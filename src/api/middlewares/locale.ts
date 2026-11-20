@@ -1,5 +1,6 @@
 import Elysia from "elysia";
 import { getLocaleFromHeader, requestContext } from "@/api/lib/i18n";
+import { trackMetricsRequest } from "@/api/lib/metrics-request";
 import { enterWorkLabel } from "@/lib/work-label";
 
 export const localeMiddleware = new Elysia({ name: "locale" })
@@ -7,7 +8,12 @@ export const localeMiddleware = new Elysia({ name: "locale" })
     const startedAt = Date.now();
     const acceptLanguage = request.headers.get("accept-language");
     const locale = getLocaleFromHeader(acceptLanguage);
-    requestContext.enterWith({ locale, startedAt, signal: request.signal });
+    requestContext.enterWith({
+      locale,
+      startedAt,
+      signal: request.signal,
+      metrics: trackMetricsRequest(request, startedAt),
+    });
   })
   // The matched route (its pattern, never the ids in the path), for a statement that times out while
   // serving it (docs/logs.md, "Database"). Entered once the route is known, in the first transform

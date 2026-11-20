@@ -9,6 +9,8 @@ import {
 import { Elysia } from "elysia";
 
 import { authPlugin, authPoolFor } from "@/api/lib/auth";
+import { requestContext } from "@/api/lib/i18n";
+import { newMetricsReads } from "@/api/lib/metrics-reads";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import config from "@/config";
 
@@ -67,6 +69,9 @@ const mockMetricsPrisma = {
   },
   endedSession: {
     findMany: mock(() => Promise.resolve([] as { jti: string }[])),
+  },
+  apiKey: {
+    findUnique: mock(() => Promise.resolve(null)),
   },
   // The lookup runs in a transaction bounded by the request's budget.
   $executeRaw: mock(() => Promise.resolve(0)),
@@ -289,6 +294,67 @@ describe("authPlugin", () => {
           authPoolFor("/api/v1/instance-health/channels").budget,
         ).toBeDefined();
         expect(authPoolFor("/api/v1/instance-healthx").budget).toBeUndefined();
+      });
+
+      test("a metrics route's lookup adds its wait for a metrics connection and its run to the request's line, as no read", async () => {
+        // The clock moves 500 ms while the transaction waits for a connection and 100 ms while the
+        // lookup runs in it.
+        let now = Date.now();
+        setSystemTime(new Date(now));
+        mockMetricsPrisma.$transaction.mockImplementationOnce(async (fn) => {
+          now += 500;
+          setSystemTime(new Date(now));
+          return fn(mockMetricsPrisma);
+        });
+        const tally = newMetricsReads();
+        try {
+          await requestContext.run(
+            { locale: "en", startedAt: now, metrics: tally },
+            () =>
+              authPoolFor("/api/v1/metrics/kpis").lookup(async () => {
+                now += 100;
+                setSystemTime(new Date(now));
+              }),
+          );
+        } finally {
+          setSystemTime();
+        }
+        expect(tally).toEqual({ reads: 0, waitMs: 500, runMs: 100 });
+      });
+
+      test("a metrics route's API key lookup adds its wait and run to the request's line too", async () => {
+        let now = Date.now();
+        setSystemTime(new Date(now));
+        mockMetricsPrisma.$transaction.mockImplementationOnce(async (fn) => {
+          now += 300;
+          setSystemTime(new Date(now));
+          return fn(mockMetricsPrisma);
+        });
+        mockMetricsPrisma.apiKey.findUnique.mockImplementationOnce(async () => {
+          now += 40;
+          setSystemTime(new Date(now));
+          return null;
+        });
+        const app = new Elysia().use(localeMiddleware).group("/api", (api) =>
+          api
+            .use(authPlugin)
+            .get("/v1/metrics/kpis", async ({ getAuthUser }) => {
+              const user = await getAuthUser();
+              return { user, tally: requestContext.getStore()?.metrics };
+            }),
+        );
+        try {
+          const res = await app.handle(
+            new BunRequest("http://localhost/api/v1/metrics/kpis", {
+              headers: { Authorization: "Bearer fazerai_abc" },
+            }),
+          );
+          const body = await res.json();
+          expect(body.user).toBeNull();
+          expect(body.tally).toEqual({ reads: 0, waitMs: 300, runMs: 40 });
+        } finally {
+          setSystemTime();
+        }
       });
 
       test("a metrics route whose session lookup fails after the request's budget is spent answers the metrics refusal", async () => {

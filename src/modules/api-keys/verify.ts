@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { PrismaClient, UserRole } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { asSuperAdminOn, type TxBudget } from "@/lib/tenancy";
+import { asSuperAdminOn, type ScopedDb, type TxBudget } from "@/lib/tenancy";
 
 // Bearer API key for the REST v1 API and the MCP transport. The plaintext is `fazerai_<base64url>`
 // (256-bit); only its SHA-256 hash is stored, so a DB dump never yields a usable key. Verified BEFORE
@@ -65,47 +65,46 @@ export async function verifyApiKey(
   base: PrismaClient = basePrisma,
   // The pool's own budget when it is not the main one (the metrics pool, for its routes).
   budget?: TxBudget,
+  // Runs the key's lookup at fleet scope: on `base` under `budget` unless the caller times it.
+  lookup: <T>(fn: (db: ScopedDb) => Promise<T>) => Promise<T> = (fn) =>
+    asSuperAdminOn(base, fn, budget),
 ): Promise<ApiKeyPrincipal | null> {
   if (!hasApiKeyPrefix(token)) return null;
   const keyHash = hashApiKey(token);
-  const resolved = await asSuperAdminOn(
-    base,
-    async (db) => {
-      const k = await db.apiKey.findUnique({
-        where: { keyHash },
-        select: {
-          id: true,
-          tenantId: true,
-          role: true,
-          createdByUserId: true,
-          stepUpAt: true,
-          revokedAt: true,
-          lastUsedAt: true,
-        },
+  const resolved = await lookup(async (db) => {
+    const k = await db.apiKey.findUnique({
+      where: { keyHash },
+      select: {
+        id: true,
+        tenantId: true,
+        role: true,
+        createdByUserId: true,
+        stepUpAt: true,
+        revokedAt: true,
+        lastUsedAt: true,
+      },
+    });
+    // Reject: unknown hash, revoked, or no recorded creator (always set at create → a row without
+    // one is malformed). createdByUserId becomes the principal's userId for audit attribution.
+    if (!k || k.revokedAt || k.createdByUserId === null) return null;
+    // Reject keys whose tenant no longer exists (deleted tenant → 401, not a silent empty result).
+    // A fleet key has no tenant to outlive.
+    if (k.tenantId !== null) {
+      const tenant = await db.tenant.findUnique({
+        where: { id: k.tenantId },
+        select: { id: true },
       });
-      // Reject: unknown hash, revoked, or no recorded creator (always set at create → a row without
-      // one is malformed). createdByUserId becomes the principal's userId for audit attribution.
-      if (!k || k.revokedAt || k.createdByUserId === null) return null;
-      // Reject keys whose tenant no longer exists (deleted tenant → 401, not a silent empty result).
-      // A fleet key has no tenant to outlive.
-      if (k.tenantId !== null) {
-        const tenant = await db.tenant.findUnique({
-          where: { id: k.tenantId },
-          select: { id: true },
-        });
-        if (!tenant) return null;
-      }
-      return {
-        id: k.id,
-        tenantId: k.tenantId,
-        role: k.role,
-        createdByUserId: k.createdByUserId,
-        stepUpAt: k.stepUpAt,
-        lastUsedAt: k.lastUsedAt,
-      };
-    },
-    budget,
-  );
+      if (!tenant) return null;
+    }
+    return {
+      id: k.id,
+      tenantId: k.tenantId,
+      role: k.role,
+      createdByUserId: k.createdByUserId,
+      stepUpAt: k.stepUpAt,
+      lastUsedAt: k.lastUsedAt,
+    };
+  });
   if (!resolved) return null;
 
   const now = Date.now();

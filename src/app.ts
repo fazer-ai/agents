@@ -8,6 +8,7 @@ import { refusedForSession } from "@/api/lib/auth";
 import { cspDirectives } from "@/api/lib/csp";
 import { getLocaleFromHeader, translateWithLocale } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
+import { logMetricsRequest } from "@/api/lib/metrics-request";
 import { parseOrigins } from "@/api/lib/origin";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { loggedPath, loggedUrl } from "@/api/lib/request-target";
@@ -147,6 +148,7 @@ export async function buildApp({
         loggedUrl(request.url, route),
         status,
       );
+      logMetricsRequest(request, route, status);
     })
     .onAfterHandle(applyStaticCacheControl)
     // NOTE: AppErrors carry their HTTP status and log at warn (expected control flow). The message is

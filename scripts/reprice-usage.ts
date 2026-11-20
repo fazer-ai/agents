@@ -14,7 +14,10 @@ import {
   connectTimeoutOption,
   lockTimeoutOption,
 } from "@/api/lib/pool-options";
-import { assertRuntimeRoleIsNotSuperuser } from "@/lib/db-guard";
+import {
+  assertRuntimeRoleIsNotSuperuser,
+  RuntimeIsolationError,
+} from "@/lib/db-guard";
 import { withSessionOptions } from "@/lib/session-zone";
 import { asSuperAdminOn } from "@/lib/tenancy";
 import { stepLedgerSums } from "@/modules/analytics/ledger-sums";
@@ -107,12 +110,14 @@ const READ_ATTEMPTS = 3;
 export async function readWithRetry<T>(
   read: () => Promise<T>,
   sleep: (ms: number) => Promise<void> = Bun.sleep,
+  fatal: (err: unknown) => boolean = () => false,
 ): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
   let error = "";
   for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
     try {
       return { ok: true, value: await read() };
     } catch (err) {
+      if (fatal(err)) throw err;
       error = err instanceof Error ? err.message : String(err);
       if (attempt < READ_ATTEMPTS) await sleep(STEP_RETRY_MS);
     }
@@ -160,11 +165,23 @@ export async function settleRepricedQuarters(
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<SettledTenant[]> {
-  await assertRuntimeRoleIsNotSuperuser(db, { allow: false });
-  const onQuarters = (tenantId: bigint) =>
-    Prisma.sql`FROM ledger_sum_marks
-         WHERE tenant_id = ${tenantId}
-           AND quarter = ANY(${[...(written.get(tenantId) ?? [])].map((q) => new Date(q))}::timestamp[])`;
+  // A role refusal ends the run, while a connection that fails is retried and then reported, since the
+  // prices are already written by now.
+  const guard = await readWithRetry(
+    () => assertRuntimeRoleIsNotSuperuser(db, { allow: false }),
+    sleep,
+    (err) => err instanceof RuntimeIsolationError,
+  );
+  const unread = (error: string): SettledTenant[] =>
+    [...written].map(([tenantId, set]) => ({
+      tenantId,
+      quarters: set.size,
+      left: 0,
+      aboveMark: 0,
+      remarked: 0,
+      unread: error,
+    }));
+  if (!guard.ok) return unread(guard.error);
   // The marks to settle are the ones visible now, by id, read for every tenant in one statement: an id
   // is taken before its write commits, so no cutoff on the id tells a mark seen now from one that
   // becomes visible later.
@@ -182,15 +199,7 @@ export async function settleRepricedQuarters(
       ),
     sleep,
   );
-  if (!seen.ok)
-    return [...written].map(([tenantId, set]) => ({
-      tenantId,
-      quarters: set.size,
-      left: 0,
-      aboveMark: 0,
-      remarked: 0,
-      unread: seen.error,
-    }));
+  if (!seen.ok) return unread(seen.error);
   const ours = new Map<bigint, bigint[]>(
     [...written.keys()].map((t) => [t, []]),
   );
@@ -243,49 +252,57 @@ export async function settleRepricedQuarters(
       await sleep(Math.max(0, Math.min(at, deadline) - now()));
     }
   }
-  const out: SettledTenant[] = [];
-  for (const [tenantId, set] of written) {
+  // What is left, for every tenant in one statement.
+  const allOurs = [...ours.values()].flat();
+  const final = await readWithRetry(
+    () =>
+      asSuperAdminOn(db, (tx) =>
+        tx.$queryRaw<
+          {
+            tenant_id: bigint;
+            left: number;
+            remarked: number;
+            mark: Date | null;
+          }[]
+        >(Prisma.sql`
+          WITH q AS (
+            SELECT m.tenant_id, m.quarter, bool_or(m.id = ANY(${allOurs}::bigint[])) AS ours
+              FROM ledger_sum_marks m
+              JOIN unnest(${pairs.map(([t]) => t.toString())}::bigint[],
+                          ${pairs.map(([, q]) => q)}::timestamp[]) AS w(tenant_id, quarter)
+                ON m.tenant_id = w.tenant_id AND m.quarter = w.quarter
+             GROUP BY 1, 2)
+          SELECT t.tenant_id,
+                 COUNT(*) FILTER (WHERE q.ours)::int AS left,
+                 COUNT(*) FILTER (WHERE NOT q.ours)::int AS remarked,
+                 (SELECT summed_until FROM ledger_sums_state s WHERE s.tenant_id = t.tenant_id) AS mark
+            FROM unnest(${[...written.keys()].map((t) => t.toString())}::bigint[]) AS t(tenant_id)
+            LEFT JOIN q ON q.tenant_id = t.tenant_id
+           GROUP BY t.tenant_id`),
+      ),
+    sleep,
+  );
+  return [...written].map(([tenantId, set]) => {
     const quarters = [...set];
     const stepError = errors.get(tenantId);
-    const read = await readWithRetry(
-      () =>
-        asSuperAdminOn(db, (tx) =>
-          tx.$queryRaw<{ left: number; remarked: number; mark: Date | null }[]>(
-            Prisma.sql`
-            SELECT COUNT(*) FILTER (WHERE q.ours)::int AS left,
-                   COUNT(*) FILTER (WHERE NOT q.ours)::int AS remarked,
-                   (SELECT summed_until FROM ledger_sums_state WHERE tenant_id = ${tenantId}) AS mark
-              FROM (SELECT quarter, bool_or(id = ANY(${ours.get(tenantId) ?? []}::bigint[])) AS ours
-                      ${onQuarters(tenantId)}
-                     GROUP BY quarter) q`,
-          ),
-        ),
-      sleep,
-    );
-    if (!read.ok) {
-      out.push({
-        tenantId,
-        quarters: quarters.length,
-        left: 0,
-        aboveMark: 0,
-        remarked: 0,
-        ...(stepError === undefined ? {} : { stepError }),
-        unread: read.error,
-      });
-      continue;
-    }
-    const [row] = read.value;
-    const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
-    out.push({
+    const base = {
       tenantId,
       quarters: quarters.length,
+      left: 0,
+      aboveMark: 0,
+      remarked: 0,
+      ...(stepError === undefined ? {} : { stepError }),
+    };
+    if (!final.ok) return { ...base, unread: final.error };
+    const row = final.value.find((r) => r.tenant_id === tenantId);
+    const mark = row?.mark?.getTime() ?? Number.NEGATIVE_INFINITY;
+    return {
+      ...base,
       left: row?.left ?? 0,
       aboveMark: quarters.filter((q) => q >= mark).length,
       remarked: row?.remarked ?? 0,
-      ...(stepError === undefined ? {} : { stepError }),
-    });
-  }
-  return out;
+    };
+  });
 }
 
 // Whether the run exits 1: a mark found when the settle began is still there, or what is left could

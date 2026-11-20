@@ -282,6 +282,22 @@ describe("a read of the marks before or after the steps", () => {
     expect(slept).toEqual([1000, 1000]);
   });
 
+  test("does not retry an error it is told is final", async () => {
+    let tries = 0;
+    const refusal = new Error("the role is a superuser");
+    await expect(
+      readWithRetry(
+        async () => {
+          tries += 1;
+          throw refusal;
+        },
+        async () => {},
+        (err) => err === refusal,
+      ),
+    ).rejects.toBe(refusal);
+    expect(tries).toBe(1);
+  });
+
   test("gives up after three tries with the last error", async () => {
     let tries = 0;
     const read = await readWithRetry(

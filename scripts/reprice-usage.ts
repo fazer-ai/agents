@@ -142,7 +142,7 @@ export interface SettledTenant {
   // Of those, the quarters holding only marks that became visible after the settle began, when every
   // tenant was settled: read from the rows until the job settles them.
   remarked: number;
-  // The last error a step threw, when one did: the step is retried until the budget runs out.
+  // The last error a read of the marks or a step threw during the rounds, when one did.
   stepError?: string;
   // Why what is left could not be read, when it could not: the counts above then say nothing.
   unread?: string;
@@ -337,7 +337,7 @@ export function settleReport(t: SettledTenant): string[] {
       `  ${t.remarked} of them marked again by later writes: read from the rows until the job settles them`,
     );
   if (t.stepError !== undefined)
-    lines.push(`  a settle step failed and was retried: ${t.stepError}`);
+    lines.push(`  a settle read or step failed: ${t.stepError}`);
   return lines;
 }
 

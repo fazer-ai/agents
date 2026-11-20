@@ -180,6 +180,8 @@ async function runScript(tenantId: bigint, databaseUrl: string | undefined) {
     ],
     {
       env: { ...process.env, DATABASE_URL: databaseUrl ?? "" },
+      // Killed before the test's own timeout, so a run that hangs never outlives its test.
+      timeout: 25_000,
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -242,7 +244,7 @@ describe("what the script prints for a tenant it settled", () => {
       }),
     ).toEqual([
       "tenant 7 · 4 of 10 repriced quarters still marked: the dashboard job settles them, read from the rows until then",
-      "  a settle step failed and was retried: Transaction already closed",
+      "  a settle read or step failed: Transaction already closed",
     ]);
   });
 });

@@ -41,10 +41,8 @@ function select(staged: string[], extra: Record<string, string> = {}) {
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), "test-staged-"));
   mkdirSync(join(repo, "scripts"));
-  cpSync(
-    join(ROOT, "scripts/test-staged.sh"),
-    join(repo, "scripts/test-staged.sh"),
-  );
+  for (const script of ["test-staged.sh", "bun-test.sh"])
+    cpSync(join(ROOT, "scripts", script), join(repo, "scripts", script));
   write("app/a/service.ts", "export const a = 1;\n");
   write("app/b/other.ts", "export const b = 1;\n");
   write(
@@ -134,7 +132,7 @@ describe("test-staged", () => {
   test("the whole suite, when asked for, runs in parallel workers", () => {
     expect(
       select(["prisma/schema.prisma"], { TEST_STAGED_FULL: "1" }),
-    ).toContain("running the whole suite (bun test --parallel)");
+    ).toContain("running the whole suite (scripts/bun-test.sh --parallel)");
   });
 
   // husky puts node_modules/.bin first, and its `bun` would run the hook's tests past the machine's
@@ -150,7 +148,7 @@ describe("test-staged", () => {
     ] as const) {
       write(
         join(dir.slice(repo.length + 1), "bun"),
-        `#!/bin/sh\n[ "$1" = "--version" ] && { echo ${version}; exit 0; }\necho "$@" >> "${dir}/calls"\nexit ${code}\n`,
+        `#!/bin/sh\n[ "$1" = "--version" ] && { echo ${version}; exit 0; }\n[ "$1" = "-e" ] && { echo 30000; exit 0; }\necho "$@" >> "${dir}/calls"\nexit ${code}\n`,
       );
       chmodSync(join(dir, "bun"), 0o755);
     }
@@ -173,7 +171,7 @@ describe("test-staged", () => {
     expect(out.exitCode).toBe(3);
     expect(existsSync(join(local, "calls"))).toBe(false);
     expect(readFileSync(join(machine, "calls"), "utf8")).toContain(
-      "test tests/modules/a-service.test.ts",
+      "test --timeout 30000 tests/modules/a-service.test.ts",
     );
   });
 
@@ -183,7 +181,7 @@ describe("test-staged", () => {
     expect(out.exitCode).toBe(5);
     expect(existsSync(join(machine, "calls"))).toBe(false);
     expect(readFileSync(join(local, "calls"), "utf8")).toContain(
-      "test tests/modules/a-service.test.ts",
+      "test --timeout 30000 tests/modules/a-service.test.ts",
     );
   });
 });

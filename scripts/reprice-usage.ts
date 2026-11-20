@@ -185,10 +185,9 @@ export async function settleRepricedQuarters(
       unread: error,
     }));
   if (!guard.ok) return unread(guard.error);
-  // The marks to settle are the ones visible now, read for every tenant in one statement, by the
-  // newest id of each quarter: a step deletes the marks it reads oldest id first, so that one leaves
-  // last. An id is taken before its write commits, so no cutoff on the id tells a mark seen now from
-  // one that becomes visible later.
+  // The marks to settle are the ones visible now, by id, read for every tenant in one statement: an id
+  // is taken before its write commits, so no cutoff on the id tells a mark seen now from one that
+  // becomes visible later.
   const pairs = [...written].flatMap(([tenantId, set]) =>
     [...set].map((q) => [tenantId, new Date(q)] as const),
   );
@@ -196,11 +195,10 @@ export async function settleRepricedQuarters(
     () =>
       asSuperAdminOn(db, (tx) =>
         tx.$queryRaw<{ tenant_id: bigint; id: bigint }[]>(Prisma.sql`
-          SELECT m.tenant_id, MAX(m.id) AS id FROM ledger_sum_marks m
+          SELECT m.tenant_id, m.id FROM ledger_sum_marks m
             JOIN unnest(${pairs.map(([t]) => t.toString())}::bigint[],
                         ${pairs.map(([, q]) => q)}::timestamp[]) AS w(tenant_id, quarter)
-              ON m.tenant_id = w.tenant_id AND m.quarter = w.quarter
-           GROUP BY m.tenant_id, m.quarter`),
+              ON m.tenant_id = w.tenant_id AND m.quarter = w.quarter`),
       ),
     sleep,
   );

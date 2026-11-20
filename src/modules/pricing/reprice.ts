@@ -306,7 +306,8 @@ export async function runReprice(
           )
         : capturePricer(opts.provider, (t) => overrides.get(t) ?? null);
       const { updates } = planReprice(rows, pricer, groups);
-      if (!opts.apply || updates.length === 0) return { rows, updates: 0 };
+      if (!opts.apply || updates.length === 0)
+        return { rows, updates: 0, wrote: [] };
       // The quarters come from the rows as the UPDATE wrote them, not as they were read: a row
       // moved or deleted in between is counted where it is now, or not at all.
       const wrote = await db.$queryRaw<{ tenant_id: bigint; quarter: Date }[]>`
@@ -317,13 +318,14 @@ export async function runReprice(
                         ${updates.map((u) => u.priceTable)}::text[]) AS v(id, cost, stamp)
            WHERE u.id = v.id::bigint
        RETURNING u.tenant_id, ledger_quarter(u.created_at) AS quarter`;
-      for (const w of wrote) {
-        const quarters = writtenQuarters.get(w.tenant_id) ?? new Set<number>();
-        quarters.add(w.quarter.getTime());
-        writtenQuarters.set(w.tenant_id, quarters);
-      }
-      return { rows, updates: wrote.length };
+      return { rows, updates: wrote.length, wrote };
     });
+    // NOTE: recorded once the batch's transaction has committed, never for one that rolled back.
+    for (const w of read.wrote) {
+      const quarters = writtenQuarters.get(w.tenant_id) ?? new Set<number>();
+      quarters.add(w.quarter.getTime());
+      writtenQuarters.set(w.tenant_id, quarters);
+    }
     if (opts.apply) written += read.updates;
     const last = read.rows.at(-1);
     if (!last || read.rows.length < batchSize) break;

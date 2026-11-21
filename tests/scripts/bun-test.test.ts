@@ -31,18 +31,26 @@ function stub(dir: string, body: string, version = Bun.version) {
   return join(root, dir);
 }
 
+// Every launch ends in `--help` and runs from an empty directory, so a launcher that falls back to the
+// real `bun` (a stub that cannot run, under a `noexec` temporary directory) prints the usage and runs no
+// test, this file included.
 function launch(args: string[], dirs: string[], path = process.env.PATH ?? "") {
-  return Bun.spawn([process.execPath, "scripts/bun-test.ts", ...args], {
-    cwd: ROOT,
-    env: { ...process.env, PATH: [...dirs, path].join(delimiter) },
-    stdout: "pipe",
-    stderr: "ignore",
-  });
+  const cwd = join(root, "cwd");
+  mkdirSync(cwd, { recursive: true });
+  return Bun.spawn(
+    [process.execPath, join(ROOT, "scripts/bun-test.ts"), ...args, "--help"],
+    {
+      cwd,
+      env: { ...process.env, PATH: [...dirs, path].join(delimiter) },
+      stdout: "pipe",
+      stderr: "ignore",
+    },
+  );
 }
 
 // `bun test --help` from the binary running the launcher: it prints the usage and runs no test.
 async function launchedHelp(dirs: string[], path?: string) {
-  const proc = launch(["--help"], dirs, path);
+  const proc = launch([], dirs, path);
   const [out, code] = await Promise.all([
     new Response(proc.stdout).text(),
     proc.exited,
@@ -71,6 +79,7 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
       "a.test.ts",
       "--timeout",
       "90000",
+      "--help",
       "",
     ]);
   });

@@ -31,16 +31,23 @@ function stub(dir: string, body: string, version = Bun.version) {
   return join(root, dir);
 }
 
-function launch(args: string[], dirs: string[]) {
+function launch(args: string[], dirs: string[], path = process.env.PATH ?? "") {
   return Bun.spawn([process.execPath, "scripts/bun-test.ts", ...args], {
     cwd: ROOT,
-    env: {
-      ...process.env,
-      PATH: [...dirs, process.env.PATH ?? ""].join(delimiter),
-    },
-    stdout: "ignore",
+    env: { ...process.env, PATH: [...dirs, path].join(delimiter) },
+    stdout: "pipe",
     stderr: "ignore",
   });
+}
+
+// `bun test --help` from the binary running the launcher: it prints the usage and runs no test.
+async function launchedHelp(dirs: string[], path?: string) {
+  const proc = launch(["--help"], dirs, path);
+  const [out, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  return { code, usage: out.includes("Usage: bun test") };
 }
 
 beforeEach(() => {
@@ -69,8 +76,8 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
   });
 
   // A package script puts node_modules/.bin first, and its `bun` would skip the machine's own (a queue
-  // that caps concurrent runs); a machine `bun` of another version would run the tests on a runtime
-  // the project does not pin.
+  // that caps concurrent runs); a machine `bun` of another version, or none, leaves the run on the
+  // binary running the launcher.
   test("starts the machine's `bun` past node_modules/.bin when it is this one's version", async () => {
     const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
     const machine = stub(
@@ -89,25 +96,39 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
     ]).toEqual([true, false]);
   });
 
-  test("keeps node_modules/.bin's `bun` when the machine's is another version", async () => {
+  test("starts the binary running it when the machine's `bun` is another version", async () => {
     const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
     const machine = stub("machine", `touch "${root}/ran-machine"`, "0.0.1");
 
-    await launch([], [local, machine]).exited;
+    expect(await launchedHelp([local, machine])).toEqual({
+      code: 0,
+      usage: true,
+    });
     expect([
       existsSync(join(root, "ran-machine")),
       existsSync(join(root, "ran-local")),
-    ]).toEqual([false, true]);
+    ]).toEqual([false, false]);
   });
 
-  test("keeps node_modules/.bin's `bun` when the machine's cannot start", async () => {
+  test("starts the binary running it when the machine's `bun` cannot start", async () => {
     const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
     mkdirSync(join(root, "machine"));
     writeFileSync(join(root, "machine/bun"), "#!/nonexistent/interpreter\n");
     chmodSync(join(root, "machine/bun"), 0o755);
 
-    expect(await launch([], [local, join(root, "machine")]).exited).toBe(0);
-    expect(existsSync(join(root, "ran-local"))).toBe(true);
+    expect(await launchedHelp([local, join(root, "machine")])).toEqual({
+      code: 0,
+      usage: true,
+    });
+    expect(existsSync(join(root, "ran-local"))).toBe(false);
+  });
+
+  test("starts the binary running it when PATH has no `bun` at all", async () => {
+    mkdirSync(join(root, "empty"));
+    expect(await launchedHelp([], join(root, "empty"))).toEqual({
+      code: 0,
+      usage: true,
+    });
   });
 
   test("a signal sent to the launcher alone reaches the run", async () => {

@@ -12,23 +12,23 @@ import { TEST_TIMEOUT_MS } from "../tests/utils/timeouts";
 // A package script runs with node_modules/.bin first on PATH, and the `bun` there would start the run
 // past the one the machine puts in front of the real binary (a queue that caps concurrent runs). The
 // machine's `bun`, found on PATH without the project's bin directories, starts the run when it is this
-// one's version, as scripts/test-staged.sh does for the hook. The run keeps the PATH it was given.
+// one's version, as scripts/test-staged.sh does for the hook; otherwise the binary running this script
+// does. The run keeps the PATH it was given.
 function testBun(path: string): string {
   const outside = path
     .split(delimiter)
     .filter((dir) => !/(^|[\\/])node_modules[\\/]\.bin[\\/]?$/.test(dir))
     .join(delimiter);
-  if (outside === path) return "bun";
   const machine = Bun.which("bun", { PATH: outside });
-  if (machine === null) return "bun";
+  if (machine === null) return process.execPath;
   try {
     const version = Bun.spawnSync([machine, "--version"])
       .stdout.toString()
       .trim();
-    return version === Bun.version ? machine : "bun";
+    return version === Bun.version ? machine : process.execPath;
   } catch {
     // One the system cannot start (a shim whose interpreter is gone) is not the machine's runtime.
-    return "bun";
+    return process.execPath;
   }
 }
 

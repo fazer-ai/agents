@@ -1,6 +1,15 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -8,44 +17,92 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
+import { until } from "@/tests/utils/poll";
+import {
+  holdTestTimeout,
+  TEST_TIMEOUT_MS,
+  TIMEOUT_ON_COMMAND_LINE,
+} from "@/tests/utils/timeouts";
 
 const ROOT = join(import.meta.dir, "../..");
 
 // bun gives a preload's `jest.setTimeout` to the first file of a process only, so a later file ran with
 // bun's 5 s default. The launcher puts the suite's deadline on the command line, where it reaches every
-// file. The `bun` it starts is a stub first on PATH that records its arguments.
+// file. The `bun` it starts is a stub first on PATH that records its arguments and environment.
 let bin = "";
+
+function stub(body: string) {
+  writeFileSync(join(bin, "bun"), `#!/bin/sh\n${body}\n`);
+  chmodSync(join(bin, "bun"), 0o755);
+}
+
+function launch(args: string[]) {
+  return Bun.spawn([process.execPath, "scripts/bun-test.ts", ...args], {
+    cwd: ROOT,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+}
 
 beforeEach(() => {
   bin = mkdtempSync(join(tmpdir(), "bun-test-"));
-  writeFileSync(
-    join(bin, "bun"),
-    `#!/bin/sh\nprintf '%s\\n' "$@" > "${bin}/args"\nexit 7\n`,
-  );
-  chmodSync(join(bin, "bun"), 0o755);
 });
 
 afterEach(() => rmSync(bin, { recursive: true, force: true }));
 
 describe("scripts/bun-test.ts", () => {
-  test("runs `bun test` with the suite's deadline and the arguments it was given, and exits with its code", () => {
-    const out = Bun.spawnSync(
-      [process.execPath, "scripts/bun-test.ts", "a.test.ts", "--bail"],
-      {
-        cwd: ROOT,
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
-      },
+  test("runs `bun test` with the suite's deadline before the arguments it was given, marked, and exits with its code", async () => {
+    stub(
+      `printf '%s\\n' "$@" > "${bin}/args"\necho "$${TIMEOUT_ON_COMMAND_LINE}" > "${bin}/mark"\nexit 7`,
     );
 
+    expect(await launch(["a.test.ts", "--timeout", "90000"]).exited).toBe(7);
     expect(readFileSync(join(bin, "args"), "utf8").split("\n")).toEqual([
       "test",
       "--timeout",
       String(TEST_TIMEOUT_MS),
       "a.test.ts",
-      "--bail",
+      "--timeout",
+      "90000",
       "",
     ]);
-    expect(out.exitCode).toBe(7);
+    expect(readFileSync(join(bin, "mark"), "utf8")).toBe("1\n");
+  });
+
+  test("a signal sent to the launcher alone reaches the run", async () => {
+    stub(
+      `trap 'echo TERM > "${bin}/got"; exit 143' TERM\ntouch "${bin}/up"\nwhile :; do sleep 0.05; done`,
+    );
+    const proc = launch(["--watch"]);
+    await until("the run to start", () => existsSync(join(bin, "up")));
+
+    proc.kill("SIGTERM");
+    await until("the run to get the signal", () =>
+      existsSync(join(bin, "got")),
+    );
+    expect(readFileSync(join(bin, "got"), "utf8")).toBe("TERM\n");
+    await proc.exited;
+  });
+});
+
+describe("holdTestTimeout", () => {
+  afterEach(() => {
+    delete process.env[TIMEOUT_ON_COMMAND_LINE];
+    jest.restoreAllMocks();
+  });
+
+  test("names the suite's deadline in a bare `bun test`", () => {
+    delete process.env[TIMEOUT_ON_COMMAND_LINE];
+    const set = spyOn(jest, "setTimeout");
+    holdTestTimeout();
+    expect(set).toHaveBeenCalledWith(TEST_TIMEOUT_MS);
+  });
+
+  test("leaves the launcher's command line, a longer deadline asked for included, alone", () => {
+    process.env[TIMEOUT_ON_COMMAND_LINE] = "1";
+    const set = spyOn(jest, "setTimeout");
+    holdTestTimeout();
+    expect(set).not.toHaveBeenCalled();
   });
 });

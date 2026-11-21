@@ -134,7 +134,9 @@ describe("test-staged", () => {
   test("the whole suite, when asked for, runs in parallel workers", () => {
     expect(
       select(["prisma/schema.prisma"], { TEST_STAGED_FULL: "1" }),
-    ).toContain("running the whole suite (bun scripts/bun-test.ts --parallel)");
+    ).toContain(
+      "running the whole suite (bun --no-env-file scripts/bun-test.ts --parallel)",
+    );
   });
 
   // husky puts node_modules/.bin first, and its `bun` would run the hook's tests past the machine's
@@ -173,7 +175,7 @@ describe("test-staged", () => {
     expect(out.exitCode).toBe(3);
     expect(existsSync(join(local, "calls"))).toBe(false);
     expect(readFileSync(join(machine, "calls"), "utf8")).toContain(
-      "scripts/bun-test.ts tests/modules/a-service.test.ts",
+      "--no-env-file scripts/bun-test.ts tests/modules/a-service.test.ts",
     );
   });
 
@@ -183,7 +185,7 @@ describe("test-staged", () => {
     expect(out.exitCode).toBe(5);
     expect(existsSync(join(machine, "calls"))).toBe(false);
     expect(readFileSync(join(local, "calls"), "utf8")).toContain(
-      "scripts/bun-test.ts tests/modules/a-service.test.ts",
+      "--no-env-file scripts/bun-test.ts tests/modules/a-service.test.ts",
     );
   });
 });

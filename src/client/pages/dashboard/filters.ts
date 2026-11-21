@@ -1,12 +1,28 @@
 import { CLIENT_AUDIENCES } from "@/graph/usage-sources";
+import {
+  CALENDAR_PRESETS,
+  type CalendarPreset,
+  type CalendarUnit,
+  isCalendarPreset,
+  presetDays,
+  presetRunning,
+  presetUnit,
+  previousStop,
+} from "@/modules/analytics/calendar";
 import { type Grain, groupOf, periodWindow } from "./period";
 
 // THE PAGE'S ONE FILTER, IN THE URL. Period, agent, inbox and source live in the query string, so a
 // view can be shared as a link and Back returns to the previous view. Every block reads the window
 // computed here, in the operator's own days (docs/ui.md, "A day is defined by the viewer's browser
-// timezone"), and the previous period is the same number of days immediately before it.
+// timezone"). A trailing window is compared with the same number of days immediately before it, a
+// calendar period with the calendar period before it (src/modules/analytics/calendar.ts).
 
-export const RANGES = ["7d", "30d", "90d", "12m", "all", "custom"] as const;
+export const TRAILING_RANGES = ["7d", "30d", "90d", "12m", "all"] as const;
+export const RANGES = [
+  ...CALENDAR_PRESETS,
+  ...TRAILING_RANGES,
+  "custom",
+] as const;
 export type Range = (typeof RANGES)[number];
 export const SOURCES = ["inbox", "playground", "client", "all"] as const;
 export type Source = (typeof SOURCES)[number];
@@ -14,7 +30,10 @@ export type Source = (typeof SOURCES)[number];
 export const AUDIENCES = ["all", ...CLIENT_AUDIENCES] as const;
 export type Audience = (typeof AUDIENCES)[number];
 
-const RANGE_DAYS: Record<Exclude<Range, "custom" | "all">, number> = {
+const RANGE_DAYS: Record<
+  Exclude<(typeof TRAILING_RANGES)[number], "all">,
+  number
+> = {
   "7d": 7,
   "30d": 30,
   "90d": 90,
@@ -128,6 +147,29 @@ export interface Window {
   firstDay: string | null;
   lastDay: string;
   days: number | null;
+  // A calendar period: the unit its previous period is one of.
+  unit?: CalendarUnit;
+}
+
+function dayCountOf(first: string, last: string): number {
+  return (
+    Math.round(
+      (Date.UTC(ymd(last)[0], ymd(last)[1], ymd(last)[2]) -
+        Date.UTC(ymd(first)[0], ymd(first)[1], ymd(first)[2])) /
+        86_400_000,
+    ) + 1
+  );
+}
+
+function ymd(day: string): [number, number, number] {
+  const [y = 0, m = 1, d = 1] = day.split("-").map(Number);
+  return [y, m - 1, d];
+}
+
+// A preset that is still under way where `now` is: today, this week, this month, this quarter, this
+// year. The page says so beside the selector.
+export function rangeRunning(range: Range): boolean {
+  return isCalendarPreset(range) && presetRunning(range);
 }
 
 // The window a set of filters names, at `now`. A preset ends today and covers N local days; a custom
@@ -141,6 +183,7 @@ export function windowOf(f: DashboardFilters, now: Date = new Date()): Window {
   }
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const until = addDays(today, 1);
+  if (isCalendarPreset(f.range)) return calendarWindow(f.range, today);
   if (f.range === "all") {
     return {
       since: null,
@@ -161,7 +204,66 @@ export function windowOf(f: DashboardFilters, now: Date = new Date()): Window {
   };
 }
 
-// The period before: the same number of days, starting that many days earlier. A window still
+// A calendar preset on the local day `today`. A running one ends after today, like a trailing window,
+// and is read up to the moment of the read (`readUpTo`); a closed one ends at the midnight after its
+// last day.
+function calendarWindow(p: CalendarPreset, today: Date): Window {
+  const { first, end } = presetDays(p, localDayKey(today));
+  const lastDay = presetRunning(p)
+    ? localDayKey(today)
+    : localDayKey(addDays(startOfLocalDay(end), -1));
+  return {
+    since: startOfLocalDay(first),
+    until: addDays(startOfLocalDay(lastDay), 1),
+    firstDay: first,
+    lastDay,
+    days: dayCountOf(first, lastDay),
+    unit: presetUnit(p),
+  };
+}
+
+// A calendar period's previous one: the unit before, whole when the period is over, and up to the same
+// day and time of day when it is still running (April 1 to 10 at 10:00 against March 1 to 10 at
+// 10:00). A day the unit before does not have (March 31 against February) compares with all of it.
+function previousCalendarWindow(
+  w: Window & { since: Date; firstDay: string; unit: CalendarUnit },
+  now: Date,
+): Window {
+  const running =
+    w.since.getTime() <= now.getTime() && now.getTime() < w.until.getTime();
+  const prev = previousStop(
+    w.firstDay,
+    w.unit,
+    running ? { today: localDayKey(now) } : null,
+  );
+  const until =
+    prev.stop.at === "time"
+      ? new Date(
+          ymd(prev.stop.day)[0],
+          ymd(prev.stop.day)[1],
+          ymd(prev.stop.day)[2],
+          now.getHours(),
+          now.getMinutes(),
+          now.getSeconds(),
+          now.getMilliseconds(),
+        )
+      : startOfLocalDay(prev.stop.day);
+  const lastDay =
+    prev.stop.at === "time"
+      ? prev.stop.day
+      : localDayKey(addDays(startOfLocalDay(prev.stop.day), -1));
+  return {
+    since: startOfLocalDay(prev.first),
+    until,
+    firstDay: prev.first,
+    lastDay,
+    days: dayCountOf(prev.first, lastDay),
+    unit: w.unit,
+  };
+}
+
+// The period before: a calendar period's is the calendar period before (previousCalendarWindow); a
+// trailing window's is the same number of days, starting that many days earlier. A window still
 // running at `now` is compared up to the same local time of day, N days back: the last 7 days at
 // 10:00 against the 7 before them up to 10:00, never against whole days, which would read as a drop
 // every morning. None for "all".
@@ -170,6 +272,11 @@ export function previousWindow(
   now: Date = new Date(),
 ): Window | null {
   if (!w.since || w.days === null) return null;
+  if (w.unit && w.firstDay)
+    return previousCalendarWindow(
+      { ...w, since: w.since, firstDay: w.firstDay, unit: w.unit },
+      now,
+    );
   const since = addDays(w.since, -w.days);
   const until =
     w.since.getTime() <= now.getTime() && now.getTime() < w.until.getTime()

@@ -392,6 +392,12 @@ async function renderDash(path = "/", settled = true, clientChannel?: boolean) {
   });
 }
 
+// The period select, by the value a preset is stored as in the link.
+const pickPeriod = (value: string) =>
+  fireEvent.change(screen.getByRole("combobox", { name: "Period" }), {
+    target: { value },
+  });
+
 const has = (text: string | RegExp) =>
   screen.queryAllByText(text, { exact: false }).length > 0;
 const asks = (path: string) => asked.filter((u) => u.pathname.endsWith(path));
@@ -892,7 +898,7 @@ describe("a retry", () => {
       expect(has("No warnings or errors in this period.")).toBe(true);
     });
     const before = asks("/metrics/health").length;
-    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    pickPeriod("90d");
     await waitFor(() => {
       expect(location).toBe("/?range=90d");
       expect(asks("/metrics/health").length).toBeGreaterThan(before);
@@ -913,7 +919,7 @@ describe("a view replaced while its requests run", () => {
     );
     expect(pending.length).toBeGreaterThan(0);
     expect(pending.every((s) => s.signal && !s.signal.aborted)).toBe(true);
-    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    pickPeriod("90d");
     await waitFor(() => {
       expect(location).toBe("/?range=90d");
       expect(pending.every((s) => s.signal?.aborted)).toBe(true);
@@ -1042,7 +1048,7 @@ describe("the funnel's own controls", () => {
       ).toBe(true);
       expect(has("Ana")).toBe(true);
     });
-    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    pickPeriod("90d");
     await waitFor(() => {
       expect(location).toBe("/?range=90d");
       expect(
@@ -1445,7 +1451,7 @@ describe("a chart with days past retention", () => {
       };
       await waitFor(() => expect(current().length).toBe(1));
       const [first] = current();
-      fireEvent.click(screen.getByRole("radio", { name: "30d" }));
+      pickPeriod("30d");
       await waitFor(() => expect(current().length).toBe(2));
       const [, second] = current();
       expect(second?.searchParams.get("since")).toBe(
@@ -1476,5 +1482,88 @@ describe("a chart with days past retention", () => {
         new Date(2026, 9, 7, 0, 0, 5).getTime(),
       );
     });
+  });
+});
+
+// A calendar period on the page: the selector groups calendar periods apart from trailing windows,
+// the link carries the preset, the previous period asked is the calendar period before, and the note
+// beside the selector says what the figures are compared with and whether the period is still running.
+describe("calendar periods", () => {
+  beforeEach(() => setSystemTime(new Date(2026, 3, 10, 10, 0)));
+  afterEach(() => setSystemTime());
+
+  const kpiWindows = () =>
+    asks("/metrics/kpis")
+      .map((u) => [
+        new Date(String(u.searchParams.get("since"))).getTime(),
+        new Date(String(u.searchParams.get("until"))).getTime(),
+      ])
+      .sort((a, b) => Number(b[0]) - Number(a[0]));
+  const note = () => screen.getByTestId("period-note").textContent ?? "";
+
+  test("the selector names its two families, and the dates show only for custom", async () => {
+    await renderDash("/");
+    const select = screen.getByRole("combobox", { name: "Period" });
+    const groups = [...select.querySelectorAll("optgroup")].map((g) => [
+      g.getAttribute("label"),
+      [...g.querySelectorAll("option")].map((o) => o.textContent),
+    ]);
+    expect(groups).toEqual([
+      [
+        "Calendar",
+        [
+          "Today",
+          "Yesterday",
+          "This week",
+          "Last week",
+          "This month",
+          "Last month",
+          "This quarter",
+          "Last quarter",
+          "This year",
+        ],
+      ],
+      [
+        "Rolling window",
+        [
+          "Last 7 days",
+          "Last 30 days",
+          "Last 90 days",
+          "Last 12 months",
+          "All time",
+        ],
+      ],
+    ]);
+    expect(screen.queryAllByLabelText("From").length).toBe(0);
+    pickPeriod("last-month");
+    await waitFor(() => expect(location).toBe("/?range=last-month"));
+    expect(screen.queryAllByLabelText("From").length).toBe(0);
+    pickPeriod("custom");
+    await waitFor(() =>
+      expect(screen.queryAllByLabelText("From").length).toBe(1),
+    );
+  });
+
+  test("last month is compared with the whole month before, and the note names it", async () => {
+    await renderDash("/?range=last-month");
+    await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
+    expect(kpiWindows()).toEqual([
+      [new Date(2026, 2, 1).getTime(), new Date(2026, 3, 1).getTime()],
+      [new Date(2026, 1, 1).getTime(), new Date(2026, 2, 1).getTime()],
+    ]);
+    expect(note()).toBe("Compared with Feb 1 to 28, 2026");
+    expect(has("In progress")).toBe(false);
+  });
+
+  test("this month runs, and is compared with the same days of the month before", async () => {
+    await renderDash("/?range=this-month");
+    await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
+    expect(kpiWindows()).toEqual([
+      [new Date(2026, 3, 1).getTime(), new Date(2026, 3, 10, 10).getTime()],
+      [new Date(2026, 2, 1).getTime(), new Date(2026, 2, 10, 10).getTime()],
+    ]);
+    expect(note()).toBe(
+      "In progressCompared with Mar 1 to 10, 2026, up to 10:00 AM",
+    );
   });
 });

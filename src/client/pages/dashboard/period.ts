@@ -128,3 +128,21 @@ export function periodLabels(
   const f = (k: string) => day.format(local(k));
   return { tick: f, long: f };
 }
+
+// A stretch of local days with its year, as the period note names the comparison ("Mar 1 to 10,
+// 2026", "1 a 10 de mar. de 2026"); one day reads as that day.
+export function daysLabel(
+  lang: string,
+  first: string,
+  last: string,
+  to = "to",
+): string {
+  const f = new Intl.DateTimeFormat(lang, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return first === last
+    ? f.format(local(first))
+    : dayRange(f, local(first), local(last), to);
+}

@@ -204,12 +204,17 @@ export interface RepriceOptions {
   // Overridable for tests: a table function and its stamp, which replace the capture's order.
   stamp?: string;
   price?: PriceFn;
+  // Filled batch by batch as each one commits, so a caller still has the quarters already written
+  // when a later batch fails. A new map when absent.
+  writtenQuarters?: Map<bigint, Set<number>>;
 }
 
 export interface RepriceReport {
   groups: RepriceGroup[];
   written: number;
   applied: boolean;
+  // Per tenant, the UTC quarter hours (epoch ms) of the rows written: the dashboard sums to settle.
+  writtenQuarters: Map<bigint, Set<number>>;
 }
 
 type TransactionCapable = Pick<PrismaClient, "$extends" | "$transaction">;
@@ -249,6 +254,8 @@ export async function runReprice(
   const groups = new Map<string, RepriceGroup>();
   let cursor = 0n;
   let written = 0;
+  const writtenQuarters =
+    opts.writtenQuarters ?? new Map<bigint, Set<number>>();
   for (;;) {
     const read = await asSuperAdminOn(base, async (db) => {
       const rows = await db.llmUsage.findMany({
@@ -299,17 +306,34 @@ export async function runReprice(
           )
         : capturePricer(opts.provider, (t) => overrides.get(t) ?? null);
       const { updates } = planReprice(rows, pricer, groups);
-      if (opts.apply && updates.length > 0) {
-        await db.$executeRaw`
+      if (!opts.apply || updates.length === 0)
+        return { rows, updates: 0, wrote: [] };
+      // The quarters come from the rows as the UPDATE wrote them, not as they were read: a row
+      // moved or deleted in between is counted where it is now, or not at all.
+      const wrote = await db.$queryRaw<
+        { tenant_id: bigint; quarter: Date; n: number }[]
+      >`
+        WITH w AS (
           UPDATE llm_usage AS u
              SET cost_usd = v.cost::numeric, price_table = v.stamp
             FROM unnest(${updates.map((u) => u.id.toString())}::text[],
                         ${updates.map((u) => u.costUsd)}::text[],
                         ${updates.map((u) => u.priceTable)}::text[]) AS v(id, cost, stamp)
-           WHERE u.id = v.id::bigint`;
-      }
-      return { rows, updates: updates.length };
+           WHERE u.id = v.id::bigint
+       RETURNING u.tenant_id, ledger_quarter(u.created_at) AS quarter)
+        SELECT tenant_id, quarter, COUNT(*)::int AS n FROM w GROUP BY 1, 2`;
+      return {
+        rows,
+        updates: wrote.reduce((sum, w) => sum + w.n, 0),
+        wrote,
+      };
     });
+    // NOTE: recorded once the batch's transaction has committed, never for one that rolled back.
+    for (const w of read.wrote) {
+      const quarters = writtenQuarters.get(w.tenant_id) ?? new Set<number>();
+      quarters.add(w.quarter.getTime());
+      writtenQuarters.set(w.tenant_id, quarters);
+    }
     if (opts.apply) written += read.updates;
     const last = read.rows.at(-1);
     if (!last || read.rows.length < batchSize) break;
@@ -325,5 +349,6 @@ export async function runReprice(
     ),
     written,
     applied: opts.apply,
+    writtenQuarters,
   };
 }

@@ -55,7 +55,7 @@ async function launchedHelp(dirs: string[], path?: string) {
     new Response(proc.stdout).text(),
     proc.exited,
   ]);
-  return { code, usage: out.includes("Usage: bun test") };
+  return { code, usage: Bun.stripANSI(out).includes("Usage: bun test") };
 }
 
 beforeEach(() => {

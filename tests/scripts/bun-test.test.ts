@@ -71,24 +71,32 @@ describe("scripts/bun-test.ts", () => {
   });
 
   test("a signal sent to the launcher alone reaches the run", async () => {
+    // The stub ends on its own after 10 s, so a launcher that does not pass the signal on leaves
+    // nothing running behind the failed test.
     stub(
-      `trap 'echo TERM > "${bin}/got"; exit 143' TERM\ntouch "${bin}/up"\nwhile :; do sleep 0.05; done`,
+      `trap 'echo TERM > "${bin}/got"; exit 143' TERM\ntouch "${bin}/up"\ni=0\nwhile [ $i -lt 200 ]; do sleep 0.05; i=$((i + 1)); done`,
     );
     const proc = launch(["--watch"]);
-    await until("the run to start", () => existsSync(join(bin, "up")));
-
-    proc.kill("SIGTERM");
-    await until("the run to get the signal", () =>
-      existsSync(join(bin, "got")),
-    );
-    expect(readFileSync(join(bin, "got"), "utf8")).toBe("TERM\n");
-    await proc.exited;
+    try {
+      await until("the run to start", () => existsSync(join(bin, "up")));
+      proc.kill("SIGTERM");
+      await until("the run to get the signal", () =>
+        existsSync(join(bin, "got")),
+      );
+      expect(readFileSync(join(bin, "got"), "utf8")).toBe("TERM\n");
+    } finally {
+      proc.kill("SIGKILL");
+      await proc.exited;
+    }
   });
 });
 
 describe("holdTestTimeout", () => {
+  // Under the launcher the mark is set for the whole process, and a sums file run after this one reads it.
+  const inherited = process.env[TIMEOUT_ON_COMMAND_LINE];
   afterEach(() => {
-    delete process.env[TIMEOUT_ON_COMMAND_LINE];
+    if (inherited === undefined) delete process.env[TIMEOUT_ON_COMMAND_LINE];
+    else process.env[TIMEOUT_ON_COMMAND_LINE] = inherited;
     jest.restoreAllMocks();
   });
 
@@ -104,5 +112,9 @@ describe("holdTestTimeout", () => {
     const set = spyOn(jest, "setTimeout");
     holdTestTimeout();
     expect(set).not.toHaveBeenCalled();
+  });
+
+  test("the tests above leave the mark as the process had it", () => {
+    expect(process.env[TIMEOUT_ON_COMMAND_LINE]).toBe(inherited);
   });
 });

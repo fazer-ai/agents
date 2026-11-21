@@ -129,6 +129,13 @@ describe("test-staged", () => {
     );
   });
 
+  // Every local run goes through the launcher, so a change to it reaches every test file too.
+  test("TEST_STAGED_FULL=1 runs the whole suite on a change to the test launcher", () => {
+    expect(
+      select(["scripts/bun-test.ts"], { TEST_STAGED_FULL: "1" }),
+    ).toContain("changes every test file: running the whole suite");
+  });
+
   // One process holding every test file outgrows a developer machine's memory; each worker holds
   // only its share.
   test("the whole suite, when asked for, runs in parallel workers", () => {

@@ -60,7 +60,7 @@ Every block asks its own route (`useMetricsBlock`, `src/client/pages/dashboard/u
 
 ## Ledger and conversation sums
 
-The figures do not add up the ledger and the conversations row by row. The `LEDGER_SUMS` job (one per tenant, armed at boot for every tenant and when the first-run setup or an admin creates one, and rearmed every minute under the scheduler's lease, `src/modules/analytics/ledger-sums.ts`) keeps them added up, and the readers add up the sums.
+The figures do not add up the ledger and the conversations row by row, and neither do the Pro Dashboards' usage and conversation panels, which read the same sums through the same readers and show the same cost per conversation for the same window and filter ([`dashboards.md`](dashboards.md), "Where the figures come from"). The `LEDGER_SUMS` job (one per tenant, armed at boot for every tenant and when the first-run setup or an admin creates one, and rearmed every minute under the scheduler's lease, `src/modules/analytics/ledger-sums.ts`) keeps them added up, and the readers add up the sums.
 
 | table | grain | written from |
 |---|---|---|

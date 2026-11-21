@@ -436,6 +436,17 @@ export function trendPointHref(
   return drillDownHref(view, w, METRIC_DRILL[metric]);
 }
 
+// The previous period's groups, paired by position with the window's. None when the two answers are
+// grouped differently (this year at 92 days, by day, against the same stretch of a leap year, 93
+// days, by week): a week drawn against a day compares nothing.
+export function previousPeriodsOf(
+  prev: Window | null,
+  grain: Grain,
+  prevGrain: Grain | undefined,
+): string[] {
+  return prev && (prevGrain ?? grain) === grain ? periodsOf(prev, grain) : [];
+}
+
 // One local day as a window, for the drill-down of a point.
 export function dayWindow(key: string): { since: Date; until: Date } {
   const since = startOfLocalDay(key);

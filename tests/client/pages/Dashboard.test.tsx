@@ -1566,4 +1566,14 @@ describe("calendar periods", () => {
       "In progressCompared with Mar 1 to 10, 2026, up to 10:00 AM",
     );
   });
+
+  test("a custom range that runs past today names the days its comparison is read over", async () => {
+    await renderDash("/?range=custom&from=2026-04-01&to=2026-04-15");
+    await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
+    expect(kpiWindows()[1]).toEqual([
+      new Date(2026, 2, 17).getTime(),
+      new Date(2026, 2, 26, 10).getTime(),
+    ]);
+    expect(note()).toBe("Compared with Mar 17 to 26, 2026, up to 10:00 AM");
+  });
 });

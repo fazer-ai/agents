@@ -34,6 +34,7 @@ import {
   apiQuery,
   type DashboardFilters,
   periodsOf,
+  previousPeriodsOf,
   type Source,
   type Window,
 } from "./filters";
@@ -178,13 +179,13 @@ export function CostSection({
 
   const c = costs.data;
   const p = prevCosts.data;
-  // A day, or the week or month of a long window: the answer says which. The previous period has as
-  // many days, so the same grouping, and its group at the same position is the comparison.
+  // A day, or the week or month of a long window: the answer says which. The previous period's group
+  // at the same position is the comparison, only while both periods are grouped alike.
   const grain = c?.grain ?? "day";
   const bounds = { first: win.firstDay, last: win.lastDay };
   const periodColumn = usePeriodColumn(grain);
   const days = periodsOf(win, grain, c?.days[0]?.date ?? null);
-  const prevDays = prev ? periodsOf(prev, p?.grain ?? grain) : [];
+  const prevDays = previousPeriodsOf(prev, grain, p?.grain);
   const costByDay = new Map(c?.days.map((d) => [d.date, d]) ?? []);
   const prevByDay = new Map(p?.days.map((d) => [d.date, d]) ?? []);
 

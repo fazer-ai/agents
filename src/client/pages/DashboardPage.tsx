@@ -133,13 +133,20 @@ function PeriodNote({
   const { t, i18n } = useTranslation();
   if (!running && !prev?.firstDay) return null;
   const to = t("dashboard.chart.rangeTo", "to");
-  const range = prev?.firstDay
-    ? daysLabel(i18n.language, prev.firstDay, prev.lastDay, to)
-    : null;
-  const [y = 0, m = 1, d = 1] = (prev?.lastDay ?? "").split("-").map(Number);
-  // A comparison cut inside its last day: a running period's, at the read's time of day.
+  // The days the previous period is read over end where its query does: inside a day when it is cut
+  // at the read's time of day, else on the day before its exclusive end.
+  const untilDay = prev ? localDayKey(prev.until) : null;
   const partial =
-    !!prev && prev.until.getTime() < new Date(y, m - 1, d + 1).getTime();
+    !!prev && prev.until.getTime() > new Date(`${untilDay}T00:00:00`).getTime();
+  const lastShown = prev
+    ? partial
+      ? (untilDay as string)
+      : localDayKey(new Date(prev.until.getTime() - 1))
+    : null;
+  const range =
+    prev?.firstDay && lastShown
+      ? daysLabel(i18n.language, prev.firstDay, lastShown, to)
+      : null;
   return (
     <p
       className="text-text-muted flex flex-wrap items-center gap-2 text-xs"

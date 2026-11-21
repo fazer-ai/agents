@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   type DashboardFilters,
   DEFAULT_FILTERS,
+  previousPeriodsOf,
   previousWindow,
   type Range,
   rangeRunning,
@@ -124,6 +125,15 @@ describe("a calendar preset as a window, in the viewer's zone", () => {
     expect(r.prevDays).toEqual(["2026-02-01", "2026-02-28", 28]);
   });
 
+  test("a quarter so far whose day the month before lacks stops at that month's end, and never shrinks", () => {
+    const july31 = read("this-quarter", at(2026, 7, 31, 15));
+    expect(july31.previous).toEqual(["2026-04-01 00:00", "2026-05-01 00:00"]);
+    const aug1 = read("this-quarter", at(2026, 8, 1, 10));
+    expect(aug1.previous).toEqual(["2026-04-01 00:00", "2026-05-01 10:00"]);
+    const leapDay = read("this-year", at(2028, 2, 29, 9));
+    expect(leapDay.previous).toEqual(["2027-01-01 00:00", "2027-03-01 00:00"]);
+  });
+
   test("the week starts on Monday: a Sunday night is still the week begun six days before", () => {
     const sunday = read("this-week", at(2026, 11, 15, 23));
     expect(sunday.current).toEqual(["2026-11-09 00:00", "2026-11-15 23:00"]);
@@ -194,6 +204,23 @@ describe("a calendar preset as a window, in the viewer's zone", () => {
       "this-quarter",
       "this-year",
     ]);
+  });
+});
+
+describe("the previous period's points on a chart", () => {
+  test("pair by position while both are grouped alike, and not at all when they are not", () => {
+    // 2 April 2025: this year is 92 days, grouped by day; the same stretch of 2024 is 93, by week.
+    const now = at(2025, 4, 2, 10);
+    const w = windowOf(filters("this-year"), now);
+    const prev = previousWindow(w, now);
+    expect([w.days, prev?.days]).toEqual([92, 93]);
+    expect(previousPeriodsOf(prev, "day", "week")).toEqual([]);
+    expect(previousPeriodsOf(prev, "day", undefined).slice(0, 2)).toEqual([
+      "2024-01-01",
+      "2024-01-02",
+    ]);
+    expect(previousPeriodsOf(prev, "week", "week")[0]).toBe("2024-01-01");
+    expect(previousPeriodsOf(null, "day", "day")).toEqual([]);
   });
 });
 

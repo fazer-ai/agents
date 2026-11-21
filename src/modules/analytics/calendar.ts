@@ -124,10 +124,11 @@ export function presetDays(
   return { first, end: shiftUnits(first, unit, 1) as string };
 }
 
-// Where the previous period of a calendar window stops, as a local day and whether it is the end of
-// that period. A closed window's previous period ends where the window starts. A running one stops on
-// the same day of the unit before, at the read's time of day (`at: "time"`), unless that day does not
-// exist there, in which case the whole unit before is the comparison.
+// Where the previous period of a calendar window stops: at the read's time of day on a day (`at:
+// "time"`), or at the start of a day. A closed window's previous period ends where the window starts.
+// A running one stops on the same day of the unit before, at the read's time of day; where that month
+// is shorter (March 31 against February, July 31 against April), at the end of that month, so a
+// quarter so far never compares with less than the day before did.
 export function previousStop(
   first: string,
   unit: CalendarUnit,
@@ -139,7 +140,14 @@ export function previousStop(
   const prevFirst = shiftUnits(first, unit, -1) as string;
   if (!running) return { first: prevFirst, stop: { day: first, at: "start" } };
   const day = shiftUnits(running.today, unit, -1);
-  return day
-    ? { first: prevFirst, stop: { day, at: "time" } }
-    : { first: prevFirst, stop: { day: first, at: "start" } };
+  if (day) return { first: prevFirst, stop: { day, at: "time" } };
+  const month = shiftUnits(
+    unitStart(running.today, "month"),
+    unit,
+    -1,
+  ) as string;
+  return {
+    first: prevFirst,
+    stop: { day: shiftUnits(month, "month", 1) as string, at: "start" },
+  };
 }

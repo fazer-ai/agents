@@ -11,26 +11,31 @@ import { TEST_TIMEOUT_MS } from "../tests/utils/timeouts";
 
 // A package script runs with node_modules/.bin first on PATH, and the `bun` there would start the run
 // past the one the machine puts in front of the real binary (a queue that caps concurrent runs). The
-// run takes the PATH without the project's bin directories when the `bun` found there is this one's
-// version, as scripts/test-staged.sh does for the hook.
-function machinePath(path: string): string {
+// machine's `bun`, found on PATH without the project's bin directories, starts the run when it is this
+// one's version, as scripts/test-staged.sh does for the hook. The run keeps the PATH it was given.
+function testBun(path: string): string {
   const outside = path
     .split(delimiter)
     .filter((dir) => !/(^|[\\/])node_modules[\\/]\.bin[\\/]?$/.test(dir))
     .join(delimiter);
-  if (outside === path) return path;
+  if (outside === path) return "bun";
   const machine = Bun.which("bun", { PATH: outside });
-  if (machine === null) return path;
+  if (machine === null) return "bun";
   const version = Bun.spawnSync([machine, "--version"])
     .stdout.toString()
     .trim();
-  return version === Bun.version ? outside : path;
+  return version === Bun.version ? machine : "bun";
 }
 
-const PATH = machinePath(process.env.PATH ?? "");
 const proc = Bun.spawn(
-  ["bun", "test", "--timeout", String(TEST_TIMEOUT_MS), ...Bun.argv.slice(2)],
-  { env: { ...process.env, PATH }, stdio: ["inherit", "inherit", "inherit"] },
+  [
+    testBun(process.env.PATH ?? ""),
+    "test",
+    "--timeout",
+    String(TEST_TIMEOUT_MS),
+    ...Bun.argv.slice(2),
+  ],
+  { stdio: ["inherit", "inherit", "inherit"] },
 );
 // A signal sent to this process alone reaches the run too, so a `--watch` is not left behind.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)

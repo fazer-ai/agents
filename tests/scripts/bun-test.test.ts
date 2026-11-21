@@ -73,9 +73,16 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
   // the project does not pin.
   test("starts the machine's `bun` past node_modules/.bin when it is this one's version", async () => {
     const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
-    const machine = stub("machine", `touch "${root}/ran-machine"`);
+    const machine = stub(
+      "machine",
+      `touch "${root}/ran-machine"\nprintf '%s' "$PATH" > "${root}/path"`,
+    );
 
     await launch([], [local, machine]).exited;
+    // The run keeps node_modules/.bin, where the tests find the project's tools (`bunx prisma`).
+    expect(readFileSync(join(root, "path"), "utf8").split(delimiter)[0]).toBe(
+      local,
+    );
     expect([
       existsSync(join(root, "ran-machine")),
       existsSync(join(root, "ran-local")),

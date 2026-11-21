@@ -42,7 +42,9 @@ const proc = Bun.spawn(
   ],
   { stdio: ["inherit", "inherit", "inherit"] },
 );
-// A signal sent to this process alone reaches the run too, so a `--watch` is not left behind.
+// A signal sent to this process alone reaches the run too, so a `--watch` is not left behind. A machine
+// shim in front of bun passes the signals it gets on to its own child, as the queue on this suite's
+// shared machines does: one that did not would leave every caller's run behind, not only this one's.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.on(signal, () => proc.kill(signal));
 process.exitCode = await proc.exited;

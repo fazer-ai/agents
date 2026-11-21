@@ -8,7 +8,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { until } from "@/tests/utils/poll";
 import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
@@ -58,8 +57,11 @@ async function launchedHelp(dirs: string[], path?: string) {
   return { code, usage: Bun.stripANSI(out).includes("Usage: bun test") };
 }
 
+// Under the checkout's ignored tmp/, not the system's temporary directory: the stubs must run, and a
+// system may mount that one `noexec`.
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "bun-test-"));
+  mkdirSync(join(ROOT, "tmp"), { recursive: true });
+  root = mkdtempSync(join(ROOT, "tmp", "bun-test-"));
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));

@@ -272,7 +272,15 @@ function FilterBar({
         </option>
       </Select>
       {filters.range === "custom" && (
-        <div className="flex items-center gap-2">
+        <fieldset
+          aria-label={t("dashboard.period.custom", "Custom dates")}
+          className="m-0 flex min-w-0 items-center gap-2 border-0 p-0"
+          // Leaving the pair with a draft the link did not take shows the dates still in use again.
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+              setDraft({ from: filters.from ?? "", to: filters.to ?? "" });
+          }}
+        >
           <Input
             type="date"
             aria-label={t("dashboard.range.from", "From")}
@@ -291,7 +299,7 @@ function FilterBar({
             onChange={(e) => setDay("to", e.target.value)}
             className="w-36"
           />
-        </div>
+        </fieldset>
       )}
       <PeriodNote running={rangeRunning(filters.range)} prev={prev} />
       <Select

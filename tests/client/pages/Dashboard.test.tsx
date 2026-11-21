@@ -1586,6 +1586,9 @@ describe("calendar periods", () => {
     fireEvent.change(from, { target: { value: "0202-04-02" } });
     expect(location).toBe("/?range=custom&from=2026-04-01&to=2026-04-05");
     expect(from.value).toBe("0202-04-02");
+    // Leaving the pair with a draft the link did not take shows the dates in use again.
+    fireEvent.blur(from);
+    expect(from.value).toBe("2026-04-01");
     fireEvent.change(from, { target: { value: "2026-04-02" } });
     await waitFor(() =>
       expect(location).toBe("/?range=custom&from=2026-04-02&to=2026-04-05"),

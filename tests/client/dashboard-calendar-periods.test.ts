@@ -292,8 +292,9 @@ describe("the preset is what the link carries", () => {
     ).toMatchObject({ range: "custom", from: "2026-02-27", to: "2026-03-01" });
   });
 
-  test("a custom day before 1970 opens on the default view", () => {
+  test("a custom day before 1970 or after 2100 opens on the default view", () => {
     for (const q of [
+      "range=custom&from=1970-01-01&to=3000-01-01",
       "range=custom&from=1969-12-31&to=2026-01-01",
       "range=custom&from=0099-01-01&to=0099-01-01",
       "range=custom&from=1000-01-01&to=2001-01-01",

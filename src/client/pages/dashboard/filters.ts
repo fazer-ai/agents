@@ -65,12 +65,16 @@ export const DEFAULT_FILTERS: DashboardFilters = {
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const ID = /^\d{1,19}$/;
 
-// The first year a custom day may name: no record predates it, and every day of its previous period
-// stays a four-digit year that the date arithmetic below keeps as written.
-const FIRST_YEAR = 1970;
+// The years a custom day may name: no record predates the first, and a range inside them has a
+// previous period whose days all keep four-digit years, which the date arithmetic below needs.
+export const FIRST_CUSTOM_DAY = "1970-01-01";
+const LAST_CUSTOM_YEAR = 2100;
 
-function validDay(s: string | null): s is string {
-  if (!s || !DAY.test(s) || Number(s.split("-")[0]) < FIRST_YEAR) return false;
+export function validDay(s: string | null): s is string {
+  if (!s || !DAY.test(s)) return false;
+  const year = Number(s.split("-")[0]);
+  if (year < Number(FIRST_CUSTOM_DAY.split("-")[0]) || year > LAST_CUSTOM_YEAR)
+    return false;
   const d = new Date(`${s}T00:00:00`);
   return !Number.isNaN(d.getTime()) && localDayKey(d) === s;
 }

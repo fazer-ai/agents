@@ -1576,6 +1576,18 @@ describe("calendar periods", () => {
     expect(note()).toBe("In progress");
   });
 
+  test("the date picker starts in 1970, and a day before it leaves the range as it was", async () => {
+    await renderDash("/?range=custom&from=2026-04-01&to=2026-04-05");
+    const from = screen.getByLabelText("From") as HTMLInputElement;
+    expect(from.min).toBe("1970-01-01");
+    fireEvent.change(from, { target: { value: "1969-12-31" } });
+    expect(location).toBe("/?range=custom&from=2026-04-01&to=2026-04-05");
+    fireEvent.change(from, { target: { value: "2026-04-02" } });
+    await waitFor(() =>
+      expect(location).toBe("/?range=custom&from=2026-04-02&to=2026-04-05"),
+    );
+  });
+
   test("a custom range that runs past today names the days its comparison is read over", async () => {
     await renderDash("/?range=custom&from=2026-04-01&to=2026-04-15");
     await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));

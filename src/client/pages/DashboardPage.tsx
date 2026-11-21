@@ -27,6 +27,7 @@ import {
   type Audience,
   apiQuery,
   type DashboardFilters,
+  FIRST_CUSTOM_DAY,
   localDayKey,
   previousWindow,
   type Range,
@@ -34,6 +35,7 @@ import {
   readFilters,
   readUpTo,
   type Source,
+  validDay,
   type Window,
   windowOf,
   writeFilters,
@@ -260,9 +262,10 @@ function FilterBar({
             type="date"
             aria-label={t("dashboard.range.from", "From")}
             value={filters.from ?? ""}
+            min={FIRST_CUSTOM_DAY}
             max={filters.to ?? today}
             onChange={(e) =>
-              e.target.value && onChange({ from: e.target.value })
+              validDay(e.target.value) && onChange({ from: e.target.value })
             }
             className="w-36"
           />
@@ -270,9 +273,11 @@ function FilterBar({
             type="date"
             aria-label={t("dashboard.range.to", "To")}
             value={filters.to ?? ""}
-            min={filters.from ?? undefined}
+            min={filters.from ?? FIRST_CUSTOM_DAY}
             max={today}
-            onChange={(e) => e.target.value && onChange({ to: e.target.value })}
+            onChange={(e) =>
+              validDay(e.target.value) && onChange({ to: e.target.value })
+            }
             className="w-36"
           />
         </div>

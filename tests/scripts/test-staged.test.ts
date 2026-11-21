@@ -129,11 +129,13 @@ describe("test-staged", () => {
     );
   });
 
-  // Every local run goes through the launcher, so a change to it reaches every test file too.
-  test("TEST_STAGED_FULL=1 runs the whole suite on a change to the test launcher", () => {
-    expect(
-      select(["scripts/bun-test.ts"], { TEST_STAGED_FULL: "1" }),
-    ).toContain("changes every test file: running the whole suite");
+  // Every local run goes through the launcher, with the deadline the timeouts module holds, so a change
+  // to either reaches every test file too.
+  test("TEST_STAGED_FULL=1 runs the whole suite on a change to the test launcher or its deadline", () => {
+    for (const file of ["scripts/bun-test.ts", "tests/utils/timeouts.ts"])
+      expect(select([file], { TEST_STAGED_FULL: "1" })).toContain(
+        "changes every test file: running the whole suite",
+      );
   });
 
   // One process holding every test file outgrows a developer machine's memory; each worker holds

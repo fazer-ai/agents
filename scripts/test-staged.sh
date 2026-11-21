@@ -36,7 +36,7 @@ fi
 staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
 [ -z "$staged" ] && exit 0
 
-full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|scripts/bun-test\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
+full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|tests/utils/timeouts\.ts|scripts/bun-test\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
 if [ -n "$full" ]; then
   run="bun --no-env-file scripts/bun-test.ts --parallel"
   if [ "$TEST_STAGED_FULL" = "1" ]; then

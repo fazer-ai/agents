@@ -143,8 +143,9 @@ function PeriodNote({
       ? (untilDay as string)
       : localDayKey(new Date(prev.until.getTime() - 1))
     : null;
+  // At the first instant of a running period its comparison is empty, and names no days.
   const range =
-    prev?.firstDay && lastShown
+    prev?.firstDay && lastShown && prev.since && prev.until > prev.since
       ? daysLabel(i18n.language, prev.firstDay, lastShown, to)
       : null;
   return (

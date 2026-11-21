@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   type DashboardFilters,
   DEFAULT_FILTERS,
+  localDayKey,
   previousPeriodsOf,
   previousWindow,
   type Range,
@@ -132,6 +133,25 @@ describe("a calendar preset as a window, in the viewer's zone", () => {
     expect(aug1.previous).toEqual(["2026-04-01 00:00", "2026-05-01 10:00"]);
     const leapDay = read("this-year", at(2028, 2, 29, 9));
     expect(leapDay.previous).toEqual(["2027-01-01 00:00", "2027-03-01 00:00"]);
+  });
+
+  test("a comparison time the day before does not have stays inside that day", () => {
+    // In Nuuk the clocks jump from 23:00 to 00:00 at the end of 28 March 2026, so 23:30 of that day
+    // does not exist; yesterday's comparison must not reach into today.
+    process.env.TZ = "America/Nuuk";
+    try {
+      const now = new Date(2026, 2, 29, 23, 30);
+      const w = windowOf(filters("today"), now);
+      const prev = previousWindow(w, now);
+      expect(prev?.until.getTime()).toBe(w.since?.getTime());
+      expect(prev?.lastDay).toBe("2026-03-28");
+    } finally {
+      process.env.TZ = "America/Sao_Paulo";
+    }
+  });
+
+  test("a day key keeps four digits of year", () => {
+    expect(localDayKey(new Date(999, 11, 31))).toBe("0999-12-31");
   });
 
   test("the week starts on Monday: a Sunday night is still the week begun six days before", () => {

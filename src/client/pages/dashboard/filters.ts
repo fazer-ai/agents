@@ -125,7 +125,7 @@ export function writeFilters(f: DashboardFilters): URLSearchParams {
 
 // Local day key (YYYY-MM-DD) of a Date in the browser's zone.
 export function localDayKey(d: Date): string {
-  const y = d.getFullYear();
+  const y = String(d.getFullYear()).padStart(4, "0");
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
@@ -236,18 +236,26 @@ function previousCalendarWindow(
     w.unit,
     running ? { today: localDayKey(now) } : null,
   );
+  const stopDay = startOfLocalDay(prev.stop.day);
+  // A time of day the stop day does not have (a clock jump at its end) would land on the next day,
+  // inside the window being compared: it is held at that day's end.
   const until =
     prev.stop.at === "time"
       ? new Date(
-          ymd(prev.stop.day)[0],
-          ymd(prev.stop.day)[1],
-          ymd(prev.stop.day)[2],
-          now.getHours(),
-          now.getMinutes(),
-          now.getSeconds(),
-          now.getMilliseconds(),
+          Math.min(
+            new Date(
+              ymd(prev.stop.day)[0],
+              ymd(prev.stop.day)[1],
+              ymd(prev.stop.day)[2],
+              now.getHours(),
+              now.getMinutes(),
+              now.getSeconds(),
+              now.getMilliseconds(),
+            ).getTime(),
+            addDays(stopDay, 1).getTime(),
+          ),
         )
-      : startOfLocalDay(prev.stop.day);
+      : stopDay;
   const lastDay =
     prev.stop.at === "time"
       ? prev.stop.day

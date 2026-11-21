@@ -197,6 +197,21 @@ function FilterBar({
   const clientChannelEnabled = useClientChannelEnabled();
   const today = localDayKey(new Date());
   const periodGroups = usePeriodGroups();
+  // The two days as typed. A date input reports partial years while a year is retyped, so the link
+  // takes the pair only once both days are valid and in order; until then the draft stays on screen.
+  const [draft, setDraft] = useState({
+    from: filters.from ?? "",
+    to: filters.to ?? "",
+  });
+  useEffect(() => {
+    setDraft({ from: filters.from ?? "", to: filters.to ?? "" });
+  }, [filters.from, filters.to]);
+  const setDay = (bound: "from" | "to", value: string) => {
+    const next = { ...draft, [bound]: value };
+    setDraft(next);
+    if (validDay(next.from) && validDay(next.to) && next.from <= next.to)
+      onChange({ from: next.from, to: next.to });
+  };
   const sources: { value: Source; label: string }[] = [
     { value: "inbox", label: t("dashboard.source.inbox", "Real") },
     {
@@ -261,23 +276,19 @@ function FilterBar({
           <Input
             type="date"
             aria-label={t("dashboard.range.from", "From")}
-            value={filters.from ?? ""}
+            value={draft.from}
             min={FIRST_CUSTOM_DAY}
             max={filters.to ?? today}
-            onChange={(e) =>
-              validDay(e.target.value) && onChange({ from: e.target.value })
-            }
+            onChange={(e) => setDay("from", e.target.value)}
             className="w-36"
           />
           <Input
             type="date"
             aria-label={t("dashboard.range.to", "To")}
-            value={filters.to ?? ""}
+            value={draft.to}
             min={filters.from ?? FIRST_CUSTOM_DAY}
             max={today}
-            onChange={(e) =>
-              validDay(e.target.value) && onChange({ to: e.target.value })
-            }
+            onChange={(e) => setDay("to", e.target.value)}
             className="w-36"
           />
         </div>

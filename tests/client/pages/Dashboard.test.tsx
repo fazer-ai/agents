@@ -1582,6 +1582,10 @@ describe("calendar periods", () => {
     expect(from.min).toBe("1970-01-01");
     fireEvent.change(from, { target: { value: "1969-12-31" } });
     expect(location).toBe("/?range=custom&from=2026-04-01&to=2026-04-05");
+    // A year retyped digit by digit passes through days that are not valid yet; they stay on screen.
+    fireEvent.change(from, { target: { value: "0202-04-02" } });
+    expect(location).toBe("/?range=custom&from=2026-04-01&to=2026-04-05");
+    expect(from.value).toBe("0202-04-02");
     fireEvent.change(from, { target: { value: "2026-04-02" } });
     await waitFor(() =>
       expect(location).toBe("/?range=custom&from=2026-04-02&to=2026-04-05"),

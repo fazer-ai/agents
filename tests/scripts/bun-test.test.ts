@@ -40,7 +40,12 @@ function launch(args: string[], dirs: string[], path = process.env.PATH ?? "") {
     [process.execPath, join(ROOT, "scripts/bun-test.ts"), ...args, "--help"],
     {
       cwd,
-      env: { ...process.env, PATH: [...dirs, path].join(delimiter) },
+      // The stubs read their fixture directory from here, as data rather than as shell source.
+      env: {
+        ...process.env,
+        PATH: [...dirs, path].join(delimiter),
+        STUB_ROOT: root,
+      },
       stdout: "pipe",
       stderr: "ignore",
     },
@@ -69,7 +74,10 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 // The stubs are POSIX shell scripts: on Windows the launcher would find the real `bun` instead.
 describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
   test("runs `bun test` with the suite's deadline before the arguments it was given, and exits with its code", async () => {
-    const dir = stub("machine", `printf '%s\\n' "$@" > "${root}/args"\nexit 7`);
+    const dir = stub(
+      "machine",
+      `printf '%s\\n' "$@" > "$STUB_ROOT/args"\nexit 7`,
+    );
 
     expect(
       await launch(["a.test.ts", "--timeout", "90000"], [dir]).exited,
@@ -90,10 +98,10 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
   // that caps concurrent runs); a machine `bun` of another version, or none, leaves the run on the
   // binary running the launcher.
   test("starts the machine's `bun` past node_modules/.bin when it is this one's version", async () => {
-    const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
+    const local = stub("node_modules/.bin", `touch "$STUB_ROOT/ran-local"`);
     const machine = stub(
       "machine",
-      `touch "${root}/ran-machine"\nprintf '%s' "$PATH" > "${root}/path"`,
+      `touch "$STUB_ROOT/ran-machine"\nprintf '%s' "$PATH" > "$STUB_ROOT/path"`,
     );
 
     await launch([], [local, machine]).exited;
@@ -108,8 +116,8 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
   });
 
   test("starts the binary running it when the machine's `bun` is another version", async () => {
-    const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
-    const machine = stub("machine", `touch "${root}/ran-machine"`, "0.0.1");
+    const local = stub("node_modules/.bin", `touch "$STUB_ROOT/ran-local"`);
+    const machine = stub("machine", `touch "$STUB_ROOT/ran-machine"`, "0.0.1");
 
     expect(await launchedHelp([local, machine])).toEqual({
       code: 0,
@@ -122,7 +130,7 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
   });
 
   test("starts the binary running it when the machine's `bun` cannot start", async () => {
-    const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
+    const local = stub("node_modules/.bin", `touch "$STUB_ROOT/ran-local"`);
     mkdirSync(join(root, "machine"));
     writeFileSync(join(root, "machine/bun"), "#!/nonexistent/interpreter\n");
     chmodSync(join(root, "machine/bun"), 0o755);
@@ -147,7 +155,7 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
     // nothing running behind the failed test.
     const dir = stub(
       "machine",
-      `trap 'echo TERM > "${root}/got"; exit 143' TERM\ntouch "${root}/up"\ni=0\nwhile [ $i -lt 200 ]; do sleep 0.05; i=$((i + 1)); done`,
+      `trap 'echo TERM > "$STUB_ROOT/got"; exit 143' TERM\ntouch "$STUB_ROOT/up"\ni=0\nwhile [ $i -lt 200 ]; do sleep 0.05; i=$((i + 1)); done`,
     );
     const proc = launch(["--watch"], [dir]);
     try {

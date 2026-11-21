@@ -100,6 +100,16 @@ describe.skipIf(process.platform === "win32")("scripts/bun-test.ts", () => {
     ]).toEqual([false, true]);
   });
 
+  test("keeps node_modules/.bin's `bun` when the machine's cannot start", async () => {
+    const local = stub("node_modules/.bin", `touch "${root}/ran-local"`);
+    mkdirSync(join(root, "machine"));
+    writeFileSync(join(root, "machine/bun"), "#!/nonexistent/interpreter\n");
+    chmodSync(join(root, "machine/bun"), 0o755);
+
+    expect(await launch([], [local, join(root, "machine")]).exited).toBe(0);
+    expect(existsSync(join(root, "ran-local"))).toBe(true);
+  });
+
   test("a signal sent to the launcher alone reaches the run", async () => {
     // The stub ends on its own after 10 s, so a launcher that does not pass the signal on leaves
     // nothing running behind the failed test.

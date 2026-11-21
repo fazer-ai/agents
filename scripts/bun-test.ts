@@ -21,10 +21,15 @@ function testBun(path: string): string {
   if (outside === path) return "bun";
   const machine = Bun.which("bun", { PATH: outside });
   if (machine === null) return "bun";
-  const version = Bun.spawnSync([machine, "--version"])
-    .stdout.toString()
-    .trim();
-  return version === Bun.version ? machine : "bun";
+  try {
+    const version = Bun.spawnSync([machine, "--version"])
+      .stdout.toString()
+      .trim();
+    return version === Bun.version ? machine : "bun";
+  } catch {
+    // One the system cannot start (a shim whose interpreter is gone) is not the machine's runtime.
+    return "bun";
+  }
 }
 
 const proc = Bun.spawn(

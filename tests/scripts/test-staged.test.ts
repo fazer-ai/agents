@@ -129,12 +129,23 @@ describe("test-staged", () => {
     );
   });
 
+  // Every local run goes through the launcher, with the deadline the timeouts module holds, so a change
+  // to either reaches every test file too.
+  test("TEST_STAGED_FULL=1 runs the whole suite on a change to the test launcher or its deadline", () => {
+    for (const file of ["scripts/bun-test.ts", "tests/utils/timeouts.ts"])
+      expect(select([file], { TEST_STAGED_FULL: "1" })).toContain(
+        "changes every test file: running the whole suite",
+      );
+  });
+
   // One process holding every test file outgrows a developer machine's memory; each worker holds
   // only its share.
   test("the whole suite, when asked for, runs in parallel workers", () => {
     expect(
       select(["prisma/schema.prisma"], { TEST_STAGED_FULL: "1" }),
-    ).toContain("running the whole suite (bun test --parallel)");
+    ).toContain(
+      "running the whole suite (bun --no-env-file scripts/bun-test.ts --parallel)",
+    );
   });
 
   // husky puts node_modules/.bin first, and its `bun` would run the hook's tests past the machine's
@@ -173,7 +184,7 @@ describe("test-staged", () => {
     expect(out.exitCode).toBe(3);
     expect(existsSync(join(local, "calls"))).toBe(false);
     expect(readFileSync(join(machine, "calls"), "utf8")).toContain(
-      "test tests/modules/a-service.test.ts",
+      "--no-env-file scripts/bun-test.ts tests/modules/a-service.test.ts",
     );
   });
 
@@ -183,7 +194,7 @@ describe("test-staged", () => {
     expect(out.exitCode).toBe(5);
     expect(existsSync(join(machine, "calls"))).toBe(false);
     expect(readFileSync(join(local, "calls"), "utf8")).toContain(
-      "test tests/modules/a-service.test.ts",
+      "--no-env-file scripts/bun-test.ts tests/modules/a-service.test.ts",
     );
   });
 });

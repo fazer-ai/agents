@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, jest, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
@@ -20,11 +20,16 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 import { until } from "@/tests/utils/poll";
+import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
 
 // THE LEDGER'S QUARTER-HOUR SUMS (docs/dashboard.md, "Ledger sums"): every ledger block reads the
 // same figures from the sums as from the rows, a row written below the mark by any route reaches the
 // figures at once, and the job never sums a quarter a still-open transaction can write into. The
 // oracle is each reader's own read of the rows, which it takes when the tenant has no sums state.
+
+// These tests outlast bun's 5 s default on a loaded machine. bun gives the preload's deadline to the
+// first file of a process only, so a bare `bun test` of several files needs it named here as well.
+jest.setTimeout(TEST_TIMEOUT_MS);
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

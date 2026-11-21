@@ -36,9 +36,9 @@ fi
 staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
 [ -z "$staged" ] && exit 0
 
-full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
+full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|tests/utils/timeouts\.ts|scripts/bun-test\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
 if [ -n "$full" ]; then
-  run="bun test --parallel"
+  run="bun --no-env-file scripts/bun-test.ts --parallel"
   if [ "$TEST_STAGED_FULL" = "1" ]; then
     echo "[test-staged] $(printf '%s' "$full" | head -1) changes every test file: running the whole suite ($run)"
     [ -n "$TEST_STAGED_LIST" ] && exit 0
@@ -146,4 +146,4 @@ fi
 if [ -n "$TEST_STAGED_LIST" ]; then printf '%s\n' $picked; exit 0; fi
 echo "[test-staged] $(printf '%s\n' $picked | wc -l | tr -d ' ') test files"
 # shellcheck disable=SC2086
-exec bun test $picked
+exec bun --no-env-file scripts/bun-test.ts $picked

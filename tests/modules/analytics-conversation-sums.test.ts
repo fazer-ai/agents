@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, jest, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
@@ -20,12 +20,17 @@ import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 import { until } from "@/tests/utils/poll";
+import { TEST_TIMEOUT_MS } from "@/tests/utils/timeouts";
 
 // THE CONVERSATION COUNTS (docs/dashboard.md, "Conversation sums"): the funnel, the KPIs, the agent
 // and inbox splits, the label outcomes, the drill-down and the cost block's divisors read the same
 // from the counts as from the conversations, and a late change to a counted conversation (its row,
 // or an agent's turn on it) reaches the figures at once. The oracle is each reader's own read of the
 // rows, which it takes when the tenant has no sums state.
+
+// These tests outlast bun's 5 s default on a loaded machine. bun gives the preload's deadline to the
+// first file of a process only, so a bare `bun test` of several files needs it named here as well.
+jest.setTimeout(TEST_TIMEOUT_MS);
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

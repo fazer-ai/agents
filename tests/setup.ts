@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { afterEach, beforeEach } from "bun:test";
+import { afterEach, beforeEach, jest } from "bun:test";
 import { configure } from "@testing-library/dom";
 import { withSessionZoneInUrl } from "@/lib/session-zone";
 import {
@@ -22,7 +22,7 @@ import {
 } from "./db-gate";
 import { withJitOffInUrl } from "./db-jit";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
-import { holdTestTimeout } from "./utils/timeouts";
+import { TEST_TIMEOUT_MS } from "./utils/timeouts";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -37,10 +37,7 @@ import { holdTestTimeout } from "./utils/timeouts";
 // of a real failure gets slower. NOT the answer for a window a test's own SETUP must fit inside,
 // paid on every run: see the overflow-drain test in tests/modules/contact-auth-grant.test.ts, which
 // holds the clock still instead.
-
-// bun applies the preload's deadline to the first file of a process only, so `bun run test` passes it
-// as `--timeout` (scripts/bun-test.ts), and this leaves that one, or a longer one asked for, alone.
-holdTestTimeout();
+jest.setTimeout(TEST_TIMEOUT_MS);
 configure({ asyncUtilTimeout: 5_000 });
 
 // A TIMED-OUT TEST KEEPS RUNNING, and Bun moves on without waiting for its body. A `globalThis.fetch`

@@ -65,8 +65,12 @@ export const DEFAULT_FILTERS: DashboardFilters = {
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const ID = /^\d{1,19}$/;
 
+// The first year a custom day may name: no record predates it, and every day of its previous period
+// stays a four-digit year that the date arithmetic below keeps as written.
+const FIRST_YEAR = 1970;
+
 function validDay(s: string | null): s is string {
-  if (!s || !DAY.test(s)) return false;
+  if (!s || !DAY.test(s) || Number(s.split("-")[0]) < FIRST_YEAR) return false;
   const d = new Date(`${s}T00:00:00`);
   return !Number.isNaN(d.getTime()) && localDayKey(d) === s;
 }
@@ -125,7 +129,7 @@ export function writeFilters(f: DashboardFilters): URLSearchParams {
 
 // Local day key (YYYY-MM-DD) of a Date in the browser's zone.
 export function localDayKey(d: Date): string {
-  const y = String(d.getFullYear()).padStart(4, "0");
+  const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
@@ -222,6 +226,49 @@ function calendarWindow(p: CalendarPreset, today: Date): Window {
   };
 }
 
+// `now`'s time of day on the local day `day`. A time the day skips (the hour a clock jumps over)
+// is the instant the clock jumps to, not the time an hour later the Date constructor gives: the cut
+// never moves back as the read moves on, and one skipped at the day's end stays out of the next day.
+function wallClockOn(day: string, now: Date): Date {
+  const [y, m, d] = ymd(day);
+  const at = new Date(
+    y,
+    m,
+    d,
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  );
+  const asked = Date.UTC(
+    y,
+    m,
+    d,
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  );
+  const got = Date.UTC(
+    at.getFullYear(),
+    at.getMonth(),
+    at.getDate(),
+    at.getHours(),
+    at.getMinutes(),
+    at.getSeconds(),
+    at.getMilliseconds(),
+  );
+  if (got === asked) return at;
+  let lo = at.getTime() - (got - asked);
+  let hi = at.getTime();
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (new Date(mid).getTimezoneOffset() === at.getTimezoneOffset()) hi = mid;
+    else lo = mid;
+  }
+  return new Date(hi);
+}
+
 // A calendar period's previous one: the unit before, whole when the period is over, and up to the same
 // day and time of day when it is still running (April 1 to 10 at 10:00 against March 1 to 10 at
 // 10:00). A day the unit before does not have (March 31 against February) compares with all of it.
@@ -236,26 +283,10 @@ function previousCalendarWindow(
     w.unit,
     running ? { today: localDayKey(now) } : null,
   );
-  const stopDay = startOfLocalDay(prev.stop.day);
-  // A time of day the stop day does not have (a clock jump at its end) would land on the next day,
-  // inside the window being compared: it is held at that day's end.
   const until =
     prev.stop.at === "time"
-      ? new Date(
-          Math.min(
-            new Date(
-              ymd(prev.stop.day)[0],
-              ymd(prev.stop.day)[1],
-              ymd(prev.stop.day)[2],
-              now.getHours(),
-              now.getMinutes(),
-              now.getSeconds(),
-              now.getMilliseconds(),
-            ).getTime(),
-            addDays(stopDay, 1).getTime(),
-          ),
-        )
-      : stopDay;
+      ? wallClockOn(prev.stop.day, now)
+      : startOfLocalDay(prev.stop.day);
   const lastDay =
     prev.stop.at === "time"
       ? prev.stop.day

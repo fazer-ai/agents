@@ -2,7 +2,6 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   type DashboardFilters,
   DEFAULT_FILTERS,
-  localDayKey,
   previousPeriodsOf,
   previousWindow,
   type Range,
@@ -150,8 +149,23 @@ describe("a calendar preset as a window, in the viewer's zone", () => {
     }
   });
 
-  test("a day key keeps four digits of year", () => {
-    expect(localDayKey(new Date(999, 11, 31))).toBe("0999-12-31");
+  test("a comparison time the clock skips is the instant it jumps to, so the cut never moves back", () => {
+    // New York jumps from 02:00 to 03:00 on 8 March 2026.
+    process.env.TZ = "America/New_York";
+    try {
+      const cut = (h: number, mi: number) => {
+        const now = new Date(2026, 2, 9, h, mi);
+        return previousWindow(
+          windowOf(filters("today"), now),
+          now,
+        )?.until.toISOString();
+      };
+      expect(cut(2, 59)).toBe("2026-03-08T07:00:00.000Z");
+      expect(cut(3, 0)).toBe("2026-03-08T07:00:00.000Z");
+      expect(cut(1, 59)).toBe("2026-03-08T06:59:00.000Z");
+    } finally {
+      process.env.TZ = "America/Sao_Paulo";
+    }
   });
 
   test("the week starts on Monday: a Sunday night is still the week begun six days before", () => {
@@ -276,6 +290,23 @@ describe("the preset is what the link carries", () => {
         new URLSearchParams("range=custom&from=2026-02-27&to=2026-03-01"),
       ),
     ).toMatchObject({ range: "custom", from: "2026-02-27", to: "2026-03-01" });
+  });
+
+  test("a custom day before 1970 opens on the default view", () => {
+    for (const q of [
+      "range=custom&from=1969-12-31&to=2026-01-01",
+      "range=custom&from=0099-01-01&to=0099-01-01",
+      "range=custom&from=1000-01-01&to=2001-01-01",
+    ])
+      expect(readFilters(new URLSearchParams(q))).toMatchObject({
+        range: DEFAULT_FILTERS.range,
+        from: null,
+      });
+    expect(
+      readFilters(
+        new URLSearchParams("range=custom&from=1970-01-01&to=1970-01-02"),
+      ).range,
+    ).toBe("custom");
   });
 
   test("a name that is not a preset opens on the default view", () => {

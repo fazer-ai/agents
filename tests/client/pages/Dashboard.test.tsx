@@ -1576,11 +1576,6 @@ describe("calendar periods", () => {
     expect(note()).toBe("In progress");
   });
 
-  test("a custom range in the year 1000 names its comparison, in the year 999", async () => {
-    await renderDash("/?range=custom&from=1000-01-01&to=1000-01-01");
-    await waitFor(() => expect(note()).toContain("999"));
-  });
-
   test("a custom range that runs past today names the days its comparison is read over", async () => {
     await renderDash("/?range=custom&from=2026-04-01&to=2026-04-15");
     await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));

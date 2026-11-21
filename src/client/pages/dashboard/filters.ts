@@ -287,16 +287,21 @@ function previousCalendarWindow(
     w.unit,
     running ? { today: localDayKey(now) } : null,
   );
+  const since = startOfLocalDay(prev.first);
+  // At the period's first instant nothing has elapsed, and the comparison is as empty, even where
+  // that instant is not a midnight (a clock that skips it starts the day at 01:00).
   const until =
-    prev.stop.at === "time"
-      ? wallClockOn(prev.stop.day, now)
-      : startOfLocalDay(prev.stop.day);
+    prev.stop.at !== "time"
+      ? startOfLocalDay(prev.stop.day)
+      : now.getTime() === w.since.getTime()
+        ? since
+        : wallClockOn(prev.stop.day, now);
   const lastDay =
     prev.stop.at === "time"
       ? prev.stop.day
       : localDayKey(addDays(startOfLocalDay(prev.stop.day), -1));
   return {
-    since: startOfLocalDay(prev.first),
+    since,
     until,
     firstDay: prev.first,
     lastDay,

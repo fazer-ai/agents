@@ -149,6 +149,19 @@ describe("a calendar preset as a window, in the viewer's zone", () => {
     }
   });
 
+  test("at a period's first instant the comparison is empty, where the clock skips midnight too", () => {
+    // Santiago skips midnight on 6 September 2026: that day starts at 01:00.
+    process.env.TZ = "America/Santiago";
+    try {
+      const w = windowOf(filters("today"), new Date(2026, 8, 6, 15));
+      const start = w.since as Date;
+      const prev = previousWindow(w, start);
+      expect(prev?.until.getTime()).toBe(prev?.since?.getTime());
+    } finally {
+      process.env.TZ = "America/Sao_Paulo";
+    }
+  });
+
   test("a comparison time the clock skips is the instant it jumps to, so the cut never moves back", () => {
     // New York jumps from 02:00 to 03:00 on 8 March 2026.
     process.env.TZ = "America/New_York";

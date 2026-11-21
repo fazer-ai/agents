@@ -128,9 +128,6 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "dashboard.col.percentileMs",
   "dashboard.exportCsv",
   "dashboard.percent",
-  "dashboard.range.30d",
-  "dashboard.range.7d",
-  "dashboard.range.90d",
   "editor.capabilities.mcp",
   "editor.tab.experiments",
   "integrations.config.minutesOption",
@@ -922,7 +919,7 @@ describe("both languages answer, and answer differently", () => {
       CLIENT_IDENTICAL_BY_DESIGN,
       // A brand name reads the same in both languages, like every `vault.secretType.*` waived above.
       // Plus the Dashboards feature's name, in the menu and on its page, in both editions.
-      hasProOnlyKeys ? 113 : 111,
+      hasProOnlyKeys ? 110 : 108,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

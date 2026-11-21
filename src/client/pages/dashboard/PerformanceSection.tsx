@@ -34,6 +34,7 @@ import {
   drillDownHref,
   METRIC_DRILL,
   periodsOf,
+  previousPeriodsOf,
   type TrendMetric,
   trendPointHref,
   type Window,
@@ -292,7 +293,7 @@ export function PerformanceSection({
   const bounds = { first: win.firstDay, last: win.lastDay };
   const periodColumn = usePeriodColumn(grain);
   const days = periodsOf(win, grain, tr?.days[0]?.date ?? null);
-  const prevDays = prev ? periodsOf(prev, prevTrend.data?.grain ?? grain) : [];
+  const prevDays = previousPeriodsOf(prev, grain, prevTrend.data?.grain);
   const prevByDay = new Map(prevTrend.data?.days.map((d) => [d.date, d]) ?? []);
   const byDay = new Map(tr?.days.map((d) => [d.date, d]) ?? []);
   const seriesDefs =

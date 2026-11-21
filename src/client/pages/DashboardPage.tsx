@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
+  Badge,
   Input,
   PageContainer,
   SegmentedControl,
@@ -26,12 +27,15 @@ import {
   type Audience,
   apiQuery,
   type DashboardFilters,
+  FIRST_CUSTOM_DAY,
   localDayKey,
   previousWindow,
   type Range,
+  rangeRunning,
   readFilters,
   readUpTo,
   type Source,
+  validDay,
   type Window,
   windowOf,
   writeFilters,
@@ -43,6 +47,7 @@ import {
   PerformanceSection,
   type PerformanceView,
 } from "./dashboard/PerformanceSection";
+import { daysLabel } from "./dashboard/period";
 import { ReasonsSection } from "./dashboard/ReasonsSection";
 import {
   DashboardMetricsProvider,
@@ -56,28 +61,157 @@ import {
 // every block; every figure is summed from this app's own records, and which query each block runs is
 // mapped in docs/dashboard.md.
 
+// The period's two families, each named: a calendar period is a closed or running stretch of the
+// calendar, a trailing window ends today and moves with it.
+function usePeriodGroups(): {
+  label: string;
+  options: { value: Range; label: string }[];
+}[] {
+  const { t } = useTranslation();
+  return [
+    {
+      label: t("dashboard.period.calendar", "Calendar"),
+      options: [
+        { value: "today", label: t("dashboard.period.today", "Today") },
+        {
+          value: "yesterday",
+          label: t("dashboard.period.yesterday", "Yesterday"),
+        },
+        {
+          value: "this-week",
+          label: t("dashboard.period.thisWeek", "This week"),
+        },
+        {
+          value: "last-week",
+          label: t("dashboard.period.lastWeek", "Last week"),
+        },
+        {
+          value: "this-month",
+          label: t("dashboard.period.thisMonth", "This month"),
+        },
+        {
+          value: "last-month",
+          label: t("dashboard.period.lastMonth", "Last month"),
+        },
+        {
+          value: "this-quarter",
+          label: t("dashboard.period.thisQuarter", "This quarter"),
+        },
+        {
+          value: "last-quarter",
+          label: t("dashboard.period.lastQuarter", "Last quarter"),
+        },
+        {
+          value: "this-year",
+          label: t("dashboard.period.thisYear", "This year"),
+        },
+      ],
+    },
+    {
+      label: t("dashboard.period.trailing", "Rolling window"),
+      options: [
+        { value: "7d", label: t("dashboard.period.7d", "Last 7 days") },
+        { value: "30d", label: t("dashboard.period.30d", "Last 30 days") },
+        { value: "90d", label: t("dashboard.period.90d", "Last 90 days") },
+        {
+          value: "12m",
+          label: t("dashboard.period.12m", "Last 12 months"),
+        },
+        { value: "all", label: t("dashboard.period.all", "All time") },
+      ],
+    },
+  ];
+}
+
+// Beside the selector: whether the period is still under way, and the stretch its figures are
+// compared with, so "this week" on a Monday morning is not read as a finished week.
+function PeriodNote({
+  running,
+  prev,
+}: {
+  running: boolean;
+  prev: Window | null;
+}) {
+  const { t, i18n } = useTranslation();
+  if (!running && !prev?.firstDay) return null;
+  const to = t("dashboard.chart.rangeTo", "to");
+  // The days the previous period is read over end where its query does: inside a day when it is cut
+  // at the read's time of day, else on the day before its exclusive end.
+  const untilDay = prev ? localDayKey(prev.until) : null;
+  const partial =
+    !!prev && prev.until.getTime() > new Date(`${untilDay}T00:00:00`).getTime();
+  const lastShown = prev
+    ? partial
+      ? (untilDay as string)
+      : localDayKey(new Date(prev.until.getTime() - 1))
+    : null;
+  // At the first instant of a running period its comparison is empty, and names no days.
+  const range =
+    prev?.firstDay && lastShown && prev.since && prev.until > prev.since
+      ? daysLabel(i18n.language, prev.firstDay, lastShown, to)
+      : null;
+  return (
+    <p
+      className="text-text-muted flex flex-wrap items-center gap-2 text-xs"
+      data-testid="period-note"
+    >
+      {running && (
+        <Badge variant="info">
+          {t("dashboard.period.running", "In progress")}
+        </Badge>
+      )}
+      {range &&
+        (partial
+          ? t(
+              "dashboard.period.comparedUpTo",
+              "Compared with {{range}}, up to {{time}}",
+              {
+                range,
+                time: new Intl.DateTimeFormat(i18n.language, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }).format(prev.until),
+              },
+            )
+          : t("dashboard.period.compared", "Compared with {{range}}", {
+              range,
+            }))}
+    </p>
+  );
+}
+
 function FilterBar({
   filters,
   onChange,
   agents,
   inboxes,
+  prev,
 }: {
   filters: DashboardFilters;
   onChange: (patch: Partial<DashboardFilters>) => void;
   agents: { id: string; name: string }[];
   inboxes: InboxOption[];
+  prev: Window | null;
 }) {
   const { t } = useTranslation();
   const clientChannelEnabled = useClientChannelEnabled();
   const today = localDayKey(new Date());
-  const ranges: { value: Range; label: string }[] = [
-    { value: "7d", label: t("dashboard.range.7d", "7d") },
-    { value: "30d", label: t("dashboard.range.30d", "30d") },
-    { value: "90d", label: t("dashboard.range.90d", "90d") },
-    { value: "12m", label: t("dashboard.range.12m", "12mo") },
-    { value: "all", label: t("dashboard.range.all", "All") },
-    { value: "custom", label: t("dashboard.range.custom", "Dates") },
-  ];
+  const periodGroups = usePeriodGroups();
+  // The two days as typed. A date input reports partial years while a year is retyped, so the link
+  // takes the pair only once both days are valid and in order; until then the draft stays on screen.
+  const [draft, setDraft] = useState({
+    from: filters.from ?? "",
+    to: filters.to ?? "",
+  });
+  useEffect(() => {
+    setDraft({ from: filters.from ?? "", to: filters.to ?? "" });
+  }, [filters.from, filters.to]);
+  const setDay = (bound: "from" | "to", value: string) => {
+    const next = { ...draft, [bound]: value };
+    setDraft(next);
+    if (validDay(next.from) && validDay(next.to) && next.from <= next.to)
+      onChange({ from: next.from, to: next.to });
+  };
   const sources: { value: Source; label: string }[] = [
     { value: "inbox", label: t("dashboard.source.inbox", "Real") },
     {
@@ -106,11 +240,12 @@ function FilterBar({
     },
   ];
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      <SegmentedControl
+    <div className="flex flex-wrap items-center gap-3">
+      <Select
         aria-label={t("dashboard.range.label", "Period")}
         value={filters.range}
-        onChange={(range) =>
+        onChange={(e) => {
+          const range = e.target.value as Range;
           onChange(
             range === "custom"
               ? {
@@ -119,33 +254,54 @@ function FilterBar({
                   to: filters.to ?? today,
                 }
               : { range, from: null, to: null },
-          )
-        }
-        options={ranges}
-      />
+          );
+        }}
+        wrapperClassName="max-w-48"
+      >
+        {periodGroups.map((g) => (
+          <optgroup key={g.label} label={g.label}>
+            {g.options.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+        <option value="custom">
+          {t("dashboard.period.custom", "Custom dates")}
+        </option>
+      </Select>
       {filters.range === "custom" && (
-        <div className="flex items-center gap-2">
+        <fieldset
+          aria-label={t("dashboard.period.custom", "Custom dates")}
+          className="m-0 flex min-w-0 items-center gap-2 border-0 p-0"
+          // Leaving the pair with a draft the link did not take shows the dates still in use again.
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+              setDraft({ from: filters.from ?? "", to: filters.to ?? "" });
+          }}
+        >
           <Input
             type="date"
             aria-label={t("dashboard.range.from", "From")}
-            value={filters.from ?? ""}
+            value={draft.from}
+            min={FIRST_CUSTOM_DAY}
             max={filters.to ?? today}
-            onChange={(e) =>
-              e.target.value && onChange({ from: e.target.value })
-            }
+            onChange={(e) => setDay("from", e.target.value)}
             className="w-36"
           />
           <Input
             type="date"
             aria-label={t("dashboard.range.to", "To")}
-            value={filters.to ?? ""}
-            min={filters.from ?? undefined}
+            value={draft.to}
+            min={filters.from ?? FIRST_CUSTOM_DAY}
             max={today}
-            onChange={(e) => e.target.value && onChange({ to: e.target.value })}
+            onChange={(e) => setDay("to", e.target.value)}
             className="w-36"
           />
-        </div>
+        </fieldset>
       )}
+      <PeriodNote running={rangeRunning(filters.range)} prev={prev} />
       <Select
         aria-label={t("dashboard.filter.agent", "Agent")}
         value={filters.agentId ?? ""}
@@ -411,6 +567,7 @@ export function DashboardPage() {
           onChange={setFilters}
           agents={agents ?? []}
           inboxes={inboxes ?? []}
+          prev={prev}
         />
         <SectionNav sections={sections} layout="bar" />
       </div>

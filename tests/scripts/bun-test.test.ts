@@ -92,29 +92,22 @@ describe("scripts/bun-test.ts", () => {
 });
 
 describe("holdTestTimeout", () => {
-  // Under the launcher the mark is set for the whole process, and a sums file run after this one reads it.
-  const inherited = process.env[TIMEOUT_ON_COMMAND_LINE];
-  afterEach(() => {
-    if (inherited === undefined) delete process.env[TIMEOUT_ON_COMMAND_LINE];
-    else process.env[TIMEOUT_ON_COMMAND_LINE] = inherited;
-    jest.restoreAllMocks();
-  });
+  afterEach(() => jest.restoreAllMocks());
 
   test("names the suite's deadline in a bare `bun test`", () => {
-    delete process.env[TIMEOUT_ON_COMMAND_LINE];
     const set = spyOn(jest, "setTimeout");
-    holdTestTimeout();
+    holdTestTimeout(false);
     expect(set).toHaveBeenCalledWith(TEST_TIMEOUT_MS);
   });
 
   test("leaves the launcher's command line, a longer deadline asked for included, alone", () => {
-    process.env[TIMEOUT_ON_COMMAND_LINE] = "1";
     const set = spyOn(jest, "setTimeout");
-    holdTestTimeout();
+    holdTestTimeout(true);
     expect(set).not.toHaveBeenCalled();
   });
 
-  test("the tests above leave the mark as the process had it", () => {
-    expect(process.env[TIMEOUT_ON_COMMAND_LINE]).toBe(inherited);
+  // A `bun test` a test starts inherits the environment but not the launcher's `--timeout`.
+  test("the launcher's mark is not passed on to a process a test starts", () => {
+    expect(process.env[TIMEOUT_ON_COMMAND_LINE]).toBeUndefined();
   });
 });

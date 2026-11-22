@@ -1,5 +1,5 @@
 import { Plus, X } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ControlPopover } from "./ControlPopover";
 
@@ -23,6 +23,16 @@ export function FilterChips({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
+  // The remove button that holds the focus. A chip can go by any change of the URL, Back included, and
+  // the browser drops the focus of a removed node on the page body, so it goes to "+ Filter" instead.
+  const focused = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    const el = focused.current;
+    if (!el || el.isConnected) return;
+    focused.current = null;
+    const active = document.activeElement;
+    if (!active || active === document.body) addRef.current?.focus();
+  });
   const filtersLabel = t("filters.label", "Filters");
   return (
     <ul
@@ -42,6 +52,17 @@ export function FilterChips({
             onClick={() => {
               c.onClear();
               addRef.current?.focus();
+            }}
+            onFocus={(e) => {
+              focused.current = e.currentTarget;
+            }}
+            onBlur={(e) => {
+              // A blur from the removal itself must not forget the button before the check above runs.
+              const el = e.currentTarget;
+              queueMicrotask(() => {
+                if (el.isConnected && focused.current === el)
+                  focused.current = null;
+              });
             }}
             aria-label={t("filters.remove", "Remove filter {{filter}}", {
               filter: c.label,

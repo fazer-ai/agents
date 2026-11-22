@@ -2261,6 +2261,50 @@ describe("filter chips", () => {
     expect(chipLabels()).toEqual([]);
   });
 
+  test("a history change that takes the focused chip away puts the focus on + Filter, and an unfocused one moves nothing", async () => {
+    await renderDash("/?range=7d&agent=7&source=playground");
+    await waitFor(() =>
+      expect(chipLabels()).toEqual(["Agent: Ana", "Source: Playground"]),
+    );
+    (
+      screen.getByRole("button", {
+        name: "Remove filter Agent: Ana",
+      }) as HTMLElement
+    ).focus();
+    // A render that keeps the chip keeps track of it, so the later removal still hands the focus over.
+    navigateTo("/?range=30d&agent=7&source=playground");
+    await waitFor(() =>
+      expect(location).toBe("/?range=30d&agent=7&source=playground"),
+    );
+    navigateTo("/?range=7d&source=playground");
+    await waitFor(() => expect(chipLabels()).toEqual(["Source: Playground"]));
+    expect(
+      document.activeElement === screen.getByRole("button", { name: "Filter" }),
+    ).toBe(true);
+    // A chip that never had the focus goes without pulling it from where it is.
+    const chip = screen.getByRole("button", {
+      name: "Remove filter Source: Playground",
+    }) as HTMLElement;
+    chip.focus();
+    chip.blur();
+    periodButton().focus();
+    navigateTo("/?range=7d");
+    await waitFor(() => expect(chipLabels()).toEqual([]));
+    expect(document.activeElement === periodButton()).toBe(true);
+    navigateTo("/?range=7d&agent=7");
+    await waitFor(() => expect(chipLabels()).toEqual(["Agent: Ana"]));
+    // Focused once and left for the page: its removal later finds nothing to hand over.
+    const agent = screen.getByRole("button", {
+      name: "Remove filter Agent: Ana",
+    }) as HTMLElement;
+    agent.focus();
+    agent.blur();
+    await Promise.resolve();
+    navigateTo("/?range=7d");
+    await waitFor(() => expect(chipLabels()).toEqual([]));
+    expect(document.activeElement === document.body).toBe(true);
+  });
+
   test("the audience is a chip under the client segment, and removing the segment drops it too", async () => {
     await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
     expect(chipLabels()).toEqual([

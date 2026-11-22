@@ -5,12 +5,17 @@ import { cn } from "@/client/lib/utils";
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-// The elements Tab stops on, in document order: focusable, shown, and of a radio group only the checked
-// radio (the first one while none is checked), as a browser walks them.
+// The elements Tab stops on, in document order: focusable, enabled (a disabled fieldset included), shown,
+// and of a radio group only the checked radio (the first one while none is checked), as a browser does.
 export function tabStops(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (el) => {
-      if (el.tabIndex < 0 || el.closest("[hidden]")) return false;
+      if (
+        el.tabIndex < 0 ||
+        el.closest("[hidden], fieldset[disabled]") ||
+        el.matches(":disabled")
+      )
+        return false;
       const shown =
         typeof el.checkVisibility === "function"
           ? el.checkVisibility({ visibilityProperty: true })

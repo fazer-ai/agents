@@ -1846,6 +1846,13 @@ describe("calendar periods", () => {
     document.body.append(shut);
     expect(tabStops(document).some((el) => shut.contains(el))).toBe(false);
     shut.remove();
+    // A control inside a disabled fieldset is disabled with no attribute of its own, and is no stop.
+    const off = document.createElement("fieldset");
+    off.disabled = true;
+    off.innerHTML = '<input aria-label="off" />';
+    document.body.append(off);
+    expect(tabStops(document).some((el) => off.contains(el))).toBe(false);
+    off.remove();
     // A control under visibility:hidden takes no focus either.
     const unseen = document.createElement("div");
     unseen.style.visibility = "hidden";

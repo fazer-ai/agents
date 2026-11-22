@@ -153,7 +153,10 @@ export function PeriodPicker<V extends string>({
     <ControlPopover
       open={open}
       onOpenChange={(next) => {
-        if (next) setActive(value);
+        if (next) {
+          setActive(value);
+          typed.current = { text: "", at: 0 };
+        }
         setOpen(next);
       }}
       label={periodLabel}

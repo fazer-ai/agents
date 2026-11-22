@@ -17,6 +17,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
+import { tabStops } from "@/client/components/ControlPopover";
 import { AuthContext } from "@/client/contexts/AuthContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import {
@@ -1537,7 +1538,7 @@ describe("calendar periods", () => {
   const footer = () => {
     openPeriod();
     const box = screen.getByRole("dialog", { name: "Period" });
-    return [...box.querySelectorAll(":scope > div:last-child > span")].map(
+    return [...box.querySelectorAll(":scope > div:last-of-type > span")].map(
       (e) => e.textContent ?? "",
     );
   };
@@ -1640,13 +1641,14 @@ describe("calendar periods", () => {
     );
   });
 
-  test("Tab leaves the popover for what follows the button, Shift+Tab returns to the button, and custom dates are reached in between", async () => {
+  // A browser walks Tab itself (between a date field's parts too), so the test stands where Tab lands:
+  // on the stop after the last control or before the first.
+  test("Tab past the last control leaves for the stop after the button, and back past the first returns to the button", async () => {
     await renderDash("/?range=this-month");
-    const tab = (shiftKey = false) =>
-      fireEvent.keyDown(document.activeElement as Element, {
-        key: "Tab",
-        shiftKey,
-      });
+    const exit = (where: "before" | "after") =>
+      document.querySelector<HTMLElement>(
+        `[role="dialog"] [data-focus-exit="${where}"]`,
+      ) as HTMLElement;
     const filterButton = () => screen.getByRole("button", { name: "Filter" });
     openPeriod();
     await waitFor(() =>
@@ -1654,7 +1656,7 @@ describe("calendar periods", () => {
         "this-month",
       ),
     );
-    tab();
+    exit("after").focus();
     await waitFor(() =>
       expect(document.activeElement === filterButton()).toBe(true),
     );
@@ -1665,28 +1667,40 @@ describe("calendar periods", () => {
         "this-month",
       ),
     );
-    tab(true);
+    exit("before").focus();
     await waitFor(() =>
       expect(document.activeElement === periodButton()).toBe(true),
     );
     expect(periodButton().getAttribute("aria-expanded")).toBe("false");
-    // Under custom dates the fields follow the list, so Tab from the list stays inside.
-    pickPeriod("custom");
+  });
+
+  test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {
+    await renderDash("/");
+    openFilters();
+    const box = screen.getByRole("dialog", { name: "Filters" });
+    // The editor opens on its first control, and its Tab stops skip the unchecked radios.
     await waitFor(() =>
-      expect(screen.queryAllByLabelText("From").length).toBe(1),
+      expect(
+        document.activeElement ===
+          screen.getByRole("combobox", { name: "Agent" }),
+      ).toBe(true),
     );
-    (periodOption("custom") as HTMLElement).focus();
-    tab();
-    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
-    // Shift+Tab from the last field walks back inside, it does not leave.
-    (screen.getByLabelText("To") as HTMLElement).focus();
-    tab(true);
-    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
-    (screen.getByLabelText("To") as HTMLElement).focus();
-    tab();
-    await waitFor(() =>
-      expect(document.activeElement === filterButton()).toBe(true),
+    const stops = tabStops(box).map(
+      (el) =>
+        (el instanceof HTMLInputElement && el.type === "radio"
+          ? el.value
+          : null) ??
+        el.getAttribute("aria-label") ??
+        el.getAttribute("data-focus-exit") ??
+        el.textContent,
     );
+    expect(stops).toEqual(["before", "Agent", "Inbox", "inbox", "after"]);
+    const hidden = document.createElement("a");
+    hidden.href = "#x";
+    hidden.hidden = true;
+    document.body.append(hidden);
+    expect(tabStops(document).includes(hidden)).toBe(false);
+    hidden.remove();
   });
 
   test("typing jumps to the preset whose name starts with it, and a repeated letter steps through them", async () => {
@@ -1714,6 +1728,16 @@ describe("calendar periods", () => {
     type("y");
     expect(focused()).toBe("yesterday");
     expect(location).toBe("/?range=this-month");
+    // A new opening starts a new search: "c", close, open again, "y" right away finds yesterday.
+    type("c");
+    type("Escape");
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    openPeriod();
+    await waitFor(() => expect(focused()).toBe("this-month"));
+    type("y");
+    expect(focused()).toBe("yesterday");
   });
 
   test("picking the period in use closes the popover and leaves the history alone", async () => {

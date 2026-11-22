@@ -27,7 +27,7 @@ export function FilterChips({
   return (
     <ul
       aria-label={filtersLabel}
-      className="m-0 flex list-none flex-wrap items-center gap-1.5 p-0"
+      className="m-0 flex max-w-full min-w-0 list-none flex-wrap items-center gap-1.5 p-0"
     >
       {chips.map((c) => (
         <li

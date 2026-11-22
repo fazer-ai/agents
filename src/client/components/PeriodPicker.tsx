@@ -16,6 +16,7 @@ export interface PeriodGroup<V extends string> {
 }
 
 const CUSTOM = "custom";
+const TYPEAHEAD_MS = 700;
 
 // THE PERIOD BUTTON AND ITS POPOVER, shared by the operator dashboard and the Dashboards. The button
 // says the whole period: name and days, then the stretch it is compared with, and a bar on its bottom
@@ -54,6 +55,8 @@ export function PeriodPicker<V extends string>({
   // the arrows or the pointer focused, so Tab leaves the list from where the focus is.
   const [active, setActive] = useState<string>(value);
   const listRef = useRef<HTMLDivElement>(null);
+  // What has been typed to jump to an option, cleared after a pause, as a native select does.
+  const typed = useRef({ text: "", at: 0 });
   const id = useId();
   const periodLabel = t("dashboard.range.label", "Period");
   const options = (): HTMLButtonElement[] =>
@@ -93,8 +96,24 @@ export function PeriodPicker<V extends string>({
       case "End":
         next = all[all.length - 1];
         break;
-      default:
-        return;
+      default: {
+        if (e.key.length !== 1 || e.altKey || e.ctrlKey || e.metaKey) return;
+        const now = Date.now();
+        const text =
+          (now - typed.current.at < TYPEAHEAD_MS ? typed.current.text : "") +
+          e.key.toLocaleLowerCase();
+        typed.current = { text, at: now };
+        // A repeated first letter steps through the options that start with it, from the one focused.
+        const repeat = [...text].every((c) => c === text[0]);
+        const from = repeat ? at + 1 : at;
+        const ring = all.map((_, i) => all[(from + i) % all.length]);
+        next = ring.find((b) =>
+          (b?.textContent ?? "")
+            .toLocaleLowerCase()
+            .startsWith(repeat ? (text[0] as string) : text),
+        );
+        if (!next) return;
+      }
     }
     e.preventDefault();
     next?.focus();
@@ -172,7 +191,7 @@ export function PeriodPicker<V extends string>({
               aria-hidden="true"
               data-progress={progress.toFixed(3)}
               className="bg-accent-solid absolute bottom-0 left-0 h-0.5"
-              style={{ width: `${Math.round(progress * 100)}%` }}
+              style={{ width: `${progress * 100}%` }}
             />
           )}
         </button>

@@ -1640,6 +1640,82 @@ describe("calendar periods", () => {
     );
   });
 
+  test("Tab leaves the popover for what follows the button, Shift+Tab returns to the button, and custom dates are reached in between", async () => {
+    await renderDash("/?range=this-month");
+    const tab = (shiftKey = false) =>
+      fireEvent.keyDown(document.activeElement as Element, {
+        key: "Tab",
+        shiftKey,
+      });
+    const filterButton = () => screen.getByRole("button", { name: "Filter" });
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    tab();
+    await waitFor(() =>
+      expect(document.activeElement === filterButton()).toBe(true),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    tab(true);
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    // Under custom dates the fields follow the list, so Tab from the list stays inside.
+    pickPeriod("custom");
+    await waitFor(() =>
+      expect(screen.queryAllByLabelText("From").length).toBe(1),
+    );
+    (periodOption("custom") as HTMLElement).focus();
+    tab();
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+    // Shift+Tab from the last field walks back inside, it does not leave.
+    (screen.getByLabelText("To") as HTMLElement).focus();
+    tab(true);
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+    (screen.getByLabelText("To") as HTMLElement).focus();
+    tab();
+    await waitFor(() =>
+      expect(document.activeElement === filterButton()).toBe(true),
+    );
+  });
+
+  test("typing jumps to the preset whose name starts with it, and a repeated letter steps through them", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const type = (k: string) =>
+      fireEvent.keyDown(document.activeElement as Element, { key: k });
+    const focused = () => document.activeElement?.getAttribute("data-value");
+    type("c");
+    expect(focused()).toBe("custom");
+    type("l");
+    // "cl" names nothing, so the focus stays.
+    expect(focused()).toBe("custom");
+    setSystemTime(new Date(2026, 3, 10, 10, 1));
+    type("l");
+    expect(focused()).toBe("last-week");
+    type("l");
+    expect(focused()).toBe("last-month");
+    setSystemTime(new Date(2026, 3, 10, 10, 2));
+    type("y");
+    expect(focused()).toBe("yesterday");
+    expect(location).toBe("/?range=this-month");
+  });
+
   test("picking the period in use closes the popover and leaves the history alone", async () => {
     await renderDash("/?range=this-month");
     const before = navigations;
@@ -1689,6 +1765,11 @@ describe("calendar periods", () => {
     // Nine whole days and ten hours of April's thirty.
     expect(progressBar()?.dataset.progress).toBe(
       ((9 + 10 / 24) / 30).toFixed(3),
+    );
+    // The bar's width is the share itself, not a rounded percent that would hide a year's first day.
+    expect(Number.parseFloat(progressBar()?.style.width ?? "")).toBeCloseTo(
+      ((9 + 10 / 24) / 30) * 100,
+      6,
     );
     expect(footer()).toEqual([
       "Day 10 of 30, in progress",

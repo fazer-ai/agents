@@ -1589,12 +1589,38 @@ describe("calendar periods", () => {
     await waitFor(() => expect(location).toBe("/?range=last-month"));
     expect(periodButton().getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryAllByLabelText("From").length).toBe(0);
-    pickPeriod("custom");
-    await waitFor(() =>
-      expect(screen.queryAllByLabelText("From").length).toBe(1),
-    );
+    const revealed: string[] = [];
+    const scroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+      revealed.push(
+        this.querySelector("input")?.getAttribute("aria-label") ?? "",
+      );
+    };
+    try {
+      pickPeriod("custom");
+      await waitFor(() =>
+        expect(screen.queryAllByLabelText("From").length).toBe(1),
+      );
+      // The fields just shown are brought into view once, and editing them does not scroll again.
+      expect(revealed).toEqual(["From"]);
+      fireEvent.change(screen.getByLabelText("From"), {
+        target: { value: "2026-04-09" },
+      });
+      await waitFor(() =>
+        expect(location).toBe("/?range=custom&from=2026-04-09&to=2026-04-10"),
+      );
+      expect(revealed).toEqual(["From"]);
+      // Custom dates coming back from the history, not picked, are not scrolled to either.
+      navigateTo("/?range=7d");
+      navigateTo("/?range=custom&from=2026-04-01&to=2026-04-02");
+      await waitFor(() =>
+        expect(screen.queryAllByLabelText("From").length).toBe(1),
+      );
+      expect(revealed).toEqual(["From"]);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = scroll;
+    }
     expect(periodButton().getAttribute("aria-expanded")).toBe("true");
-    expect(location).toBe("/?range=custom&from=2026-04-10&to=2026-04-10");
   });
 
   test("the keyboard opens on the selected preset, walks the list and the columns, and Escape returns to the button", async () => {
@@ -1706,6 +1732,10 @@ describe("calendar periods", () => {
       ),
     );
     const heading = screen.getByRole("heading", { name: "Dashboard" });
+    // The console's page sits in a <main tabIndex={-1}>, which a click on its text focuses.
+    const main = document.createElement("main");
+    main.tabIndex = -1;
+    heading.parentElement?.before(main);
     // The page may have scrolled away from the band: handing the focus back must not scroll to it.
     let scrolledBack = false;
     const button = periodButton();
@@ -1718,7 +1748,7 @@ describe("calendar periods", () => {
     await new Promise((r) => setTimeout(r, 10));
     fireEvent.pointerDown(heading, { button: 0, pointerType: "mouse" });
     fireEvent.click(heading);
-    (document.activeElement as HTMLElement | null)?.blur();
+    main.focus();
     await waitFor(() =>
       expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
     );
@@ -1932,6 +1962,12 @@ describe("calendar periods", () => {
       "Period: Today · Apr 10, Day 1 of 1, in progress",
     );
     expect(footer()).toEqual(["Day 1 of 1, in progress"]);
+  });
+
+  test("a custom range opened at the first instant of its first day names that day, not the days ahead", async () => {
+    setSystemTime(new Date(2026, 3, 10, 0, 0));
+    await renderDash("/?range=custom&from=2026-04-10&to=2026-04-15");
+    expect(periodName()).toBe("Period: Custom dates · Apr 10");
   });
 
   test("all time has no comparison and no progress", async () => {

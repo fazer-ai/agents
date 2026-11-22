@@ -119,11 +119,11 @@ export function ControlPopover({
               return;
             }
             // NOTE: after a click outside, Radix leaves the focus where the click put it; a click on
-            // nothing focusable puts it on the page itself, and then it goes back to the trigger, without
-            // scrolling the page back to it.
+            // nothing focusable puts it on the page (the body, or the `<main tabIndex={-1}>` that holds it),
+            // and then it goes back to the trigger, without scrolling the page back to it.
             requestAnimationFrame(() => {
               const at = document.activeElement;
-              if (!at || at === document.body)
+              if (!at?.matches(FOCUSABLE))
                 triggerEl?.focus({ preventScroll: true });
             });
           }}

@@ -157,7 +157,12 @@ function usePeriodTexts(
   // the read, as its comparison does.
   const read =
     daysRead(readUpTo(win, openedAt)) ??
-    (win.firstDay ? { first: win.firstDay, last: win.lastDay } : null);
+    (win.firstDay
+      ? {
+          first: win.firstDay,
+          last: [win.lastDay, localDayKey(openedAt)].sort()[0] as string,
+        }
+      : null);
   const dates = read
     ? shortDaysLabel(i18n.language, read.first, read.last, to)
     : null;

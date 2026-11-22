@@ -63,6 +63,15 @@ export function PeriodPicker<V extends string>({
   const listRef = useRef<HTMLDivElement>(null);
   // What has been typed to jump to an option, cleared after a pause, as a native select does.
   const typed = useRef({ text: "", at: 0 });
+  // Custom dates just picked: their fields appear below the option, possibly under the box's fold on a
+  // short screen, so they are scrolled into view once, and not again while they are edited.
+  const fieldsRef = useRef<HTMLDivElement>(null);
+  const revealFields = useRef(false);
+  useEffect(() => {
+    if (value !== CUSTOM || !revealFields.current) return;
+    revealFields.current = false;
+    fieldsRef.current?.scrollIntoView({ block: "nearest" });
+  }, [value]);
   // A period changed from outside while the box is open (Back, under custom dates) can take the focused
   // field away with it; the focus then goes to the option now selected, so the list stays in reach.
   useEffect(() => {
@@ -147,6 +156,7 @@ export function PeriodPicker<V extends string>({
   const pick = (v: V | typeof CUSTOM) => {
     if (v !== value) onSelect(v);
     if (v !== CUSTOM) setOpen(false);
+    else revealFields.current = true;
   };
   const option = (v: V | typeof CUSTOM, text: string) => (
     <button
@@ -258,7 +268,9 @@ export function PeriodPicker<V extends string>({
         )}
       </div>
       {custom && value === CUSTOM && (
-        <div className="px-4 pb-3">{custom.fields}</div>
+        <div ref={fieldsRef} className="px-4 pb-3">
+          {custom.fields}
+        </div>
       )}
       {(dayText || compareFull) && (
         <div className="border-border bg-bg-secondary text-text-secondary flex flex-col gap-0.5 border-t px-4 py-2 text-xs">

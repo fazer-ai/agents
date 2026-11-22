@@ -1617,6 +1617,12 @@ describe("calendar periods", () => {
     key("ArrowRight");
     // The fifth row of the rolling column is its last, all time.
     expect(document.activeElement?.getAttribute("data-value")).toBe("all");
+    // Alt+Left is the browser's Back, not a move to the other column.
+    fireEvent.keyDown(document.activeElement as Element, {
+      key: "ArrowLeft",
+      altKey: true,
+    });
+    expect(document.activeElement?.getAttribute("data-value")).toBe("all");
     key("ArrowLeft");
     expect(document.activeElement?.getAttribute("data-value")).toBe(
       "this-month",
@@ -1672,6 +1678,18 @@ describe("calendar periods", () => {
       expect(document.activeElement === periodButton()).toBe(true),
     );
     expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    // A next stop that will not take the focus leaves it on the button, never on nothing.
+    filterButton().focus = () => {};
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    exit("after").focus();
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
   });
 
   test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {
@@ -1701,6 +1719,13 @@ describe("calendar periods", () => {
     document.body.append(hidden);
     expect(tabStops(document).includes(hidden)).toBe(false);
     hidden.remove();
+    // A link under a display:none ancestor (a section index below its breakpoint) is no stop either.
+    const shut = document.createElement("div");
+    shut.style.display = "none";
+    shut.innerHTML = '<a href="#y">y</a>';
+    document.body.append(shut);
+    expect(tabStops(document).some((el) => shut.contains(el))).toBe(false);
+    shut.remove();
   });
 
   test("typing jumps to the preset whose name starts with it, and a repeated letter steps through them", async () => {

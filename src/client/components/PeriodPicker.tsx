@@ -65,7 +65,9 @@ export function PeriodPicker<V extends string>({
         [],
     );
   const columns: string[][] = groups.map((g) => g.options.map((o) => o.value));
+  // A modified key is the browser's (Alt+Left goes back), never a move in the list.
   const move = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     const all = options();
     const at = all.indexOf(document.activeElement as HTMLButtonElement);
     if (at < 0) return;
@@ -97,7 +99,7 @@ export function PeriodPicker<V extends string>({
         next = all[all.length - 1];
         break;
       default: {
-        if (e.key.length !== 1 || e.altKey || e.ctrlKey || e.metaKey) return;
+        if (e.key.length !== 1) return;
         const now = Date.now();
         const text =
           (now - typed.current.at < TYPEAHEAD_MS ? typed.current.text : "") +

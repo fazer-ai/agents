@@ -11,8 +11,11 @@ export function tabStops(root: ParentNode): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (el) => {
       if (el.tabIndex < 0 || el.closest("[hidden]")) return false;
-      if (typeof el.checkVisibility === "function" && !el.checkVisibility())
-        return false;
+      const shown =
+        typeof el.checkVisibility === "function"
+          ? el.checkVisibility()
+          : el.getClientRects().length > 0;
+      if (!shown) return false;
       if (el instanceof HTMLInputElement && el.type === "radio" && el.name) {
         const group = Array.from(
           root.querySelectorAll<HTMLInputElement>(
@@ -101,8 +104,9 @@ export function ControlPopover({
             const next = leaveTo.current;
             leaveTo.current = null;
             if (!next) return;
-            e.preventDefault();
             next.focus();
+            // A stop that would not take the focus leaves it to Radix, which hands it to the trigger.
+            if (document.activeElement === next) e.preventDefault();
           }}
           className={cn(
             // Capped by the viewport on both axes: a box wider or taller than the screen cannot be

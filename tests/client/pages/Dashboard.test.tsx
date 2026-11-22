@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -16,7 +17,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { tabStops } from "@/client/components/ControlPopover";
 import { AuthContext } from "@/client/contexts/AuthContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
@@ -356,8 +357,12 @@ let location = "";
 // Each distinct history entry the page has been on: a re-render on the same entry does not count.
 let navigations = 0;
 let lastKey = "";
+// Navigates as a history change from outside the page would (Back, a link).
+let navigateTo: (to: string) => void = () => {};
 function Where() {
   const l = useLocation();
+  const navigate = useNavigate();
+  navigateTo = (to) => act(() => navigate(to));
   location = `${l.pathname}${l.search}`;
   if (l.key !== lastKey) {
     lastKey = l.key;
@@ -1818,6 +1823,12 @@ describe("calendar periods", () => {
     type("y");
     expect(focused()).toBe("yesterday");
     expect(location).toBe("/?range=this-month");
+    // A navigation key ends the search: "l", Home, then "y" right away finds yesterday, not "ly".
+    type("l");
+    type("Home");
+    expect(focused()).toBe("today");
+    type("y");
+    expect(focused()).toBe("yesterday");
     // A new opening starts a new search: "c", close, open again, "y" right away finds yesterday.
     type("c");
     type("Escape");
@@ -1828,6 +1839,22 @@ describe("calendar periods", () => {
     await waitFor(() => expect(focused()).toBe("this-month"));
     type("y");
     expect(focused()).toBe("yesterday");
+  });
+
+  test("a period changed from outside while the popover is open moves the focus to the option now selected", async () => {
+    await renderDash("/?range=custom&from=2026-04-01&to=2026-04-05");
+    openPeriod();
+    const from = screen.getByLabelText("From") as HTMLInputElement;
+    from.focus();
+    // Back to a preset takes the date fields, and the focused one, away.
+    navigateTo("/?range=last-month");
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "last-month",
+      ),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryAllByLabelText("From").length).toBe(0);
   });
 
   test("picking the period in use closes the popover and leaves the history alone", async () => {

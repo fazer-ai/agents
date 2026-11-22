@@ -2,6 +2,7 @@ import { CalendarDays, ChevronDown } from "lucide-react";
 import {
   type KeyboardEvent,
   type ReactNode,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -62,6 +63,16 @@ export function PeriodPicker<V extends string>({
   const listRef = useRef<HTMLDivElement>(null);
   // What has been typed to jump to an option, cleared after a pause, as a native select does.
   const typed = useRef({ text: "", at: 0 });
+  // A period changed from outside while the box is open (Back, under custom dates) can take the focused
+  // field away with it; the focus then goes to the option now selected, so the list stays in reach.
+  useEffect(() => {
+    if (!open) return;
+    const box = listRef.current?.closest('[role="dialog"]');
+    if (box?.contains(document.activeElement)) return;
+    listRef.current
+      ?.querySelector<HTMLElement>(`[role="option"][data-value="${value}"]`)
+      ?.focus();
+  }, [value, open]);
   const id = useId();
   const periodLabel = t("dashboard.range.label", "Period");
   const options = (): HTMLButtonElement[] =>
@@ -73,6 +84,8 @@ export function PeriodPicker<V extends string>({
   // A modified key is the browser's (Alt+Left goes back), never a move in the list.
   const move = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
+    // Any other key ends a typed search, so the next letter starts a new one.
+    if (e.key.length !== 1) typed.current = { text: "", at: 0 };
     const all = options();
     const at = all.indexOf(document.activeElement as HTMLButtonElement);
     if (at < 0) return;

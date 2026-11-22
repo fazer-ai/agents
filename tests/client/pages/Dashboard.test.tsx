@@ -1729,14 +1729,25 @@ describe("calendar periods", () => {
     );
     const filter = screen.getByRole("button", { name: "Filter" });
     await new Promise((r) => setTimeout(r, 10));
+    // A press on "+ Filter" focuses it (the browser's mousedown), and its click opens the editor.
     fireEvent.pointerDown(filter, { button: 0, pointerType: "mouse" });
-    fireEvent.click(filter);
     filter.focus();
+    fireEvent.click(filter);
     await waitFor(() =>
       expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
     );
+    expect(filter.getAttribute("aria-expanded")).toBe("true");
+    const agent = () => screen.getByRole("combobox", { name: "Agent" });
+    await waitFor(() => expect(document.activeElement === agent()).toBe(true));
+    // The period popover's close callback runs once its box is gone, and leaves the editor's focus alone.
+    await waitFor(() =>
+      expect(screen.queryAllByRole("dialog", { name: "Period" }).length).toBe(
+        0,
+      ),
+    );
     await new Promise((r) => requestAnimationFrame(() => r(null)));
-    expect(document.activeElement === filter).toBe(true);
+    expect(document.activeElement === agent()).toBe(true);
+    expect(filter.getAttribute("aria-expanded")).toBe("true");
   });
 
   test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {

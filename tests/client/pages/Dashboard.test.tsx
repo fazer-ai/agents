@@ -1812,8 +1812,12 @@ describe("calendar periods", () => {
     type("c");
     expect(focused()).toBe("custom");
     type("l");
-    // "cl" names nothing, so the focus stays.
+    // "cl" names nothing, so the focus stays, and a space typed into the search presses nothing.
     expect(focused()).toBe("custom");
+    const space = fireEvent.keyDown(document.activeElement as Element, {
+      key: " ",
+    });
+    expect(space).toBe(false);
     setSystemTime(new Date(2026, 3, 10, 10, 1));
     type("l");
     expect(focused()).toBe("last-week");
@@ -1973,6 +1977,10 @@ describe("calendar periods", () => {
     expect(footer()).toEqual([
       "Compared with Mar 17 to 26, 2026, up to 10:00 AM",
     ]);
+    // The button names the days read so far, not the days asked for.
+    expect(periodName()).toBe(
+      "Period: Custom dates · Apr 1 to 10, vs. Mar 17 to 26",
+    );
   });
 });
 

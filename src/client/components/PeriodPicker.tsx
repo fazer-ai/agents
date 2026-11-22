@@ -132,7 +132,12 @@ export function PeriodPicker<V extends string>({
             repeat ? (text[0] as string) : text,
           ),
         );
-        if (!next) return;
+        // NOTE: a key that continues a search is the search's even when nothing matches, so a space
+        // typed into "last x " never presses the option the focus is on.
+        if (!next) {
+          if (text.length > 1) e.preventDefault();
+          return;
+        }
       }
     }
     e.preventDefault();

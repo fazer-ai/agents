@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
-  comparedDays,
   type DashboardFilters,
   DEFAULT_FILTERS,
+  daysRead,
   type NarrowingFilter,
   narrowingFilters,
   periodProgress,
@@ -95,7 +95,7 @@ describe("how far a running calendar period has gone", () => {
 describe("the days the comparison is named by", () => {
   const now = new Date(2026, 3, 10, 10, 0);
   const of = (patch: Partial<DashboardFilters>) =>
-    comparedDays(previousWindow(windowOf(f(patch), now), now));
+    daysRead(previousWindow(windowOf(f(patch), now), now));
   test("a closed month: the whole month before, ending on its last day", () => {
     expect(of({ range: "last-month" })).toEqual({
       first: "2026-02-01",
@@ -121,7 +121,7 @@ describe("the days the comparison is named by", () => {
     expect(of({ range: "all" })).toBeNull();
     const midnight = new Date(2026, 3, 10, 0, 0);
     expect(
-      comparedDays(
+      daysRead(
         previousWindow(windowOf(f({ range: "today" }), midnight), midnight),
       ),
     ).toBeNull();

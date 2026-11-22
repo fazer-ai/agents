@@ -35,8 +35,8 @@ import { CostSection } from "./dashboard/CostSection";
 import {
   type Audience,
   apiQuery,
-  comparedDays,
   type DashboardFilters,
+  daysRead,
   FIRST_CUSTOM_DAY,
   localDayKey,
   type NarrowingFilter,
@@ -153,10 +153,15 @@ function usePeriodTexts(
       ? t("dashboard.period.custom", "Custom dates")
       : (groups.flatMap((g) => g.options).find((o) => o.value === filters.range)
           ?.label ?? "");
-  const dates = win.firstDay
-    ? shortDaysLabel(i18n.language, win.firstDay, win.lastDay, to)
+  // The days the figures are read over: a custom range that runs past today names only the days up to
+  // the read, as its comparison does.
+  const read =
+    daysRead(readUpTo(win, openedAt)) ??
+    (win.firstDay ? { first: win.firstDay, last: win.lastDay } : null);
+  const dates = read
+    ? shortDaysLabel(i18n.language, read.first, read.last, to)
     : null;
-  const compared = comparedDays(prev);
+  const compared = daysRead(prev);
   const compareShort = compared
     ? t("dashboard.period.vs", "vs. {{range}}", {
         range: shortDaysLabel(i18n.language, compared.first, compared.last, to),

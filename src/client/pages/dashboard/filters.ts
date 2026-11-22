@@ -213,11 +213,10 @@ export function periodProgress(
   return { day, total, fraction: Math.min(1, Math.max(0, fraction)) };
 }
 
-// The local days a previous period's figures are read over, as the screen names them: they end inside
-// a day when the period is cut at the read's time of day (`partial`), else on the day before its
-// exclusive end. Null when there is no previous period, or it is empty (the first instant of a running
-// period).
-export function comparedDays(
+// The local days a window's figures are read over, as the screen names them: they end inside a day when
+// the window is cut at the read's time of day (`partial`), else on the day before its exclusive end.
+// Null for no window, all time, or an empty one (the first instant of a running period).
+export function daysRead(
   prev: Window | null,
 ): { first: string; last: string; partial: boolean } | null {
   if (!prev?.firstDay || !prev.since || prev.until <= prev.since) return null;

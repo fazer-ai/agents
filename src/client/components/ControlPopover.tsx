@@ -19,11 +19,6 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
 
-function order(el: HTMLElement): number {
-  const n = Number(el.getAttribute("tabindex") ?? 0);
-  return n > 0 ? n : Number.MAX_SAFE_INTEGER;
-}
-
 // Whether Tab can land on a focusable element: enabled (a disabled fieldset included), not inert, shown.
 function reachable(el: HTMLElement): boolean {
   // The attribute and not `tabIndex`: a summary reports -1 in some engines and is still a stop.
@@ -52,11 +47,10 @@ function shown(el: HTMLElement): boolean {
 // The elements Tab stops on, in document order, as a browser walks them: the reachable ones, and of a
 // radio group (same name, same form) only its checked radio, or its first reachable one while none is.
 export function tabStops(root: ParentNode): HTMLElement[] {
-  // A positive tabindex comes first, in its own order, as a browser walks them; the rest in document
-  // order (the sort is stable).
-  const candidates = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE))
-    .filter(reachable)
-    .sort((a, b) => order(a) - order(b));
+  // Document order is Tab order: the console lint refuses a positive tabindex.
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>(FOCUSABLE),
+  ).filter(reachable);
   return candidates.filter((el) => {
     if (!(el instanceof HTMLInputElement && el.type === "radio" && el.name))
       return true;

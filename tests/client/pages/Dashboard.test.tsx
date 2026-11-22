@@ -1973,17 +1973,6 @@ describe("calendar periods", () => {
       ["b", "c"],
     );
     forms.remove();
-    // A positive tabindex comes before the controls in document order.
-    const ordered = document.createElement("div");
-    ordered.innerHTML =
-      '<button type="button">plain</button><input aria-label="first" tabindex="1" />';
-    document.body.append(ordered);
-    expect(
-      tabStops(ordered).map(
-        (el) => el.getAttribute("aria-label") ?? el.textContent,
-      ),
-    ).toEqual(["first", "plain"]);
-    ordered.remove();
     // A control inside an inert section takes no focus.
     const asleep = document.createElement("div");
     asleep.innerHTML =
@@ -2068,6 +2057,22 @@ describe("calendar periods", () => {
     );
     expect(periodButton().getAttribute("aria-expanded")).toBe("true");
     expect(screen.queryAllByLabelText("From").length).toBe(0);
+  });
+
+  test("Back while a preset holds the focus moves it to the preset now selected", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    navigateTo("/?range=last-month");
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "last-month",
+      ),
+    );
   });
 
   test("picking the period in use closes the popover and leaves the history alone", async () => {

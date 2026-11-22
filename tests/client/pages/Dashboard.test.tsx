@@ -1610,13 +1610,16 @@ describe("calendar periods", () => {
         expect(location).toBe("/?range=custom&from=2026-04-09&to=2026-04-10"),
       );
       expect(revealed).toEqual(["From"]);
+      // Picking custom dates again, already in use, brings the fields into view again.
+      fireEvent.click(periodOption("custom") as HTMLElement);
+      expect(revealed).toEqual(["From", "From"]);
       // Custom dates coming back from the history, not picked, are not scrolled to either.
       navigateTo("/?range=7d");
       navigateTo("/?range=custom&from=2026-04-01&to=2026-04-02");
       await waitFor(() =>
         expect(screen.queryAllByLabelText("From").length).toBe(1),
       );
-      expect(revealed).toEqual(["From"]);
+      expect(revealed).toEqual(["From", "From"]);
     } finally {
       HTMLElement.prototype.scrollIntoView = scroll;
     }
@@ -1764,6 +1767,30 @@ describe("calendar periods", () => {
     );
     const filter = screen.getByRole("button", { name: "Filter" });
     await new Promise((r) => setTimeout(r, 10));
+    // A click that opens something focused on purpose (a chart's day detail) keeps that focus.
+    const detail = document.createElement("section");
+    detail.tabIndex = -1;
+    heading.parentElement?.after(detail);
+    await new Promise((r) => setTimeout(r, 10));
+    fireEvent.pointerDown(heading, { button: 0, pointerType: "mouse" });
+    fireEvent.click(heading);
+    detail.focus();
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByRole("dialog", { name: "Period" }).length).toBe(
+        0,
+      ),
+    );
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement === detail).toBe(true);
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
     // A press on "+ Filter" focuses it (the browser's mousedown), and its click opens the editor.
     fireEvent.pointerDown(filter, { button: 0, pointerType: "mouse" });
     filter.focus();

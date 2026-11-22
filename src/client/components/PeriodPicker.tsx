@@ -156,6 +156,8 @@ export function PeriodPicker<V extends string>({
   const pick = (v: V | typeof CUSTOM) => {
     if (v !== value) onSelect(v);
     if (v !== CUSTOM) setOpen(false);
+    else if (value === CUSTOM)
+      fieldsRef.current?.scrollIntoView({ block: "nearest" });
     else revealFields.current = true;
   };
   const option = (v: V | typeof CUSTOM, text: string) => (

@@ -1131,7 +1131,9 @@
       "agent": "Agente",
       "allAgents": "Todos os agentes",
       "allInboxes": "Todas as caixas",
-      "inbox": "Caixa de entrada"
+      "inbox": "Caixa de entrada",
+      "source": "Origem",
+      "sourceAll": "todas"
     },
     "followups": {
       "cameBack": "Cliente voltou a escrever",
@@ -1240,16 +1242,17 @@
       "compared": "Comparado com {{range}}",
       "comparedUpTo": "Comparado com {{range}}, até {{time}}",
       "custom": "Datas personalizadas",
+      "dayOf": "Dia {{day}} de {{total}}, em andamento",
       "lastMonth": "Mês passado",
       "lastQuarter": "Trimestre passado",
       "lastWeek": "Semana passada",
-      "running": "Em andamento",
       "thisMonth": "Este mês",
       "thisQuarter": "Este trimestre",
       "thisWeek": "Esta semana",
       "thisYear": "Este ano",
       "today": "Hoje",
       "trailing": "Janela móvel",
+      "vs": "vs {{range}}",
       "yesterday": "Ontem"
     },
     "previous": "anterior: {{value}}",
@@ -3311,6 +3314,11 @@
   "experiments": {
     "comingSoonDesc": "Rode variantes de prompt lado a lado e compare os resultados. Esta funcionalidade está em construção.",
     "comingSoonTitle": "Experimentos A/B em breve"
+  },
+  "filters": {
+    "add": "Filtro",
+    "label": "Filtros",
+    "remove": "Remover filtro {{filter}}"
   },
   "hours": {
     "add": "Novo horário",

@@ -147,7 +147,7 @@ export function BreakdownSection({
   return (
     <section
       id="breakdown"
-      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-(--dashboard-band)"
     >
       <Block
         error={block.error}

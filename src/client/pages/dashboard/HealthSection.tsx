@@ -96,7 +96,7 @@ export function HealthSection({
   return (
     <section
       id="health"
-      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-(--dashboard-band)"
     >
       <SectionHeading icon={Activity}>
         {t("dashboard.health.title", "Health")}
@@ -276,7 +276,7 @@ export function AutomationSection() {
   return (
     <section
       id="automation"
-      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-(--dashboard-band)"
     >
       <SectionHeading icon={Bot}>
         {t("dashboard.automation.title", "What the agent does on its own")}

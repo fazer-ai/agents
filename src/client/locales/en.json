@@ -1079,7 +1079,9 @@
       "agent": "Agent",
       "allAgents": "All agents",
       "allInboxes": "All inboxes",
-      "inbox": "Inbox"
+      "inbox": "Inbox",
+      "source": "Source",
+      "sourceAll": "all"
     },
     "followups": {
       "cameBack": "Customer wrote back",
@@ -1186,16 +1188,17 @@
       "compared": "Compared with {{range}}",
       "comparedUpTo": "Compared with {{range}}, up to {{time}}",
       "custom": "Custom dates",
+      "dayOf": "Day {{day}} of {{total}}, in progress",
       "lastMonth": "Last month",
       "lastQuarter": "Last quarter",
       "lastWeek": "Last week",
-      "running": "In progress",
       "thisMonth": "This month",
       "thisQuarter": "This quarter",
       "thisWeek": "This week",
       "thisYear": "This year",
       "today": "Today",
       "trailing": "Rolling window",
+      "vs": "vs. {{range}}",
       "yesterday": "Yesterday"
     },
     "previous": "previous: {{value}}",
@@ -3195,6 +3198,11 @@
   "experiments": {
     "comingSoonDesc": "Run prompt variants side by side and compare outcomes. This feature is under construction.",
     "comingSoonTitle": "A/B experiments are coming soon"
+  },
+  "filters": {
+    "add": "Filter",
+    "label": "Filters",
+    "remove": "Remove filter {{filter}}"
   },
   "hours": {
     "add": "New schedule",

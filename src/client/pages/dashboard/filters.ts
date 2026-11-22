@@ -131,6 +131,20 @@ export function writeFilters(f: DashboardFilters): URLSearchParams {
   return p;
 }
 
+// The filters that differ from their default, in the band's order: a chip each. Every source is one
+// too, since it widens the view past the default real segment, and the audience counts only under the
+// client segment it refines.
+export type ChipFilter = "agent" | "inbox" | "source" | "audience";
+export function chipFilters(f: DashboardFilters): ChipFilter[] {
+  const out: ChipFilter[] = [];
+  if (f.agentId) out.push("agent");
+  if (f.inboxId) out.push("inbox");
+  if (f.source !== DEFAULT_FILTERS.source) out.push("source");
+  if (f.source === "client" && f.audience !== DEFAULT_FILTERS.audience)
+    out.push("audience");
+  return out;
+}
+
 // Local day key (YYYY-MM-DD) of a Date in the browser's zone.
 export function localDayKey(d: Date): string {
   const y = d.getFullYear();
@@ -178,6 +192,41 @@ function ymd(day: string): [number, number, number] {
 // year. The page says so beside the selector.
 export function rangeRunning(range: Range): boolean {
   return isCalendarPreset(range) && presetRunning(range);
+}
+
+// How far a running calendar preset has gone at `now`: the day it is on, out of the days it holds, and
+// the share of it already past, counting today's elapsed hours. Null for any other range.
+export function periodProgress(
+  range: Range,
+  now: Date = new Date(),
+): { day: number; total: number; fraction: number } | null {
+  if (!rangeRunning(range) || !isCalendarPreset(range)) return null;
+  const today = localDayKey(now);
+  const { first, end } = presetDays(range, today);
+  const total = dayCountOf(first, end) - 1;
+  const day = dayCountOf(first, today);
+  const midnight = startOfLocalDay(today).getTime();
+  const dayLength = addDays(startOfLocalDay(today), 1).getTime() - midnight;
+  const sinceMidnight = now.getTime() - midnight;
+  const done = day - 1 + sinceMidnight / dayLength;
+  const fraction = done / total;
+  return { day, total, fraction: Math.min(1, Math.max(0, fraction)) };
+}
+
+// The local days a window's figures are read over, as the screen names them: they end inside a day when
+// the window is cut at the read's time of day (`partial`), else on the day before its exclusive end.
+// Null for no window, all time, or an empty one (the first instant of a running period).
+export function daysRead(
+  prev: Window | null,
+): { first: string; last: string; partial: boolean } | null {
+  if (!prev?.firstDay || !prev.since || prev.until <= prev.since) return null;
+  const untilDay = localDayKey(prev.until);
+  const partial = prev.until.getTime() > startOfLocalDay(untilDay).getTime();
+  return {
+    first: prev.firstDay,
+    last: partial ? untilDay : localDayKey(new Date(prev.until.getTime() - 1)),
+    partial,
+  };
 }
 
 // The window a set of filters names, at `now`. A preset ends today and covers N local days; a custom

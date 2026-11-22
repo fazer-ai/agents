@@ -178,7 +178,7 @@ export function ReasonsSection({ win }: { win: Window }) {
   return (
     <section
       id="reasons"
-      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-(--dashboard-band)"
     >
       <SectionHeading icon={ArrowRightLeft}>
         {t("dashboard.reasons.title", "Why it hands over, and what people ask")}

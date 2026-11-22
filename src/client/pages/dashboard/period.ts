@@ -129,7 +129,26 @@ export function periodLabels(
   return { tick: f, long: f };
 }
 
-// A stretch of local days with its year, as the period note names the comparison ("Mar 1 to 10,
+// A stretch of local days without its year, as the period button names its days and its comparison
+// ("Mar 1 to 10", "1 a 10 de mar."): the year only when the stretch spans two, since the popover names
+// the comparison in full.
+export function shortDaysLabel(
+  lang: string,
+  first: string,
+  last: string,
+  to = "to",
+): string {
+  const f = new Intl.DateTimeFormat(lang, {
+    day: "numeric",
+    month: "short",
+    ...(first.split("-")[0] !== last.split("-")[0] ? { year: "numeric" } : {}),
+  });
+  return first === last
+    ? f.format(local(first))
+    : dayRange(f, local(first), local(last), to);
+}
+
+// A stretch of local days with its year, as the period popover names the comparison ("Mar 1 to 10,
 // 2026", "1 a 10 de mar. de 2026"); one day reads as that day.
 export function daysLabel(
   lang: string,

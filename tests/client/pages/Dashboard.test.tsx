@@ -9,6 +9,7 @@ import {
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -16,7 +17,9 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router";
+import { useState } from "react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
+import { tabStops } from "@/client/components/ControlPopover";
 import { AuthContext } from "@/client/contexts/AuthContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import {
@@ -352,9 +355,20 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
 }) as unknown as typeof globalThis.fetch;
 
 let location = "";
+// Each distinct history entry the page has been on: a re-render on the same entry does not count.
+let navigations = 0;
+let lastKey = "";
+// Navigates as a history change from outside the page would (Back, a link).
+let navigateTo: (to: string) => void = () => {};
 function Where() {
   const l = useLocation();
+  const navigate = useNavigate();
+  navigateTo = (to) => act(() => navigate(to));
   location = `${l.pathname}${l.search}`;
+  if (l.key !== lastKey) {
+    lastKey = l.key;
+    navigations++;
+  }
   return null;
 }
 
@@ -393,10 +407,28 @@ async function renderDash(path = "/", settled = true, clientChannel?: boolean) {
 }
 
 // The period select, by the value a preset is stored as in the link.
-const pickPeriod = (value: string) =>
-  fireEvent.change(screen.getByRole("combobox", { name: "Period" }), {
-    target: { value },
-  });
+// The period button: its accessible name starts with "Period:" and carries the whole period.
+const periodButton = () => screen.getByRole("button", { name: /^Period:/ });
+const periodName = () => periodButton().getAttribute("aria-label") ?? "";
+const openPeriod = () => {
+  if (periodButton().getAttribute("aria-expanded") !== "true")
+    fireEvent.click(periodButton());
+};
+const periodOption = (value: string) =>
+  document.querySelector<HTMLElement>(`[role="option"][data-value="${value}"]`);
+const pickPeriod = (value: string) => {
+  openPeriod();
+  fireEvent.click(periodOption(value) as HTMLElement);
+};
+// The filter editor, behind "+ Filter".
+const openFilters = () => {
+  const button = screen.getByRole("button", { name: "Filter" });
+  if (button.getAttribute("aria-expanded") !== "true") fireEvent.click(button);
+};
+const chipLabels = () =>
+  [...screen.getByRole("list", { name: "Filters" }).querySelectorAll("li")]
+    .map((li) => li.textContent ?? "")
+    .filter((text) => text !== "Filter");
 
 const has = (text: string | RegExp) =>
   screen.queryAllByText(text, { exact: false }).length > 0;
@@ -571,6 +603,7 @@ describe("one filter, in the URL, for every block", () => {
     await waitFor(() => {
       expect(screen.queryAllByRole("button", { name: "Beto" }).length).toBe(1);
     });
+    openFilters();
     fireEvent.change(screen.getByRole("combobox", { name: "Agent" }), {
       target: { value: "8" },
     });
@@ -587,6 +620,7 @@ describe("one filter, in the URL, for every block", () => {
       { id: "5", name: "SAC WhatsApp", account: { id: 7, name: null } },
     ];
     await renderDash("/");
+    openFilters();
     const select = screen.getByRole("combobox", {
       name: "Inbox",
     }) as HTMLSelectElement;
@@ -614,6 +648,10 @@ describe("one filter, in the URL, for every block", () => {
       { id: "5", name: "SAC WhatsApp", account: { id: 7, name: null } },
     ];
     await renderDash("/?inbox=4");
+    await waitFor(() => {
+      expect(chipLabels()).toEqual(["Inbox: SAC WhatsApp · Main brand"]);
+    });
+    openFilters();
     const select = screen.getByRole("combobox", {
       name: "Inbox",
     }) as HTMLSelectElement;
@@ -627,6 +665,7 @@ describe("one filter, in the URL, for every block", () => {
 
   test("choosing an agent puts it in the URL, and every agent takes it out", async () => {
     await renderDash("/");
+    openFilters();
     const select = screen.getByRole("combobox", {
       name: "Agent",
     }) as HTMLSelectElement;
@@ -1485,9 +1524,10 @@ describe("a chart with days past retention", () => {
   });
 });
 
-// A calendar period on the page: the selector groups calendar periods apart from trailing windows,
-// the link carries the preset, the previous period asked is the calendar period before, and the note
-// beside the selector says what the figures are compared with and whether the period is still running.
+// A calendar period on the page: the period button says the period, its days and the stretch it is
+// compared with; the popover groups calendar periods apart from trailing windows and names the
+// progress and the comparison in full; the link carries the preset, and the previous period asked is
+// the calendar period before.
 describe("calendar periods", () => {
   beforeEach(() => setSystemTime(new Date(2026, 3, 10, 10, 0)));
   afterEach(() => setSystemTime());
@@ -1499,14 +1539,23 @@ describe("calendar periods", () => {
         new Date(String(u.searchParams.get("until"))).getTime(),
       ])
       .sort((a, b) => Number(b[0]) - Number(a[0]));
-  const note = () => screen.getByTestId("period-note").textContent ?? "";
+  const progressBar = () =>
+    periodButton().querySelector<HTMLElement>("[data-progress]");
+  const footer = () => {
+    openPeriod();
+    const box = screen.getByRole("dialog", { name: "Period" });
+    return [...box.querySelectorAll(":scope > div:last-of-type > span")].map(
+      (e) => e.textContent ?? "",
+    );
+  };
 
-  test("the selector names its two families, and the dates show only for custom", async () => {
+  test("the popover names its two families, a preset closes it, and custom dates keep it open on their fields", async () => {
     await renderDash("/");
-    const select = screen.getByRole("combobox", { name: "Period" });
-    const groups = [...select.querySelectorAll("optgroup")].map((g) => [
-      g.getAttribute("label"),
-      [...g.querySelectorAll("option")].map((o) => o.textContent),
+    openPeriod();
+    const list = screen.getByRole("listbox", { name: "Period" });
+    const groups = [...list.querySelectorAll('[role="group"]')].map((g) => [
+      g.querySelector("span")?.textContent,
+      [...g.querySelectorAll('[role="option"]')].map((o) => o.textContent),
     ]);
     expect(groups).toEqual([
       [
@@ -1534,50 +1583,593 @@ describe("calendar periods", () => {
         ],
       ],
     ]);
+    expect(periodOption("custom")?.textContent).toBe("Custom dates");
+    expect(periodOption("30d")?.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryAllByLabelText("From").length).toBe(0);
     pickPeriod("last-month");
     await waitFor(() => expect(location).toBe("/?range=last-month"));
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryAllByLabelText("From").length).toBe(0);
-    pickPeriod("custom");
+    const revealed: string[] = [];
+    const scroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+      revealed.push(
+        this.querySelector("input")?.getAttribute("aria-label") ?? "",
+      );
+    };
+    try {
+      pickPeriod("custom");
+      await waitFor(() =>
+        expect(screen.queryAllByLabelText("From").length).toBe(1),
+      );
+      // The fields just shown are brought into view once, and editing them does not scroll again.
+      expect(revealed).toEqual(["From"]);
+      fireEvent.change(screen.getByLabelText("From"), {
+        target: { value: "2026-04-09" },
+      });
+      await waitFor(() =>
+        expect(location).toBe("/?range=custom&from=2026-04-09&to=2026-04-10"),
+      );
+      expect(revealed).toEqual(["From"]);
+      // Picking custom dates again, already in use, brings the fields into view again.
+      fireEvent.click(periodOption("custom") as HTMLElement);
+      expect(revealed).toEqual(["From", "From"]);
+      // Custom dates coming back from the history, not picked, are not scrolled to either.
+      navigateTo("/?range=7d");
+      navigateTo("/?range=custom&from=2026-04-01&to=2026-04-02");
+      await waitFor(() =>
+        expect(screen.queryAllByLabelText("From").length).toBe(1),
+      );
+      expect(revealed).toEqual(["From", "From"]);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = scroll;
+    }
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  test("the keyboard opens on the selected preset, walks the list and the columns, and Escape returns to the button", async () => {
+    await renderDash("/?range=this-month");
+    periodButton().focus();
+    openPeriod();
     await waitFor(() =>
-      expect(screen.queryAllByLabelText("From").length).toBe(1),
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const key = (k: string) =>
+      fireEvent.keyDown(document.activeElement as Element, { key: k });
+    key("ArrowDown");
+    expect(document.activeElement?.getAttribute("data-value")).toBe(
+      "last-month",
+    );
+    // The one Tab stop follows the focus, so Tab leaves the list from there.
+    expect(
+      [...document.querySelectorAll('[role="option"][tabindex="0"]')].map((o) =>
+        o.getAttribute("data-value"),
+      ),
+    ).toEqual(["last-month"]);
+    key("ArrowUp");
+    key("ArrowRight");
+    // The fifth row of the rolling column is its last, all time.
+    expect(document.activeElement?.getAttribute("data-value")).toBe("all");
+    // Alt+Left is the browser's Back, not a move to the other column.
+    fireEvent.keyDown(document.activeElement as Element, {
+      key: "ArrowLeft",
+      altKey: true,
+    });
+    expect(document.activeElement?.getAttribute("data-value")).toBe("all");
+    key("ArrowLeft");
+    expect(document.activeElement?.getAttribute("data-value")).toBe(
+      "this-month",
+    );
+    key("End");
+    expect(document.activeElement?.getAttribute("data-value")).toBe("custom");
+    key("Home");
+    expect(document.activeElement?.getAttribute("data-value")).toBe("today");
+    // Moving the focus picks nothing.
+    expect(location).toBe("/?range=this-month");
+    key("Escape");
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    // Opened again, the Tab stop is back on the selected preset.
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
     );
   });
 
-  test("last month is compared with the whole month before, and the note names it", async () => {
+  // A browser walks Tab itself (between a date field's parts too), so the test stands where Tab lands:
+  // on the stop after the last control or before the first.
+  test("Tab past the last control leaves for the stop after the button, and back past the first returns to the button", async () => {
+    await renderDash("/?range=this-month");
+    const exit = (where: "before" | "after") =>
+      document.querySelector<HTMLElement>(
+        `[role="dialog"] [data-focus-exit="${where}"]`,
+      ) as HTMLElement;
+    const filterButton = () => screen.getByRole("button", { name: "Filter" });
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    exit("after").focus();
+    await waitFor(() =>
+      expect(document.activeElement === filterButton()).toBe(true),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    exit("before").focus();
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    // A next stop that will not take the focus leaves it on the button, never on nothing.
+    filterButton().focus = () => {};
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    exit("after").focus();
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+  });
+
+  test("a click outside on nothing focusable hands the focus back to the button, and a click on a control keeps it there", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const heading = screen.getByRole("heading", { name: "Dashboard" });
+    // The console's page sits in a <main tabIndex={-1}>, which a click on its text focuses.
+    const main = document.createElement("main");
+    main.tabIndex = -1;
+    heading.parentElement?.before(main);
+    // The page may have scrolled away from the band: handing the focus back must not scroll to it.
+    let scrolledBack = false;
+    const button = periodButton();
+    const focusOf = button.focus.bind(button);
+    button.focus = (options?: FocusOptions) => {
+      if (!options?.preventScroll) scrolledBack = true;
+      focusOf(options);
+    };
+    // Radix arms its outside listener a tick after the box opens, and a mouse press closes on its click.
+    await new Promise((r) => setTimeout(r, 10));
+    fireEvent.pointerDown(heading, { button: 0, pointerType: "mouse" });
+    fireEvent.click(heading);
+    main.focus();
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    expect(scrolledBack).toBe(false);
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const filter = screen.getByRole("button", { name: "Filter" });
+    await new Promise((r) => setTimeout(r, 10));
+    // A click that opens something focused on purpose (a chart's day detail) keeps that focus.
+    const detail = document.createElement("section");
+    detail.tabIndex = -1;
+    heading.parentElement?.after(detail);
+    await new Promise((r) => setTimeout(r, 10));
+    fireEvent.pointerDown(heading, { button: 0, pointerType: "mouse" });
+    fireEvent.click(heading);
+    detail.focus();
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByRole("dialog", { name: "Period" }).length).toBe(
+        0,
+      ),
+    );
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement === detail).toBe(true);
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    // A press on "+ Filter" focuses it (the browser's mousedown), and its click opens the editor.
+    fireEvent.pointerDown(filter, { button: 0, pointerType: "mouse" });
+    filter.focus();
+    fireEvent.click(filter);
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    expect(filter.getAttribute("aria-expanded")).toBe("true");
+    const agent = () => screen.getByRole("combobox", { name: "Agent" });
+    await waitFor(() => expect(document.activeElement === agent()).toBe(true));
+    // The period popover's close callback runs once its box is gone, and leaves the editor's focus alone.
+    await waitFor(() =>
+      expect(screen.queryAllByRole("dialog", { name: "Period" }).length).toBe(
+        0,
+      ),
+    );
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement === agent()).toBe(true);
+    expect(filter.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  test("Tab from the period box itself, after a click on its text, goes to its controls and keeps it open", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    const box = screen.getByRole("dialog", { name: "Period" });
+    box.focus();
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(document.activeElement?.getAttribute("data-value")).toBe(
+      "this-month",
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  test("an editor that focuses its own field still hands Tab past its end to the stop after the trigger", async () => {
+    const { ControlPopover } = await import("@/client/components");
+    function Probe() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <ControlPopover
+            open={open}
+            onOpenChange={setOpen}
+            label="Self"
+            trigger={<button type="button">self</button>}
+          >
+            {/* biome-ignore lint/a11y/noAutofocus: the case under test is an editor that focuses its own field. */}
+            <input aria-label="typed" autoFocus />
+          </ControlPopover>
+          <button type="button">next</button>
+        </>
+      );
+    }
+    render(withI18n(<Probe />));
+    fireEvent.click(screen.getByRole("button", { name: "self" }));
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("textbox", { name: "typed" }),
+      ).toBe(true),
+    );
+    (
+      document.querySelector('[data-focus-exit="after"]') as HTMLElement
+    ).focus();
+    await waitFor(() =>
+      expect(
+        document.activeElement === screen.getByRole("button", { name: "next" }),
+      ).toBe(true),
+    );
+  });
+
+  test("a popover with no control to take the focus holds it itself and stays open", async () => {
+    const { ControlPopover } = await import("@/client/components");
+    function Probe() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <ControlPopover
+            open={open}
+            onOpenChange={setOpen}
+            label="Probe"
+            trigger={<button type="button">probe</button>}
+          >
+            <fieldset disabled>
+              <input aria-label="locked" />
+            </fieldset>
+          </ControlPopover>
+          <button type="button">after</button>
+        </>
+      );
+    }
+    render(withI18n(<Probe />));
+    fireEvent.click(screen.getByRole("button", { name: "probe" }));
+    const box = await waitFor(() =>
+      screen.getByRole("dialog", { name: "Probe" }),
+    );
+    await waitFor(() => expect(document.activeElement === box).toBe(true));
+    expect(
+      screen
+        .getByRole("button", { name: "probe" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    // Tab from the box leaves for what follows the trigger, Shift+Tab for the trigger.
+    fireEvent.keyDown(box, { key: "Tab" });
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("button", { name: "after" }),
+      ).toBe(true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "probe" }));
+    const again = await waitFor(() =>
+      screen.getByRole("dialog", { name: "Probe" }),
+    );
+    await waitFor(() => expect(document.activeElement === again).toBe(true));
+    fireEvent.keyDown(again, { key: "Tab", shiftKey: true });
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("button", { name: "probe" }),
+      ).toBe(true),
+    );
+  });
+
+  test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {
+    await renderDash("/");
+    openFilters();
+    const box = screen.getByRole("dialog", { name: "Filters" });
+    // The editor opens on its first control, and its Tab stops skip the unchecked radios.
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("combobox", { name: "Agent" }),
+      ).toBe(true),
+    );
+    const stops = tabStops(box).map(
+      (el) =>
+        (el instanceof HTMLInputElement && el.type === "radio"
+          ? el.value
+          : null) ??
+        el.getAttribute("aria-label") ??
+        el.getAttribute("data-focus-exit") ??
+        el.textContent,
+    );
+    expect(stops).toEqual(["before", "Agent", "Inbox", "inbox", "after"]);
+    const hidden = document.createElement("a");
+    hidden.href = "#x";
+    hidden.hidden = true;
+    document.body.append(hidden);
+    expect(tabStops(document).includes(hidden)).toBe(false);
+    hidden.remove();
+    // A link under a display:none ancestor (a section index below its breakpoint) is no stop either.
+    const shut = document.createElement("div");
+    shut.style.display = "none";
+    shut.innerHTML = '<a href="#y">y</a>';
+    document.body.append(shut);
+    expect(tabStops(document).some((el) => shut.contains(el))).toBe(false);
+    shut.remove();
+    // A control inside a disabled fieldset is disabled with no attribute of its own, and is no stop.
+    const off = document.createElement("fieldset");
+    off.disabled = true;
+    off.innerHTML =
+      '<legend><button type="button">legend</button></legend><input aria-label="off" /><a href="#l">link</a>';
+    document.body.append(off);
+    // Its first legend's controls stay enabled, and a link is never disabled by it.
+    expect(
+      tabStops(off).map(
+        (el) => el.getAttribute("aria-label") ?? el.textContent,
+      ),
+    ).toEqual(["legend", "link"]);
+    off.remove();
+    // An unchecked group whose first radio is disabled stops on its first enabled one, and a radio
+    // of the same name in another form is another group.
+    const forms = document.createElement("div");
+    forms.innerHTML =
+      '<form><input type="radio" name="g" value="a" disabled /><input type="radio" name="g" value="b" /></form>' +
+      '<form><input type="radio" name="g" value="c" /></form>';
+    document.body.append(forms);
+    expect(tabStops(forms).map((el) => (el as HTMLInputElement).value)).toEqual(
+      ["b", "c"],
+    );
+    forms.remove();
+    // A control inside an inert section takes no focus.
+    const asleep = document.createElement("div");
+    asleep.innerHTML =
+      '<section inert><button type="button">asleep</button></section><button type="button">awake</button>';
+    document.body.append(asleep);
+    expect(tabStops(asleep).map((el) => el.textContent)).toEqual(["awake"]);
+    asleep.remove();
+    // A native disclosure's summary is a stop with no tabindex of its own.
+    const disclosure = document.createElement("div");
+    disclosure.innerHTML =
+      "<details><summary>more</summary><p>text</p></details>";
+    document.body.append(disclosure);
+    expect(tabStops(disclosure).map((el) => el.textContent)).toEqual(["more"]);
+    disclosure.remove();
+    // A control under visibility:hidden takes no focus either.
+    const unseen = document.createElement("div");
+    unseen.style.visibility = "hidden";
+    unseen.innerHTML = '<button type="button">z</button>';
+    document.body.append(unseen);
+    expect(tabStops(document).some((el) => unseen.contains(el))).toBe(false);
+    unseen.remove();
+  });
+
+  test("typing jumps to the preset whose name starts with it, and a repeated letter steps through them", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const type = (k: string) =>
+      fireEvent.keyDown(document.activeElement as Element, { key: k });
+    const focused = () => document.activeElement?.getAttribute("data-value");
+    type("c");
+    expect(focused()).toBe("custom");
+    type("l");
+    // "cl" names nothing, so the focus stays, and a space typed into the search presses nothing.
+    expect(focused()).toBe("custom");
+    const space = fireEvent.keyDown(document.activeElement as Element, {
+      key: " ",
+    });
+    expect(space).toBe(false);
+    setSystemTime(new Date(2026, 3, 10, 10, 1));
+    type("l");
+    expect(focused()).toBe("last-week");
+    type("l");
+    expect(focused()).toBe("last-month");
+    setSystemTime(new Date(2026, 3, 10, 10, 2));
+    type("y");
+    expect(focused()).toBe("yesterday");
+    expect(location).toBe("/?range=this-month");
+    // A navigation key ends the search: "l", Home, then "y" right away finds yesterday, not "ly".
+    type("l");
+    type("Home");
+    expect(focused()).toBe("today");
+    type("y");
+    expect(focused()).toBe("yesterday");
+    // A new opening starts a new search: "c", close, open again, "y" right away finds yesterday.
+    type("c");
+    type("Escape");
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    openPeriod();
+    await waitFor(() => expect(focused()).toBe("this-month"));
+    type("y");
+    expect(focused()).toBe("yesterday");
+  });
+
+  test("a period changed from outside while the popover is open moves the focus to the option now selected", async () => {
+    await renderDash("/?range=custom&from=2026-04-01&to=2026-04-05");
+    openPeriod();
+    const from = screen.getByLabelText("From") as HTMLInputElement;
+    from.focus();
+    // Back to a preset takes the date fields, and the focused one, away.
+    navigateTo("/?range=last-month");
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "last-month",
+      ),
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryAllByLabelText("From").length).toBe(0);
+  });
+
+  test("Back while a preset holds the focus moves it to the preset now selected", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    navigateTo("/?range=last-month");
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "last-month",
+      ),
+    );
+  });
+
+  test("picking the period in use closes the popover and leaves the history alone", async () => {
+    await renderDash("/?range=this-month");
+    const before = navigations;
+    pickPeriod("this-month");
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    expect(navigations).toBe(before);
+  });
+
+  test("the progress is the one at the view's opening, where its figures stop, not the clock's", async () => {
+    await renderDash("/?range=this-month");
+    const at = progressBar()?.dataset.progress;
+    setSystemTime(new Date(2026, 3, 10, 15, 0));
+    fireEvent.click(screen.getByRole("radio", { name: "By agent" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("radio", { name: "By agent" }) as HTMLInputElement)
+          .checked,
+      ).toBe(true),
+    );
+    expect(progressBar()?.dataset.progress).toBe(at);
+  });
+
+  test("last month is compared with the whole month before, and the button and the popover name it", async () => {
     await renderDash("/?range=last-month");
     await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
     expect(kpiWindows()).toEqual([
       [new Date(2026, 2, 1).getTime(), new Date(2026, 3, 1).getTime()],
       [new Date(2026, 1, 1).getTime(), new Date(2026, 2, 1).getTime()],
     ]);
-    expect(note()).toBe("Compared with Feb 1 to 28, 2026");
-    expect(has("In progress")).toBe(false);
+    expect(periodName()).toBe(
+      "Period: Last month · Mar 1 to 31, vs. Feb 1 to 28",
+    );
+    expect(progressBar()).toBeNull();
+    expect(footer()).toEqual(["Compared with Feb 1 to 28, 2026"]);
   });
 
-  test("this month runs, and is compared with the same days of the month before", async () => {
+  test("this month runs: the button carries its progress, and it is compared with the same days of the month before", async () => {
     await renderDash("/?range=this-month");
     await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
     expect(kpiWindows()).toEqual([
       [new Date(2026, 3, 1).getTime(), new Date(2026, 3, 10, 10).getTime()],
       [new Date(2026, 2, 1).getTime(), new Date(2026, 2, 10, 10).getTime()],
     ]);
-    expect(note()).toBe(
-      "In progressCompared with Mar 1 to 10, 2026, up to 10:00 AM",
+    expect(periodName()).toBe(
+      "Period: This month · Apr 1 to 10, vs. Mar 1 to 10, Day 10 of 30, in progress",
     );
+    // Nine whole days and ten hours of April's thirty.
+    expect(progressBar()?.dataset.progress).toBe(
+      ((9 + 10 / 24) / 30).toFixed(3),
+    );
+    // The bar's width is the share itself, not a rounded percent that would hide a year's first day.
+    expect(Number.parseFloat(progressBar()?.style.width ?? "")).toBeCloseTo(
+      ((9 + 10 / 24) / 30) * 100,
+      6,
+    );
+    expect(footer()).toEqual([
+      "Day 10 of 30, in progress",
+      "Compared with Mar 1 to 10, 2026, up to 10:00 AM",
+    ]);
   });
 
-  test("at the first instant of today the comparison is empty, and the note names no days", async () => {
+  test("at the first instant of today the comparison is empty, and nothing names its days", async () => {
     setSystemTime(new Date(2026, 3, 10, 0, 0));
     await renderDash("/?range=today");
     await waitFor(() =>
       expect(asks("/metrics/kpis").length).toBeGreaterThan(0),
     );
-    expect(note()).toBe("In progress");
+    expect(periodName()).toBe(
+      "Period: Today · Apr 10, Day 1 of 1, in progress",
+    );
+    expect(footer()).toEqual(["Day 1 of 1, in progress"]);
+  });
+
+  test("a custom range opened at the first instant of its first day names that day, not the days ahead", async () => {
+    setSystemTime(new Date(2026, 3, 10, 0, 0));
+    await renderDash("/?range=custom&from=2026-04-10&to=2026-04-15");
+    expect(periodName()).toBe("Period: Custom dates · Apr 10");
+  });
+
+  test("all time has no comparison and no progress", async () => {
+    await renderDash("/?range=all");
+    expect(periodName()).toBe("Period: All time");
+    expect(progressBar()).toBeNull();
+    openPeriod();
+    expect(
+      screen.getByRole("dialog", { name: "Period" }).textContent,
+    ).not.toContain("Compared");
   });
 
   test("the date picker starts in 1970, and a day before it leaves the range as it was", async () => {
     await renderDash("/?range=custom&from=2026-04-01&to=2026-04-05");
+    expect(periodName()).toBe(
+      "Period: Custom dates · Apr 1 to 5, vs. Mar 27 to 31",
+    );
+    openPeriod();
     const from = screen.getByLabelText("From") as HTMLInputElement;
     expect(from.min).toBe("1970-01-01");
     fireEvent.change(from, { target: { value: "1969-12-31" } });
@@ -1602,6 +2194,158 @@ describe("calendar periods", () => {
       new Date(2026, 2, 17).getTime(),
       new Date(2026, 2, 26, 10).getTime(),
     ]);
-    expect(note()).toBe("Compared with Mar 17 to 26, 2026, up to 10:00 AM");
+    expect(footer()).toEqual([
+      "Compared with Mar 17 to 26, 2026, up to 10:00 AM",
+    ]);
+    // The button names the days read so far, not the days asked for.
+    expect(periodName()).toBe(
+      "Period: Custom dates · Apr 1 to 10, vs. Mar 17 to 26",
+    );
+  });
+});
+
+// A section the index scrolls to stops below the sticky band, however tall the chips make it.
+describe("the band's height", () => {
+  test("is what a section's scroll margin reads", async () => {
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const r = rect.call(this);
+      return this.hasAttribute("data-dashboard-band")
+        ? ({ ...r.toJSON(), height: 150.2 } as DOMRect)
+        : r;
+    };
+    try {
+      await renderDash("/");
+      const page = document.querySelector("[data-dashboard-band]")
+        ?.parentElement as HTMLElement | null | undefined;
+      expect(page?.style.getPropertyValue("--dashboard-band")).toBe("167px");
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect;
+    }
+  });
+});
+
+// The filters that narrow the view are chips beside the period, each removable; a filter at its
+// default or at a value that narrows nothing is no chip.
+describe("filter chips", () => {
+  test("the default view carries no chip, and every source is one that says so", async () => {
+    await renderDash("/");
+    expect(chipLabels()).toEqual([]);
+    openFilters();
+    fireEvent.click(screen.getByRole("radio", { name: "All" }));
+    await waitFor(() => expect(location).toBe("/?source=all"));
+    expect(chipLabels()).toEqual(["Source: all"]);
+    fireEvent.click(screen.getByRole("radio", { name: "Real" }));
+    await waitFor(() => expect(location).toBe("/"));
+    expect(chipLabels()).toEqual([]);
+  });
+
+  test("a link's agent and segment are chips, and removing one keeps the rest of the view", async () => {
+    await renderDash("/?range=7d&agent=7&source=playground");
+    await waitFor(() =>
+      expect(chipLabels()).toEqual(["Agent: Ana", "Source: Playground"]),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove filter Agent: Ana" }),
+    );
+    await waitFor(() => expect(location).toBe("/?range=7d&source=playground"));
+    expect(chipLabels()).toEqual(["Source: Playground"]);
+    // The removed chip's button is gone, and the focus waits on "+ Filter".
+    expect(
+      document.activeElement === screen.getByRole("button", { name: "Filter" }),
+    ).toBe(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove filter Source: Playground" }),
+    );
+    await waitFor(() => expect(location).toBe("/?range=7d"));
+    expect(chipLabels()).toEqual([]);
+  });
+
+  test("a history change that takes the focused chip away puts the focus on + Filter, and an unfocused one moves nothing", async () => {
+    await renderDash("/?range=7d&agent=7&source=playground");
+    await waitFor(() =>
+      expect(chipLabels()).toEqual(["Agent: Ana", "Source: Playground"]),
+    );
+    (
+      screen.getByRole("button", {
+        name: "Remove filter Agent: Ana",
+      }) as HTMLElement
+    ).focus();
+    // A render that keeps the chip keeps track of it, so the later removal still hands the focus over.
+    navigateTo("/?range=30d&agent=7&source=playground");
+    await waitFor(() =>
+      expect(location).toBe("/?range=30d&agent=7&source=playground"),
+    );
+    navigateTo("/?range=7d&source=playground");
+    await waitFor(() => expect(chipLabels()).toEqual(["Source: Playground"]));
+    expect(
+      document.activeElement === screen.getByRole("button", { name: "Filter" }),
+    ).toBe(true);
+    // A chip that never had the focus goes without pulling it from where it is.
+    const chip = screen.getByRole("button", {
+      name: "Remove filter Source: Playground",
+    }) as HTMLElement;
+    chip.focus();
+    chip.blur();
+    periodButton().focus();
+    navigateTo("/?range=7d");
+    await waitFor(() => expect(chipLabels()).toEqual([]));
+    expect(document.activeElement === periodButton()).toBe(true);
+    navigateTo("/?range=7d&agent=7");
+    await waitFor(() => expect(chipLabels()).toEqual(["Agent: Ana"]));
+    // Focused once and left for the page: its removal later finds nothing to hand over.
+    const agent = screen.getByRole("button", {
+      name: "Remove filter Agent: Ana",
+    }) as HTMLElement;
+    agent.focus();
+    agent.blur();
+    await Promise.resolve();
+    navigateTo("/?range=7d");
+    await waitFor(() => expect(chipLabels()).toEqual([]));
+    expect(document.activeElement === document.body).toBe(true);
+  });
+
+  test("the audience is a chip under the client segment, and removing the segment drops it too", async () => {
+    await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
+    expect(chipLabels()).toEqual([
+      "Source: Client channel",
+      "Audience: Anonymous",
+    ]);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Remove filter Source: Client channel",
+      }),
+    );
+    await waitFor(() => expect(location).toBe("/?range=7d"));
+    expect(chipLabels()).toEqual([]);
+  });
+
+  test("a history change that takes the focused audience away keeps the focus in the editor", async () => {
+    await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
+    openFilters();
+    (screen.getByRole("radio", { name: "Anonymous" }) as HTMLElement).focus();
+    navigateTo("/?range=7d");
+    await waitFor(() =>
+      expect(screen.queryAllByRole("radio", { name: "Anonymous" }).length).toBe(
+        0,
+      ),
+    );
+    const box = screen.getByRole("dialog", { name: "Filters" });
+    await waitFor(() =>
+      expect(box.contains(document.activeElement)).toBe(true),
+    );
+    // A control that keeps the focus through a change keeps it: no jump back to the first one.
+    const inbox = screen.getByRole("combobox", { name: "Inbox" });
+    inbox.focus();
+    fireEvent.change(inbox, { target: { value: "3" } });
+    await waitFor(() => expect(location).toBe("/?range=7d&inbox=3"));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement === inbox).toBe(true);
+  });
+
+  test("an unreadable list keeps a link's agent as a chip that names its id", async () => {
+    optionsFail = true;
+    await renderDash("/?agent=7");
+    expect(chipLabels()).toEqual(["Agent: #7"]);
   });
 });

@@ -7,13 +7,22 @@ import {
   Table2,
   Target,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
-  Badge,
+  type FilterChip,
+  FilterChips,
   Input,
   PageContainer,
+  PeriodPicker,
   SegmentedControl,
   Select,
 } from "@/client/components";
@@ -26,12 +35,15 @@ import { CostSection } from "./dashboard/CostSection";
 import {
   type Audience,
   apiQuery,
+  type ChipFilter,
+  chipFilters,
   type DashboardFilters,
+  daysRead,
   FIRST_CUSTOM_DAY,
   localDayKey,
+  periodProgress,
   previousWindow,
   type Range,
-  rangeRunning,
   readFilters,
   readUpTo,
   type Source,
@@ -47,7 +59,7 @@ import {
   PerformanceSection,
   type PerformanceView,
 } from "./dashboard/PerformanceSection";
-import { daysLabel } from "./dashboard/period";
+import { daysLabel, shortDaysLabel } from "./dashboard/period";
 import { ReasonsSection } from "./dashboard/ReasonsSection";
 import {
   DashboardMetricsProvider,
@@ -123,82 +135,92 @@ function usePeriodGroups(): {
   ];
 }
 
-// Beside the selector: whether the period is still under way, and the stretch its figures are
-// compared with, so "this week" on a Monday morning is not read as a finished week.
-function PeriodNote({
-  running,
-  prev,
-}: {
-  running: boolean;
-  prev: Window | null;
-}) {
+// The period button's texts: the period's name and days, the stretch it is compared with (short on
+// the button, in full in the popover, with the time of day where the previous period is cut inside a
+// day), and how far a running calendar period has gone at the instant the view was opened, where its
+// figures stop.
+function usePeriodTexts(
+  filters: DashboardFilters,
+  win: Window,
+  prev: Window | null,
+  openedAt: Date,
+) {
   const { t, i18n } = useTranslation();
-  if (!running && !prev?.firstDay) return null;
+  const groups = usePeriodGroups();
   const to = t("dashboard.chart.rangeTo", "to");
-  // The days the previous period is read over end where its query does: inside a day when it is cut
-  // at the read's time of day, else on the day before its exclusive end.
-  const untilDay = prev ? localDayKey(prev.until) : null;
-  const partial =
-    !!prev && prev.until.getTime() > new Date(`${untilDay}T00:00:00`).getTime();
-  const lastShown = prev
-    ? partial
-      ? (untilDay as string)
-      : localDayKey(new Date(prev.until.getTime() - 1))
+  const label =
+    filters.range === "custom"
+      ? t("dashboard.period.custom", "Custom dates")
+      : (groups.flatMap((g) => g.options).find((o) => o.value === filters.range)
+          ?.label ?? "");
+  // The days the figures are read over: a custom range that runs past today names only the days up to
+  // the read, as its comparison does.
+  const read =
+    daysRead(readUpTo(win, openedAt)) ??
+    (win.firstDay
+      ? {
+          first: win.firstDay,
+          last: [win.lastDay, localDayKey(openedAt)].sort()[0] as string,
+        }
+      : null);
+  const dates = read
+    ? shortDaysLabel(i18n.language, read.first, read.last, to)
     : null;
-  // At the first instant of a running period its comparison is empty, and names no days.
-  const range =
-    prev?.firstDay && lastShown && prev.since && prev.until > prev.since
-      ? daysLabel(i18n.language, prev.firstDay, lastShown, to)
-      : null;
-  return (
-    <p
-      className="text-text-muted flex flex-wrap items-center gap-2 text-xs"
-      data-testid="period-note"
-    >
-      {running && (
-        <Badge variant="info">
-          {t("dashboard.period.running", "In progress")}
-        </Badge>
-      )}
-      {range &&
-        (partial
-          ? t(
-              "dashboard.period.comparedUpTo",
-              "Compared with {{range}}, up to {{time}}",
-              {
-                range,
-                time: new Intl.DateTimeFormat(i18n.language, {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }).format(prev.until),
-              },
-            )
-          : t("dashboard.period.compared", "Compared with {{range}}", {
+  const compared = daysRead(prev);
+  const compareShort = compared
+    ? t("dashboard.period.vs", "vs. {{range}}", {
+        range: shortDaysLabel(i18n.language, compared.first, compared.last, to),
+      })
+    : null;
+  const range = compared
+    ? daysLabel(i18n.language, compared.first, compared.last, to)
+    : null;
+  const compareFull =
+    compared && range
+      ? compared.partial && prev
+        ? t(
+            "dashboard.period.comparedUpTo",
+            "Compared with {{range}}, up to {{time}}",
+            {
               range,
-            }))}
-    </p>
-  );
+              time: new Intl.DateTimeFormat(i18n.language, {
+                hour: "2-digit",
+                minute: "2-digit",
+              }).format(prev.until),
+            },
+          )
+        : t("dashboard.period.compared", "Compared with {{range}}", { range })
+      : null;
+  const progress = periodProgress(filters.range, openedAt);
+  const dayText = progress
+    ? t("dashboard.period.dayOf", "Day {{day}} of {{total}}, in progress", {
+        day: progress.day,
+        total: progress.total,
+      })
+    : null;
+  return {
+    groups,
+    label,
+    dates,
+    compareShort,
+    compareFull,
+    progress: progress?.fraction ?? null,
+    dayText,
+  };
 }
 
-function FilterBar({
+// The two days of a custom range, as typed. A date input reports partial years while a year is
+// retyped, so the link takes the pair only once both days are valid and in order; until then the draft
+// stays on screen.
+function CustomDays({
   filters,
   onChange,
-  agents,
-  inboxes,
-  prev,
 }: {
   filters: DashboardFilters;
   onChange: (patch: Partial<DashboardFilters>) => void;
-  agents: { id: string; name: string }[];
-  inboxes: InboxOption[];
-  prev: Window | null;
 }) {
   const { t } = useTranslation();
-  const clientChannelEnabled = useClientChannelEnabled();
   const today = localDayKey(new Date());
-  const periodGroups = usePeriodGroups();
-  // The two days as typed. A date input reports partial years while a year is retyped, so the link
-  // takes the pair only once both days are valid and in order; until then the draft stays on screen.
   const [draft, setDraft] = useState({
     from: filters.from ?? "",
     to: filters.to ?? "",
@@ -212,6 +234,59 @@ function FilterBar({
     if (validDay(next.from) && validDay(next.to) && next.from <= next.to)
       onChange({ from: next.from, to: next.to });
   };
+  return (
+    <fieldset
+      aria-label={t("dashboard.period.custom", "Custom dates")}
+      className="m-0 flex min-w-0 flex-wrap items-center gap-2 border-0 p-0"
+      // Leaving the pair with a draft the link did not take shows the dates still in use again.
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+          setDraft({ from: filters.from ?? "", to: filters.to ?? "" });
+      }}
+    >
+      <Input
+        type="date"
+        aria-label={t("dashboard.range.from", "From")}
+        value={draft.from}
+        min={FIRST_CUSTOM_DAY}
+        max={filters.to ?? today}
+        onChange={(e) => setDay("from", e.target.value)}
+        className="w-36"
+      />
+      <Input
+        type="date"
+        aria-label={t("dashboard.range.to", "To")}
+        value={draft.to}
+        min={filters.from ?? FIRST_CUSTOM_DAY}
+        max={today}
+        onChange={(e) => setDay("to", e.target.value)}
+        className="w-36"
+      />
+    </fieldset>
+  );
+}
+
+function FilterBar({
+  filters,
+  onChange,
+  agents,
+  inboxes,
+  win,
+  prev,
+  openedAt,
+}: {
+  filters: DashboardFilters;
+  onChange: (patch: Partial<DashboardFilters>) => void;
+  agents: { id: string; name: string }[] | null;
+  inboxes: InboxOption[] | null;
+  win: Window;
+  prev: Window | null;
+  openedAt: Date;
+}) {
+  const { t } = useTranslation();
+  const clientChannelEnabled = useClientChannelEnabled();
+  const today = localDayKey(new Date());
+  const period = usePeriodTexts(filters, win, prev, openedAt);
   const sources: { value: Source; label: string }[] = [
     { value: "inbox", label: t("dashboard.source.inbox", "Real") },
     {
@@ -239,79 +314,52 @@ function FilterBar({
       label: t("dashboard.audience.anonymous", "Anonymous"),
     },
   ];
-  return (
-    <div className="flex flex-wrap items-center gap-3">
-      <Select
-        aria-label={t("dashboard.range.label", "Period")}
-        value={filters.range}
-        onChange={(e) => {
-          const range = e.target.value as Range;
-          onChange(
-            range === "custom"
-              ? {
-                  range,
-                  from: filters.from ?? today,
-                  to: filters.to ?? today,
-                }
-              : { range, from: null, to: null },
-          );
-        }}
-        wrapperClassName="max-w-48"
-      >
-        {periodGroups.map((g) => (
-          <optgroup key={g.label} label={g.label}>
-            {g.options.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-        <option value="custom">
-          {t("dashboard.period.custom", "Custom dates")}
-        </option>
-      </Select>
-      {filters.range === "custom" && (
-        <fieldset
-          aria-label={t("dashboard.period.custom", "Custom dates")}
-          className="m-0 flex min-w-0 items-center gap-2 border-0 p-0"
-          // Leaving the pair with a draft the link did not take shows the dates still in use again.
-          onBlur={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-              setDraft({ from: filters.from ?? "", to: filters.to ?? "" });
-          }}
-        >
-          <Input
-            type="date"
-            aria-label={t("dashboard.range.from", "From")}
-            value={draft.from}
-            min={FIRST_CUSTOM_DAY}
-            max={filters.to ?? today}
-            onChange={(e) => setDay("from", e.target.value)}
-            className="w-36"
-          />
-          <Input
-            type="date"
-            aria-label={t("dashboard.range.to", "To")}
-            value={draft.to}
-            min={filters.from ?? FIRST_CUSTOM_DAY}
-            max={today}
-            onChange={(e) => setDay("to", e.target.value)}
-            className="w-36"
-          />
-        </fieldset>
-      )}
-      <PeriodNote running={rangeRunning(filters.range)} prev={prev} />
+  // A link's id is kept while the lists are unread or unreadable, so its chip names the id until then.
+  const agentName = (id: string) =>
+    agents?.find((a) => a.id === id)?.name ?? `#${id}`;
+  const inboxName = (id: string) => {
+    const inbox = inboxes?.find((i) => i.id === id);
+    return inbox ? inboxOptionLabel(inbox, t) : `#${id}`;
+  };
+  const chipOf: Record<ChipFilter, () => FilterChip> = {
+    agent: () => ({
+      key: "agent",
+      label: `${t("dashboard.filter.agent", "Agent")}: ${agentName(filters.agentId as string)}`,
+      onClear: () => onChange({ agentId: null }),
+    }),
+    inbox: () => ({
+      key: "inbox",
+      label: `${t("dashboard.filter.inbox", "Inbox")}: ${inboxName(filters.inboxId as string)}`,
+      onClear: () => onChange({ inboxId: null }),
+    }),
+    source: () => ({
+      key: "source",
+      label: `${t("dashboard.filter.source", "Source")}: ${
+        filters.source === "all"
+          ? t("dashboard.filter.sourceAll", "all")
+          : (sources.find((s) => s.value === filters.source)?.label ?? "")
+      }`,
+      onClear: () => onChange({ source: "inbox" }),
+    }),
+    audience: () => ({
+      key: "audience",
+      label: `${t("dashboard.audience.label", "Audience")}: ${audiences.find((a) => a.value === filters.audience)?.label ?? ""}`,
+      onClear: () => onChange({ audience: "all" }),
+    }),
+  };
+  const chips = chipFilters(filters).map((key) => chipOf[key]());
+  const editor = (
+    <div className="flex flex-col gap-3">
       <Select
         aria-label={t("dashboard.filter.agent", "Agent")}
         value={filters.agentId ?? ""}
         onChange={(e) => onChange({ agentId: e.target.value || null })}
-        wrapperClassName="max-w-44"
+        wrapperClassName="w-full"
       >
         <option value="">
           {t("dashboard.filter.allAgents", "All agents")}
         </option>
-        {agents.map((a) => (
+        {(agents ?? []).map((a) => (
           <option key={a.id} value={a.id}>
             {a.name}
           </option>
@@ -321,14 +369,12 @@ function FilterBar({
         aria-label={t("dashboard.filter.inbox", "Inbox")}
         value={filters.inboxId ?? ""}
         onChange={(e) => onChange({ inboxId: e.target.value || null })}
-        // Wider than the agent select: a repeated name carries its account, which is the part
-        // that tells the two apart and must not be the part cut off.
-        wrapperClassName="max-w-64"
+        wrapperClassName="w-full"
       >
         <option value="">
           {t("dashboard.filter.allInboxes", "All inboxes")}
         </option>
-        {inboxes.map((i) => (
+        {(inboxes ?? []).map((i) => (
           <option key={i.id} value={i.id}>
             {inboxOptionLabel(i, t)}
           </option>
@@ -348,6 +394,36 @@ function FilterBar({
           options={audiences}
         />
       )}
+    </div>
+  );
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <PeriodPicker<Range>
+        value={filters.range}
+        label={period.label}
+        dates={period.dates}
+        compareShort={period.compareShort}
+        compareFull={period.compareFull}
+        progress={period.progress}
+        dayText={period.dayText}
+        groups={period.groups}
+        onSelect={(range) =>
+          onChange(
+            range === "custom"
+              ? {
+                  range,
+                  from: filters.from ?? today,
+                  to: filters.to ?? today,
+                }
+              : { range, from: null, to: null },
+          )
+        }
+        custom={{
+          label: t("dashboard.period.custom", "Custom dates"),
+          fields: <CustomDays filters={filters} onChange={onChange} />,
+        }}
+      />
+      <FilterChips chips={chips} editor={editor} />
     </div>
   );
 }
@@ -376,7 +452,10 @@ function DashboardBlocks({
   );
   return (
     <div className="flex min-w-0 flex-col gap-8">
-      <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
+      <div
+        id="performance"
+        className="scroll-mt-4 lg:scroll-mt-(--dashboard-band)"
+      >
         <PerformanceSection
           filters={filters}
           win={win}
@@ -397,6 +476,9 @@ function DashboardBlocks({
     </div>
   );
 }
+
+// The room between the sticky band and a section the index scrolled to.
+const BAND_GAP_PX = 16;
 
 // The waits before the filter options are asked again after a failure. Exported so a test need not
 // wait for them.
@@ -505,6 +587,25 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
+  // The band's height, as `--dashboard-band` on the page, is how far a section stops below the top
+  // when the index scrolls to it: chips that wrap to a second row make the band taller.
+  const bandRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const band = bandRef.current;
+    const page = band?.parentElement;
+    if (!band || !page) return;
+    const measure = () =>
+      page.style.setProperty(
+        "--dashboard-band",
+        `${Math.ceil(band.getBoundingClientRect().height) + BAND_GAP_PX}px`,
+      );
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(band);
+    return () => observer.disconnect();
+  }, []);
+
   const openedAt = useOpenedAt(writeFilters(filters).toString());
   const win = windowOf(filters, openedAt);
   const prev = previousWindow(win, openedAt);
@@ -561,13 +662,19 @@ export function DashboardPage() {
           the top rather than a column beside it: at a laptop's width a column took a quarter of
           the room the blocks need. -mx-6/px-6 cover the scroll container's padding, so the blocks
           pass under the band and not beside it. */}
-      <div className="border-border bg-bg-secondary z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-b px-6 py-3 lg:sticky lg:-top-6">
+      <div
+        ref={bandRef}
+        data-dashboard-band
+        className="border-border bg-bg-secondary z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-b px-6 py-3 lg:sticky lg:-top-6"
+      >
         <FilterBar
           filters={filters}
           onChange={setFilters}
-          agents={agents ?? []}
-          inboxes={inboxes ?? []}
+          agents={agents}
+          inboxes={inboxes}
+          win={win}
           prev={prev}
+          openedAt={openedAt}
         />
         <SectionNav sections={sections} layout="bar" />
       </div>

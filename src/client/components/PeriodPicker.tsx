@@ -173,7 +173,7 @@ export function PeriodPicker<V extends string>({
           type="button"
           aria-label={name}
           className={cn(
-            "border-border-hover bg-bg-tertiary text-text-primary hover:border-border-focus focus:ring-accent-soft relative flex max-w-full min-w-0 items-center gap-2 overflow-hidden rounded-md border px-2.5 text-left text-sm focus:ring-2 focus:outline-none",
+            "border-border-hover bg-bg-tertiary text-text-primary hover:border-border-focus focus:ring-accent-soft relative flex max-w-full min-w-0 items-center gap-2 overflow-hidden rounded-md border px-2.5 text-left text-sm focus:ring-2 focus:outline-hidden",
             { "h-11": twoLines, "h-8": !twoLines },
           )}
         >

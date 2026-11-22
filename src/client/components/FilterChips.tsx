@@ -62,7 +62,7 @@ export function FilterChips({
             <button
               ref={addRef}
               type="button"
-              className="border-border-hover text-text-secondary hover:text-text-primary focus:ring-accent-soft inline-flex h-7 items-center gap-1 rounded-full border border-dashed px-2.5 text-xs focus:ring-2 focus:outline-none"
+              className="border-border-hover text-text-secondary hover:text-text-primary focus:ring-accent-soft inline-flex h-7 items-center gap-1 rounded-full border border-dashed px-2.5 text-xs focus:ring-2 focus:outline-hidden"
             >
               <Plus className="h-3 w-3" aria-hidden="true" />
               {t("filters.add", "Filter")}

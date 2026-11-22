@@ -13,8 +13,9 @@ export function tabStops(root: ParentNode): HTMLElement[] {
       if (el.tabIndex < 0 || el.closest("[hidden]")) return false;
       const shown =
         typeof el.checkVisibility === "function"
-          ? el.checkVisibility()
-          : el.getClientRects().length > 0;
+          ? el.checkVisibility({ visibilityProperty: true })
+          : el.getClientRects().length > 0 &&
+            getComputedStyle(el).visibility !== "hidden";
       if (!shown) return false;
       if (el instanceof HTMLInputElement && el.type === "radio" && el.name) {
         const group = Array.from(

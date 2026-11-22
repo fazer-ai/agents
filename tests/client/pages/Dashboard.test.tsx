@@ -1726,6 +1726,13 @@ describe("calendar periods", () => {
     document.body.append(shut);
     expect(tabStops(document).some((el) => shut.contains(el))).toBe(false);
     shut.remove();
+    // A control under visibility:hidden takes no focus either.
+    const unseen = document.createElement("div");
+    unseen.style.visibility = "hidden";
+    unseen.innerHTML = '<button type="button">z</button>';
+    document.body.append(unseen);
+    expect(tabStops(document).some((el) => unseen.contains(el))).toBe(false);
+    unseen.remove();
   });
 
   test("typing jumps to the preset whose name starts with it, and a repeated letter steps through them", async () => {

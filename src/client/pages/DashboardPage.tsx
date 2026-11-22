@@ -35,12 +35,12 @@ import { CostSection } from "./dashboard/CostSection";
 import {
   type Audience,
   apiQuery,
+  type ChipFilter,
+  chipFilters,
   type DashboardFilters,
   daysRead,
   FIRST_CUSTOM_DAY,
   localDayKey,
-  type NarrowingFilter,
-  narrowingFilters,
   periodProgress,
   previousWindow,
   type Range,
@@ -321,7 +321,7 @@ function FilterBar({
     const inbox = inboxes?.find((i) => i.id === id);
     return inbox ? inboxOptionLabel(inbox, t) : `#${id}`;
   };
-  const chipOf: Record<NarrowingFilter, () => FilterChip> = {
+  const chipOf: Record<ChipFilter, () => FilterChip> = {
     agent: () => ({
       key: "agent",
       label: `${t("dashboard.filter.agent", "Agent")}: ${agentName(filters.agentId as string)}`,
@@ -334,7 +334,11 @@ function FilterBar({
     }),
     source: () => ({
       key: "source",
-      label: `${t("dashboard.filter.source", "Source")}: ${sources.find((s) => s.value === filters.source)?.label ?? ""}`,
+      label: `${t("dashboard.filter.source", "Source")}: ${
+        filters.source === "all"
+          ? t("dashboard.filter.sourceAll", "all")
+          : (sources.find((s) => s.value === filters.source)?.label ?? "")
+      }`,
       onClear: () => onChange({ source: "inbox" }),
     }),
     audience: () => ({
@@ -343,7 +347,7 @@ function FilterBar({
       onClear: () => onChange({ audience: "all" }),
     }),
   };
-  const chips = narrowingFilters(filters).map((key) => chipOf[key]());
+  const chips = chipFilters(filters).map((key) => chipOf[key]());
   const editor = (
     <div className="flex flex-col gap-3">
       <Select

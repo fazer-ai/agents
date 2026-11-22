@@ -131,15 +131,15 @@ export function writeFilters(f: DashboardFilters): URLSearchParams {
   return p;
 }
 
-// The filters that narrow the view, in the band's order: a chip each. A filter at its default, or at
-// a value that narrows nothing (every agent, every inbox, every source), is none, and the audience
-// counts only under the client segment it refines.
-export type NarrowingFilter = "agent" | "inbox" | "source" | "audience";
-export function narrowingFilters(f: DashboardFilters): NarrowingFilter[] {
-  const out: NarrowingFilter[] = [];
+// The filters that differ from their default, in the band's order: a chip each. Every source is one
+// too, since it widens the view past the default real segment, and the audience counts only under the
+// client segment it refines.
+export type ChipFilter = "agent" | "inbox" | "source" | "audience";
+export function chipFilters(f: DashboardFilters): ChipFilter[] {
+  const out: ChipFilter[] = [];
   if (f.agentId) out.push("agent");
   if (f.inboxId) out.push("inbox");
-  if (f.source === "playground" || f.source === "client") out.push("source");
+  if (f.source !== DEFAULT_FILTERS.source) out.push("source");
   if (f.source === "client" && f.audience !== DEFAULT_FILTERS.audience)
     out.push("audience");
   return out;

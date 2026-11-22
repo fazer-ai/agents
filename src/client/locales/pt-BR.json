@@ -1132,7 +1132,8 @@
       "allAgents": "Todos os agentes",
       "allInboxes": "Todas as caixas",
       "inbox": "Caixa de entrada",
-      "source": "Origem"
+      "source": "Origem",
+      "sourceAll": "todas"
     },
     "followups": {
       "cameBack": "Cliente voltou a escrever",

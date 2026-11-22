@@ -5,35 +5,38 @@ import { cn } from "@/client/lib/utils";
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-// The elements Tab stops on, in document order: focusable, enabled (a disabled fieldset included), shown,
-// and of a radio group only the checked radio (the first one while none is checked), as a browser does.
+// Whether Tab can land on a focusable element: enabled (a disabled fieldset included) and shown.
+function reachable(el: HTMLElement): boolean {
+  if (
+    el.tabIndex < 0 ||
+    el.closest("[hidden], fieldset[disabled]") ||
+    el.matches(":disabled")
+  )
+    return false;
+  return typeof el.checkVisibility === "function"
+    ? el.checkVisibility({ visibilityProperty: true })
+    : el.getClientRects().length > 0 &&
+        getComputedStyle(el).visibility !== "hidden";
+}
+
+// The elements Tab stops on, in document order, as a browser walks them: the reachable ones, and of a
+// radio group (same name, same form) only its checked radio, or its first reachable one while none is.
 export function tabStops(root: ParentNode): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (el) => {
-      if (
-        el.tabIndex < 0 ||
-        el.closest("[hidden], fieldset[disabled]") ||
-        el.matches(":disabled")
-      )
-        return false;
-      const shown =
-        typeof el.checkVisibility === "function"
-          ? el.checkVisibility({ visibilityProperty: true })
-          : el.getClientRects().length > 0 &&
-            getComputedStyle(el).visibility !== "hidden";
-      if (!shown) return false;
-      if (el instanceof HTMLInputElement && el.type === "radio" && el.name) {
-        const group = Array.from(
-          root.querySelectorAll<HTMLInputElement>(
-            `input[type="radio"][name="${CSS.escape(el.name)}"]`,
-          ),
-        );
-        const stop = group.find((r) => r.checked) ?? group[0];
-        return stop === el;
-      }
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>(FOCUSABLE),
+  ).filter(reachable);
+  return candidates.filter((el) => {
+    if (!(el instanceof HTMLInputElement && el.type === "radio" && el.name))
       return true;
-    },
-  );
+    const group = candidates.filter(
+      (r): r is HTMLInputElement =>
+        r instanceof HTMLInputElement &&
+        r.type === "radio" &&
+        r.name === el.name &&
+        r.form === el.form,
+    );
+    return (group.find((r) => r.checked) ?? group[0]) === el;
+  });
 }
 
 // A popover that holds CONTROLS (a list of choices, a filter editor), the counterpart of `Popover`,
@@ -126,9 +129,10 @@ export function ControlPopover({
             const first = tabStops(boxRef.current ?? document).find(
               (el) => !el.hasAttribute("data-focus-exit"),
             );
-            if (!first) return;
+            // NOTE: with no control to take it (all disabled), the box itself holds the focus: Radix's
+            // default would pick the edge stop, which closes the box the moment it opens.
             e.preventDefault();
-            first.focus();
+            (first ?? boxRef.current)?.focus();
           }}
           onCloseAutoFocus={(e) => {
             const next = leaveTo.current;

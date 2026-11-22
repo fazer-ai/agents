@@ -17,6 +17,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { tabStops } from "@/client/components/ControlPopover";
 import { AuthContext } from "@/client/contexts/AuthContext";
@@ -1812,6 +1813,36 @@ describe("calendar periods", () => {
     expect(filter.getAttribute("aria-expanded")).toBe("true");
   });
 
+  test("a popover with no control to take the focus holds it itself and stays open", async () => {
+    const { ControlPopover } = await import("@/client/components");
+    function Probe() {
+      const [open, setOpen] = useState(false);
+      return (
+        <ControlPopover
+          open={open}
+          onOpenChange={setOpen}
+          label="Probe"
+          trigger={<button type="button">probe</button>}
+        >
+          <fieldset disabled>
+            <input aria-label="locked" />
+          </fieldset>
+        </ControlPopover>
+      );
+    }
+    render(withI18n(<Probe />));
+    fireEvent.click(screen.getByRole("button", { name: "probe" }));
+    const box = await waitFor(() =>
+      screen.getByRole("dialog", { name: "Probe" }),
+    );
+    await waitFor(() => expect(document.activeElement === box).toBe(true));
+    expect(
+      screen
+        .getByRole("button", { name: "probe" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
   test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {
     await renderDash("/");
     openFilters();
@@ -1853,6 +1884,17 @@ describe("calendar periods", () => {
     document.body.append(off);
     expect(tabStops(document).some((el) => off.contains(el))).toBe(false);
     off.remove();
+    // An unchecked group whose first radio is disabled stops on its first enabled one, and a radio
+    // of the same name in another form is another group.
+    const forms = document.createElement("div");
+    forms.innerHTML =
+      '<form><input type="radio" name="g" value="a" disabled /><input type="radio" name="g" value="b" /></form>' +
+      '<form><input type="radio" name="g" value="c" /></form>';
+    document.body.append(forms);
+    expect(tabStops(forms).map((el) => (el as HTMLInputElement).value)).toEqual(
+      ["b", "c"],
+    );
+    forms.remove();
     // A control under visibility:hidden takes no focus either.
     const unseen = document.createElement("div");
     unseen.style.visibility = "hidden";
@@ -2078,12 +2120,15 @@ describe("the band's height", () => {
 // The filters that narrow the view are chips beside the period, each removable; a filter at its
 // default or at a value that narrows nothing is no chip.
 describe("filter chips", () => {
-  test("the default view, and every source, carry no chip", async () => {
+  test("the default view carries no chip, and every source is one that says so", async () => {
     await renderDash("/");
     expect(chipLabels()).toEqual([]);
     openFilters();
     fireEvent.click(screen.getByRole("radio", { name: "All" }));
     await waitFor(() => expect(location).toBe("/?source=all"));
+    expect(chipLabels()).toEqual(["Source: all"]);
+    fireEvent.click(screen.getByRole("radio", { name: "Real" }));
+    await waitFor(() => expect(location).toBe("/"));
     expect(chipLabels()).toEqual([]);
   });
 

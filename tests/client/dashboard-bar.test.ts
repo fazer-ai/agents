@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type ChipFilter,
+  chipFilters,
   type DashboardFilters,
   DEFAULT_FILTERS,
   daysRead,
-  type NarrowingFilter,
-  narrowingFilters,
   periodProgress,
   previousWindow,
   type Range,
@@ -20,10 +20,14 @@ const f = (patch: Partial<DashboardFilters>): DashboardFilters => ({
   ...patch,
 });
 
-describe("a filter is a chip only when it narrows the view", () => {
-  const cases: [string, Partial<DashboardFilters>, NarrowingFilter[]][] = [
+describe("a filter is a chip whenever it differs from its default", () => {
+  const cases: [string, Partial<DashboardFilters>, ChipFilter[]][] = [
     ["the default view", {}, []],
-    ["every source", { source: "all" }, []],
+    [
+      "every source, which widens past the default",
+      { source: "all" },
+      ["source"],
+    ],
     ["the real segment, the default", { source: "inbox" }, []],
     ["an audience outside the client segment", { audience: "anonymous" }, []],
     ["a period alone", { range: "this-month" }, []],
@@ -48,7 +52,7 @@ describe("a filter is a chip only when it narrows the view", () => {
     ],
   ];
   for (const [name, patch, chips] of cases)
-    test(name, () => expect(narrowingFilters(f(patch))).toEqual(chips));
+    test(name, () => expect(chipFilters(f(patch))).toEqual(chips));
 });
 
 describe("how far a running calendar period has gone", () => {

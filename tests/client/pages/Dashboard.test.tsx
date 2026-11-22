@@ -1701,6 +1701,14 @@ describe("calendar periods", () => {
       ),
     );
     const heading = screen.getByRole("heading", { name: "Dashboard" });
+    // The page may have scrolled away from the band: handing the focus back must not scroll to it.
+    let scrolledBack = false;
+    const button = periodButton();
+    const focusOf = button.focus.bind(button);
+    button.focus = (options?: FocusOptions) => {
+      if (!options?.preventScroll) scrolledBack = true;
+      focusOf(options);
+    };
     // Radix arms its outside listener a tick after the box opens, and a mouse press closes on its click.
     await new Promise((r) => setTimeout(r, 10));
     fireEvent.pointerDown(heading, { button: 0, pointerType: "mouse" });
@@ -1712,6 +1720,7 @@ describe("calendar periods", () => {
     await waitFor(() =>
       expect(document.activeElement === periodButton()).toBe(true),
     );
+    expect(scrolledBack).toBe(false);
     openPeriod();
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("data-value")).toBe(

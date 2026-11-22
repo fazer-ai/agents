@@ -7,12 +7,21 @@ const FOCUSABLE =
 
 // Whether Tab can land on a focusable element: enabled (a disabled fieldset included) and shown.
 function reachable(el: HTMLElement): boolean {
-  if (
-    el.tabIndex < 0 ||
-    el.closest("[hidden], fieldset[disabled]") ||
-    el.matches(":disabled")
-  )
+  if (el.tabIndex < 0 || el.closest("[hidden]") || el.matches(":disabled"))
     return false;
+  return shown(el) && !inDisabledFieldset(el);
+}
+
+// A disabled fieldset disables its form controls, except those in its first legend; a link inside stays.
+function inDisabledFieldset(el: HTMLElement): boolean {
+  if (!el.matches("button, input, select, textarea")) return false;
+  const fieldset = el.closest("fieldset[disabled]");
+  if (!fieldset) return false;
+  const legend = fieldset.querySelector(":scope > legend");
+  return !legend?.contains(el);
+}
+
+function shown(el: HTMLElement): boolean {
   return typeof el.checkVisibility === "function"
     ? el.checkVisibility({ visibilityProperty: true })
     : el.getClientRects().length > 0 &&
@@ -119,6 +128,13 @@ export function ControlPopover({
           sideOffset={6}
           collisionPadding={8}
           aria-label={label}
+          // NOTE: the box itself holds the focus only when it has no control (all disabled); Tab from
+          // there leaves as it would from its last stop, Shift+Tab as from its first.
+          onKeyDown={(e) => {
+            if (e.key !== "Tab" || e.target !== boxRef.current) return;
+            e.preventDefault();
+            leave(!e.shiftKey);
+          }}
           onOpenAutoFocus={(e) => {
             const box = boxRef.current;
             triggerRef.current = box

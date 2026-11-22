@@ -1818,16 +1818,19 @@ describe("calendar periods", () => {
     function Probe() {
       const [open, setOpen] = useState(false);
       return (
-        <ControlPopover
-          open={open}
-          onOpenChange={setOpen}
-          label="Probe"
-          trigger={<button type="button">probe</button>}
-        >
-          <fieldset disabled>
-            <input aria-label="locked" />
-          </fieldset>
-        </ControlPopover>
+        <>
+          <ControlPopover
+            open={open}
+            onOpenChange={setOpen}
+            label="Probe"
+            trigger={<button type="button">probe</button>}
+          >
+            <fieldset disabled>
+              <input aria-label="locked" />
+            </fieldset>
+          </ControlPopover>
+          <button type="button">after</button>
+        </>
       );
     }
     render(withI18n(<Probe />));
@@ -1841,6 +1844,26 @@ describe("calendar periods", () => {
         .getByRole("button", { name: "probe" })
         .getAttribute("aria-expanded"),
     ).toBe("true");
+    // Tab from the box leaves for what follows the trigger, Shift+Tab for the trigger.
+    fireEvent.keyDown(box, { key: "Tab" });
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("button", { name: "after" }),
+      ).toBe(true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "probe" }));
+    const again = await waitFor(() =>
+      screen.getByRole("dialog", { name: "Probe" }),
+    );
+    await waitFor(() => expect(document.activeElement === again).toBe(true));
+    fireEvent.keyDown(again, { key: "Tab", shiftKey: true });
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("button", { name: "probe" }),
+      ).toBe(true),
+    );
   });
 
   test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {
@@ -1880,9 +1903,15 @@ describe("calendar periods", () => {
     // A control inside a disabled fieldset is disabled with no attribute of its own, and is no stop.
     const off = document.createElement("fieldset");
     off.disabled = true;
-    off.innerHTML = '<input aria-label="off" />';
+    off.innerHTML =
+      '<legend><button type="button">legend</button></legend><input aria-label="off" /><a href="#l">link</a>';
     document.body.append(off);
-    expect(tabStops(document).some((el) => off.contains(el))).toBe(false);
+    // Its first legend's controls stay enabled, and a link is never disabled by it.
+    expect(
+      tabStops(off).map(
+        (el) => el.getAttribute("aria-label") ?? el.textContent,
+      ),
+    ).toEqual(["legend", "link"]);
     off.remove();
     // An unchecked group whose first radio is disabled stops on its first enabled one, and a radio
     // of the same name in another form is another group.

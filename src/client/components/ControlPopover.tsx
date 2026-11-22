@@ -2,13 +2,29 @@ import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
 import { cn } from "@/client/lib/utils";
 
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+// Every element a browser puts in the Tab order without a `tabindex`, plus those given one: the
+// candidate list the `tabbable` library walks.
+const FOCUSABLE = [
+  "a[href]",
+  "area[href]",
+  "button:not([disabled])",
+  'input:not([disabled]):not([type="hidden"])',
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "details > summary:first-of-type",
+  "audio[controls]",
+  "video[controls]",
+  "iframe",
+  '[contenteditable]:not([contenteditable="false"])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
 
 // Whether Tab can land on a focusable element: enabled (a disabled fieldset included) and shown.
 function reachable(el: HTMLElement): boolean {
-  if (el.tabIndex < 0 || el.closest("[hidden]") || el.matches(":disabled"))
-    return false;
+  // The attribute and not `tabIndex`: a summary reports -1 in some engines and is still a stop.
+  const tabindex = el.getAttribute("tabindex");
+  if (tabindex !== null && Number(tabindex) < 0) return false;
+  if (el.closest("[hidden]") || el.matches(":disabled")) return false;
   return shown(el) && !inDisabledFieldset(el);
 }
 

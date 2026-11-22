@@ -230,7 +230,7 @@ export function PeriodPicker<V extends string>({
             <span
               aria-hidden="true"
               data-progress={progress.toFixed(3)}
-              className="bg-accent-solid absolute bottom-0 left-0 h-0.5"
+              className="bg-accent-solid absolute bottom-0 left-0 h-0.5 forced-colors:bg-[Highlight]"
               style={{ width: `${progress * 100}%` }}
             />
           )}

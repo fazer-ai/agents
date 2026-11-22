@@ -1936,6 +1936,13 @@ describe("calendar periods", () => {
       ["b", "c"],
     );
     forms.remove();
+    // A native disclosure's summary is a stop with no tabindex of its own.
+    const disclosure = document.createElement("div");
+    disclosure.innerHTML =
+      "<details><summary>more</summary><p>text</p></details>";
+    document.body.append(disclosure);
+    expect(tabStops(disclosure).map((el) => el.textContent)).toEqual(["more"]);
+    disclosure.remove();
     // A control under visibility:hidden takes no focus either.
     const unseen = document.createElement("div");
     unseen.style.visibility = "hidden";

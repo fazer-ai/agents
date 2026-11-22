@@ -62,3 +62,37 @@ describe("typing in the presets", () => {
     expect(focused()).toBe("90d");
   });
 });
+
+describe("a period changed from outside", () => {
+  test("puts the focus on the option now selected, whatever its value holds", async () => {
+    const quoted = [
+      {
+        label: "Odd",
+        options: [
+          { value: 'a"b', label: "Quoted" },
+          { value: "plain", label: "Plain" },
+        ],
+      },
+    ];
+    const props = {
+      label: "Plain",
+      dates: null,
+      compareShort: null,
+      compareFull: null,
+      progress: null,
+      dayText: null,
+      groups: quoted,
+      onSelect: () => {},
+    };
+    const view = render(withI18n(<PeriodPicker value="plain" {...props} />));
+    fireEvent.click(screen.getByRole("button", { name: /Plain/ }));
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe("plain"),
+    );
+    (document.activeElement as HTMLElement).blur();
+    view.rerender(withI18n(<PeriodPicker value='a"b' {...props} />));
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe('a"b'),
+    );
+  });
+});

@@ -74,12 +74,13 @@ export function PeriodPicker<V extends string>({
   }, [value]);
   // A period changed from outside while the box is open (Back, under custom dates) can take the focused
   // field away with it; the focus then goes to the option now selected, so the list stays in reach.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new period is what moves the selected option.
   useEffect(() => {
     if (!open) return;
     const box = listRef.current?.closest('[role="dialog"]');
     if (box?.contains(document.activeElement)) return;
     listRef.current
-      ?.querySelector<HTMLElement>(`[role="option"][data-value="${value}"]`)
+      ?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
       ?.focus();
   }, [value, open]);
   const id = useId();

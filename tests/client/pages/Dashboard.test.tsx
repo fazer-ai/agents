@@ -1825,6 +1825,43 @@ describe("calendar periods", () => {
     expect(periodButton().getAttribute("aria-expanded")).toBe("true");
   });
 
+  test("an editor that focuses its own field still hands Tab past its end to the stop after the trigger", async () => {
+    const { ControlPopover } = await import("@/client/components");
+    function Probe() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <ControlPopover
+            open={open}
+            onOpenChange={setOpen}
+            label="Self"
+            trigger={<button type="button">self</button>}
+          >
+            {/* biome-ignore lint/a11y/noAutofocus: the case under test is an editor that focuses its own field. */}
+            <input aria-label="typed" autoFocus />
+          </ControlPopover>
+          <button type="button">next</button>
+        </>
+      );
+    }
+    render(withI18n(<Probe />));
+    fireEvent.click(screen.getByRole("button", { name: "self" }));
+    await waitFor(() =>
+      expect(
+        document.activeElement ===
+          screen.getByRole("textbox", { name: "typed" }),
+      ).toBe(true),
+    );
+    (
+      document.querySelector('[data-focus-exit="after"]') as HTMLElement
+    ).focus();
+    await waitFor(() =>
+      expect(
+        document.activeElement === screen.getByRole("button", { name: "next" }),
+      ).toBe(true),
+    );
+  });
+
   test("a popover with no control to take the focus holds it itself and stays open", async () => {
     const { ControlPopover } = await import("@/client/components");
     function Probe() {
@@ -1936,6 +1973,17 @@ describe("calendar periods", () => {
       ["b", "c"],
     );
     forms.remove();
+    // A positive tabindex comes before the controls in document order.
+    const ordered = document.createElement("div");
+    ordered.innerHTML =
+      '<button type="button">plain</button><input aria-label="first" tabindex="1" />';
+    document.body.append(ordered);
+    expect(
+      tabStops(ordered).map(
+        (el) => el.getAttribute("aria-label") ?? el.textContent,
+      ),
+    ).toEqual(["first", "plain"]);
+    ordered.remove();
     // A control inside an inert section takes no focus.
     const asleep = document.createElement("div");
     asleep.innerHTML =

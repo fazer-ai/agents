@@ -19,6 +19,11 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
 
+function order(el: HTMLElement): number {
+  const n = Number(el.getAttribute("tabindex") ?? 0);
+  return n > 0 ? n : Number.MAX_SAFE_INTEGER;
+}
+
 // Whether Tab can land on a focusable element: enabled (a disabled fieldset included), not inert, shown.
 function reachable(el: HTMLElement): boolean {
   // The attribute and not `tabIndex`: a summary reports -1 in some engines and is still a stop.
@@ -47,9 +52,11 @@ function shown(el: HTMLElement): boolean {
 // The elements Tab stops on, in document order, as a browser walks them: the reachable ones, and of a
 // radio group (same name, same form) only its checked radio, or its first reachable one while none is.
 export function tabStops(root: ParentNode): HTMLElement[] {
-  const candidates = Array.from(
-    root.querySelectorAll<HTMLElement>(FOCUSABLE),
-  ).filter(reachable);
+  // A positive tabindex comes first, in its own order, as a browser walks them; the rest in document
+  // order (the sort is stable).
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE))
+    .filter(reachable)
+    .sort((a, b) => order(a) - order(b));
   return candidates.filter((el) => {
     if (!(el instanceof HTMLInputElement && el.type === "radio" && el.name))
       return true;
@@ -90,9 +97,7 @@ export function ControlPopover({
   className?: string;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
-  // The trigger, read when the box opens: by the time it closes the box is gone, and with it the
-  // `aria-controls` link that finds the trigger.
-  const triggerRef = useRef<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // Where the focus goes when the box closes because Tab left it: the stop after the trigger, or the trigger.
   const leaveTo = useRef<HTMLElement | null>(null);
   // A control removed while it held the focus (Back taking away a field the editor showed) drops the
@@ -136,7 +141,9 @@ export function ControlPopover({
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      <PopoverPrimitive.Trigger asChild>{trigger}</PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Trigger ref={triggerRef} asChild>
+        {trigger}
+      </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
           ref={boxRef}
@@ -159,12 +166,6 @@ export function ControlPopover({
             else leave(!e.shiftKey);
           }}
           onOpenAutoFocus={(e) => {
-            const box = boxRef.current;
-            triggerRef.current = box
-              ? document.querySelector<HTMLElement>(
-                  `[aria-controls="${box.id}"]`,
-                )
-              : null;
             const first = tabStops(boxRef.current ?? document).find(
               (el) => !el.hasAttribute("data-focus-exit"),
             );

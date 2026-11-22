@@ -1813,6 +1813,18 @@ describe("calendar periods", () => {
     expect(filter.getAttribute("aria-expanded")).toBe("true");
   });
 
+  test("Tab from the period box itself, after a click on its text, goes to its controls and keeps it open", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    const box = screen.getByRole("dialog", { name: "Period" });
+    box.focus();
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(document.activeElement?.getAttribute("data-value")).toBe(
+      "this-month",
+    );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+  });
+
   test("a popover with no control to take the focus holds it itself and stays open", async () => {
     const { ControlPopover } = await import("@/client/components");
     function Probe() {

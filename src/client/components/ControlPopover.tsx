@@ -128,12 +128,19 @@ export function ControlPopover({
           sideOffset={6}
           collisionPadding={8}
           aria-label={label}
-          // NOTE: the box itself holds the focus only when it has no control (all disabled); Tab from
-          // there leaves as it would from its last stop, Shift+Tab as from its first.
+          // NOTE: the box itself holds the focus when it has no control (all disabled) or after a click on
+          // its text. Tab from there goes to its first control, or leaves when it has none; Shift+Tab
+          // leaves for the trigger, as from its first stop.
           onKeyDown={(e) => {
             if (e.key !== "Tab" || e.target !== boxRef.current) return;
             e.preventDefault();
-            leave(!e.shiftKey);
+            const first = e.shiftKey
+              ? undefined
+              : tabStops(boxRef.current).find(
+                  (el) => !el.hasAttribute("data-focus-exit"),
+                );
+            if (first) first.focus();
+            else leave(!e.shiftKey);
           }}
           onOpenAutoFocus={(e) => {
             const box = boxRef.current;

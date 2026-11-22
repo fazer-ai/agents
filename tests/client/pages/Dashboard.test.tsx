@@ -1692,6 +1692,44 @@ describe("calendar periods", () => {
     );
   });
 
+  test("a click outside on nothing focusable hands the focus back to the button, and a click on a control keeps it there", async () => {
+    await renderDash("/?range=this-month");
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const heading = screen.getByRole("heading", { name: "Dashboard" });
+    // Radix arms its outside listener a tick after the box opens, and a mouse press closes on its click.
+    await new Promise((r) => setTimeout(r, 10));
+    fireEvent.pointerDown(heading, { button: 0, pointerType: "mouse" });
+    fireEvent.click(heading);
+    (document.activeElement as HTMLElement | null)?.blur();
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(document.activeElement === periodButton()).toBe(true),
+    );
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const filter = screen.getByRole("button", { name: "Filter" });
+    await new Promise((r) => setTimeout(r, 10));
+    fireEvent.pointerDown(filter, { button: 0, pointerType: "mouse" });
+    fireEvent.click(filter);
+    filter.focus();
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement === filter).toBe(true);
+  });
+
   test("the stop after the button is the next one a browser would take: the checked radio, never a hidden link", async () => {
     await renderDash("/");
     openFilters();

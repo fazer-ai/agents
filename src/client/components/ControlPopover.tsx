@@ -57,13 +57,14 @@ export function ControlPopover({
   className?: string;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  // The trigger, read when the box opens: by the time it closes the box is gone, and with it the
+  // `aria-controls` link that finds the trigger.
+  const triggerRef = useRef<HTMLElement | null>(null);
   // Where the focus goes when the box closes because Tab left it: the stop after the trigger, or the trigger.
   const leaveTo = useRef<HTMLElement | null>(null);
   const leave = (forward: boolean) => {
     const box = boxRef.current;
-    const triggerEl = box
-      ? document.querySelector<HTMLElement>(`[aria-controls="${box.id}"]`)
-      : null;
+    const triggerEl = triggerRef.current;
     leaveTo.current = triggerEl;
     if (forward && box && triggerEl) {
       const page = tabStops(document).filter((el) => !box.contains(el));
@@ -94,6 +95,12 @@ export function ControlPopover({
           collisionPadding={8}
           aria-label={label}
           onOpenAutoFocus={(e) => {
+            const box = boxRef.current;
+            triggerRef.current = box
+              ? document.querySelector<HTMLElement>(
+                  `[aria-controls="${box.id}"]`,
+                )
+              : null;
             const first = tabStops(boxRef.current ?? document).find(
               (el) => !el.hasAttribute("data-focus-exit"),
             );
@@ -104,10 +111,19 @@ export function ControlPopover({
           onCloseAutoFocus={(e) => {
             const next = leaveTo.current;
             leaveTo.current = null;
-            if (!next) return;
-            next.focus();
-            // A stop that would not take the focus leaves it to Radix, which hands it to the trigger.
-            if (document.activeElement === next) e.preventDefault();
+            const triggerEl = triggerRef.current;
+            if (next) {
+              next.focus();
+              // A stop that would not take the focus leaves it to Radix, which hands it to the trigger.
+              if (document.activeElement === next) e.preventDefault();
+              return;
+            }
+            // NOTE: after a click outside, Radix leaves the focus where the click put it; a click on
+            // nothing focusable puts it on the page itself, and then it goes back to the trigger.
+            requestAnimationFrame(() => {
+              const at = document.activeElement;
+              if (!at || at === document.body) triggerEl?.focus();
+            });
           }}
           className={cn(
             // Capped by the viewport on both axes: a box wider or taller than the screen cannot be

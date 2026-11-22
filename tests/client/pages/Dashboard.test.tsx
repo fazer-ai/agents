@@ -1936,6 +1936,13 @@ describe("calendar periods", () => {
       ["b", "c"],
     );
     forms.remove();
+    // A control inside an inert section takes no focus.
+    const asleep = document.createElement("div");
+    asleep.innerHTML =
+      '<section inert><button type="button">asleep</button></section><button type="button">awake</button>';
+    document.body.append(asleep);
+    expect(tabStops(asleep).map((el) => el.textContent)).toEqual(["awake"]);
+    asleep.remove();
     // A native disclosure's summary is a stop with no tabindex of its own.
     const disclosure = document.createElement("div");
     disclosure.innerHTML =

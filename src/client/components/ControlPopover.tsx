@@ -19,12 +19,12 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
 
-// Whether Tab can land on a focusable element: enabled (a disabled fieldset included) and shown.
+// Whether Tab can land on a focusable element: enabled (a disabled fieldset included), not inert, shown.
 function reachable(el: HTMLElement): boolean {
   // The attribute and not `tabIndex`: a summary reports -1 in some engines and is still a stop.
   const tabindex = el.getAttribute("tabindex");
   if (tabindex !== null && Number(tabindex) < 0) return false;
-  if (el.closest("[hidden]") || el.matches(":disabled")) return false;
+  if (el.closest("[hidden], [inert]") || el.matches(":disabled")) return false;
   return shown(el) && !inDisabledFieldset(el);
 }
 

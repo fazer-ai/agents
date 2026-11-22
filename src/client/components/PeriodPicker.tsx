@@ -136,7 +136,7 @@ export function PeriodPicker<V extends string>({
       onFocus={() => setActive(v)}
       onClick={() => pick(v)}
       className={cn(
-        "hover:bg-bg-tertiary focus-visible:outline-accent-solid rounded-md px-2 py-1 text-left text-sm outline-none focus-visible:outline-2 focus-visible:-outline-offset-2",
+        "hover:bg-bg-tertiary focus-visible:outline-accent-solid rounded-md px-2 py-1 text-left text-sm outline-hidden focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid",
         { "bg-accent-soft text-accent font-medium": v === value },
       )}
     >

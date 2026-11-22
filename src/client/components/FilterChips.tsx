@@ -46,7 +46,7 @@ export function FilterChips({
             aria-label={t("filters.remove", "Remove filter {{filter}}", {
               filter: c.label,
             })}
-            className="hover:bg-bg-tertiary focus-visible:outline-accent-solid shrink-0 rounded-full p-0.5 outline-none focus-visible:outline-2"
+            className="hover:bg-bg-tertiary focus-visible:outline-accent-solid shrink-0 rounded-full p-0.5 outline-hidden focus-visible:outline-2 focus-visible:outline-solid"
           >
             <X className="h-3 w-3" aria-hidden="true" />
           </button>

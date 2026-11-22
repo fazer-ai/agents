@@ -18,6 +18,11 @@ export interface PeriodGroup<V extends string> {
 const CUSTOM = "custom";
 const TYPEAHEAD_MS = 700;
 
+// Case and accents folded away, so "u" reaches "Últimos 7 dias" as it would in a native select.
+function fold(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
+}
+
 // THE PERIOD BUTTON AND ITS POPOVER, shared by the operator dashboard and the Dashboards. The button
 // says the whole period: name and days, then the stretch it is compared with, and a bar on its bottom
 // edge while a calendar period runs. The popover lists the presets by group in columns, the custom
@@ -103,16 +108,16 @@ export function PeriodPicker<V extends string>({
         const now = Date.now();
         const text =
           (now - typed.current.at < TYPEAHEAD_MS ? typed.current.text : "") +
-          e.key.toLocaleLowerCase();
+          fold(e.key);
         typed.current = { text, at: now };
         // A repeated first letter steps through the options that start with it, from the one focused.
         const repeat = [...text].every((c) => c === text[0]);
         const from = repeat ? at + 1 : at;
         const ring = all.map((_, i) => all[(from + i) % all.length]);
         next = ring.find((b) =>
-          (b?.textContent ?? "")
-            .toLocaleLowerCase()
-            .startsWith(repeat ? (text[0] as string) : text),
+          fold(b?.textContent ?? "").startsWith(
+            repeat ? (text[0] as string) : text,
+          ),
         );
         if (!next) return;
       }

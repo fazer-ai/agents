@@ -350,7 +350,7 @@ export function CostSection({
   return (
     <section
       id="cost"
-      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-(--dashboard-band)"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <SectionHeading icon={Coins}>
@@ -674,7 +674,7 @@ export function CostSection({
             whatever the period above), the spend so far, and where the month ends at this pace. */}
       <Card
         id="month"
-        className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+        className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-(--dashboard-band)"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-text-primary flex items-center gap-2 text-sm font-medium">

@@ -7,7 +7,14 @@ import {
   Table2,
   Target,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
@@ -431,7 +438,10 @@ function DashboardBlocks({
   );
   return (
     <div className="flex min-w-0 flex-col gap-8">
-      <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
+      <div
+        id="performance"
+        className="scroll-mt-4 lg:scroll-mt-(--dashboard-band)"
+      >
         <PerformanceSection
           filters={filters}
           win={win}
@@ -452,6 +462,9 @@ function DashboardBlocks({
     </div>
   );
 }
+
+// The room between the sticky band and a section the index scrolled to.
+const BAND_GAP_PX = 16;
 
 // The waits before the filter options are asked again after a failure. Exported so a test need not
 // wait for them.
@@ -560,6 +573,25 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
+  // The band's height, as `--dashboard-band` on the page, is how far a section stops below the top
+  // when the index scrolls to it: chips that wrap to a second row make the band taller.
+  const bandRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const band = bandRef.current;
+    const page = band?.parentElement;
+    if (!band || !page) return;
+    const measure = () =>
+      page.style.setProperty(
+        "--dashboard-band",
+        `${Math.ceil(band.getBoundingClientRect().height) + BAND_GAP_PX}px`,
+      );
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(band);
+    return () => observer.disconnect();
+  }, []);
+
   const openedAt = useOpenedAt(writeFilters(filters).toString());
   const win = windowOf(filters, openedAt);
   const prev = previousWindow(win, openedAt);
@@ -616,7 +648,11 @@ export function DashboardPage() {
           the top rather than a column beside it: at a laptop's width a column took a quarter of
           the room the blocks need. -mx-6/px-6 cover the scroll container's padding, so the blocks
           pass under the band and not beside it. */}
-      <div className="border-border bg-bg-secondary z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-b px-6 py-3 lg:sticky lg:-top-6">
+      <div
+        ref={bandRef}
+        data-dashboard-band
+        className="border-border bg-bg-secondary z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-b px-6 py-3 lg:sticky lg:-top-6"
+      >
         <FilterBar
           filters={filters}
           onChange={setFilters}

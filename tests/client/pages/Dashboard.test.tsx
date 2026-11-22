@@ -1949,6 +1949,27 @@ describe("calendar periods", () => {
   });
 });
 
+// A section the index scrolls to stops below the sticky band, however tall the chips make it.
+describe("the band's height", () => {
+  test("is what a section's scroll margin reads", async () => {
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const r = rect.call(this);
+      return this.hasAttribute("data-dashboard-band")
+        ? ({ ...r.toJSON(), height: 150.2 } as DOMRect)
+        : r;
+    };
+    try {
+      await renderDash("/");
+      const page = document.querySelector("[data-dashboard-band]")
+        ?.parentElement as HTMLElement | null | undefined;
+      expect(page?.style.getPropertyValue("--dashboard-band")).toBe("167px");
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect;
+    }
+  });
+});
+
 // The filters that narrow the view are chips beside the period, each removable; a filter at its
 // default or at a value that narrows nothing is no chip.
 describe("filter chips", () => {

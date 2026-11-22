@@ -117,7 +117,10 @@ export function Block({
   const shown = !error;
   const ready = shown && !loading;
   return (
-    <Card id={id} className="flex scroll-mt-4 flex-col gap-4 lg:scroll-mt-32">
+    <Card
+      id={id}
+      className="flex scroll-mt-4 flex-col gap-4 lg:scroll-mt-(--dashboard-band)"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-text-primary flex items-center gap-2 text-sm font-medium">
           <Icon className="text-accent h-4 w-4" aria-hidden="true" />

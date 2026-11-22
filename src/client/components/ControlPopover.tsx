@@ -1,5 +1,5 @@
 import * as PopoverPrimitive from "@radix-ui/react-popover";
-import { type ReactElement, type ReactNode, useRef } from "react";
+import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
 import { cn } from "@/client/lib/utils";
 
 const FOCUSABLE =
@@ -62,6 +62,23 @@ export function ControlPopover({
   const triggerRef = useRef<HTMLElement | null>(null);
   // Where the focus goes when the box closes because Tab left it: the stop after the trigger, or the trigger.
   const leaveTo = useRef<HTMLElement | null>(null);
+  // A control removed while it held the focus (Back taking away a field the editor showed) drops the
+  // focus onto the page; it comes back to the box's first control, a frame later so a caller that puts
+  // it somewhere more precise goes first.
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      const at = document.activeElement;
+      if (at && !at.matches("body, main")) return;
+      tabStops(boxRef.current ?? document)
+        .find(
+          (el) =>
+            !el.hasAttribute("data-focus-exit") && boxRef.current?.contains(el),
+        )
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  });
   const leave = (forward: boolean) => {
     const box = boxRef.current;
     const triggerEl = triggerRef.current;

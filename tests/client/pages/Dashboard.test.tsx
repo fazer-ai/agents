@@ -2116,6 +2116,29 @@ describe("filter chips", () => {
     expect(chipLabels()).toEqual([]);
   });
 
+  test("a history change that takes the focused audience away keeps the focus in the editor", async () => {
+    await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
+    openFilters();
+    (screen.getByRole("radio", { name: "Anonymous" }) as HTMLElement).focus();
+    navigateTo("/?range=7d");
+    await waitFor(() =>
+      expect(screen.queryAllByRole("radio", { name: "Anonymous" }).length).toBe(
+        0,
+      ),
+    );
+    const box = screen.getByRole("dialog", { name: "Filters" });
+    await waitFor(() =>
+      expect(box.contains(document.activeElement)).toBe(true),
+    );
+    // A control that keeps the focus through a change keeps it: no jump back to the first one.
+    const inbox = screen.getByRole("combobox", { name: "Inbox" });
+    inbox.focus();
+    fireEvent.change(inbox, { target: { value: "3" } });
+    await waitFor(() => expect(location).toBe("/?range=7d&inbox=3"));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement === inbox).toBe(true);
+  });
+
   test("an unreadable list keeps a link's agent as a chip that names its id", async () => {
     optionsFail = true;
     await renderDash("/?agent=7");

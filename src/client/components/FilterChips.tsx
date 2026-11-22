@@ -1,5 +1,5 @@
 import { Plus, X } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ControlPopover } from "./ControlPopover";
 
@@ -22,6 +22,7 @@ export function FilterChips({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const addRef = useRef<HTMLButtonElement>(null);
   const filtersLabel = t("filters.label", "Filters");
   return (
     <ul
@@ -36,7 +37,12 @@ export function FilterChips({
           <span className="truncate">{c.label}</span>
           <button
             type="button"
-            onClick={c.onClear}
+            // The removed chip takes its button away, and clearing one filter can take another chip with it,
+            // so the focus goes to the one control that stays.
+            onClick={() => {
+              c.onClear();
+              addRef.current?.focus();
+            }}
             aria-label={t("filters.remove", "Remove filter {{filter}}", {
               filter: c.label,
             })}
@@ -54,6 +60,7 @@ export function FilterChips({
           className="w-80 p-3"
           trigger={
             <button
+              ref={addRef}
               type="button"
               className="border-border-hover text-text-secondary hover:text-text-primary focus:ring-accent-soft inline-flex h-7 items-center gap-1 rounded-full border border-dashed px-2.5 text-xs focus:ring-2 focus:outline-none"
             >

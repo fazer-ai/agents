@@ -130,11 +130,13 @@ function usePeriodGroups(): {
 
 // The period button's texts: the period's name and days, the stretch it is compared with (short on
 // the button, in full in the popover, with the time of day where the previous period is cut inside a
-// day), and how far a running calendar period has gone.
+// day), and how far a running calendar period has gone at the instant the view was opened, where its
+// figures stop.
 function usePeriodTexts(
   filters: DashboardFilters,
   win: Window,
   prev: Window | null,
+  openedAt: Date,
 ) {
   const { t, i18n } = useTranslation();
   const groups = usePeriodGroups();
@@ -172,7 +174,7 @@ function usePeriodTexts(
           )
         : t("dashboard.period.compared", "Compared with {{range}}", { range })
       : null;
-  const progress = periodProgress(filters.range);
+  const progress = periodProgress(filters.range, openedAt);
   const dayText = progress
     ? t("dashboard.period.dayOf", "Day {{day}} of {{total}}, in progress", {
         day: progress.day,
@@ -254,6 +256,7 @@ function FilterBar({
   inboxes,
   win,
   prev,
+  openedAt,
 }: {
   filters: DashboardFilters;
   onChange: (patch: Partial<DashboardFilters>) => void;
@@ -261,11 +264,12 @@ function FilterBar({
   inboxes: InboxOption[] | null;
   win: Window;
   prev: Window | null;
+  openedAt: Date;
 }) {
   const { t } = useTranslation();
   const clientChannelEnabled = useClientChannelEnabled();
   const today = localDayKey(new Date());
-  const period = usePeriodTexts(filters, win, prev);
+  const period = usePeriodTexts(filters, win, prev, openedAt);
   const sources: { value: Source; label: string }[] = [
     { value: "inbox", label: t("dashboard.source.inbox", "Real") },
     {
@@ -620,6 +624,7 @@ export function DashboardPage() {
           inboxes={inboxes}
           win={win}
           prev={prev}
+          openedAt={openedAt}
         />
         <SectionNav sections={sections} layout="bar" />
       </div>

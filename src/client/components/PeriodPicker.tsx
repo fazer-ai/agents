@@ -50,6 +50,9 @@ export function PeriodPicker<V extends string>({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  // The option holding the listbox's one Tab stop: the selected one when the box opens, then whichever
+  // the arrows or the pointer focused, so Tab leaves the list from where the focus is.
+  const [active, setActive] = useState<string>(value);
   const listRef = useRef<HTMLDivElement>(null);
   const id = useId();
   const periodLabel = t("dashboard.range.label", "Period");
@@ -96,8 +99,9 @@ export function PeriodPicker<V extends string>({
     e.preventDefault();
     next?.focus();
   };
+  // Picking the period already in use changes nothing, so it adds no entry to the history.
   const pick = (v: V | typeof CUSTOM) => {
-    onSelect(v);
+    if (v !== value) onSelect(v);
     if (v !== CUSTOM) setOpen(false);
   };
   const option = (v: V | typeof CUSTOM, text: string) => (
@@ -107,7 +111,8 @@ export function PeriodPicker<V extends string>({
       role="option"
       aria-selected={v === value}
       data-value={v}
-      tabIndex={v === value ? 0 : -1}
+      tabIndex={v === active ? 0 : -1}
+      onFocus={() => setActive(v)}
       onClick={() => pick(v)}
       className={cn(
         "hover:bg-bg-tertiary focus-visible:ring-accent-soft rounded-md px-2 py-1 text-left text-sm focus:outline-none focus-visible:ring-2",
@@ -128,7 +133,10 @@ export function PeriodPicker<V extends string>({
   return (
     <ControlPopover
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        if (next) setActive(value);
+        setOpen(next);
+      }}
       label={periodLabel}
       className="w-[30rem] p-0"
       trigger={

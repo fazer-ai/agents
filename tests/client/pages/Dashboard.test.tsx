@@ -352,9 +352,16 @@ const stubFetch = (async (input: unknown, init?: RequestInit) => {
 }) as unknown as typeof globalThis.fetch;
 
 let location = "";
+// Each distinct history entry the page has been on: a re-render on the same entry does not count.
+let navigations = 0;
+let lastKey = "";
 function Where() {
   const l = useLocation();
   location = `${l.pathname}${l.search}`;
+  if (l.key !== lastKey) {
+    lastKey = l.key;
+    navigations++;
+  }
   return null;
 }
 
@@ -1599,6 +1606,12 @@ describe("calendar periods", () => {
     expect(document.activeElement?.getAttribute("data-value")).toBe(
       "last-month",
     );
+    // The one Tab stop follows the focus, so Tab leaves the list from there.
+    expect(
+      [...document.querySelectorAll('[role="option"][tabindex="0"]')].map((o) =>
+        o.getAttribute("data-value"),
+      ),
+    ).toEqual(["last-month"]);
     key("ArrowUp");
     key("ArrowRight");
     // The fifth row of the rolling column is its last, all time.
@@ -1615,9 +1628,38 @@ describe("calendar periods", () => {
     expect(location).toBe("/?range=this-month");
     key("Escape");
     await waitFor(() =>
-      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+      expect(document.activeElement === periodButton()).toBe(true),
     );
-    expect(document.activeElement).toBe(periodButton());
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    // Opened again, the Tab stop is back on the selected preset.
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+  });
+
+  test("picking the period in use closes the popover and leaves the history alone", async () => {
+    await renderDash("/?range=this-month");
+    const before = navigations;
+    pickPeriod("this-month");
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
+    expect(navigations).toBe(before);
+  });
+
+  test("the progress is the one at the view's opening, where its figures stop, not the clock's", async () => {
+    await renderDash("/?range=this-month");
+    const at = progressBar()?.dataset.progress;
+    setSystemTime(new Date(2026, 3, 10, 15, 0));
+    fireEvent.click(screen.getByRole("radio", { name: "By agent" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("radio", { name: "By agent" }) as HTMLInputElement)
+          .checked,
+      ).toBe(true),
+    );
+    expect(progressBar()?.dataset.progress).toBe(at);
   });
 
   test("last month is compared with the whole month before, and the button and the popover name it", async () => {
@@ -1734,6 +1776,10 @@ describe("filter chips", () => {
     );
     await waitFor(() => expect(location).toBe("/?range=7d&source=playground"));
     expect(chipLabels()).toEqual(["Source: Playground"]);
+    // The removed chip's button is gone, and the focus waits on "+ Filter".
+    expect(
+      document.activeElement === screen.getByRole("button", { name: "Filter" }),
+    ).toBe(true);
     fireEvent.click(
       screen.getByRole("button", { name: "Remove filter Source: Playground" }),
     );

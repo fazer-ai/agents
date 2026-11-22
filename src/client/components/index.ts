@@ -17,6 +17,7 @@ export {
 } from "./CodeEditor";
 export { ComboBox, type ComboItem, type ComboItemAction } from "./ComboBox";
 export { ConfirmDialog, type ConfirmPayload } from "./ConfirmDialog";
+export { ControlPopover } from "./ControlPopover";
 export { CredentialForm } from "./CredentialForm";
 export { CredentialPicker } from "./CredentialPicker";
 export {
@@ -26,6 +27,7 @@ export {
 export { DataBoundary } from "./DataBoundary";
 export { Dropdown, type DropdownItem } from "./Dropdown";
 export { EmptyState } from "./EmptyState";
+export { type FilterChip, FilterChips } from "./FilterChips";
 export { type FilterPillItem, FilterPills } from "./FilterPills";
 export { FormField } from "./FormField";
 export { GlobalApiToasts } from "./GlobalApiToasts";
@@ -62,6 +64,7 @@ export {
 } from "./NumberInput";
 export { OutOfHoursBadge } from "./OutOfHoursBadge";
 export { PageContainer } from "./PageContainer";
+export { type PeriodGroup, PeriodPicker } from "./PeriodPicker";
 export { Popover } from "./Popover";
 export { type ProFeature, ProGate } from "./ProGate";
 export { ProtectedRoute } from "./ProtectedRoute";

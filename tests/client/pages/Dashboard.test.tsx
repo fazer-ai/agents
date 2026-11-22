@@ -393,10 +393,28 @@ async function renderDash(path = "/", settled = true, clientChannel?: boolean) {
 }
 
 // The period select, by the value a preset is stored as in the link.
-const pickPeriod = (value: string) =>
-  fireEvent.change(screen.getByRole("combobox", { name: "Period" }), {
-    target: { value },
-  });
+// The period button: its accessible name starts with "Period:" and carries the whole period.
+const periodButton = () => screen.getByRole("button", { name: /^Period:/ });
+const periodName = () => periodButton().getAttribute("aria-label") ?? "";
+const openPeriod = () => {
+  if (periodButton().getAttribute("aria-expanded") !== "true")
+    fireEvent.click(periodButton());
+};
+const periodOption = (value: string) =>
+  document.querySelector<HTMLElement>(`[role="option"][data-value="${value}"]`);
+const pickPeriod = (value: string) => {
+  openPeriod();
+  fireEvent.click(periodOption(value) as HTMLElement);
+};
+// The filter editor, behind "+ Filter".
+const openFilters = () => {
+  const button = screen.getByRole("button", { name: "Filter" });
+  if (button.getAttribute("aria-expanded") !== "true") fireEvent.click(button);
+};
+const chipLabels = () =>
+  [...screen.getByRole("list", { name: "Filters" }).querySelectorAll("li")]
+    .map((li) => li.textContent ?? "")
+    .filter((text) => text !== "Filter");
 
 const has = (text: string | RegExp) =>
   screen.queryAllByText(text, { exact: false }).length > 0;
@@ -571,6 +589,7 @@ describe("one filter, in the URL, for every block", () => {
     await waitFor(() => {
       expect(screen.queryAllByRole("button", { name: "Beto" }).length).toBe(1);
     });
+    openFilters();
     fireEvent.change(screen.getByRole("combobox", { name: "Agent" }), {
       target: { value: "8" },
     });
@@ -587,6 +606,7 @@ describe("one filter, in the URL, for every block", () => {
       { id: "5", name: "SAC WhatsApp", account: { id: 7, name: null } },
     ];
     await renderDash("/");
+    openFilters();
     const select = screen.getByRole("combobox", {
       name: "Inbox",
     }) as HTMLSelectElement;
@@ -614,6 +634,10 @@ describe("one filter, in the URL, for every block", () => {
       { id: "5", name: "SAC WhatsApp", account: { id: 7, name: null } },
     ];
     await renderDash("/?inbox=4");
+    await waitFor(() => {
+      expect(chipLabels()).toEqual(["Inbox: SAC WhatsApp · Main brand"]);
+    });
+    openFilters();
     const select = screen.getByRole("combobox", {
       name: "Inbox",
     }) as HTMLSelectElement;
@@ -627,6 +651,7 @@ describe("one filter, in the URL, for every block", () => {
 
   test("choosing an agent puts it in the URL, and every agent takes it out", async () => {
     await renderDash("/");
+    openFilters();
     const select = screen.getByRole("combobox", {
       name: "Agent",
     }) as HTMLSelectElement;
@@ -1485,9 +1510,10 @@ describe("a chart with days past retention", () => {
   });
 });
 
-// A calendar period on the page: the selector groups calendar periods apart from trailing windows,
-// the link carries the preset, the previous period asked is the calendar period before, and the note
-// beside the selector says what the figures are compared with and whether the period is still running.
+// A calendar period on the page: the period button says the period, its days and the stretch it is
+// compared with; the popover groups calendar periods apart from trailing windows and names the
+// progress and the comparison in full; the link carries the preset, and the previous period asked is
+// the calendar period before.
 describe("calendar periods", () => {
   beforeEach(() => setSystemTime(new Date(2026, 3, 10, 10, 0)));
   afterEach(() => setSystemTime());
@@ -1499,14 +1525,23 @@ describe("calendar periods", () => {
         new Date(String(u.searchParams.get("until"))).getTime(),
       ])
       .sort((a, b) => Number(b[0]) - Number(a[0]));
-  const note = () => screen.getByTestId("period-note").textContent ?? "";
+  const progressBar = () =>
+    periodButton().querySelector<HTMLElement>("[data-progress]");
+  const footer = () => {
+    openPeriod();
+    const box = screen.getByRole("dialog", { name: "Period" });
+    return [...box.querySelectorAll(":scope > div:last-child > span")].map(
+      (e) => e.textContent ?? "",
+    );
+  };
 
-  test("the selector names its two families, and the dates show only for custom", async () => {
+  test("the popover names its two families, a preset closes it, and custom dates keep it open on their fields", async () => {
     await renderDash("/");
-    const select = screen.getByRole("combobox", { name: "Period" });
-    const groups = [...select.querySelectorAll("optgroup")].map((g) => [
-      g.getAttribute("label"),
-      [...g.querySelectorAll("option")].map((o) => o.textContent),
+    openPeriod();
+    const list = screen.getByRole("listbox", { name: "Period" });
+    const groups = [...list.querySelectorAll('[role="group"]')].map((g) => [
+      g.querySelector("span")?.textContent,
+      [...g.querySelectorAll('[role="option"]')].map((o) => o.textContent),
     ]);
     expect(groups).toEqual([
       [
@@ -1534,50 +1569,119 @@ describe("calendar periods", () => {
         ],
       ],
     ]);
+    expect(periodOption("custom")?.textContent).toBe("Custom dates");
+    expect(periodOption("30d")?.getAttribute("aria-selected")).toBe("true");
     expect(screen.queryAllByLabelText("From").length).toBe(0);
     pickPeriod("last-month");
     await waitFor(() => expect(location).toBe("/?range=last-month"));
+    expect(periodButton().getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryAllByLabelText("From").length).toBe(0);
     pickPeriod("custom");
     await waitFor(() =>
       expect(screen.queryAllByLabelText("From").length).toBe(1),
     );
+    expect(periodButton().getAttribute("aria-expanded")).toBe("true");
+    expect(location).toBe("/?range=custom&from=2026-04-10&to=2026-04-10");
   });
 
-  test("last month is compared with the whole month before, and the note names it", async () => {
+  test("the keyboard opens on the selected preset, walks the list and the columns, and Escape returns to the button", async () => {
+    await renderDash("/?range=this-month");
+    periodButton().focus();
+    openPeriod();
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-value")).toBe(
+        "this-month",
+      ),
+    );
+    const key = (k: string) =>
+      fireEvent.keyDown(document.activeElement as Element, { key: k });
+    key("ArrowDown");
+    expect(document.activeElement?.getAttribute("data-value")).toBe(
+      "last-month",
+    );
+    key("ArrowUp");
+    key("ArrowRight");
+    // The fifth row of the rolling column is its last, all time.
+    expect(document.activeElement?.getAttribute("data-value")).toBe("all");
+    key("ArrowLeft");
+    expect(document.activeElement?.getAttribute("data-value")).toBe(
+      "this-month",
+    );
+    key("End");
+    expect(document.activeElement?.getAttribute("data-value")).toBe("custom");
+    key("Home");
+    expect(document.activeElement?.getAttribute("data-value")).toBe("today");
+    // Moving the focus picks nothing.
+    expect(location).toBe("/?range=this-month");
+    key("Escape");
+    await waitFor(() =>
+      expect(periodButton().getAttribute("aria-expanded")).toBe("false"),
+    );
+    expect(document.activeElement).toBe(periodButton());
+  });
+
+  test("last month is compared with the whole month before, and the button and the popover name it", async () => {
     await renderDash("/?range=last-month");
     await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
     expect(kpiWindows()).toEqual([
       [new Date(2026, 2, 1).getTime(), new Date(2026, 3, 1).getTime()],
       [new Date(2026, 1, 1).getTime(), new Date(2026, 2, 1).getTime()],
     ]);
-    expect(note()).toBe("Compared with Feb 1 to 28, 2026");
-    expect(has("In progress")).toBe(false);
+    expect(periodName()).toBe(
+      "Period: Last month · Mar 1 to 31, vs. Feb 1 to 28",
+    );
+    expect(progressBar()).toBeNull();
+    expect(footer()).toEqual(["Compared with Feb 1 to 28, 2026"]);
   });
 
-  test("this month runs, and is compared with the same days of the month before", async () => {
+  test("this month runs: the button carries its progress, and it is compared with the same days of the month before", async () => {
     await renderDash("/?range=this-month");
     await waitFor(() => expect(asks("/metrics/kpis").length).toBe(2));
     expect(kpiWindows()).toEqual([
       [new Date(2026, 3, 1).getTime(), new Date(2026, 3, 10, 10).getTime()],
       [new Date(2026, 2, 1).getTime(), new Date(2026, 2, 10, 10).getTime()],
     ]);
-    expect(note()).toBe(
-      "In progressCompared with Mar 1 to 10, 2026, up to 10:00 AM",
+    expect(periodName()).toBe(
+      "Period: This month · Apr 1 to 10, vs. Mar 1 to 10, Day 10 of 30, in progress",
     );
+    // Nine whole days and ten hours of April's thirty.
+    expect(progressBar()?.dataset.progress).toBe(
+      ((9 + 10 / 24) / 30).toFixed(3),
+    );
+    expect(footer()).toEqual([
+      "Day 10 of 30, in progress",
+      "Compared with Mar 1 to 10, 2026, up to 10:00 AM",
+    ]);
   });
 
-  test("at the first instant of today the comparison is empty, and the note names no days", async () => {
+  test("at the first instant of today the comparison is empty, and nothing names its days", async () => {
     setSystemTime(new Date(2026, 3, 10, 0, 0));
     await renderDash("/?range=today");
     await waitFor(() =>
       expect(asks("/metrics/kpis").length).toBeGreaterThan(0),
     );
-    expect(note()).toBe("In progress");
+    expect(periodName()).toBe(
+      "Period: Today · Apr 10, Day 1 of 1, in progress",
+    );
+    expect(footer()).toEqual(["Day 1 of 1, in progress"]);
+  });
+
+  test("all time has no comparison and no progress", async () => {
+    await renderDash("/?range=all");
+    expect(periodName()).toBe("Period: All time");
+    expect(progressBar()).toBeNull();
+    openPeriod();
+    expect(
+      screen.getByRole("dialog", { name: "Period" }).textContent,
+    ).not.toContain("Compared");
   });
 
   test("the date picker starts in 1970, and a day before it leaves the range as it was", async () => {
     await renderDash("/?range=custom&from=2026-04-01&to=2026-04-05");
+    expect(periodName()).toBe(
+      "Period: Custom dates · Apr 1 to 5, vs. Mar 27 to 31",
+    );
+    openPeriod();
     const from = screen.getByLabelText("From") as HTMLInputElement;
     expect(from.min).toBe("1970-01-01");
     fireEvent.change(from, { target: { value: "1969-12-31" } });
@@ -1602,6 +1706,59 @@ describe("calendar periods", () => {
       new Date(2026, 2, 17).getTime(),
       new Date(2026, 2, 26, 10).getTime(),
     ]);
-    expect(note()).toBe("Compared with Mar 17 to 26, 2026, up to 10:00 AM");
+    expect(footer()).toEqual([
+      "Compared with Mar 17 to 26, 2026, up to 10:00 AM",
+    ]);
+  });
+});
+
+// The filters that narrow the view are chips beside the period, each removable; a filter at its
+// default or at a value that narrows nothing is no chip.
+describe("filter chips", () => {
+  test("the default view, and every source, carry no chip", async () => {
+    await renderDash("/");
+    expect(chipLabels()).toEqual([]);
+    openFilters();
+    fireEvent.click(screen.getByRole("radio", { name: "All" }));
+    await waitFor(() => expect(location).toBe("/?source=all"));
+    expect(chipLabels()).toEqual([]);
+  });
+
+  test("a link's agent and segment are chips, and removing one keeps the rest of the view", async () => {
+    await renderDash("/?range=7d&agent=7&source=playground");
+    await waitFor(() =>
+      expect(chipLabels()).toEqual(["Agent: Ana", "Source: Playground"]),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove filter Agent: Ana" }),
+    );
+    await waitFor(() => expect(location).toBe("/?range=7d&source=playground"));
+    expect(chipLabels()).toEqual(["Source: Playground"]);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove filter Source: Playground" }),
+    );
+    await waitFor(() => expect(location).toBe("/?range=7d"));
+    expect(chipLabels()).toEqual([]);
+  });
+
+  test("the audience is a chip under the client segment, and removing the segment drops it too", async () => {
+    await renderDash("/?range=7d&source=client&audience=anonymous", true, true);
+    expect(chipLabels()).toEqual([
+      "Source: Client channel",
+      "Audience: Anonymous",
+    ]);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Remove filter Source: Client channel",
+      }),
+    );
+    await waitFor(() => expect(location).toBe("/?range=7d"));
+    expect(chipLabels()).toEqual([]);
+  });
+
+  test("an unreadable list keeps a link's agent as a chip that names its id", async () => {
+    optionsFail = true;
+    await renderDash("/?agent=7");
+    expect(chipLabels()).toEqual(["Agent: #7"]);
   });
 });

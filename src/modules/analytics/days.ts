@@ -116,6 +116,19 @@ export function shiftLocalDays(instant: Date, n: number, tz: string): Date {
   return new Date(lo * 60_000);
 }
 
+// The first instant showing the same wall-clock time as `instant`: in the hour a clock falls back, which
+// shows twice, the earlier one, as the browser's `wallClockOn` picks (src/client/pages/dashboard/filters.ts).
+export function firstAtWallClock(instant: Date, tz: string): Date {
+  const t = instant.getTime();
+  const wall = t + offsetAt(t, tz);
+  // The offset half a day before is the one the zone had before falling back, by however much it
+  // fell (an hour, half an hour, two hours in Antarctica/Troll); no zone changes twice in that time.
+  const earlier = wall - offsetAt(t - 12 * 3_600_000, tz);
+  return earlier < t && earlier + offsetAt(earlier, tz) === wall
+    ? new Date(earlier)
+    : instant;
+}
+
 // How many days from `first` to `last`, both inclusive, without listing them.
 export function dayCount(first: string, last: string): number {
   if (first > last) return 0;

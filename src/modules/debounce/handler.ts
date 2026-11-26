@@ -140,8 +140,8 @@ const DEFER_CEILING_MS = 5 * 60_000;
 // A file the arrival pass could not download, on a failure that may pass, is one external storage
 // has not finished writing. The flush comes back for it instead of rendering it unread, every
 // `MEDIA_DEFER_MS`, and each round tries the download again (free: the provider was never asked).
-// Past `MEDIA_DEFER_CEILING_MS` from the burst's start the reply goes with what it has, so a file
-// that never lands costs the customer a minute, not the deferral's five.
+// Past `MEDIA_DEFER_CEILING_MS` from the first such deferral the reply goes with what it has, so a
+// file that never lands costs the customer a minute, not the deferral's five.
 const MEDIA_DEFER_MS = 5_000;
 const MEDIA_DEFER_CEILING_MS = 60_000;
 
@@ -346,6 +346,7 @@ export async function selectAnswerableBurst(
     | "settings"
     | "label"
     | "catchUp"
+    | "mediaWaitUntil"
     | "onEmptyBurst"
   > & {
     // Presente só quando o chamador quer os anexos sem extração abertos antes do render (ver
@@ -436,6 +437,7 @@ export async function selectAnswerableBurst(
       messages,
       pending,
       fill: ctx.fillMedia,
+      retryUntil: ctx.mediaWaitUntil,
       base,
       deps,
     });
@@ -492,6 +494,7 @@ export async function selectAnswerableBurst(
       base,
       deps,
       onlyUnavailable: true,
+      retryUntil: ctx.mediaWaitUntil,
     }))
   )
     waitedOnMedia = true;
@@ -565,6 +568,9 @@ export async function fillMissingVisuals(args: {
   // Asked before each paid read: a caller whose work can be withdrawn while it reads (a retired job)
   // stops opening files there. Absent answers yes.
   stillWanted?: () => Promise<boolean>;
+  // Past this instant (epoch ms) a file is no longer opened again for being late: the media wait is
+  // over and the reply goes with what it has. Files never tried are still read.
+  retryUntil?: number;
 }): Promise<boolean> {
   // DAS SETTINGS QUE O TURNO JÁ CARREGOU, sem ir ao banco. `resolveVisionConfig` faz exatamente
   // isto depois de descobrir o agente pela inbox, e aqui o agente já está decidido: quem chegou até
@@ -580,7 +586,9 @@ export async function fillMissingVisuals(args: {
     // The files' own mark only: a voice note on its way says nothing about them. A message read in
     // part is opened again for its late file, and the files already read come back from the per-file
     // cache (`rememberFileRead`), so the aggregate is complete and nothing is paid twice.
-    const late = mediaStillArriving({ ...m, transcriptionUnavailable: false });
+    const late =
+      mediaStillArriving({ ...m, transcriptionUnavailable: false }) &&
+      (args.retryUntil === undefined || Date.now() < args.retryUntil);
     return (
       hasUnextractedVisual(m.visuals) &&
       (late ||
@@ -694,6 +702,8 @@ export async function fillMissingAudio(args: {
   // Only the voice notes the arrival pass could not download (`transcriptionUnavailable`): the flush
   // reads after that pass, which already tried every other one.
   onlyUnavailable?: boolean;
+  // Past this instant (epoch ms) no further voice note is tried: the media wait is over.
+  retryUntil?: number;
   // True once a transcription was attempted: the caller waited on the provider.
 }): Promise<boolean> {
   const cfg = readSttConfig(args.settings);
@@ -708,6 +718,7 @@ export async function fillMissingAudio(args: {
   let attempted = false;
   for (const m of alvos) {
     if (args.fill.signal?.aborted) break;
+    if (args.retryUntil !== undefined && Date.now() >= args.retryUntil) break;
     if (args.stillWanted && !(await args.stillWanted())) break;
     const recusadaAte = await refusalMarkOrClosed(args);
     if (recusadaAte !== null && m.id <= recusadaAte) continue;
@@ -2409,6 +2420,9 @@ export async function flushDebounceJob(
   const deferringSince =
     readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? nowMs;
   const pastDeferralCeiling = nowMs >= deferringSince + DEFER_CEILING_MS;
+  // The media wait counts from the burst's first deferral, or from this flush when it has none: the
+  // debounce window before the first flush is not time spent waiting for a file.
+  const mediaSince = readDeferringSince(job.payload) ?? nowMs;
   if (
     isTurnInFlight(graphThreadId) ||
     isFlushHeld(graphThreadId) ||
@@ -2523,7 +2537,7 @@ export async function flushDebounceJob(
         // NOTE: Some transports attach the file after creating the message: the arrival pass saw
         // nothing to read, and this is the last read before the turn renders the file as unread.
         fillMissingMedia: "untried",
-        mediaWaitUntil: deferringSince + MEDIA_DEFER_CEILING_MS,
+        mediaWaitUntil: mediaSince + MEDIA_DEFER_CEILING_MS,
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {
@@ -2564,12 +2578,17 @@ export async function flushDebounceJob(
       await stampDeferral({
         tenantId,
         threadId,
-        since: deferringSince,
+        since: mediaSince,
         base,
       });
       return {
         outcome: "reschedule",
-        runAt: new Date(Date.now() + MEDIA_DEFER_MS),
+        runAt: new Date(
+          Math.min(
+            Date.now() + MEDIA_DEFER_MS,
+            mediaSince + MEDIA_DEFER_CEILING_MS,
+          ),
+        ),
       };
     }
     // NOTE: Nothing was written and the burst is still owed: another invoke held the thread at claim

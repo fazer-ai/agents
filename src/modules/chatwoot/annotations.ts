@@ -145,8 +145,10 @@ export function overlayMediaAnnotations(
     const hit = store.get(keyOf(tenantId, instanceId, row.id));
     if (!hit || nowMs - hit.at >= TTL_MS) continue;
     row.transcribedText ??= hit.note.transcribedText ?? null;
-    if (hit.note.transcriptionUnavailable && !row.transcribedText)
-      row.transcriptionUnavailable = true;
+    // NOTE: Both values: a later download that cleared the mark has to reach a row an earlier overlay
+    // marked.
+    if (hit.note.transcriptionUnavailable !== undefined && !row.transcribedText)
+      row.transcriptionUnavailable = hit.note.transcriptionUnavailable;
     // NOTE: the vision fields are aggregates, so "meta wins" inverts. The write-back is per
     // attachment, so a page with one of two meta writes landed carries a partial description that
     // `??=` would keep. The stash is written once by the pass that produced all of them (idempotent

@@ -18,12 +18,14 @@ import { encryptJson } from "@/api/lib/crypto";
 import {
   clearMediaAnnotations,
   mediaAnnotationFor,
+  overlayMediaAnnotations,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
   ChatwootApiError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { debounceDedupeKey } from "@/modules/debounce/service";
 import { transcribeInboundAudio } from "@/modules/stt/service";
@@ -267,8 +269,8 @@ async function flush(
   convId: number,
   client: ChatwootClient,
   p: ReturnType<typeof provider>,
-  // The burst's start, which the media ceiling counts from. `1` is long past it.
-  burstStartedAt = 1,
+  // When the burst first deferred, which the media ceiling counts from; absent, this flush.
+  deferringSince?: number,
 ) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
   // A rescheduled flush leaves its row behind; the next round stands in for the worker's reclaim.
@@ -282,7 +284,12 @@ async function flush(
       dedupeKey: debounceDedupeKey(thread),
       status: "CLAIMED",
       runAt: new Date(),
-      payload: { threadId: thread, agentBotId: 9, burstStartedAt },
+      payload: {
+        threadId: thread,
+        agentBotId: 9,
+        burstStartedAt: 1,
+        ...(deferringSince !== undefined ? { deferringSince } : {}),
+      },
     },
     select: { id: true, claimSeq: true, payload: true },
   });
@@ -632,6 +639,102 @@ describe.skipIf(!dbUp)(
 
       expect(out).toEqual({ outcome: "done" });
       expect(s.state.sent).toBe(1);
+    });
+
+    test("a cleared mark reaches a row an earlier overlay marked", () => {
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionUnavailable: true },
+      );
+      const row = {
+        id: 1,
+        transcribedText: null,
+      } as unknown as ChatwootMessageRow;
+      overlayMediaAnnotations(tenantId, instanceId, [row]);
+      expect(row.transcriptionUnavailable).toBe(true);
+
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionUnavailable: false },
+      );
+      overlayMediaAnnotations(tenantId, instanceId, [row]);
+      expect(row.transcriptionUnavailable).toBe(false);
+    });
+
+    // A timeout or the caller's deadline is no answer from the storage.
+    test("a download cut short keeps the mark a 404 left", async () => {
+      await seedConversation(9715);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9715, 1, s.client(page), p.sttFetch);
+      const cut = s.client(page);
+      cut.downloadAttachment = (async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof cut.downloadAttachment;
+
+      await arriveVoice(9715, 1, cut, p.sttFetch);
+
+      expect(
+        mediaAnnotationFor(tenantId, instanceId, 1)?.transcriptionUnavailable,
+      ).toBe(true);
+    });
+
+    test("no voice note is tried again once the media wait is over", async () => {
+      await seedConversation(9716);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1), voice(2)];
+      await arriveVoice(9716, 1, s.client(page), p.sttFetch);
+      await arriveVoice(9716, 2, s.client(page), p.sttFetch);
+      const before = s.state.downloads;
+      const real = Date.now.bind(Date);
+      let ahead = 0;
+      const slow = s.client(page);
+      const download = slow.downloadAttachment.bind(slow);
+      slow.downloadAttachment = (async (
+        ...args: Parameters<typeof download>
+      ) => {
+        ahead += 2_000;
+        return download(...args);
+      }) as typeof slow.downloadAttachment;
+      const clock = spyOn(Date, "now").mockImplementation(() => real() + ahead);
+
+      const { out } = await flush(9716, slow, p, real() - 59_000).finally(() =>
+        clock.mockRestore(),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.downloads - before).toBe(1);
+    });
+
+    test("past the media ceiling a late image is not downloaded again", async () => {
+      await seedConversation(9718);
+      const s = storage();
+      const p = provider();
+      const page = [image(1)];
+      await arriveImage(9718, 1, s.client(page), p.visionFetch);
+      const before = s.state.downloads;
+
+      const { out } = await flush(9718, s.client(page), p, Date.now() - 61_000);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.downloads).toBe(before);
+    });
+
+    test("the next round of a media wait is never set past its ceiling", async () => {
+      await seedConversation(9717);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9717, 1, s.client(page), p.sttFetch);
+      const start = Date.now() - 57_000;
+
+      const { out } = await flush(9717, s.client(page), p, start);
+
+      expect(out.outcome).toBe("reschedule");
+      const runAt = new Date((out as { runAt: Date }).runAt).getTime();
+      expect(runAt).toBeLessThanOrEqual(start + 60_000);
     });
 
     // Files over the per-message cap are counted unread and never tried: reading the message again

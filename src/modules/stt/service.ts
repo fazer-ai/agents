@@ -10,6 +10,7 @@ import {
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
+  ChatwootApiError,
   type ChatwootClient,
   isTransientAttachmentFailure,
 } from "@/modules/chatwoot/client";
@@ -226,11 +227,13 @@ async function transcribeOnce(
         errorMessage: err instanceof Error ? err.message : String(err),
       });
     }
-    // The mark follows the LATEST download: a failure that may pass lets the reply try again for
-    // free; any other one ends the wait.
-    stashMediaAnnotation(target, {
-      transcriptionUnavailable: isTransientAttachmentFailure(err),
-    });
+    // The mark follows the LATEST answer from Chatwoot: a failure that may pass lets the reply try
+    // again for free, a refusal ends the wait. A download cut by a timeout or the caller's deadline is
+    // no answer, and leaves the mark as it was.
+    if (err instanceof ChatwootApiError)
+      stashMediaAnnotation(target, {
+        transcriptionUnavailable: isTransientAttachmentFailure(err),
+      });
     throw err;
   }
   // The file is here: whatever the provider answers next, there is nothing left to wait for.

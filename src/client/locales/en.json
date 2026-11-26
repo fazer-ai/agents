@@ -3871,7 +3871,8 @@
     },
     "guardrailHeld": {
       "input": "The check failed, so the customer's message was held and a hand-over to the team was requested",
-      "output": "The check failed, so the reply was held and a hand-over to the team was requested"
+      "output": "The check failed, so the reply was held and a hand-over to the team was requested",
+      "turnReviewCall": "The turn review could not judge the call to {{tool}}, so the call did not run and a hand-over to the team was requested"
     },
     "guardrailObserved": {
       "categories": "categories: {{categories}}",
@@ -3885,6 +3886,7 @@
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message was let through unchecked",
       "output": "The check failed, so the reply was let through unchecked",
+      "turnReviewCall": "The turn review could not judge the call to {{tool}}, so the call ran unreviewed",
       "unknown": "The check failed; this older line does not record whether the message was let through"
     },
     "level": {
@@ -4706,7 +4708,9 @@
       "sources": "Sources",
       "toggle": "Execution details",
       "turnReviewCall": "Turn review of the call to {{tool}}",
+      "turnReviewCallHeld": "could not be judged, so the call did not run and the case would go to the team",
       "turnReviewCallRevised": "against the agent's instructions; the call did not run and the agent was told why",
+      "turnReviewCallUnavailable": "could not be judged, so the call ran unreviewed",
       "turnReviewClean": "follows the agent's instructions",
       "turnReviewObserved": "against the agent's instructions; only recorded, the step went ahead",
       "turnReviewReply": "Turn review of the reply",

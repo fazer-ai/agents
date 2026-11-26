@@ -75,6 +75,25 @@ describe("an observed guardrail line on the Logs page", () => {
     ).toBeNull();
   });
 
+  // The bug it catches: a turn review of a write call that could not run read "the reply was let
+  // through unchecked", while what went on unreviewed (or was held) was the call.
+  test("a turn review of a call that could not run names the call", () => {
+    const call = {
+      direction: "output",
+      check: "turn_review",
+      step: "call",
+      tool: "agendar",
+      outcome: "analysis_failed",
+    };
+    expect([
+      guardrailUncheckedLabel("guardrail", { ...call, unchecked: true }, t),
+      guardrailUncheckedLabel("guardrail", { ...call, held: true }, t),
+    ]).toEqual([
+      "The turn review could not judge the call to agendar, so the call ran unreviewed",
+      "The turn review could not judge the call to agendar, so the call did not run and a hand-over to the team was requested",
+    ]);
+  });
+
   test("its badge names the observed selector, and only for an observed trip", () => {
     expect(selectorOf("guardrail", { action: "observe" })).toBe(
       GUARDRAIL_OBSERVED,

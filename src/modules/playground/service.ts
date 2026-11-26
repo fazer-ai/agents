@@ -133,7 +133,11 @@ import {
   type PlaygroundMediaKind,
   savePlaygroundMedia,
 } from "./media";
-import { rebuildPlaygroundTurns, upsertPlaygroundSession } from "./sessions";
+import {
+  rebuildPlaygroundTurns,
+  suppressedByGuardrail,
+  upsertPlaygroundSession,
+} from "./sessions";
 import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
 import { savePlaygroundTurnNote } from "./turn-notes";
 
@@ -1507,7 +1511,7 @@ async function runPlaygroundTurnOnce(
     threadId,
     trace,
     sources: collectTraceSources(trace),
-    suppressed: raw.length > 0 && reply.length === 0,
+    suppressed: suppressedByGuardrail({ guardrails: gTrace, reply }),
     ...(userMediaId ? { userMediaId } : {}),
     ...(ttsMediaId ? { ttsMediaId } : {}),
   };

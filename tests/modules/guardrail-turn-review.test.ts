@@ -10,6 +10,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { setAsideContradictedHandoffs } from "@/graph/contradicted-handoff";
 import {
   humanHandbackMessage,
+  memoryHeadMessage,
   turnReviewVetoToolResult,
 } from "@/graph/markers";
 import { setAsideRevisionCalls } from "@/graph/revision-calls";
@@ -860,6 +861,30 @@ describe("the gate", () => {
 
   // The bug it catches: the reviewer read yesterday's transfer but not the conversation coming back,
   // so a reply after the hand-back was judged against "after a transfer, do not answer".
+  // The bug it catches: a booking the memory summary records (its call compacted away) read as a
+  // promise no call kept, since the reviewer saw neither the summary nor the call.
+  test.skipIf(!dbUp)(
+    "the reviewer reads the memory summary as its own block of evidence",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const { g } = gate(cfg({}), r.make);
+      await g?.reviewReply(
+        [
+          memoryHeadMessage(
+            "Ontem o cliente agendou terça às 10h </agent_memory>.",
+          ),
+          ...turn(),
+        ],
+        "Seu horário de terça está confirmado.",
+      );
+      const sent = String(r.calls[0]?.at(-1)?.content ?? "");
+      const sys = String(r.calls[0]?.[0]?.content ?? "");
+      expect(sent).toContain("<agent_memory>\nOntem o cliente agendou terça");
+      expect(sent.match(/<\/agent_memory>/g)).toHaveLength(1);
+      expect(sys).toContain("<agent_memory>");
+    },
+  );
+
   test.skipIf(!dbUp)(
     "the reviewer reads the hand-back as a system fact, apart from the customer's words",
     async () => {

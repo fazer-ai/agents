@@ -355,10 +355,15 @@ export async function undoRefusedTurn(params: {
         );
         if (note) return { ...decided, noted: true };
       }
+      // Only onto the thread this turn left: its last message is still the tail, read under this
+      // same claim, so a reset or a newer message in between keeps the thread untouched.
+      const tail = produced.at(-1)?.id;
       if (
         decided.action === "keep" &&
         decided.reason === "no-turn-found" &&
-        params.orAppend
+        params.orAppend &&
+        tail !== undefined &&
+        current.at(-1)?.id === tail
       ) {
         await graph.updateState(
           threadCfg,

@@ -97,7 +97,11 @@ import {
   withOtherInboxesContext,
 } from "@/modules/other-inboxes/context";
 import { signatureFor } from "@/modules/signature/service";
-import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
+import {
+  deliverReply,
+  type ReplyDelivery,
+  splitReplyParts,
+} from "@/modules/split/service";
 import type { transcribeInboundAudio } from "@/modules/stt/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
 import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
@@ -360,6 +364,11 @@ export interface RuntimeDeps {
 // "posted-partial". The callers cannot write it: they read the outcome as an answer and
 // clear the badge. The cause stays in the flow log (`stage: "split"`); best-effort like
 // `recordConversationError`, so a delivered half-answer never becomes a thrown turn.
+// Recorded beside a closing line only part of which reached the customer, when the part cannot be
+// named: the next turn reads that the line was not received whole.
+const PARTIAL_LINE_NOTE =
+  "(Contexto do sistema: só parte desta mensagem chegou ao cliente.)";
+
 async function notePartialDelivery(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -1767,6 +1776,21 @@ async function runTurnBody(
     }
   };
 
+  // What of a line split into balloons reached the customer: the first `landed` pieces the split
+  // cut, as sent. A count that does not fit the cut (a voice note, say) cannot name the part that
+  // arrived, so the whole line goes with an explicit note that only part of it did.
+  const landedPart = (line: string, landed: number): string => {
+    const parts = loaded.splitConfig.enabled
+      ? splitReplyParts(line, loaded.splitConfig)
+      : { chunks: [line.trim()], seps: [""] };
+    if (landed > 0 && landed < parts.chunks.length)
+      return parts.chunks
+        .filter((_, i) => i < landed)
+        .map((c, i) => `${parts.seps[i] ?? ""}${c}`)
+        .join("");
+    return `${line}\n\n${PARTIAL_LINE_NOTE}`;
+  };
+
   // The sentence the transfer promised, delivered on the way out of the turn whatever that
   // way is: once the tool set `open`, every retry stops at its ownership gate. Two exclusive call
   // sites (the failure path rethrows); a third would own the at-most-once question.
@@ -1828,9 +1852,13 @@ async function runTurnBody(
       )
         return;
       deliveredBalloons = delivered.delivered;
-      if (reviewed) sentInDraftsPlace = screened;
-      if (reviewed && delivered.failed)
-        closingLinePartial = { unproven: delivered.unproven };
+      if (reviewed) {
+        sentInDraftsPlace = delivered.failed
+          ? landedPart(screened, delivered.delivered)
+          : screened;
+        if (delivered.failed)
+          closingLinePartial = { unproven: delivered.unproven };
+      }
     } catch (e) {
       // NOTE: Best-effort: the transfer succeeded, so an error would stamp lastError on a thread a
       // human already owns, and on the failure path would mask the error that ended the turn.
@@ -3037,6 +3065,18 @@ async function runTurnBody(
       return settled("posted");
     };
     const ended = await afterGeneration();
+    // A closing line known to have landed in part is recorded whatever the turn's outcome: the badge
+    // is a record, not a send, so a takeover by this turn's own transfer does not skip it.
+    // Set inside `deliverHandoffPromise`, which the narrowing above cannot see.
+    const partialLine = closingLinePartial as { unproven: boolean } | null;
+    if (partialLine && ended.outcome !== "posted-partial")
+      await notePartialDelivery({
+        tenantId,
+        instanceId,
+        conversationId,
+        base,
+        unproven: partialLine.unproven,
+      });
     // A takeover this turn's own transfer caused, read after the fallback's closing line went out:
     // the refusal still sends nothing more, but the thread records the line the customer read
     // instead of losing the turn's last message.

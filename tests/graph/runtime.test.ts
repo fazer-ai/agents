@@ -12158,95 +12158,125 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
       // The bug it catches: a fallback closing line split into balloons, one of which never arrived,
       // settled as fully posted, so nobody was told part of it was missing.
-      test("a fallback closing line delivered in part settles as partial", async () => {
-        await suDb.agent.update({
-          where: { id: gAgentId },
-          data: {
-            settings: {
-              split: { enabled: true, typingWpm: 99999 },
-              handoff: { mode: "route" },
-              guardrails: {
-                enabled: true,
-                provider: "openai",
-                model: GUARD_MODEL,
-                credentialRef: gVaultRef,
-                input: { enabled: false },
-                output: {
-                  enabled: false,
-                  templateMessage: "Primeira parte.\n\nSegunda parte.",
-                },
-                turnReview: {
+      // With the mirror already reading this turn's transfer the turn is a takeover, and the known
+      // failure is still recorded: the badge is a record, not a send.
+      for (const [convId, mirrorOpens] of [
+        [7956, false],
+        [7957, true],
+      ] as const)
+        test(`a fallback closing line delivered in part settles as partial${mirrorOpens ? ", the mirror already open" : ""}`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: true, typingWpm: 99999 },
+                handoff: { mode: "route" },
+                guardrails: {
                   enabled: true,
-                  action: "revise",
-                  maxAttempts: 1,
-                  fallback: "template",
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "Primeira parte.\n\nSegunda parte.",
+                  },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback: "template",
+                  },
                 },
               },
             },
-          },
-        });
-        const convId = 7956;
-        await seedConv(convId);
-        const sent: Array<[number, string]> = [];
-        const notes: Array<[number, string]> = [];
-        const toggles: Array<[number, string]> = [];
-        let asked = 0;
-        const handingOver = {
-          async invoke() {
-            return new AIMessage("");
-          },
-          bindTools() {
-            return {
-              async invoke() {
-                asked += 1;
-                if (asked > 2) return new AIMessage("");
-                return new AIMessage({
-                  content: "",
-                  tool_calls: [
-                    {
-                      name: "handoff_to_human",
-                      args: { customerMessage: "" },
-                      id: `h${asked}`,
-                    },
-                  ],
-                });
-              },
-            };
-          },
-        } as unknown as BaseChatModel;
-        const result = await runAgentTurn({
-          tenantId: gTenantId,
-          instanceId: gInstanceId,
-          agentBotId: G_BOT,
-          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
-          base: appDb,
-          deps: {
-            makeModel: branchingWith(
-              JSON.stringify({
-                violated: true,
-                categories: ["turn_review"],
-                rationale: "Pergunte o pedido antes.",
-                suggestedReply: null,
-              }),
-              handingOver,
-            ),
-            makeClient: async () => {
-              const c = await guardStub(sent, notes, toggles)();
-              const send = c.sendMessage.bind(c);
-              c.sendMessage = (async (id: number, content: string) => {
-                if (content.includes("Segunda")) throw new Error("HTTP 500");
-                return send(id, content);
-              }) as typeof c.sendMessage;
-              return c;
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          const checkpointer = new MemorySaver();
+          let asked = 0;
+          const handingOver = {
+            async invoke() {
+              return new AIMessage("");
             },
-            checkpointer: new MemorySaver(),
-          },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 2) return new AIMessage("");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: "" },
+                        id: `h${asked}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          const result = await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingWith(
+                JSON.stringify({
+                  violated: true,
+                  categories: ["turn_review"],
+                  rationale: "Pergunte o pedido antes.",
+                  suggestedReply: null,
+                }),
+                handingOver,
+              ),
+              makeClient: async () => {
+                const c = await guardStub(sent, notes, toggles)();
+                const toggle = c.toggleStatus.bind(c);
+                c.toggleStatus = (async (id: number, status: string) => {
+                  const r = await toggle(id, status as never);
+                  if (mirrorOpens)
+                    await suDb.conversation.updateMany({
+                      where: {
+                        tenantId: gTenantId,
+                        chatwootConversationId: id,
+                      },
+                      data: { status: "open" },
+                    });
+                  return r;
+                }) as typeof c.toggleStatus;
+                const send = c.sendMessage.bind(c);
+                c.sendMessage = (async (id: number, content: string) => {
+                  if (content.includes("Segunda")) throw new Error("HTTP 500");
+                  return send(id, content);
+                }) as typeof c.sendMessage;
+                return c;
+              },
+              checkpointer,
+            },
+          });
+          expect([sent, result]).toEqual([
+            [[convId, "Primeira parte."]],
+            mirrorOpens ? "taken-over" : "posted-partial",
+          ]);
+          const row = await suDb.conversation.findFirst({
+            where: { tenantId: gTenantId, chatwootConversationId: convId },
+            select: { lastError: true },
+          });
+          expect(row?.lastError ?? "").toContain("entrega");
+          // The thread holds the balloons that landed, not the whole line.
+          const thread = await threadChannel(checkpointer, convId, {
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+          });
+          expect(thread.at(-1)).toEqual(["ai", "Primeira parte."]);
         });
-        expect([sent, result]).toEqual([
-          [[convId, "Primeira parte."]],
-          "posted-partial",
-        ]);
-      });
 
       // Throws on the save that would record the second note's result, as a database or a deploy can
       // fail mid-turn, after the write ran.

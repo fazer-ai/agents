@@ -49,6 +49,7 @@ const GUARD_MODEL = "guard-judge";
 let tenantId = 0n;
 let agentId = 0n;
 let agentFallback = 0n;
+let agentSilentFallback = 0n;
 
 // The agent writes a note twice (the first vetoed, the retry approved, or with `alwaysFlagged` run
 // past the attempts), then answers.
@@ -192,6 +193,45 @@ describe.skipIf(!dbUp)("the turn review in the playground trace", () => {
         },
       })
     ).id;
+    agentSilentFallback = (
+      await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Silencioso",
+          systemPrompt: "x",
+          modelConfig: {
+            provider: "openai",
+            model: "gpt-4o-mini",
+            credentialRef: llmRef,
+          },
+          settings: {
+            guardrails: {
+              enabled: true,
+              provider: "openai",
+              model: GUARD_MODEL,
+              credentialRef: guardRef,
+              input: { enabled: false },
+              output: { enabled: false },
+              turnReview: {
+                enabled: true,
+                action: "revise",
+                maxAttempts: 1,
+                fallback: "silent",
+              },
+            },
+          } as never,
+        },
+      })
+    ).id;
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentSilentFallback,
+        source: "NATIVE",
+        enabledTools: ["private_note"],
+        knowledgeBaseIds: [],
+      },
+    });
     await suDb.agentToolSelection.create({
       data: {
         tenantId,
@@ -344,5 +384,28 @@ describe.skipIf(!dbUp)("the turn review in the playground trace", () => {
       "user:anota aí",
       "assistant:TEMPLATE-PG",
     ]);
+  });
+
+  // The bug it catches: a silent fallback after a write past the attempts read as an agent that had
+  // nothing to say live, and as a suppressed reply once the session was reopened.
+  test("a silent fallback reads as suppressed live and in the reopened session", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentSilentFallback,
+      message: "anota aí",
+      base: appDb,
+      deps: { makeModel: models(true).make, checkpointer: cp },
+    });
+    const messages = (
+      (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+        ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+    )?.messages as BaseMessage[];
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(messages),
+      await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
+    );
+    const reply = turns.find((t) => t.role === "assistant");
+    expect([r.suppressed, reply?.suppressed ?? false]).toEqual([true, true]);
   });
 });

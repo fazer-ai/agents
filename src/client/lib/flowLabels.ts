@@ -104,6 +104,26 @@ export function guardrailUncheckedLabel(
   if (stage !== "guardrail" || !detail) return null;
   // The external check's lines read through `guardrailExternalLabel`.
   if (detail.check === "external") return null;
+  // A turn review of a write call judged the call, not a reply: what went on unreviewed, or was held,
+  // is the call.
+  if (
+    detail.check === "turn_review" &&
+    detail.step === "call" &&
+    (detail.held === true || detail.unchecked === true)
+  ) {
+    const tool = typeof detail.tool === "string" ? detail.tool : "";
+    return detail.held === true
+      ? t("logs.guardrailHeld.turnReviewCall", {
+          defaultValue:
+            "The turn review could not judge the call to {{tool}}, so the call did not run and a hand-over to the team was requested",
+          tool,
+        })
+      : t("logs.guardrailUnchecked.turnReviewCall", {
+          defaultValue:
+            "The turn review could not judge the call to {{tool}}, so the call ran unreviewed",
+          tool,
+        });
+  }
   if (detail.held === true) {
     switch (detail.direction) {
       case "input":

@@ -2488,7 +2488,7 @@
       "turnReviewActionReviseHint": "A flagged call does not run and a flagged reply is not sent: the agent reads why and redoes the step, with its tools. One reviewer call per reviewed step, plus one generation per redo.",
       "turnReviewAttempts": "Redos per turn",
       "turnReviewAttemptsHint": "Past this number, the turn stops reviewing: a flagged call runs as written and a flagged reply meets the action below.",
-      "turnReviewDesc": "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Lookups are never reviewed.",
+      "turnReviewDesc": "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Only lookups that cannot change anything skip it, such as the knowledge search, the time and an HTTP GET.",
       "turnReviewEnabled": "Review the turn's actions and reply",
       "turnReviewFallback": "When the redos run out",
       "turnReviewFallbackHandoff": "Hand the conversation to the team",

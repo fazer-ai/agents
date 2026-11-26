@@ -166,7 +166,6 @@ export function renderTranscript(
       if (text) lines.push(`cliente: ${text}`);
       continue;
     }
-    if (text) lines.push(`atendente: ${text}`);
     const calls = (m as { tool_calls?: { id?: string; name: string }[] })
       .tool_calls;
     const ran = Array.isArray(calls)
@@ -175,6 +174,17 @@ export function renderTranscript(
           return !r || !isUnranToolResult(r);
         })
       : [];
+    if (text) lines.push(`atendente: ${text}`);
+    // Text beside a call that never ran ("your booking is confirmed" beside a vetoed booking) is
+    // kept, since the runtime may have recovered and sent it, and the record says that call did not
+    // run, so the text is never the only evidence that it did.
+    const unran = Array.isArray(calls)
+      ? calls.filter((c) => !ran.includes(c))
+      : [];
+    if (text && unran.length > 0)
+      lines.push(
+        `atendente [não executou: ${unran.map((c) => (typeof c?.name === "string" ? c.name : "?")).join(", ")}]`,
+      );
     if (ran.length > 0) {
       const names = ran
         .map((c) => (typeof c?.name === "string" ? c.name : "?"))

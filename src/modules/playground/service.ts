@@ -480,6 +480,7 @@ async function buildPlaygroundGraph(params: {
       index?: number;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   reviewTurnReply?: (
@@ -489,6 +490,7 @@ async function buildPlaygroundGraph(params: {
       canRedo: boolean;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;

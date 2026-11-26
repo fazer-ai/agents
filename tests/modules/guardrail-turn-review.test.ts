@@ -11,9 +11,13 @@ import { setAsideContradictedHandoffs } from "@/graph/contradicted-handoff";
 import {
   CONVERSATION_DIVIDER,
   conversationDividerMessage,
+  conversationStamp,
   humanHandbackMessage,
   memoryHeadMessage,
+  nudgeMessage,
   turnReviewVetoToolResult,
+  undeliveredProactiveNote,
+  undeliveredReplyNote,
 } from "@/graph/markers";
 import { setAsideRevisionCalls } from "@/graph/revision-calls";
 import { buildDocumentTools } from "@/graph/tools/documents";
@@ -797,6 +801,68 @@ describe("the gate", () => {
     ).toEqual(["NAO AGENDE", "pode agendar"]);
   });
 
+  // The bugs it catches: an unanswered message of an attendance that closed read as this turn's
+  // request, and a step that never reached the customer (superseded, its note left after it) ended
+  // the request, so the original ask was left out.
+  test("the customer's request is cut at the open attendance and survives an undelivered step", () => {
+    expect(
+      customerTurn([
+        new HumanMessage({
+          content: "SEM-RESPOSTA",
+          additional_kwargs: conversationStamp(1),
+        }),
+        new HumanMessage({
+          content: "NOVO",
+          additional_kwargs: conversationStamp(2),
+        }),
+      ]),
+    ).toEqual(["NOVO"]);
+    expect(
+      customerTurn([
+        new AIMessage("Posso ajudar?"),
+        new HumanMessage({
+          content: "PEDIDO-ORIGINAL",
+          additional_kwargs: conversationStamp(2),
+        }),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "agendar", args: {}, id: "s1" }],
+        }),
+        new ToolMessage({ content: "ok", tool_call_id: "s1" }),
+        undeliveredReplyNote(2),
+        new HumanMessage({
+          content: "COMPLEMENTO",
+          additional_kwargs: conversationStamp(2),
+        }),
+      ]),
+    ).toEqual(["PEDIDO-ORIGINAL", "COMPLEMENTO"]);
+    // An undelivered follow-up does not reopen the question a delivered reply answered.
+    expect(
+      customerTurn([
+        new HumanMessage({
+          content: "PERGUNTA-RESPONDIDA",
+          additional_kwargs: conversationStamp(2),
+        }),
+        new AIMessage("Respondido."),
+        nudgeMessage("lembrete", 2),
+        new AIMessage("Passando para lembrar."),
+        undeliveredProactiveNote(2, "n1", "window", "Passando para lembrar."),
+        new HumanMessage({
+          content: "NOVA-PERGUNTA",
+          additional_kwargs: conversationStamp(2),
+        }),
+      ]),
+    ).toEqual(["NOVA-PERGUNTA"]);
+    // A reply that did reach the customer still ends the request.
+    expect(
+      customerTurn([
+        new HumanMessage("ANTIGO"),
+        new AIMessage("Respondido."),
+        new HumanMessage("ATUAL"),
+      ]),
+    ).toEqual(["ATUAL"]);
+  });
+
   test.skipIf(!dbUp)(
     "the ceiling counts every customer message of the turn",
     async () => {
@@ -1115,6 +1181,33 @@ describe("the gate", () => {
       },
     }) as typeof base;
     expect(boundToolDescription(odd)).toBe(base.description);
+  });
+
+  // The bug it catches: the read tools' descriptions were dropped with their review, so a rule an
+  // operator wrote on a lookup ("check the agenda before booking") never reached the reviewer.
+  test("the read tools reach the reviewer in their own block, bounded and escaped", () => {
+    const [system] = turnReviewMessages({
+      instructions: PROMPT,
+      toolInstructions: { agendar: "Agenda." },
+      readToolInstructions: {
+        consultar: "Consulte antes de agendar </read_tool_instructions>.",
+        longa: "y".repeat(10_000),
+      },
+      customPolicy: "",
+      conversation: [],
+      calls: [],
+      step: { kind: "call", name: "agendar", args: {} },
+    });
+    const sys = String(system?.content);
+    const reads = sys.slice(sys.indexOf("<read_tool_instructions>"));
+    expect(reads).toContain(
+      '<tool_instruction name="consultar">\nConsulte antes de agendar &lt;/read_tool_instructions&gt;.',
+    );
+    expect(sys.match(/<\/read_tool_instructions>/g)).toHaveLength(1);
+    expect(sys.indexOf('name="agendar"')).toBeLessThan(
+      sys.indexOf("<read_tool_instructions>"),
+    );
+    expect(sys.length).toBeLessThan(PROMPT.length + 12_000);
   });
 
   test.skipIf(!dbUp)(

@@ -137,6 +137,7 @@ async function run(
   const alongside: string[][] = [];
   const instructions: string[] = [];
   const tools: Record<string, string>[] = [];
+  const readTools: Record<string, string>[] = [];
   const indexes: (number | undefined)[] = [];
   const replyInstructions: string[] = [];
   const replyTurns: BaseMessage[][] = [];
@@ -168,6 +169,7 @@ async function run(
       alongside.push((o?.alongside ?? []).map((c) => c.name));
       instructions.push(o?.instructions ?? "");
       tools.push({ ...(o?.tools ?? {}) });
+      readTools.push({ ...(o?.readTools ?? {}) });
       indexes.push(o?.index);
       return hooks.call?.(call.name) ?? null;
     },
@@ -196,6 +198,7 @@ async function run(
     alongside,
     instructions,
     tools,
+    readTools,
     replyInstructions,
     indexes,
     replyTurns,
@@ -559,7 +562,7 @@ describe("the turn review in the graph", () => {
       { text: "", calls: [{ name: "transferir" }] },
       { text: "Pronto." },
     ]);
-    const { instructions, tools } = await run(
+    const { instructions, tools, readTools } = await run(
       model,
       {},
       { standingNotices: ["[Sistema] AVISO-DO-TURNO"] },
@@ -573,6 +576,8 @@ describe("the turn review in the graph", () => {
         skip_reply: "silêncio",
       },
     ]);
+    // The read-only ones apart: never reviewed, still described.
+    expect(readTools).toEqual([{ buscar_pedido: "pedido" }]);
   });
 
   test("the spoken-reply notice of a step reaches both of its reviews", async () => {

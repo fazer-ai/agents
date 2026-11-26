@@ -249,6 +249,7 @@ export interface BuildAgentGraphParams {
       index?: number;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
@@ -260,6 +261,7 @@ export interface BuildAgentGraphParams {
       canRedo: boolean;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
@@ -868,17 +870,20 @@ export function buildAgentGraph({
       .filter((t) => t.trim())
       .join("\n\n");
   let reviewInstructions = stepInstructions([]);
-  // The write tools this graph binds, each as the model reads it: what the operator wrote on a tool
+  // The tools this graph binds, each as the model reads it: what the operator wrote on a tool
   // reaches the reviewer through the very text the agent got, and a tool left out is not described.
-  // Built only when a review can read them.
-  const reviewTools: Record<string, string> =
+  // Built only when a review can read them. The read-only tools are described too, apart: never
+  // reviewed (the exemption is at the tool node), but their notes are rules all the same.
+  const described = (readOnly: boolean): Record<string, string> =>
     reviewCall || reviewTurnReply
       ? Object.fromEntries(
           (tools ?? [])
-            .filter((t) => !isReadOnlyTool(t))
+            .filter((t) => isReadOnlyTool(t) === readOnly)
             .map((t) => [t.name, boundToolDescription(t)]),
         )
       : {};
+  const reviewTools = described(false);
+  const reviewReadTools = described(true);
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
   // Bound to the SAME toolset, or the fallback would answer a question the primary was asked
   // with tools it cannot call; the tool-call budget below counts calls, not models.
@@ -1006,6 +1011,7 @@ export function buildAgentGraph({
             canRedo,
             instructions: reviewInstructions,
             tools: reviewTools,
+            readTools: reviewReadTools,
           })
         : null;
     // The turn ends where the information ends, in three cases. A lone `skip_reply` asked for
@@ -1785,6 +1791,7 @@ export function buildAgentGraph({
                       index: index >= 0 ? index : undefined,
                       instructions: reviewInstructions,
                       tools: reviewTools,
+                      readTools: reviewReadTools,
                     });
                   },
                   turnLost,

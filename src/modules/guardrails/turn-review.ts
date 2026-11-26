@@ -15,7 +15,6 @@ import {
   isConversationDivider,
   isHumanAgentTurn,
   isHumanHandback,
-  isMemoryHead,
   isNudgeTurn,
   isUndeliveredProactiveNote,
   isUndeliveredReplyNote,
@@ -37,6 +36,7 @@ import {
 import { scrubbedClip } from "@/lib/redact";
 import { clipText } from "@/lib/text";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { selectClosedPrefix } from "@/modules/memory/cut";
 import { invokeStructured } from "./analyze";
 import type { DatedContextMessage } from "./context";
 import type {
@@ -101,6 +101,8 @@ export interface TurnReviewInput {
   // The bound write tools as the model reads them (`boundToolDescription`), by name: the operator's
   // notes on them reach the agent in the tool descriptions, not in the system prompt.
   toolInstructions?: Readonly<Partial<Record<string, string>>>;
+  // The bound read tools, the same way: never the step under review, but their notes are rules.
+  readToolInstructions?: Readonly<Partial<Record<string, string>>>;
   customPolicy: string;
   conversation: readonly DatedContextMessage[];
   calls: readonly GroundingToolCall[];
@@ -172,10 +174,17 @@ export const TURN_REVIEW_SYSTEM_PROMPT = [
   'Respond with ONLY a JSON object (no markdown, no prose) of the form: {"violated": boolean, "categories": string[], "rationale": string, "suggestedReply": null}. When violated, `categories` is ["turn_review"] and `rationale` is ONE sentence addressed to the agent, in the language of the conversation, saying what it should do instead (for example: "Ask which health plan the patient has before transferring."). When nothing is violated, set "violated" to false, "categories" to [] and "rationale" to "".',
 ].join("\n");
 
-// Each tool the agent can call to change something, as the model reads it, one fenced entry per
-// tool, in name order so the system message stays the same bytes from turn to turn.
+// The bound tools as the model reads them, one fenced entry per tool, in name order so the system
+// message stays the same bytes from turn to turn: those that change something, then those that only
+// read, in a block of their own.
+const WRITE_TOOLS_HEADING =
+  "The tools the agent can call to change something, as the agent reads them: each description and what each argument is for. What they say about when and how to use a tool is part of the agent's instructions, for any call to that tool:";
+const READ_TOOLS_HEADING =
+  "The tools the agent can call that only read, as the agent reads them. A call to one is never the step under review, but what they say about when and how to use them is part of the agent's instructions too:";
 function toolInstructionsBlock(
   described: Readonly<Partial<Record<string, string>>> | undefined,
+  heading = WRITE_TOOLS_HEADING,
+  tag = "tool_instructions",
 ): string[] {
   const entries = Object.entries(described ?? {})
     .filter((e): e is [string, string] => !!e[1]?.trim())
@@ -183,13 +192,13 @@ function toolInstructionsBlock(
   if (entries.length === 0) return [];
   return [
     [
-      "The tools the agent can call to change something, as the agent reads them: each description and what each argument is for. What they say about when and how to use a tool is part of the agent's instructions, for any call to that tool:",
-      "<tool_instructions>",
+      heading,
+      `<${tag}>`,
       ...entries.map(
         ([name, text]) =>
           `<tool_instruction name="${quotedName(name)}">\n${asData(clipText(text.trim(), TOOL_INSTRUCTION_MAX))}\n</tool_instruction>`,
       ),
-      "</tool_instructions>",
+      `</${tag}>`,
     ].join("\n"),
   ];
 }
@@ -274,6 +283,11 @@ export function turnReviewMessages(input: TurnReviewInput): BaseMessage[] {
     TURN_REVIEW_SYSTEM_PROMPT,
     `<agent_instructions>\n${asData(input.instructions)}\n</agent_instructions>`,
     ...toolInstructionsBlock(input.toolInstructions),
+    ...toolInstructionsBlock(
+      input.readToolInstructions,
+      READ_TOOLS_HEADING,
+      "read_tool_instructions",
+    ),
     ...(input.customPolicy.trim()
       ? [`Additional policy: ${input.customPolicy.trim()}`]
       : []),
@@ -431,6 +445,7 @@ export interface TurnReviewGate {
       index?: number;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   // The graph's `reviewTurnReply`: the final reply, before the factual-grounding review and the send.
@@ -443,6 +458,7 @@ export interface TurnReviewGate {
       canRedo: boolean;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   // The fallback the caller's output gate applies in the reply's place, once a step was still flagged
@@ -454,34 +470,42 @@ export interface TurnReviewGate {
   halted: () => boolean;
 }
 
-// The customer's messages this turn answers, oldest first and whole: those after the agent's last
-// reply (or a person's), the platform's own notes left out. An empty assistant turn answered nobody
-// and is passed over, so a thread with or without those (the model's view drops them) reads the
-// same. A new conversation's divider ends it: its own folded text is the customer's, and what came
-// before it belongs to the earlier attendance.
+// The customer's current request, oldest first and whole: their messages after the agent's last
+// reply that reached them, inside the open attendance (`selectClosedPrefix`, the cut the memory and
+// the choice check make, with a divider's marker still ending it on a thread from before stamps).
+// A step answered by the undelivered note (`undeliveredReplyNote`) reached nobody and closes nothing,
+// and an empty assistant turn answered nobody either. The platform's notes are left out.
 export function customerTurn(turn: readonly BaseMessage[]): string[] {
+  const { open } = selectClosedPrefix([...turn], {
+    currentAttendanceClosed: false,
+  });
   const out: string[] = [];
-  let i = turn.length - 1;
-  while (i >= 0 && (turn[i] as BaseMessage).getType() !== "human") i--;
+  // Set from an undelivered note back to the customer message before it: that step went unsent.
+  let unsent = false;
+  let i = open.length - 1;
+  while (i >= 0 && (open[i] as BaseMessage).getType() !== "human") i--;
   for (; i >= 0; i--) {
-    const m = turn[i] as BaseMessage;
+    const m = open[i] as BaseMessage;
     const type = m.getType();
+    if (isUndeliveredReplyNote(m) || isUndeliveredProactiveNote(m)) {
+      unsent = true;
+      continue;
+    }
     if (type === "ai") {
       const said =
         contentToText(m.content).trim() ||
         ((m as { tool_calls?: unknown[] }).tool_calls?.length ?? 0) > 0;
-      if (said) break;
+      if (said && !unsent) break;
       continue;
     }
-    if (isHumanAgentTurn(m) || isMemoryHead(m)) break;
-    if (
-      type !== "human" ||
-      isNudgeTurn(m) ||
-      isHumanHandback(m) ||
-      isUndeliveredReplyNote(m) ||
-      isUndeliveredProactiveNote(m)
-    )
+    if (isHumanAgentTurn(m)) break;
+    // A nudge opens the proactive step an undelivered note follows: the steps before it count again.
+    if (isNudgeTurn(m)) {
+      unsent = false;
       continue;
+    }
+    if (type !== "human" || isHumanHandback(m)) continue;
+    unsent = false;
     let text = contentToText(m.content).trim();
     if (text.startsWith(CONVERSATION_DIVIDER))
       text = text.slice(CONVERSATION_DIVIDER.length).trim();
@@ -676,8 +700,10 @@ export function buildTurnReviewGate(
     canRedo = true,
     // The instructions the graph gave the model for this step; the stored prompt when absent.
     instructions?: string,
-    // The write tools the graph binds, as the model reads them (`boundToolDescription`).
+    // The write tools the graph binds, as the model reads them (`boundToolDescription`), and the
+    // read tools, which are never reviewed but whose descriptions are part of the instructions.
     tools?: Readonly<Record<string, string>>,
+    readTools?: Readonly<Record<string, string>>,
   ): Promise<{ rationale: string } | null> => {
     if (stopped || p.signal?.aborted) return null;
     const m = resolveModel();
@@ -711,6 +737,7 @@ export function buildTurnReviewGate(
         timezone: p.clock.timezone,
         instructions: instructions?.trim() ? instructions : p.systemPrompt,
         toolInstructions: tools,
+        readToolInstructions: readTools,
         customPolicy: gr.customPolicy,
         conversation: groundingConversation(
           turn,
@@ -837,6 +864,7 @@ export function buildTurnReviewGate(
         true,
         opts?.instructions,
         opts?.tools,
+        opts?.readTools,
       );
       return flagged ? turnReviewNote(step, flagged.rationale) : null;
     },
@@ -848,6 +876,7 @@ export function buildTurnReviewGate(
         opts?.canRedo ?? true,
         opts?.instructions,
         opts?.tools,
+        opts?.readTools,
       );
       return flagged ? turnReviewFeedback(reply, flagged.rationale) : null;
     },

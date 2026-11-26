@@ -296,6 +296,37 @@ describe("renderTranscript", () => {
     );
   });
 
+  // The bug it catches: the text beside a vetoed booking ("your booking is confirmed") went into the
+  // memory as said, and became the only record that the booking happened. Kept, since the runtime may
+  // have recovered and sent it, with the record that the call did not run.
+  test("text beside a call that never ran is kept with the record that the call did not run", () => {
+    const t = renderTranscript([
+      new AIMessage({
+        content: "Seu agendamento está confirmado.",
+        tool_calls: [{ name: "agendar", args: {}, id: "v1" }],
+      }),
+      turnReviewVetoToolResult(
+        { id: "v1", name: "agendar" },
+        "Confirme o horário antes.",
+      ),
+      new AIMessage({
+        content: "Etiqueta aplicada.",
+        tool_calls: [{ name: "marcar_etiqueta", args: {}, id: "r1" }],
+      }),
+      new ToolMessage({ content: "ok", tool_call_id: "r1" }),
+      new AIMessage("Qual horário prefere?"),
+    ]);
+    expect(t).toBe(
+      [
+        "atendente: Seu agendamento está confirmado.",
+        "atendente [não executou: agendar]",
+        "atendente: Etiqueta aplicada.",
+        "atendente [usou ferramenta: marcar_etiqueta]",
+        "atendente: Qual horário prefere?",
+      ].join("\n"),
+    );
+  });
+
   // The transcript is customer-written text placed inside a fence. Left alone, a customer could
   // close the fence and address the summarizer directly — and what the summarizer writes is what
   // the agent believes from then on.

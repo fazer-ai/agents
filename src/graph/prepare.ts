@@ -2554,6 +2554,7 @@ export interface GraphBuildDeps {
       index?: number;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   reviewTurnReply?: (
@@ -2563,6 +2564,7 @@ export interface GraphBuildDeps {
       canRedo: boolean;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;

@@ -647,15 +647,15 @@ export async function fillMissingVisuals(args: {
     if (i > 0) {
       const agora = await refusalMarkOrClosed(args);
       if (agora !== null && m.id <= agora) continue;
-      // NOTE: An earlier message's download can run the media wait out; a file tried before is not
-      // opened again past it, and a file never tried still is.
-      if (
-        args.retryUntil !== undefined &&
-        Date.now() >= args.retryUntil &&
-        mediaStillArriving({ ...m, transcriptionUnavailable: false })
-      )
-        continue;
     }
+    // NOTE: An earlier download, or the reads above, can run the media wait out; a file tried before
+    // is not opened again past it, and a file never tried still is.
+    if (
+      args.retryUntil !== undefined &&
+      Date.now() >= args.retryUntil &&
+      mediaStillArriving({ ...m, transcriptionUnavailable: false })
+    )
+      continue;
     try {
       const lido = await extractMessageVisuals({
         tenantId: args.tenantId,
@@ -2510,10 +2510,7 @@ export async function flushDebounceJob(
     // NOTE: Inside the try so the `finally` always releases the hold, and best-effort: a stale stamp
     // costs an early ceiling later, smaller than a failed turn, and the `.catch` keeps it out of the
     // turn-failure handler below.
-    if (
-      readDeferringSince(job.payload) !== null ||
-      readMediaWaitSince(job.payload) !== null
-    ) {
+    if (readDeferringSince(job.payload) !== null) {
       await clearDeferral({ tenantId, threadId, base }).catch((e) =>
         logger.warn(
           "debounce flush: could not clear the deferral stamp on thread %s: %s",
@@ -2613,6 +2610,21 @@ export async function flushDebounceJob(
         base,
       });
     }
+    // NOTE: The media wait's stamp outlives a failed attempt (a throw above leaves it on the row, so a
+    // retry keeps the deadline) and goes once the burst is settled some other way.
+    if (outcome !== "media-pending" && readMediaWaitSince(job.payload) !== null)
+      await clearDeferral({
+        tenantId,
+        threadId,
+        field: "mediaWaitSince",
+        base,
+      }).catch((e) =>
+        logger.warn(
+          "debounce flush: could not clear the media wait stamp on thread %s: %s",
+          graphThreadId,
+          err(e),
+        ),
+      );
     // NOTE: A file of the burst is still being written to storage. Nothing was claimed or invoked; the
     // stamp carries the burst's start across re-arms, so the media ceiling holds.
     if (outcome === "media-pending") {

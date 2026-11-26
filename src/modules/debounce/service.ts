@@ -225,9 +225,13 @@ export async function stampDeferral(params: {
 export async function clearDeferral(params: {
   tenantId: bigint;
   threadId: string;
+  field?: "deferringSince" | "mediaWaitSince";
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
+  const field = params.field ?? "deferringSince";
+  const read =
+    field === "deferringSince" ? readDeferringSince : readMediaWaitSince;
   const dedupeKey = debounceDedupeKey(params.threadId);
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
@@ -235,17 +239,11 @@ export async function clearDeferral(params: {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { id: true, payload: true },
       });
-      if (
-        !row ||
-        (readDeferringSince(row.payload) === null &&
-          readMediaWaitSince(row.payload) === null)
-      )
-        return;
-      const {
-        deferringSince: _dropped,
-        mediaWaitSince: _droppedMedia,
-        ...rest
-      } = row.payload as Record<string, unknown>;
+      if (!row || read(row.payload) === null) return;
+      const { [field]: _dropped, ...rest } = row.payload as Record<
+        string,
+        unknown
+      >;
       await db.schedulerJob.update({
         where: { id: row.id },
         data: { payload: rest as Prisma.InputJsonObject },

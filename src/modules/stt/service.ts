@@ -144,10 +144,21 @@ async function transcribeOnce(
 ): Promise<string | null> {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
+  const target = {
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    messageId: params.messageId,
+  };
 
   // Surface a misconfig skip on the turn trail / Logs (warn + skipped), so an STT that silently does
   // nothing (voice note left untranscribed) is visible to the operator instead of vanishing.
   const skip = (reason: string): null => {
+    // A note no configuration can read is no longer on its way: no flush should wait for it.
+    if (
+      mediaAnnotationFor(params.tenantId, params.instanceId, params.messageId)
+        ?.transcriptionUnavailable
+    )
+      stashMediaAnnotation(target, { transcriptionUnavailable: false });
     if (params.flow) {
       emitFlowEvent(params.flow, {
         stage: "stt",
@@ -206,11 +217,6 @@ async function transcribeOnce(
   // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
   let bytes: ArrayBuffer;
   let contentType: string | null;
-  const target = {
-    tenantId: params.tenantId,
-    instanceId: params.instanceId,
-    messageId: params.messageId,
-  };
   try {
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,

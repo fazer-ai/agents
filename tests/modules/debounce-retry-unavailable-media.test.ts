@@ -815,6 +815,82 @@ describe.skipIf(!dbUp)(
       expect(second.seen).toContain(WORDS);
     });
 
+    // The credential went away after the arrival pass: no flush can download the note now.
+    test("a voice note the agent can no longer transcribe does not defer the reply", async () => {
+      await seedConversation(9727);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9727, 1, s.client(page), p.sttFetch);
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            ...settings(),
+            stt: {
+              enabled: true,
+              provider: "openai",
+              credentialRef: "vault:999999999",
+            },
+          },
+        },
+      });
+
+      const { out } = await flush(9727, s.client(page), p, Date.now()).finally(
+        () =>
+          suDb.agent.update({
+            where: { id: agentId },
+            data: { settings: settings() },
+          }),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+    });
+
+    test("an image whose first download answers 404 and then times out stays on its way", async () => {
+      await seedConversation(9728);
+      const s = storage();
+      const p = provider();
+      const cut = s.client([image(1)]);
+      cut.downloadAttachment = (async (
+        _url: string,
+        opts?: { onMissing?: () => void },
+      ) => {
+        opts?.onMissing?.();
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof cut.downloadAttachment;
+
+      const arrival = await arriveImage(9728, 1, cut, p.visionFetch);
+
+      expect(arrival?.unreadFiles).toEqual([
+        { name: "comprovante.png", cause: "failed", retryable: true },
+      ]);
+    });
+
+    test("a flush attempt that fails keeps the media wait's deadline", async () => {
+      await seedConversation(9729);
+      const s = storage();
+      const p = provider();
+      await arriveVoice(9729, 1, s.client([voice(1)]), p.sttFetch);
+      const broken = s.client([voice(1)]);
+      broken.getMessages = (async () => {
+        throw new ChatwootApiError(502, "GET messages");
+      }) as typeof broken.getMessages;
+      const since = Date.now() - 30_000;
+
+      await flush(9729, broken, p, since).catch(() => null);
+
+      const row = await suDb.schedulerJob.findFirstOrThrow({
+        where: {
+          tenantId,
+          dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9729`),
+        },
+        select: { payload: true },
+      });
+      expect(row.payload).toHaveProperty("mediaWaitSince", since);
+    });
+
     test("no voice note is tried again once the media wait is over", async () => {
       await seedConversation(9716);
       const s = storage();

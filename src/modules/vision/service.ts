@@ -11,7 +11,10 @@ import {
   rememberFileRead,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   emitFlowEvent,
@@ -580,14 +583,24 @@ async function extractInboundOnce(
   // instead of letting it vanish, and absorb Chatwoot's write race on a freshly-posted attachment.
   let bytes: ArrayBuffer;
   let contentType: string | null;
+  let missing = false;
   try {
     // A body image was stored by the mailbox before the message existed: its 404 will not heal, and
     // retrying it would multiply whatever a crafted body asks for.
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: !params.bodyImage,
       signal: params.signal,
+      onMissing: () => {
+        missing = true;
+      },
     }));
-  } catch (err) {
+  } catch (caught) {
+    // A retry cut short with no answer (a timeout, an abort) leaves the storage's last answer standing:
+    // the file is still on its way, not unreadable.
+    const err =
+      missing && !(caught instanceof ChatwootApiError)
+        ? new ChatwootApiError(404, "GET attachment")
+        : caught;
     if (params.flow) {
       emitFlowEvent(params.flow, {
         stage: "vision",
@@ -595,7 +608,7 @@ async function extractInboundOnce(
         status: "error",
         provider: cfg.provider,
         detail: { step: "download" },
-        errorMessage: err instanceof Error ? err.message : String(err),
+        errorMessage: caught instanceof Error ? caught.message : String(caught),
       });
     }
     throw err;

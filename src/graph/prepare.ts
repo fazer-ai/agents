@@ -1520,6 +1520,26 @@ export interface ToolBuildDeps {
 // Native Chatwoot tools + allowlisted custom HTTP tools + allowlisted MCP tools. buildNativeTools
 // is injected so this module does not import the native-tools file (which the nudge path may want
 // to vary), keeping the dependency graph shallow.
+// Operator-authored per-tool guidance (handoff transfer logic / funnel notes), appended to the
+// respective native tool descriptions, and read by the turn review, which judges calls against it.
+// Only keys with text are set.
+export function operatorToolGuidance(
+  cfg: Pick<AgentConfig, "toolGuidance" | "handoffConfig" | "kanbanConfig">,
+): Partial<Record<NativeToolName, string>> {
+  const toolInstructions: Partial<Record<NativeToolName, string>> = {
+    ...cfg.toolGuidance,
+  };
+  // NOTE: handoff/kanban guidance lives in their own grouped config; let it win over the flat map for those
+  // two tools (the editor writes them there, not into settings.toolGuidance).
+  if (cfg.handoffConfig.instructions) {
+    toolInstructions.handoff_to_human = cfg.handoffConfig.instructions;
+  }
+  if (cfg.kanbanConfig.instructions) {
+    toolInstructions.kanban_move_card = cfg.kanbanConfig.instructions;
+  }
+  return toolInstructions;
+}
+
 export async function buildToolset(
   cfg: AgentConfig,
   ctx: ToolsetCtx,
@@ -1829,19 +1849,7 @@ export async function buildToolset(
       );
     }
   }
-  // Operator-authored per-tool guidance (handoff transfer logic / funnel notes), appended to the
-  // respective native tool descriptions. Only keys with text are set.
-  const toolInstructions: Partial<Record<NativeToolName, string>> = {
-    ...cfg.toolGuidance,
-  };
-  // NOTE: handoff/kanban guidance lives in their own grouped config; let it win over the flat map for those
-  // two tools (the editor writes them there, not into settings.toolGuidance).
-  if (cfg.handoffConfig.instructions) {
-    toolInstructions.handoff_to_human = cfg.handoffConfig.instructions;
-  }
-  if (cfg.kanbanConfig.instructions) {
-    toolInstructions.kanban_move_card = cfg.kanbanConfig.instructions;
-  }
+  const toolInstructions = operatorToolGuidance(cfg);
   // The order below IS the precedence when two sources claim one name — see unique-names.ts. Native
   // first, because those are the tools the operator cannot rename.
   const nativeTools = deps.buildNativeTools(
@@ -2550,6 +2558,7 @@ export interface GraphBuildDeps {
   reviewCall?: (
     turn: BaseMessage[],
     call: { name: string; args: unknown },
+    opts?: { alongside: { name: string; args: unknown }[] },
   ) => Promise<string | null>;
   reviewTurnReply?: (
     turn: BaseMessage[],

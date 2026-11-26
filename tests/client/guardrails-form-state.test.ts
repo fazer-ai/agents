@@ -134,6 +134,27 @@ describe("playgroundGuardrailsUsable", () => {
     ]).toEqual([true, false, true]);
   });
 
+  // The bug it catches: a keyless compatible reviewer with no endpoint anywhere read as usable, while
+  // the model it needs is never built.
+  test("a keyless turn reviewer needs an endpoint, typed or on the credential", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const keyless = {
+      ...on,
+      credentialRef: null,
+      provider: "openai-compatible" as const,
+      baseURL: null,
+      turnReview: { ...on.turnReview, enabled: true },
+    };
+    expect([
+      playgroundGuardrailsUsable(keyless),
+      playgroundGuardrailsUsable(keyless, {
+        guardrails: "http://revisor.local/v1",
+        grounding: null,
+      }),
+      playgroundGuardrailsUsable({ ...keyless, baseURL: "   " }),
+    ]).toEqual([false, true, false]);
+  });
+
   // The bug it catches: a grounding reviewer with its own key bills playground turns while the toggle
   // that would skip it reads disabled.
   test("is usable when only the factual-grounding reviewer has a key", () => {

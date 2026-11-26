@@ -980,6 +980,39 @@ export function GuardrailsTab({
                     aria-label={t("editor.model", "Model")}
                   />
                 </FormField>
+                {/* An OpenAI-compatible endpoint needs its URL, from the credential or typed here: a
+                    keyless reviewer has no other place to get it. */}
+                {g.provider === "openai-compatible" && (
+                  <FormField
+                    label={t("editor.baseURL", "Base URL")}
+                    description={
+                      guardrailsCredBaseUrl
+                        ? t(
+                            "editor.baseURLFromCredential",
+                            "Defined by the selected credential.",
+                          )
+                        : t(
+                            "editor.baseURLHint",
+                            "Required for OpenAI-compatible providers.",
+                          )
+                    }
+                  >
+                    <Input
+                      value={guardrailsCredBaseUrl ?? g.baseURL ?? ""}
+                      onChange={(e) =>
+                        setG((s) => ({
+                          ...s,
+                          baseURL: e.target.value.trim()
+                            ? e.target.value
+                            : null,
+                        }))
+                      }
+                      disabled={!!guardrailsCredBaseUrl}
+                      placeholder="https://api.provider.com/v1"
+                      data-testid="gr-base-url"
+                    />
+                  </FormField>
+                )}
               </>
             )}
           </Section>

@@ -29,7 +29,7 @@ export function playgroundGuardrailsUsable(
     (!!guardrailCredentialRef(g) ||
       g.onFailure === "hold" ||
       !!g.external.url ||
-      turnReviewerCalls(g) ||
+      turnReviewerCalls(g, credBaseUrls) ||
       (g.factualGrounding.enabled &&
         groundingHasSources(g.factualGrounding) &&
         groundingReviewerCalls(g, credBaseUrls)))
@@ -37,11 +37,17 @@ export function playgroundGuardrailsUsable(
 }
 
 // Whether the turn reviewer calls out: it runs on the guardrails chat model and key whichever
-// classifier screens, or with no key on a compatible endpoint (resolved in graph/prepare).
-function turnReviewerCalls(g: GuardrailsConfig): boolean {
+// classifier screens, or with no key on a compatible endpoint (resolved in graph/prepare). A keyless
+// endpoint needs its URL, from the credential or typed: without one the model is never built.
+function turnReviewerCalls(
+  g: GuardrailsConfig,
+  credBaseUrls: GroundingCredBaseUrls,
+): boolean {
   return (
     g.turnReview.enabled &&
-    (!!g.credentialRef || g.provider === "openai-compatible")
+    (!!g.credentialRef ||
+      (g.provider === "openai-compatible" &&
+        !!(credBaseUrls.guardrails ?? g.baseURL)?.trim()))
   );
 }
 

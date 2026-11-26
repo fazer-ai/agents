@@ -248,6 +248,43 @@ describe("what the reviewer reads", () => {
     expect(usr).toContain('The agent calls the tool "handoff_to_human"');
   });
 
+  test("the operator's per-tool guidance reaches the reviewer beside the agent's instructions", () => {
+    const [system] = turnReviewMessages({
+      instructions: PROMPT,
+      toolInstructions: {
+        handoff_to_human: "Antes de transferir, pergunte o número do pedido.",
+        set_labels: "  ",
+      },
+      customPolicy: "",
+      conversation: [],
+      calls: [],
+      step: { kind: "call", name: "handoff_to_human", args: {} },
+    });
+    const sys = String(system?.content);
+    expect(sys).toContain(
+      '<tool_instruction name="handoff_to_human">\nAntes de transferir, pergunte o número do pedido.\n</tool_instruction>',
+    );
+    expect(sys).not.toContain('name="set_labels"');
+  });
+
+  test("a call step lists the writes of the same step admitted beside it, as not yet run", () => {
+    const [, user] = turnReviewMessages({
+      instructions: PROMPT,
+      customPolicy: "",
+      conversation: [],
+      calls: [],
+      step: {
+        kind: "call",
+        name: "agendar",
+        args: { dia: "terça" },
+        alongside: [{ name: "agendar", args: { dia: "quarta" } }],
+      },
+    });
+    const usr = String(user?.content);
+    expect(usr).toContain("not yet run");
+    expect(usr).toContain('- "agendar" with arguments: {"dia":"quarta"}');
+  });
+
   test("a reply step names the tools the turn called, so a promise with no call shows", () => {
     const [, none] = turnReviewMessages({
       instructions: PROMPT,

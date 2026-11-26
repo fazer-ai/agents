@@ -59,13 +59,22 @@ export const TURN_REVIEW_KEY = "turn_review" as const;
 
 // What the agent is about to do: one write call, or the reply that would end the turn.
 export type TurnStep =
-  | { kind: "call"; name: string; args: unknown }
+  | {
+      kind: "call";
+      name: string;
+      args: unknown;
+      // The writes of the same step already admitted: no result yet, they run together with this one.
+      alongside?: readonly { name: string; args: unknown }[];
+    }
   | { kind: "reply"; text: string };
 
 export interface TurnReviewInput {
   now?: string;
   timezone?: string;
   instructions: string;
+  // The operator's guidance written on the tools (handoff rules, funnel notes): it reaches the agent
+  // in the tool descriptions, not in the system prompt, so the reviewer is handed it here.
+  toolInstructions?: Readonly<Partial<Record<string, string>>>;
   customPolicy: string;
   conversation: readonly DatedContextMessage[];
   calls: readonly GroundingToolCall[];
@@ -89,7 +98,7 @@ const CONVERSATION_TAG = "conversation_context";
 const TOOLS_TAG = "tool_results";
 const STEP_TAG = "proposed_step";
 const FENCES =
-  /<\s*\/?\s*(now|conversation_context|tool_results|tool_call|proposed_step|agent_instructions)[^>]*>/gi;
+  /<\s*\/?\s*(now|conversation_context|tool_results|tool_call|proposed_step|agent_instructions|tool_instructions|tool_instruction)[^>]*>/gi;
 const unfenced = (s: string) => s.replace(FENCES, "");
 
 // A new judge prompt behind an opt-in check, measured by the operator in `observe` before it acts. The
@@ -113,12 +122,48 @@ export const TURN_REVIEW_SYSTEM_PROMPT = [
   'Respond with ONLY a JSON object (no markdown, no prose) of the form: {"violated": boolean, "categories": string[], "rationale": string, "suggestedReply": null}. When violated, `categories` is ["turn_review"] and `rationale` is ONE sentence addressed to the agent, in the language of the conversation, saying what it should do instead (for example: "Ask which health plan the patient has before transferring."). When nothing is violated, set "violated" to false, "categories" to [] and "rationale" to "".',
 ].join("\n");
 
+// The operator's per-tool guidance, one fenced entry per tool with text, in name order so the system
+// message stays the same bytes from turn to turn.
+function toolInstructionsBlock(
+  guidance: Readonly<Partial<Record<string, string>>> | undefined,
+): string[] {
+  const entries = Object.entries(guidance ?? {})
+    .filter((e): e is [string, string] => !!e[1]?.trim())
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return [];
+  return [
+    [
+      "The operator also wrote instructions on specific tools. They are part of the agent's instructions, for any call to that tool:",
+      "<tool_instructions>",
+      ...entries.map(
+        ([name, text]) =>
+          `<tool_instruction name="${quotedName(name)}">\n${unfenced(text.trim())}\n</tool_instruction>`,
+      ),
+      "</tool_instructions>",
+    ].join("\n"),
+  ];
+}
+
+const quotedName = (name: string) => unfenced(name).replace(/"/g, "");
+
 const roleLine = (c: DatedContextMessage, timezone?: string) =>
   `${c.role}: ${c.at && timezone ? `${historyDate(c.at, timezone)} ` : ""}${unfenced(c.text)}`;
 
 function stepBlock(step: TurnStep, calls: readonly GroundingToolCall[]) {
-  if (step.kind === "call")
-    return `The agent calls the tool "${unfenced(step.name).replace(/"/g, "")}" with arguments:\n${unfenced(JSON.stringify(step.args ?? {}))}`;
+  if (step.kind === "call") {
+    const call = `The agent calls the tool "${quotedName(step.name)}" with arguments:\n${unfenced(JSON.stringify(step.args ?? {}))}`;
+    const alongside = step.alongside ?? [];
+    if (alongside.length === 0) return call;
+    return [
+      call,
+      "",
+      "In the same step, and not yet run (they have no result), the agent also makes these calls, which will run together with this one:",
+      ...alongside.map(
+        (c) =>
+          `- "${quotedName(c.name)}" with arguments: ${unfenced(JSON.stringify(c.args ?? {}))}`,
+      ),
+    ].join("\n");
+  }
   const made = calls.map((c) => c.name);
   return [
     "The agent sends this reply to the customer:",
@@ -134,6 +179,7 @@ export function turnReviewMessages(input: TurnReviewInput): BaseMessage[] {
   const system = [
     TURN_REVIEW_SYSTEM_PROMPT,
     `<agent_instructions>\n${unfenced(input.instructions)}\n</agent_instructions>`,
+    ...toolInstructionsBlock(input.toolInstructions),
     ...(input.customPolicy.trim()
       ? [`Additional policy: ${input.customPolicy.trim()}`]
       : []),
@@ -226,6 +272,8 @@ export interface TurnReviewGateParams {
   reviewer: GroundingReviewerModel | null;
   // The agent's resolved system prompt: the instructions every step is judged against.
   systemPrompt: string;
+  // The operator's per-tool guidance (`operatorToolGuidance`), judged with the system prompt.
+  toolGuidance?: Readonly<Partial<Record<string, string>>>;
   flow: FlowContext;
   logValues?: boolean;
   announce?: GuardrailAnnounce;
@@ -241,6 +289,7 @@ export interface TurnReviewGate {
   reviewCall: (
     turn: BaseMessage[],
     call: { name: string; args: unknown },
+    opts?: { alongside: { name: string; args: unknown }[] },
   ) => Promise<string | null>;
   // The graph's `reviewTurnReply`: the final reply, before the factual-grounding review and the send.
   // With `canRedo: false` (no model call left) a flagged reply meets the fallback at once, and the
@@ -407,6 +456,7 @@ export function buildTurnReviewGate(
         now: groundingNow(p.clock.now, p.clock.timezone),
         timezone: p.clock.timezone,
         instructions: p.systemPrompt,
+        toolInstructions: p.toolGuidance,
         customPolicy: gr.customPolicy,
         conversation: groundingConversation(turn, TURN_REVIEW_CONTEXT_MESSAGES),
         calls,
@@ -508,8 +558,13 @@ export function buildTurnReviewGate(
   };
 
   return {
-    reviewCall: (turn, call) =>
-      review(turn, { kind: "call", name: call.name, args: call.args }),
+    reviewCall: (turn, call, opts) =>
+      review(turn, {
+        kind: "call",
+        name: call.name,
+        args: call.args,
+        alongside: opts?.alongside ?? [],
+      }),
     reviewReply: (turn, reply, opts) =>
       reply.trim()
         ? review(turn, { kind: "reply", text: reply }, opts?.canRedo ?? true)

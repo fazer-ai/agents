@@ -2,6 +2,7 @@ import {
   AIMessage,
   type BaseMessage,
   RemoveMessage,
+  type ToolMessage,
 } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -12,7 +13,11 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "./inflight";
-import { isCalledOffToolResult, isNudgeTurn } from "./markers";
+import {
+  isCalledOffToolResult,
+  isNudgeTurn,
+  isUnranToolResult,
+} from "./markers";
 import {
   claimIngestWrite,
   type IngestWriteClaim,
@@ -52,27 +57,40 @@ function isInertToolCall(
   inert: ReadonlySet<string>,
   // The message directly after `m` in the slice, or undefined at the end of it.
   next: BaseMessage | undefined,
+  // Ids of the calls whose result says they never ran (`unranCallIds`).
+  unran: ReadonlySet<string> = new Set(),
 ): boolean {
   // NOTE: no early return on an empty set: `inert.has` already answers false, and the shortcut would
   // make a by-name mutation of the branch below unobservable to the tests.
   if (m.getType() === "tool") {
-    if (isCalledOffToolResult(m)) return true;
+    if (isUnranToolResult(m)) return true;
     const name = (m as { name?: string }).name;
     return name !== undefined && inert.has(name);
   }
   const calls = (m as AIMessage).tool_calls ?? [];
   if (calls.length === 0) return false;
   if (next !== undefined && isCalledOffToolResult(next)) return true;
-  return calls.every((c) => inert.has(c.name));
+  return calls.every(
+    (c) => inert.has(c.name) || (c.id !== undefined && unran.has(c.id)),
+  );
+}
+
+// The calls of a slice that never ran, by id: a turn-review veto answers one call of a batch whose
+// siblings may have run, so it is read per call, not per message.
+function unranCallIds(slice: readonly BaseMessage[]): Set<string> {
+  return new Set(
+    slice.filter(isUnranToolResult).map((m) => (m as ToolMessage).tool_call_id),
+  );
 }
 
 function actedOnTheWorld(
   slice: readonly BaseMessage[],
   inert: ReadonlySet<string>,
 ): boolean {
+  const unran = unranCallIds(slice);
   return slice.some(
     (m, i) =>
-      !isInertToolCall(m, inert, slice[i + 1]) &&
+      !isInertToolCall(m, inert, slice[i + 1], unran) &&
       (m.getType() === "tool" ||
         ((m as AIMessage).tool_calls?.length ?? 0) > 0),
   );
@@ -217,10 +235,12 @@ export function actedToolNames(
   const stretch = actingStretch(produced, start);
   // A batch is inert as a whole only when every call is, so a mixed one still drops its inert
   // calls by name.
+  const unran = unranCallIds(stretch);
   const names = stretch.flatMap((m, i) =>
-    isInertToolCall(m, inertTools, stretch[i + 1])
+    isInertToolCall(m, inertTools, stretch[i + 1], unran)
       ? []
       : ((m as AIMessage).tool_calls ?? [])
+          .filter((c) => !(c.id !== undefined && unran.has(c.id)))
           .map((c) => c.name)
           .filter((name) => !inertTools.has(name)),
   );

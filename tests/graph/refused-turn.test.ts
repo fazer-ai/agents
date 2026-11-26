@@ -12,6 +12,8 @@ import {
   calledOffToolResult,
   memoryHeadMessage,
   nudgeMessage,
+  turnReviewHeldToolResult,
+  turnReviewVetoToolResult,
 } from "@/graph/markers";
 import {
   actedToolNames,
@@ -825,5 +827,65 @@ describe("rememberWhatWasSent", () => {
       clearTurnInFlight("th-d");
     }
     expect(shape(await read(cp, "th-d"))).toEqual(["human:oi", "ai:RASCUNHO"]);
+  });
+});
+
+// A call the turn review vetoed never ran, and neither did a batch a held review refused: neither
+// is an act the customer is owed, while a sibling write of the same batch that ran still is.
+describe("a call the turn review kept from running", () => {
+  const vetoedBatch = (sibling: "ran" | "vetoed") => [
+    h("h1", "quero falar com alguém"),
+    new AIMessage({
+      id: "a1",
+      content: "",
+      tool_calls: [
+        { id: "c1", name: "handoff_to_human", args: {} },
+        { id: "c2", name: "set_labels", args: {} },
+      ],
+    }),
+    turnReviewVetoToolResult(
+      { id: "c1", name: "handoff_to_human" },
+      "[Sistema] Revisão do turno: não rodou",
+    ),
+    sibling === "ran"
+      ? new ToolMessage({
+          tool_call_id: "c2",
+          name: "set_labels",
+          content: "ok",
+        })
+      : turnReviewVetoToolResult(
+          { id: "c2", name: "set_labels" },
+          "[Sistema] Revisão do turno: não rodou",
+        ),
+    a("a2", "Qual é o número do seu pedido?"),
+  ];
+
+  test("a batch whose every call was vetoed did not act", () => {
+    const produced = vetoedBatch("vetoed");
+    expect([
+      turnActedBeforeItsReply(produced),
+      actedToolNames(produced),
+    ]).toEqual([false, []]);
+  });
+
+  test("a vetoed call drops out by id, and the sibling write that ran stays", () => {
+    const produced = vetoedBatch("ran");
+    expect([
+      turnActedBeforeItsReply(produced),
+      actedToolNames(produced),
+    ]).toEqual([true, ["set_labels"]]);
+  });
+
+  test("a batch a held review refused did not act", () => {
+    const produced = [
+      h("h1", "quero falar com alguém"),
+      calling("a1", "handoff_to_human"),
+      turnReviewHeldToolResult({ id: "a1-c", name: "handoff_to_human" }),
+      a("a2", ""),
+    ];
+    expect([
+      turnActedBeforeItsReply(produced),
+      actedToolNames(produced),
+    ]).toEqual([false, []]);
   });
 });

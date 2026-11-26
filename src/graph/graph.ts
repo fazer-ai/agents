@@ -53,6 +53,7 @@ import {
   calledOffToolResult,
   droppedCallCount,
   droppedCallsStamp,
+  turnReviewHeldToolResult,
 } from "./markers";
 import { setAsideReviewedCalls } from "./reviewed-calls";
 import {
@@ -231,6 +232,7 @@ export interface BuildAgentGraphParams {
   reviewCall?: (
     turn: BaseMessage[],
     call: { name: string; args: unknown },
+    opts?: { alongside: { name: string; args: unknown }[] },
   ) => Promise<string | null>;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
   // fallback at once, and the note only says it was flagged.
@@ -656,6 +658,17 @@ function textlessCopy(ai: AIMessage, id: string): AIMessage {
 
 // The reply `replyWrittenThisTurn` would recover, taken out of the thread once a factual-grounding
 // revise replaced it, so the refused draft is neither delivered nor read by the next turn as said.
+// The thread as the reducer will leave it once `replaced` is returned: each replacement takes the
+// place of the message with its id.
+function withReplaced(
+  messages: BaseMessage[],
+  replaced: readonly BaseMessage[],
+): BaseMessage[] {
+  if (replaced.length === 0) return messages;
+  const byId = new Map(replaced.map((m) => [m.id, m]));
+  return messages.map((m) => (m.id && byId.get(m.id)) || m);
+}
+
 function recoveredDraftRemoved(messages: BaseMessage[]): BaseMessage[] {
   const draft = recoveredDraftOf(messages);
   return draft ? [draft.textless] : [];
@@ -1263,30 +1276,26 @@ export function buildAgentGraph({
     // NOTE: from here on a `—` is the empty answer: the review below must not take it as a candidate.
     if (fillerOnly(response)) response = withoutText(response);
     // The turn review of the final answer, before the factual-grounding one. A note asks the model
-    // again with the whole toolset: a reply that promised a transfer can now make it, and the draft
-    // never reaches the thread. A redone reply is reviewed again, a call goes to the tools node, and
-    // the gate stops sending notes once its attempts are spent.
-    // The reply under review is the one that would go out: the final text, or, when that is empty,
-    // the reply written beside an earlier call that the runtime recovers (`replyWrittenThisTurn`). A
-    // flagged recovered draft leaves the thread, so neither a later review nor the delivery finds it.
+    // again with the whole toolset, so a reply that promised a transfer can now make it. A redone
+    // reply is reviewed again until the gate's attempts are spent. The reply under review is the one
+    // that would go out: the final text, or, when that is empty, the one the runtime recovers
+    // (`replyWrittenThisTurn`). INVARIANT: every review reads the thread as delivery will
+    // (`deliveredView`, the flagged drafts taken out), so whatever the runtime recovers in the end is
+    // a reply some review saw, and an older draft a removal uncovers is reviewed next.
     let draftRemoved: BaseMessage[] = [];
-    let recoveredGone = false;
+    const deliveredView = () =>
+      withReplaced([...history, response], draftRemoved);
     while (reviewTurnReply && !noReplyChannel && !silentTurn) {
       if (((response as AIMessage).tool_calls?.length ?? 0) > 0) break;
       const own = contentToText(response.content).trim();
+      const view = deliveredView();
       const recovered =
-        !own && !recoveredGone && recoversReply?.()
-          ? replyWrittenThisTurn([...history, response])
-          : "";
+        !own && recoversReply?.() ? replyWrittenThisTurn(view) : "";
       const draft = customerFacingReply(own || recovered).text;
-      const note = draft
-        ? await reviewTurnReply([...history, response], draft)
-        : null;
+      const note = draft ? await reviewTurnReply(view, draft) : null;
       if (!note) break;
-      if (!own && recovered) {
-        draftRemoved = recoveredDraftRemoved([...history, response]);
-        recoveredGone = true;
-      }
+      if (!own && recovered)
+        draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
       response = await ask(
         lateSystemAccepted
           ? [...messages, new SystemMessage(note)]
@@ -1302,6 +1311,7 @@ export function buildAgentGraph({
     // silence: the final text, or, when that is empty, the reply written beside an earlier call that
     // the runtime recovers and delivers (`replyWrittenThisTurn`). A revise note travels like the
     // silence retry's instruction, with the draft quoted inside it rather than sent as an assistant turn.
+    const groundingView = deliveredView();
     const candidate =
       reviewReply &&
       !replyRevised &&
@@ -1310,17 +1320,18 @@ export function buildAgentGraph({
       ((response as AIMessage).tool_calls?.length ?? 0) === 0
         ? customerFacingReply(
             contentToText(response.content).trim() ||
-              (!recoveredGone && recoversReply?.()
-                ? replyWrittenThisTurn([...history, response])
-                : ""),
+              (recoversReply?.() ? replyWrittenThisTurn(groundingView) : ""),
           ).text
         : "";
     if (reviewReply && candidate) {
-      const note = await reviewReply([...history, response], candidate);
+      const note = await reviewReply(groundingView, candidate);
       if (note) {
         replyRevised = true;
         if (!contentToText(response.content).trim())
-          draftRemoved = recoveredDraftRemoved([...history, response]);
+          draftRemoved = [
+            ...draftRemoved,
+            ...recoveredDraftRemoved(groundingView),
+          ];
         const plan = revisionPlan?.() ?? null;
         const sources = plan
           ? revisionTools(
@@ -1474,12 +1485,17 @@ export function buildAgentGraph({
     if (wanted) return null;
     return refuseBatch(calls);
   };
+  // `held`: a turn review that held refused the batch. The turn is not called off (the caller still
+  // owns it and hands it over), so its results carry their own marker, never `called_off`.
   const refuseBatch = (
     calls: Parameters<typeof calledOffToolResult>[0][],
+    held = false,
   ): { messages: BaseMessage[] } => {
     calledOffAtTools = true;
     logger.info(
-      "graph: the turn was called off mid-invoke, so %d tool call(s) were refused instead of run",
+      held
+        ? "graph: the turn review held, so %d tool call(s) were refused instead of run"
+        : "graph: the turn was called off mid-invoke, so %d tool call(s) were refused instead of run",
       calls.length,
     );
     // NOTE: and an empty assistant turn after them. The runtime reads the reply off the LAST message
@@ -1488,7 +1504,10 @@ export function buildAgentGraph({
     // answers TRUE again once an agent is re-enabled), so the empty terminator, the one the silence
     // protocol ends on, makes the refusal unpostable by construction.
     return {
-      messages: [...calls.map(calledOffToolResult), new AIMessage("")],
+      messages: [
+        ...calls.map(held ? turnReviewHeldToolResult : calledOffToolResult),
+        new AIMessage(""),
+      ],
     };
   };
 
@@ -1556,7 +1575,7 @@ export function buildAgentGraph({
           if (reviewCall && !revision) {
             if (turnReviewHalted?.()) {
               const last = state.messages.at(-1) as AIMessage;
-              return refuseBatch(last.tool_calls ?? []);
+              return refuseBatch(last.tool_calls ?? [], true);
             }
             const late = await refuseCalledOffCalls(state);
             if (late) return late;

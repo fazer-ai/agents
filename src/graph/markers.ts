@@ -22,7 +22,9 @@ type SystemMarker =
   | "human_handback"
   | "undelivered_reply"
   | "undelivered_proactive"
-  | "called_off";
+  | "called_off"
+  | "turn_review_veto"
+  | "turn_review_held";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
@@ -409,6 +411,50 @@ export function calledOffToolResult(call: {
 
 export function isCalledOffToolResult(message: BaseMessage): boolean {
   return message.getType() === "tool" && hasMarker(message, "called_off");
+}
+
+// What a write call gets back when the turn review flags it: the reviewer's note for the model, and
+// the MARKER for the side-effect accounting (./refused-turn.ts), which counts the call as never run.
+export function turnReviewVetoToolResult(
+  call: { id?: string; name: string },
+  note: string,
+): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content: note,
+    status: "error",
+    additional_kwargs: { [MARKER_KWARG]: "turn_review_veto" },
+  });
+}
+
+// What every call of a batch gets back when the turn review held (`onFailure: "hold"`): nothing ran,
+// and the turn is NOT called off. The caller still owns the conversation and hands it over, so this
+// marker must never read as `called_off`, whose callers exit before the handover.
+export const TURN_REVIEW_HELD_TOOL_RESULT =
+  "Not executed: the turn review could not check this step, so the conversation goes to the team.";
+
+export function turnReviewHeldToolResult(call: {
+  id?: string;
+  name: string;
+}): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content: TURN_REVIEW_HELD_TOOL_RESULT,
+    additional_kwargs: { [MARKER_KWARG]: "turn_review_held" },
+  });
+}
+
+// Whether a tool result says its call never ran: called off, vetoed by the turn review, or refused
+// by a held review.
+export function isUnranToolResult(message: BaseMessage): boolean {
+  return (
+    message.getType() === "tool" &&
+    (hasMarker(message, "called_off") ||
+      hasMarker(message, "turn_review_veto") ||
+      hasMarker(message, "turn_review_held"))
+  );
 }
 
 // Whether the tool boundary refused this invoke's calls, asked by the caller of what `graph.invoke`

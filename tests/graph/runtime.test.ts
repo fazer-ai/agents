@@ -11843,6 +11843,109 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([[951, "TEMPLATE-NO-MODEL"]]);
     });
 
+    // The turn review at the inbox: a review that cannot run under `onFailure: "hold"` must keep every
+    // write of the step from running AND still hand the conversation over. A held batch read as a
+    // called-off turn exits before the handover, leaving the customer with no answer and no person.
+    describe("turn review held", () => {
+      beforeAll(async () => {
+        await suDb.agentToolSelection.create({
+          data: {
+            tenantId: gTenantId,
+            agentId: gAgentId,
+            source: "NATIVE",
+            enabledTools: ["private_note", "handoff_to_human"],
+            knowledgeBaseIds: [],
+          },
+        });
+      });
+      afterAll(async () => {
+        await suDb.agentToolSelection.deleteMany({
+          where: { tenantId: gTenantId, agentId: gAgentId, source: "NATIVE" },
+        });
+      });
+
+      test("no write runs, the reviewer read the tool's guidance, and the conversation is handed over", async () => {
+        await suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff: {
+                mode: "route",
+                instructions: "ORIENTACAO-DA-TRANSFERENCIA",
+              },
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                onFailure: "hold",
+                input: { enabled: false },
+                output: {
+                  enabled: false,
+                  templateMessage: "TEMPLATE-OUT",
+                  handoffMessage: "HANDOFF-OUT",
+                },
+                turnReview: { enabled: true, action: "revise" },
+              },
+            },
+          },
+        });
+        const convId = 7931;
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const reviewerSaw: string[] = [];
+        const writer = {
+          async invoke() {
+            return new AIMessage("sem ferramentas");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "private_note",
+                      args: { content: "NOTA-DO-AGENTE" },
+                      id: `c${Math.random()}`,
+                    },
+                  ],
+                });
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    reviewerSaw.push(
+                      ...msgs.map((m) => String((m as BaseMessage).content)),
+                    );
+                    throw new Error("revisor fora");
+                  })
+                : writer,
+            makeClient: guardStub(sent, notes, toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(reviewerSaw.join("\n")).toContain("ORIENTACAO-DA-TRANSFERENCIA");
+        expect(notes.some(([, n]) => n.includes("NOTA-DO-AGENTE"))).toBe(false);
+        expect(outcome).toBe("posted");
+        expect(sent).toEqual([[convId, "HANDOFF-OUT"]]);
+        expect(toggles).toEqual([[convId, "open"]]);
+      });
+    });
+
     // NOTE: Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only
     // place that decision becomes an actual request. Asserting it on the table alone would leave the
     // wiring untested: a provider correctly classified and still asked the wrong way.

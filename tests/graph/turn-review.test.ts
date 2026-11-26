@@ -9,7 +9,8 @@ import {
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
-import { buildAgentGraph } from "@/graph/graph";
+import { buildAgentGraph, replyWrittenThisTurn } from "@/graph/graph";
+import { isUnranToolResult, turnWasCalledOff } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { markRead, markReadOnly } from "@/graph/tools/reads";
 
@@ -106,6 +107,7 @@ async function run(
   const calls: string[] = [];
   const replies: string[] = [];
   const canRedo: boolean[] = [];
+  const alongside: string[][] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
@@ -115,8 +117,9 @@ async function run(
     recoversReply: opts.recoversReply,
     turnReviewHalted: opts.halted,
     stillWanted: opts.stillWanted,
-    reviewCall: async (_turn, call) => {
+    reviewCall: async (_turn, call, o) => {
       calls.push(call.name);
+      alongside.push((o?.alongside ?? []).map((c) => c.name));
       return hooks.call?.(call.name) ?? null;
     },
     reviewTurnReply: async (_turn, reply, o) => {
@@ -133,7 +136,13 @@ async function run(
     },
     { configurable: { thread_id: `tr-${Math.random()}` } },
   );
-  return { messages: out.messages as BaseMessage[], calls, replies, canRedo };
+  return {
+    messages: out.messages as BaseMessage[],
+    calls,
+    replies,
+    canRedo,
+    alongside,
+  };
 }
 
 const text = (m: BaseMessage | undefined) =>
@@ -153,6 +162,8 @@ describe("the turn review in the graph", () => {
     const answer = messages.find((m) => m.getType() === "tool") as ToolMessage;
     expect(text(answer)).toBe(CALL_NOTE);
     expect(answer.status).toBe("error");
+    // Marked as a call that never ran, so the side-effect accounting does not count it.
+    expect(isUnranToolResult(answer)).toBe(true);
     expect(
       model.seen[1]?.some(
         (m) => text(m) === CALL_NOTE && m.getType() === "tool",
@@ -272,6 +283,8 @@ describe("the turn review in the graph", () => {
     expect(ran).toEqual([]);
     expect(model.seen).toHaveLength(1);
     expect(messages.filter((m) => m.getType() === "tool")).toHaveLength(2);
+    // Not a called-off turn: the caller still owns it and must reach the handover.
+    expect(turnWasCalledOff(messages)).toBe(false);
     expect(text(messages.at(-1))).toBe("");
   });
 
@@ -333,5 +346,48 @@ describe("the turn review in the graph", () => {
     expect(
       messages.some((m) => text(m) === "Vou te passar para a equipe."),
     ).toBe(false);
+  });
+
+  test("each write of a step is reviewed with the writes already admitted beside it", async () => {
+    const model = new BoundRecordingModel([
+      {
+        text: "",
+        calls: [
+          { name: "consultar_agenda" },
+          { name: "transferir" },
+          { name: "consultar_agenda" },
+        ],
+      },
+      { text: "Pronto." },
+    ]);
+    const { calls, alongside } = await run(model, {
+      call: (name) => (name === "transferir" ? CALL_NOTE : null),
+    });
+    expect(calls).toEqual([
+      "consultar_agenda",
+      "transferir",
+      "consultar_agenda",
+    ]);
+    // The vetoed transfer is not beside the third call: it will not run.
+    expect(alongside).toEqual([[], ["consultar_agenda"], ["consultar_agenda"]]);
+  });
+
+  test("after a flagged recovered draft and a blank redo, the older draft delivery would recover is reviewed too", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Rascunho antigo.", calls: [{ name: "buscar_pedido" }] },
+      { text: "Rascunho novo.", calls: [{ name: "buscar_pedido" }] },
+      { text: "" },
+      { text: "" },
+    ]);
+    // Two notes at most, as the gate's attempts would bound them.
+    let notes = 2;
+    const { messages, replies } = await run(
+      model,
+      { reply: () => (notes-- > 0 ? REPLY_NOTE : null) },
+      { recoversReply: () => true },
+    );
+    expect(replies).toEqual(["Rascunho novo.", "Rascunho antigo."]);
+    // Neither flagged draft is left for the runtime to recover.
+    expect(replyWrittenThisTurn(messages)).toBe("");
   });
 });

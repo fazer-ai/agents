@@ -161,6 +161,7 @@ import {
   buildSpeechNormalizer,
   buildToolset,
   loadAgentConfig,
+  operatorToolGuidance,
 } from "./prepare";
 import {
   actedToolNames,
@@ -1247,6 +1248,7 @@ async function runTurnBody(
     cfg: loaded.guardrails,
     reviewer: loaded.turnReviewer,
     systemPrompt: loaded.systemPrompt,
+    toolGuidance: operatorToolGuidance(loaded),
     flow,
     logValues: loaded.logToolValues,
     announce: async (r) => {
@@ -1262,10 +1264,10 @@ async function runTurnBody(
   const graph = await buildModelAndGraph(loaded, tools, {
     // After a completed transfer nothing is reviewed: the conversation is a person's now.
     reviewCall: turnReview
-      ? (turn, call) =>
+      ? (turn, call, opts) =>
           handoffState.completed
             ? Promise.resolve(null)
-            : turnReview.reviewCall(turn, call)
+            : turnReview.reviewCall(turn, call, opts)
       : undefined,
     reviewTurnReply: turnReview
       ? (turn, reply, opts) =>

@@ -172,7 +172,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // of one conversation (the text reply is in none), `replyRecovered` and the `silenceUnexplained` warn
   // that must not fire on it, `silenceRetry` and the warn's detail, and the lines of a turn whose
   // recovered reply a takeover refused, a guardrail replaced, or that was delivered.
-  "tests/graph/runtime.test.ts": 45,
+  "tests/graph/runtime.test.ts": 46,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   "tests/graph/skip-reply-reason-logged.test.ts": 1,
@@ -240,6 +240,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/guardrail-health.test.ts": 1,
   "tests/modules/guardrail-observe.test.ts": 1,
   "tests/modules/guardrail-on-failure.test.ts": 1,
+  "tests/modules/guardrail-turn-review.test.ts": 1,
   "tests/modules/guardrail-unchecked-line.test.ts": 1,
   // NOTE: One reader answering both directions on the same query: the line that names a colleague's reply
   // nobody remembered, and its absence on the customer's own lost ingestion, which keeps the report

@@ -122,6 +122,8 @@ export const GUARDRAIL_RANGES = {
   reviseMaxToolCalls: intRange(1, LIMITS_RANGES.maxToolCalls.max),
   // Earlier messages the factual-grounding reviewer reads; 0 reads only the turn.
   groundingContextMessages: intRange(0, 40),
+  // Steps the turn review may send back to the agent in one turn; past them the fallback acts.
+  turnReviewMaxAttempts: intRange(1, 3),
 } as const;
 
 // A knowledge hit's cosine distance; 0 would drop every hit, and nothing is farther than 2.

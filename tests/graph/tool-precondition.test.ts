@@ -3,6 +3,7 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
+import { isUnranToolResult } from "@/graph/markers";
 import { isEffectFreeTool, markEffectFree } from "@/graph/tools/effect-free";
 import { type CallReport, withFenceReporter } from "@/graph/tools/fence-report";
 import {
@@ -252,6 +253,25 @@ describe("guardedTool under ToolNode", () => {
     // Bound to THIS call, or the model cannot tell which of a batch of calls was refused.
     expect(answer?.tool_call_id).toBe("call_1");
     expect(String(answer?.content)).toContain("was not run");
+    // Marked as never run, so a reviewer of the record does not read it as a call that failed.
+    expect(isUnranToolResult(answer as ToolMessage)).toBe(true);
+  });
+
+  // The bug it catches: a provider call with no id got the bare text back, which `ToolNode` wrapped
+  // without the marker, so the refusal read as a call that ran.
+  test("a call envelope with no id gets a marked result, plain arguments the text", async () => {
+    const { tool: inner, calls } = spyTool();
+    const guarded = guardedTool(inner, [COND], unmet);
+    const out = await guarded.invoke({
+      type: "tool_call",
+      name: "handoff_to_human",
+      args: { reason: "2" },
+    } as never);
+    expect(out).toBeInstanceOf(ToolMessage);
+    expect((out as ToolMessage).tool_call_id).toBe("");
+    expect(isUnranToolResult(out as ToolMessage)).toBe(true);
+    expect(typeof (await guarded.invoke({ reason: "2" }))).toBe("string");
+    expect(calls).toHaveLength(0);
   });
 
   test("a refusal is not an error: the turn continues", async () => {

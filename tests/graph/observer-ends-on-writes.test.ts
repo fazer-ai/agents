@@ -28,7 +28,11 @@ class ScriptedModel {
   calls = 0;
   bareCalls = 0;
   seen: BaseMessage[][] = [];
-  constructor(private readonly script: Call[][]) {}
+  constructor(
+    private readonly script: Call[][],
+    // A provider that repeats one id across the calls of a step.
+    private readonly sharedId = false,
+  ) {}
   private next(messages: BaseMessage[]): AIMessage {
     const step = this.script[this.calls] ?? [];
     this.calls++;
@@ -39,7 +43,7 @@ class ScriptedModel {
       tool_calls: step.map((c, i) => ({
         name: c.name,
         args: c.args ?? {},
-        id: `call_${this.calls}_${i}`,
+        id: this.sharedId ? `call_${this.calls}` : `call_${this.calls}_${i}`,
       })),
     });
   }
@@ -122,10 +126,11 @@ async function run(
     observer?: boolean;
     maxToolCalls?: number;
     noEffectCount?: () => number;
+    sharedId?: boolean;
   } = {},
 ) {
   ran.length = 0;
-  const model = new ScriptedModel(script);
+  const model = new ScriptedModel(script, opts.sharedId);
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
@@ -196,6 +201,17 @@ describe("an observation goes on when the model has something to see", () => {
       expect(toolResults(model.seen[1])).toHaveLength(1);
     });
   }
+
+  // The bug it catches: results read through a map by id, so a failed write sharing its id with an
+  // accepted one read as accepted and the observation ended before the model saw the failure.
+  test("a failed write that repeats an accepted one's id keeps the next call", async () => {
+    const { model } = await run(
+      [[{ name: "failing" }, { name: "w" }], []],
+      [failingWrite, write("w")],
+      { sharedId: true },
+    );
+    expect(model.calls).toBe(2);
+  });
 
   test("a read beside a write keeps the next call", async () => {
     const { model } = await run(

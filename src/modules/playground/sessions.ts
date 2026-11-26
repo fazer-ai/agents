@@ -14,7 +14,9 @@ import {
   buildPlaygroundTrace,
   collectTraceSources,
   type TraceEntry,
+  type TraceGuardrail,
   type TraceSource,
+  withCallVerdicts,
 } from "@/graph/trace";
 import {
   addUsageGroup,
@@ -300,13 +302,17 @@ interface Placement {
 function verdictsAround(note: LoadedTurnNote, own: TraceEntry[]): TraceEntry[] {
   const before = note.guardrails.filter((g) => g.direction === "input");
   const after = note.guardrails.filter((g) => g.direction !== "input");
-  return [...before, ...own, ...after];
+  return [...before, ...withCallVerdicts(own, after)];
 }
 
 // A reply the guardrail EMPTIED, which is not the same as an agent that had nothing to say. Read
 // off the verdicts rather than off the text, or a turn the agent ended in silence would be
 // reported as moderated.
-function suppressedByGuardrail(note: LoadedTurnNote): boolean {
+// The one rule the live turn and the reopened session both read.
+export function suppressedByGuardrail(note: {
+  guardrails: readonly TraceGuardrail[];
+  reply: string | null;
+}): boolean {
   return note.guardrails.some(
     (g) =>
       g.outcome === "suppressed" ||

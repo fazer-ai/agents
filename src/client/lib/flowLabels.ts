@@ -104,6 +104,26 @@ export function guardrailUncheckedLabel(
   if (stage !== "guardrail" || !detail) return null;
   // The external check's lines read through `guardrailExternalLabel`.
   if (detail.check === "external") return null;
+  // A turn review of a write call judged the call, not a reply: what went on unreviewed, or was held,
+  // is the call.
+  if (
+    detail.check === "turn_review" &&
+    detail.step === "call" &&
+    (detail.held === true || detail.unchecked === true)
+  ) {
+    const tool = typeof detail.tool === "string" ? detail.tool : "";
+    return detail.held === true
+      ? t("logs.guardrailHeld.turnReviewCall", {
+          defaultValue:
+            "The turn review could not judge the call to {{tool}}, so the call did not run and a hand-over to the team was requested",
+          tool,
+        })
+      : t("logs.guardrailUnchecked.turnReviewCall", {
+          defaultValue:
+            "The turn review could not judge the call to {{tool}}, and did not block it",
+          tool,
+        });
+  }
   if (detail.held === true) {
     switch (detail.direction) {
       case "input":
@@ -386,16 +406,30 @@ export function guardrailObservedLabel(
   const categories = Array.isArray(detail.categories)
     ? detail.categories.filter((c): c is string => typeof c === "string")
     : [];
+  // A turn review judges a step, and a step may be a write call, which sent no reply. The line is
+  // written at the review, before the call runs or the reply is screened and sent, so it says only
+  // what the review did; running and delivery have lines of their own.
   const head =
-    detail.direction === "input"
-      ? t(
-          "logs.guardrailObserved.input",
-          "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
-        )
-      : t(
-          "logs.guardrailObserved.output",
-          "The reply tripped the check; only recorded, it went out as written",
-        );
+    detail.check === "turn_review"
+      ? detail.step === "call"
+        ? t("logs.guardrailObserved.turnReviewCall", {
+            defaultValue:
+              "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
+            tool: typeof detail.tool === "string" ? detail.tool : "",
+          })
+        : t(
+            "logs.guardrailObserved.turnReviewReply",
+            "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
+          )
+      : detail.direction === "input"
+        ? t(
+            "logs.guardrailObserved.input",
+            "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
+          )
+        : t(
+            "logs.guardrailObserved.output",
+            "The reply tripped the check; only recorded, it went out as written",
+          );
   return [
     head,
     categories.length

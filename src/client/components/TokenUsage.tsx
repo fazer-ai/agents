@@ -49,6 +49,8 @@ function nodeLabel(t: T, node: string): string {
       return t("tokenUsage.node.guardrail", "guardrail check");
     case "guardrail_grounding":
       return t("tokenUsage.node.guardrailGrounding", "factual grounding check");
+    case "guardrail_turn_review":
+      return t("tokenUsage.node.guardrailTurnReview", "turn review");
     case "tts_normalize":
       return t("tokenUsage.node.ttsNormalize", "rewrite for speech");
     case "choice_check":

@@ -20,6 +20,7 @@ const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   modelBadEndpoint: "blocking",
   guardrails: "blocking",
   guardrailsFailing: "blocking",
+  turnReview: "blocking",
   contactAuth: "blocking",
   contactAuthNoUrl: "blocking",
   stt: "degraded",

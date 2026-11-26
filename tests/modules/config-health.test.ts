@@ -1207,6 +1207,25 @@ describe("computeConfigIssues — the guardrails credential", () => {
     ).toEqual([{ key: "guardrails", ...at, pending: true, vaultId: "5" }]);
   });
 
+  // The bug it catches: Decisions screening with its own key, turn review on, and no chat key: the
+  // reviewer runs on the chat model, so no step is reviewed while the panel reads clean.
+  test("with Decisions screening, the turn reviewer's chat key is checked on its own", () => {
+    const decisions = {
+      ...guarded,
+      guardrailsCredentialRef: "vault:1",
+      knownRefs: new Set(["vault:1"]),
+    };
+    expect([
+      computeConfigIssues({ ...decisions, turnReviewCredentialRef: "" }).map(
+        (i) => i.key,
+      ),
+      computeConfigIssues({
+        ...decisions,
+        turnReviewCredentialRef: "vault:1",
+      }).map((i) => i.key),
+    ]).toEqual([["turnReview"], []]);
+  });
+
   test("flags a guardrails credential whose entry is gone", () => {
     expect(
       computeConfigIssues({

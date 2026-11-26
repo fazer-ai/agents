@@ -12,6 +12,13 @@ import {
 } from "@/modules/guardrails/settings";
 import { overrideResolution } from "./modelOverrideForm";
 
+// Whether the tab draws the guardrails chat model's fields (provider, key, model): the chat
+// classifier screens on them, and turn review runs on them whichever classifier screens. The one
+// predicate the tab renders by and the editor routes a refusal of that key by.
+export function guardrailsChatModelShown(g: GuardrailsConfig): boolean {
+  return g.enabled && (g.classifier !== "decisions" || g.turnReview.enabled);
+}
+
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime
 // has (modules/guardrails/gate), the feature switched on and its OWN credential. Under `hold` a
 // missing credential still screens (every turn is held), so the operator has to be able to turn it
@@ -29,6 +36,7 @@ export function playgroundGuardrailsUsable(
     (!!guardrailCredentialRef(g) ||
       g.onFailure === "hold" ||
       !!g.external.url ||
+      (g.turnReview.enabled && !!g.credentialRef) ||
       (g.factualGrounding.enabled &&
         groundingHasSources(g.factualGrounding) &&
         groundingReviewerCalls(g, credBaseUrls)))

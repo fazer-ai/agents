@@ -7,7 +7,11 @@ import {
 } from "@langchain/core/messages";
 import logger from "@/api/lib/logger";
 import { historyDate } from "@/graph/history-dates";
-import { isMemoryHead } from "@/graph/markers";
+import {
+  isMemoryHead,
+  isUnranToolResult,
+  pairedResults,
+} from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { partsInTimezone } from "@/graph/time";
@@ -65,6 +69,11 @@ export interface GroundingToolCall {
   source: boolean;
   // How many customer turns before this one the call was made; absent for this turn's own calls.
   turnsBack?: number;
+  // A call that never ran (called off, vetoed or held by the turn review), with the refusal as its
+  // result: evidence that the action did not happen, never a source and never an act.
+  notRun?: true;
+  // A call that ran and failed (its result has status "error").
+  isError?: true;
 }
 
 export interface GroundingReviewInput {
@@ -198,39 +207,39 @@ function toolCallsIn(
   sourceTools: readonly string[],
   turnsBackAt?: (index: number) => number,
 ): GroundingToolCall[] {
-  const results = new Map<string, { text: string; isError: boolean }>();
-  for (const m of turn) {
-    if (msgType(m) !== "tool") continue;
-    const tm = m as unknown as {
-      tool_call_id?: string;
-      content?: unknown;
-      status?: string;
-    };
-    if (tm.tool_call_id)
-      results.set(tm.tool_call_id, {
-        text: contentToText(tm.content as never),
-        isError: tm.status === "error",
-      });
-  }
+  // Paired per batch, an id-less call included (`pairedResults`). A call that never ran (called
+  // off, vetoed or held by the turn review) stays, marked: it proves that call did not do it.
+  const paired = pairedResults(turn);
   const sources = new Set(sourceTools);
   const out: GroundingToolCall[] = [];
   for (const [index, m] of turn.entries()) {
     if (msgType(m) !== "ai") continue;
     const calls = (
       m as unknown as {
-        tool_calls?: Array<{ name?: string; args?: unknown; id?: string }>;
+        tool_calls?: Array<{ name: string; args?: unknown; id?: string }>;
       }
     ).tool_calls;
     for (const c of calls ?? []) {
-      const res = c.id ? results.get(c.id) : undefined;
-      if (!res) continue;
+      const r = paired.get(c);
+      if (!r) continue;
+      const notRun = isUnranToolResult(r);
+      const res = {
+        text: contentToText(r.content as never),
+        isError: (r as { status?: string }).status === "error",
+      };
       const name = c.name ?? "tool";
       out.push({
         name,
         args: c.args ?? {},
         result: res.text,
-        source: sources.has(name) && !res.isError && res.text.trim() !== "",
+        source:
+          !notRun &&
+          sources.has(name) &&
+          !res.isError &&
+          res.text.trim() !== "",
         ...(turnsBackAt ? { turnsBack: turnsBackAt(index) } : {}),
+        ...(notRun ? { notRun: true as const } : {}),
+        ...(res.isError && !notRun ? { isError: true as const } : {}),
       });
     }
   }
@@ -243,10 +252,12 @@ function toolCallsIn(
 export function groundingConversation(
   messages: readonly BaseMessage[],
   limit: number,
+  opts?: { handbacks?: boolean },
 ): DatedContextMessage[] {
   if (limit <= 0) return [];
   return unclippedContext(beforeTurn(messages), limit, {
     acrossAttendances: true,
+    handbacks: opts?.handbacks,
   }).map((c) => ({
     ...c,
     text: clipText(c.text, GROUNDING_MESSAGE_MAX),
@@ -372,7 +383,7 @@ export function groundingUserMessage(input: GroundingReviewInput): string {
   const calls = input.calls
     .map(
       (c) =>
-        `<tool_call name="${unfenced(c.name).replace(/"/g, "")}" source="${c.source ? "yes" : "no"}"${c.turnsBack ? ` turn="earlier" turns_back="${c.turnsBack}"` : ""}>\narguments: ${unfenced(JSON.stringify(c.args ?? {}))}\nresult:\n${unfenced(c.result)}\n</tool_call>`,
+        `<tool_call name="${unfenced(c.name).replace(/"/g, "")}" source="${c.source ? "yes" : "no"}"${c.notRun ? ' ran="no"' : ""}${c.turnsBack ? ` turn="earlier" turns_back="${c.turnsBack}"` : ""}>\narguments: ${unfenced(JSON.stringify(c.args ?? {}))}\nresult:\n${unfenced(c.result)}\n</tool_call>`,
     )
     .join("\n");
   return [

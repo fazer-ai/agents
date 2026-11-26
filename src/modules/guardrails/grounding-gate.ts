@@ -48,6 +48,7 @@ import {
   type GuardrailsConfig,
   groundingHasSources,
 } from "./settings";
+import { replyAnchor } from "./turn-review";
 
 // The factual-grounding check as the reactive turn and the playground run it. `review` is the graph's
 // `reviewReply` hook: it decides whether the turn is reviewed at all, runs the reviewer, writes the
@@ -362,7 +363,13 @@ export function buildGroundingGate(
       return null;
     }
     if (fg.action === "revise") {
-      await p.announce?.({ ...report, outcome: "revised", action: "revise" });
+      // Placed in a trace by the draft it judged, ahead of the rewrite and its calls.
+      await p.announce?.({
+        ...report,
+        outcome: "revised",
+        action: "revise",
+        ...replyAnchor(turn),
+      });
       return reviseNote(reply, claims);
     }
     if (fg.action === "handoff") {

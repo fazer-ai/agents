@@ -278,6 +278,9 @@ export async function readAgentConfigHealth(
     contactAuthDenyMessage: contactAuth.denyMessage ?? "",
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
+    ...(guardrails.classifier === "decisions" && guardrails.turnReview.enabled
+      ? { turnReviewCredentialRef: guardrails.credentialRef ?? "" }
+      : {}),
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,

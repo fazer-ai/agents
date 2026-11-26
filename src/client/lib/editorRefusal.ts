@@ -220,8 +220,8 @@ export interface EditorControlsShown {
   // engine is `decisions`.
   decisionsEngineShown: boolean;
   guardrailsEnabled: boolean;
-  // The guardrails tab draws one credential picker at a time: the chat model's, or the classification
-  // API's when that is who judges.
+  // The chat model's credential picker, drawn for the chat classifier and for turn review whichever
+  // classifier screens (`guardrailsChatModelShown`), and the classification API's when that judges.
   guardrailsChatModelShown: boolean;
   guardrailsClassifierShown: boolean;
   // The factual-grounding reviewer's own key, drawn whenever the check is on (as every own-model field).

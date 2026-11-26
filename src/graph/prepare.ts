@@ -123,6 +123,7 @@ import {
   readGuardrailsConfig,
   resolveGroundingReviewer,
 } from "@/modules/guardrails/settings";
+import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
 import {
   type HandoffConfig,
   readHandoffConfig,
@@ -306,6 +307,8 @@ export interface AgentConfig {
   // The factual-grounding reviewer, resolved as an override of the guardrails chat model
   // (`resolveGroundingReviewer`), key included; null while the check is off.
   groundingReviewer: GroundingReviewerModel | null;
+  // The turn reviewer's model and key, or why it cannot run; null when the check is off.
+  turnReviewer: GroundingReviewerModel | null;
   // The reference bases' READY documents, read for this turn; null while the check is off or none is
   // picked.
   groundingReference: GroundingReference | null;
@@ -651,21 +654,25 @@ export async function loadAgentConfig(
   }
   let groundingReviewer: GroundingReviewerModel | null = null;
   let groundingReference: GroundingReference | null = null;
+  // A key of the reviewers below: the screening's when it is the same entry, otherwise read now.
+  const resolveReviewerKey = async (
+    ref: string | null,
+  ): Promise<{ key: string; baseUrl: string | null }> => {
+    if (!ref) return { key: "", baseUrl: null };
+    if (ref === guardrailsRef && guardrailsApiKey)
+      return { key: guardrailsApiKey, baseUrl: guardrailsCredentialBaseUrl };
+    const e = await tryResolveApiKeyEntry(db, ref);
+    return e.state === "ok"
+      ? { key: e.secret, baseUrl: e.baseUrl }
+      : { key: "", baseUrl: null };
+  };
   if (guardrails.enabled && guardrails.factualGrounding.enabled) {
     const refIds = guardrails.factualGrounding.referenceKnowledgeBaseIds;
     if (refIds.length > 0)
       groundingReference = await loadGroundingReference(db, refIds);
     // The two keys it may run on: its own credential's and the guardrails chat model's, the one it
     // inherits from (which is the screening's key unless the screening runs on the decisions engine).
-    const resolve = async (ref: string | null) => {
-      if (!ref) return { key: "", baseUrl: null };
-      if (ref === guardrailsRef && guardrailsApiKey)
-        return { key: guardrailsApiKey, baseUrl: guardrailsCredentialBaseUrl };
-      const e = await tryResolveApiKeyEntry(db, ref);
-      return e.state === "ok"
-        ? { key: e.secret, baseUrl: e.baseUrl }
-        : { key: "", baseUrl: null };
-    };
+    const resolve = resolveReviewerKey;
     const own = await resolve(guardrails.factualGrounding.credentialRef);
     const parent = await resolve(guardrails.credentialRef);
     groundingReviewer = resolveGroundingReviewer(guardrails, {
@@ -674,6 +681,25 @@ export async function loadAgentConfig(
       parentKey: parent.key,
       parentBaseUrl: parent.baseUrl,
     });
+  }
+  // The turn reviewer runs on the guardrails chat model and its key, whichever classifier screens.
+  let turnReviewer: GroundingReviewerModel | null = null;
+  if (guardrails.enabled && guardrails.turnReview.enabled) {
+    const parent = await resolveReviewerKey(guardrails.credentialRef);
+    turnReviewer = parent.key
+      ? {
+          runnable: true,
+          provider: guardrails.provider,
+          model: guardrails.model,
+          baseURL: parent.baseUrl ?? guardrails.baseURL,
+          apiKey: parent.key,
+        }
+      : {
+          runnable: false,
+          reason: "credential_not_found",
+          provider: guardrails.provider,
+          model: guardrails.model,
+        };
   }
   let guardrailsExternalSecret: string | null = null;
   let guardrailsExternalSecretMissing = false;
@@ -1136,6 +1162,7 @@ export async function loadAgentConfig(
     guardrailsExternalSecret,
     guardrailsExternalSecretMissing,
     groundingReviewer,
+    turnReviewer,
     groundingReference,
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
@@ -2517,6 +2544,31 @@ export interface GraphBuildDeps {
   revisionPlan?: () => RevisionPlan | null;
   onReplyRevised?: (text: string) => void;
   recoversReply?: () => boolean;
+  // See BuildAgentGraphParams.reviewCall / reviewTurnReply. The reactive turn and the playground pass them.
+  reviewCall?: (
+    turn: BaseMessage[],
+    call: { name: string; args: unknown; id?: string },
+    opts?: {
+      alongside?: { name: string; args: unknown }[];
+      // The call's place among the calls of its step, from 0.
+      index?: number;
+      instructions?: string;
+      tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
+    },
+  ) => Promise<string | null>;
+  reviewTurnReply?: (
+    turn: BaseMessage[],
+    reply: string,
+    opts?: {
+      canRedo: boolean;
+      callable?: readonly string[];
+      instructions?: string;
+      tools?: Readonly<Record<string, string>>;
+      readTools?: Readonly<Record<string, string>>;
+    },
+  ) => Promise<TurnReviewFeedback | null>;
+  turnReviewHalted?: () => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2676,6 +2728,9 @@ export async function buildModelAndGraph(
     revisionPlan: deps.revisionPlan,
     onReplyRevised: deps.onReplyRevised,
     recoversReply: deps.recoversReply,
+    reviewCall: deps.reviewCall,
+    reviewTurnReply: deps.reviewTurnReply,
+    turnReviewHalted: deps.turnReviewHalted,
     clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)

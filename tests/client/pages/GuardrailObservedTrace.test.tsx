@@ -34,4 +34,59 @@ describe("an observed trip in the playground trace", () => {
     expect(text.includes("unsafe_content — RAZAO-OBS-1")).toBe(true);
     expect(text.includes("only recorded")).toBe(true);
   });
+
+  // The bug it catches: a turn-review redo shown with its verdict but not its reason, which is what
+  // an operator tuning the instructions came to read.
+  test("a turn review that sent a step back shows the reason", () => {
+    const { container } = render(
+      withI18n(
+        <TraceRow
+          entry={{
+            type: "guardrail",
+            direction: "output",
+            outcome: "revised",
+            action: "revise",
+            check: "turn_review",
+            step: "call",
+            tool: "agendar",
+            categories: ["turn_review"],
+            rationale: "RAZAO-REVISAO-1",
+          }}
+        />,
+        createTestI18n("en", catalogs),
+      ),
+    );
+    expect((container.textContent ?? "").includes("RAZAO-REVISAO-1")).toBe(
+      true,
+    );
+  });
+
+  // The bug it catches: an observed verdict said the step "went ahead", which the trace cannot know
+  // (running and delivery have their own lines); the Logs page says only that the review did not
+  // block it, and so does this row, in both languages.
+  for (const [lang, phrase] of [
+    ["en", "the review did not block the step"],
+    ["pt-BR", "a revisão não bloqueou o passo"],
+  ] as const)
+    test(`an observed turn review says the review did not block the step (${lang})`, () => {
+      const { container } = render(
+        withI18n(
+          <TraceRow
+            entry={{
+              type: "guardrail",
+              direction: "output",
+              outcome: "observed",
+              action: "observe",
+              check: "turn_review",
+              step: "call",
+              tool: "agendar",
+            }}
+          />,
+          createTestI18n(lang, catalogs),
+        ),
+      );
+      const text = container.textContent ?? "";
+      expect(text).toContain(phrase);
+      expect(text).not.toContain("went ahead");
+    });
 });

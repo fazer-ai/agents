@@ -90,6 +90,22 @@ describe("agentTurn", () => {
     );
   });
 
+  // The bug it catches: a turn review of a call that could not run read as a reply let through.
+  test("a turn review of a call that could not run names the call", () => {
+    const call = {
+      direction: "output",
+      check: "turn_review",
+      step: "call",
+    } as const;
+    expect([
+      guardrailTraceLabel(t, { ...call, outcome: "unavailable" }),
+      guardrailTraceLabel(t, { ...call, outcome: "handed-off", held: true }),
+    ]).toEqual([
+      "could not be judged; the review did not block the call",
+      "could not be judged, so the call did not run and the case would go to the team",
+    ]);
+  });
+
   // The bug it catches: a held turn labelled as a policy block, hiding that no check answered.
   test("a held screening says the check could not run", () => {
     expect(

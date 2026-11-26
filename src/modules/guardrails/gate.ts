@@ -30,6 +30,7 @@ import type { FACTUAL_GROUNDING_KEY, GroundingClaim } from "./grounding";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
+import type { TURN_REVIEW_KEY } from "./turn-review";
 
 // The moderation gate both runtimes call, one unit so the reactive and proactive (follow-up) paths
 // cannot drift. `GuardrailDecision` is what one screening DID, as a single union: separate flags for
@@ -117,7 +118,20 @@ export interface GuardrailReport {
   // As CARRIED OUT, and only on a trip. See the note on `effectiveAction` below.
   action?: GuardrailAction | "revise";
   // Set on a report of the factual-grounding check (./grounding-gate.ts), with the claims it found.
-  check?: typeof FACTUAL_GROUNDING_KEY;
+  check?: typeof FACTUAL_GROUNDING_KEY | typeof TURN_REVIEW_KEY;
+  // Set on a turn-review report: which step was judged, and the tool for a call.
+  step?: "call" | "reply";
+  tool?: string;
+  // The reviewed call's id, so a trace places the verdict beside the call it judged.
+  callId?: string;
+  // The same pairing for a call with no id: its place among the turn's calls, from 1.
+  callOrdinal?: number;
+  // On a verdict about a reply (a turn review's, a factual-grounding rewrite's): the id of the turn's
+  // last call before it, so a trace places the verdict after that call's step and before the calls
+  // a redo or a rewrite made.
+  afterCallId?: string;
+  // The same place when that call has no id: how many calls the turn had made, 0 for none.
+  afterCalls?: number;
   claims?: GroundingClaim[];
   // Model-written, and only on a trip.
   categories?: string[];

@@ -8,6 +8,7 @@ import {
   HUMAN_AGENT_NOTE,
   isConversationDivider,
   isHumanAgentTurn,
+  isHumanHandback,
   isNudgeTurn,
   isSystemMarker,
   lastStampedConversationId,
@@ -49,7 +50,7 @@ export const CONTEXT_MESSAGE_MAX = 1000;
 
 // A proactive nudge, or the playground's simulated follow-up. DATA_FENCE catches the ones written
 // before the marker, as the summarizer does: renderNudge always embeds it.
-function isNudge(m: BaseMessage): boolean {
+export function isNudge(m: BaseMessage): boolean {
   return (
     isNudgeTurn(m) ||
     (m.getType() === "human" && contentToText(m.content).includes(DATA_FENCE))
@@ -62,7 +63,7 @@ export function guardrailContext(
 ): GuardrailContextMessage[] {
   const out: GuardrailContextMessage[] = [];
   for (const c of unclippedContext(messages, limit))
-    if (c.role !== "tool")
+    if (c.role !== "tool" && c.role !== "system")
       out.push({ role: c.role, text: clipText(c.text, CONTEXT_MESSAGE_MAX) });
   return out;
 }
@@ -71,7 +72,7 @@ export function guardrailContext(
 // dated history reads it; the agent's own lines are never dated. A `tool` entry is what a tool
 // returned, present only when the reader asks for it.
 export interface DatedContextMessage {
-  role: GuardrailContextRole | "tool";
+  role: GuardrailContextRole | "tool" | "system";
   text: string;
   at: Date | null;
   tool?: string;
@@ -86,7 +87,13 @@ export interface DatedContextMessage {
 export interface ContextWindowOptions {
   toolResultChars?: number;
   acrossAttendances?: boolean;
+  // The hand-back as a `system` line, a fact the platform recorded and nobody's words, for a reader
+  // that judges against a rule hanging on the transfer ("after a transfer, do not answer").
+  handbacks?: boolean;
 }
+
+export const HANDBACK_FACT =
+  "the human attendance ended and the conversation came back to the agent";
 
 export function unclippedContext(
   messages: readonly BaseMessage[],
@@ -134,6 +141,11 @@ function contextWindow(
         text = text.slice(HUMAN_AGENT_NOTE.length).trim();
       if (text) out.push({ role: "attendant", text, at: stampedSentAt(m) });
       if (out.length > before) start = i;
+      continue;
+    }
+    if (opts?.handbacks && isHumanHandback(m)) {
+      out.push({ role: "system", text: HANDBACK_FACT, at: stampedSentAt(m) });
+      start = i;
       continue;
     }
     if (isSystemMarker(m) || isNudge(m) || !text) continue;

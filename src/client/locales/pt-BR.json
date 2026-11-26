@@ -1216,6 +1216,7 @@
       "decision": "API de decisão",
       "guardrail": "Guardrail",
       "guardrailGrounding": "Guardrail: checagem factual",
+      "guardrailTurnReview": "Guardrail: revisão do turno",
       "memoryCompact": "Compactação de memória",
       "nudge": "Follow-up",
       "observer": "Observador",
@@ -1937,6 +1938,7 @@
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
       "ttsFallback": "A voz reserva está num outro provedor e não tem chave de API própria, então não consegue assumir uma resposta que a voz principal perder.",
       "ttsNormalize": "A reescrita para fala está ligada mas a configuração de modelo dela não pode rodar, então o áudio sai sem ela. Confira provedor, modelo, chave e endpoint.",
+      "turnReview": "A revisão do turno está ligada, mas o modelo de chat dos guardrails, em que ela roda, não tem chave de API: nenhum passo é revisado, as chamadas rodam e as respostas saem sem revisão, a não ser que “Quando uma checagem não consegue rodar” esteja em segurar.",
       "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
     "configIssueGuardrailsFailing": "Os guardrails estão ligados, mas {{failures}} das Checagens não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}). Uma checagem que não rodou não julgou nada: a mensagem seguiu sem checagem, ou foi segurada se “Quando uma checagem não consegue rodar” estiver em segurar. Confira “Modelo do guardrails”, “Base URL” e “Chave de API”.",
@@ -1958,6 +1960,7 @@
       "tts": "A credencial de resposta em áudio está referenciada, mas ainda não foi preenchida.",
       "ttsFallback": "A credencial da voz reserva está referenciada, mas ainda não foi preenchida, então a voz reserva não consegue assumir uma resposta.",
       "ttsNormalize": "A credencial da reescrita para fala está referenciada, mas ainda não foi preenchida.",
+      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, foi referenciada mas ainda não foi preenchida, então nenhum passo é revisado.",
       "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
     },
     "configIssuesTitle": "Avisos de configuração",
@@ -1977,6 +1980,7 @@
       "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",
       "ttsFallback": "A credencial da voz reserva não existe mais, então a voz reserva não consegue assumir uma resposta.",
       "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
+      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, não existe mais, então nenhum passo é revisado.",
       "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
     },
     "configIssueWatcherModel": "O modelo não tem chave de API definida, então este agente não consegue analisar as conversas que observa.",
@@ -1999,6 +2003,7 @@
       "tts": "A credencial da resposta em áudio é de um tipo que não pode ser usado como chave de API, então as respostas saem em texto. Escolha uma credencial que guarde uma única chave.",
       "ttsFallback": "A credencial da voz reserva é de um tipo que não pode ser usado como chave de API, então a voz reserva não consegue assumir uma resposta. Escolha uma credencial que guarde uma única chave.",
       "ttsNormalize": "A credencial da reescrita para fala é de um tipo que não pode ser usado como chave de API, então as respostas são faladas sem a reescrita. Escolha uma credencial que guarde uma única chave.",
+      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, é de um tipo que não serve como chave de API, então nenhum passo é revisado. Escolha uma credencial que guarde uma única chave.",
       "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave."
     },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",
@@ -2557,6 +2562,7 @@
       "navModel": "Modelo",
       "navOutput": "Saída",
       "navPolicy": "Política",
+      "navTurnReview": "Revisão do turno",
       "onFailure": "Quando uma checagem não consegue rodar",
       "onFailureHold": "Segurar e passar a conversa para a equipe",
       "onFailureHoldHint": "A mensagem não segue e a conversa vai para a sua equipe, com a mensagem de transferência da direção. Os follow-ups que o agente inicia sozinho continuam saindo.",
@@ -2569,7 +2575,25 @@
       "template": "Mensagem template",
       "templateFallbackHint": "Enviada sempre que nenhuma resposta substituta é escrita: quando o modelo não devolve nenhuma, e sempre que a checagem de relevância for a que disparou, porque aí não há resposta para reescrever.",
       "templateInboundHelp": "Na mensagem do cliente, este texto é SEMPRE o que será enviado.\n\nNão há resposta para reescrever: o texto em análise é a própria mensagem do cliente.\n\nIsso foi medido: uma mensagem mandando informar um preço e uma parceria produziu exatamente isso, palavra por palavra, nas 16 execuções.",
-      "thresholdsHint": "O número ao lado de cada checagem é o limiar dela, de 0 a 1: a checagem dispara quando a probabilidade que a API devolve chega a ele. Mais baixo bloqueia mais; mais alto deixa passar mais."
+      "thresholdsHint": "O número ao lado de cada checagem é o limiar dela, de 0 a 1: a checagem dispara quando a probabilidade que a API devolve chega a ele. Mais baixo bloqueia mais; mais alto deixa passar mais.",
+      "turnReview": "Revisão do turno",
+      "turnReviewAction": "Quando um passo foge das instruções",
+      "turnReviewActionObserve": "Só registrar",
+      "turnReviewActionObserveHint": "O veredito vai para a página de Logs e o passo segue como foi escrito. Use para medir antes de deixar a revisão agir.",
+      "turnReviewActionRevise": "Mandar o agente refazer o passo",
+      "turnReviewActionReviseHint": "Uma chamada apontada não roda e uma resposta apontada não sai: o agente lê o motivo e refaz o passo, com as ferramentas dele. Uma chamada ao revisor por passo revisado, mais uma geração por refação.",
+      "turnReviewAttempts": "Refações por turno",
+      "turnReviewAttemptsHint": "Passado esse número, um passo ainda apontado não acontece: a chamada não roda, a resposta não sai e o turno termina com a ação abaixo.",
+      "turnReviewDesc": "Antes de uma ação ter efeito, um modelo revisor lê as instruções do agente, a Política acima, a conversa e os resultados das ferramentas no turno, e julga se o passo segue o que elas pedem. Revisa cada chamada que muda alguma coisa (uma transferência, um agendamento, uma etiqueta) antes de ela rodar, e a resposta final antes de ela sair. Só ficam fora as ferramentas que não mudam nada: a busca na base, a hora, a calculadora, as ferramentas de código e uma chamada HTTP de leitura (GET). Chamadas de MCP e de integrações são revisadas, porque nada garante que elas só leiam.",
+      "turnReviewEnabled": "Revisar as ações e a resposta do turno",
+      "turnReviewFallback": "Quando as refações acabam",
+      "turnReviewFallbackHandoff": "Transferir a conversa para a equipe",
+      "turnReviewFallbackHint": "Usa as mensagens definidas em Saída.",
+      "turnReviewFallbackSilent": "Não enviar nada",
+      "turnReviewFallbackTemplate": "Enviar a mensagem template",
+      "turnReviewHandoff": "Mensagem ao cliente (a mesma de Saída)",
+      "turnReviewModelHint": "A revisão do turno usa este modelo de chat e a chave dele.",
+      "turnReviewTemplate": "Mensagem template (a mesma de Saída)"
     },
     "handoffAgentChoice": "A IA escolhe",
     "handoffAgentChoiceDecisions": "Esta transferência está em “A IA escolhe”, e perguntas e regras não têm modelo para escolher: troque para o roteamento do Chatwoot ou para um agente ou time específico.",
@@ -3990,18 +4014,22 @@
     },
     "guardrailHeld": {
       "input": "A checagem falhou, então a mensagem do cliente foi segurada e a passagem para a equipe foi pedida",
-      "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida"
+      "output": "A checagem falhou, então a resposta foi segurada e a passagem para a equipe foi pedida",
+      "turnReviewCall": "A revisão do turno não conseguiu julgar a chamada a {{tool}}, então a chamada não rodou e foi pedida a transferência para a equipe"
     },
     "guardrailObserved": {
       "categories": "categorias: {{categories}}",
       "input": "A mensagem do cliente disparou a checagem; só registrado, o turno seguiu como se ela tivesse passado",
       "output": "A resposta disparou a checagem; só registrado, ela saiu como foi escrita",
       "rationale": "justificativa: {{rationale}}",
-      "rationaleHidden": "o modelo deu uma justificativa ({{chars}} caracteres), mostrada aqui só com \"Registrar os valores enviados às ferramentas\" ligado"
+      "rationaleHidden": "o modelo deu uma justificativa ({{chars}} caracteres), mostrada aqui só com \"Registrar os valores enviados às ferramentas\" ligado",
+      "turnReviewCall": "A revisão do turno achou a chamada a {{tool}} contra as instruções do agente; só registrado, a revisão não a bloqueou",
+      "turnReviewReply": "A revisão do turno achou a resposta contra as instruções do agente; só registrado, a revisão não a bloqueou"
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",
       "output": "A checagem falhou, e a resposta foi liberada sem checagem",
+      "turnReviewCall": "A revisão do turno não conseguiu julgar a chamada a {{tool}} e não a bloqueou",
       "unknown": "A checagem falhou; esta linha antiga não registra se a mensagem foi liberada"
     },
     "level": {
@@ -4884,6 +4912,14 @@
       "simulated": "simulado",
       "sources": "Fontes",
       "toggle": "Detalhes da execução",
+      "turnReviewCall": "Revisão do turno da chamada a {{tool}}",
+      "turnReviewCallHeld": "não pôde ser julgada, então a chamada não rodaria e o caso iria para a equipe",
+      "turnReviewCallRevised": "contra as instruções do agente; a chamada não rodou e o agente soube o motivo",
+      "turnReviewCallUnavailable": "não pôde ser julgada; a revisão não bloqueou a chamada",
+      "turnReviewClean": "segue as instruções do agente",
+      "turnReviewObserved": "contra as instruções do agente; só registrado, a revisão não bloqueou o passo",
+      "turnReviewReply": "Revisão do turno da resposta",
+      "turnReviewReplyRevised": "contra as instruções do agente; o agente refez a resposta",
       "visionDocument": "Leitura de documento",
       "visionImage": "Leitura de imagem"
     },
@@ -5219,6 +5255,7 @@
       "decision": "API de decisão",
       "guardrail": "verificação de guardrails",
       "guardrailGrounding": "checagem factual",
+      "guardrailTurnReview": "revisão do turno",
       "memoryCompact": "resumo de memória",
       "nudge": "mensagem proativa",
       "observer": "observador",

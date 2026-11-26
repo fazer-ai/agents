@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  guardrailsChatModelShown,
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
 } from "@/client/pages/agents/guardrailsFormState";
@@ -105,7 +106,48 @@ describe("guardrails form state", () => {
   });
 });
 
+// The bug it catches: the chat model's credential picker drawn for turn review under Decisions
+// screening, while a refusal of that credential was routed as if the picker were hidden.
+describe("guardrailsChatModelShown", () => {
+  test("the chat model fields show for the chat classifier, or for turn review under Decisions", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const decisions = { ...on, classifier: "decisions" as const };
+    expect([
+      guardrailsChatModelShown({ ...on, classifier: "chat" as const }),
+      guardrailsChatModelShown(decisions),
+      guardrailsChatModelShown({
+        ...decisions,
+        turnReview: { ...on.turnReview, enabled: true },
+      }),
+      guardrailsChatModelShown({ ...on, enabled: false }),
+    ]).toEqual([true, false, true, false]);
+  });
+});
+
 describe("playgroundGuardrailsUsable", () => {
+  // The bug it catches: a turn reviewer on the chat key while screening runs on Decisions calls out
+  // on every write call and reply while the toggle that would skip it reads disabled.
+  test("is usable when only the turn reviewer can call out", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    // Screening on Decisions with no key of its own, so only the reviewer can call out.
+    const reviewer = {
+      ...on,
+      classifier: "decisions" as const,
+      decisions: { ...on.decisions, credentialRef: null },
+      provider: "anthropic" as const,
+      credentialRef: "vault:3",
+      turnReview: { ...on.turnReview, enabled: true },
+    };
+    expect([
+      playgroundGuardrailsUsable(reviewer),
+      playgroundGuardrailsUsable({
+        ...reviewer,
+        turnReview: { ...reviewer.turnReview, enabled: false },
+      }),
+      playgroundGuardrailsUsable({ ...reviewer, credentialRef: null }),
+    ]).toEqual([true, false, false]);
+  });
+
   // The bug it catches: a grounding reviewer with its own key bills playground turns while the toggle
   // that would skip it reads disabled.
   test("is usable when only the factual-grounding reviewer has a key", () => {

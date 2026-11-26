@@ -15,6 +15,8 @@ import {
   isNudgeTurn,
   isUndeliveredProactiveNote,
   isUndeliveredReplyNote,
+  isUnranToolResult,
+  pairedResults,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import {
@@ -124,6 +126,9 @@ export function renderTranscript(
   maxHistoryTokens: number | null = null,
 ): string {
   const lines: string[] = [];
+  // A call answered by a refusal (vetoed, held, called off, set aside) never ran, so it is not
+  // remembered as a tool used: the turn review reads this summary as a record of what was done.
+  const results = pairedResults(messages);
   for (const m of messages) {
     const type = m.getType();
     if (type === "tool") continue;
@@ -161,10 +166,27 @@ export function renderTranscript(
       if (text) lines.push(`cliente: ${text}`);
       continue;
     }
+    const calls = (m as { tool_calls?: { id?: string; name: string }[] })
+      .tool_calls;
+    const ran = Array.isArray(calls)
+      ? calls.filter((c) => {
+          const r = results.get(c);
+          return !r || !isUnranToolResult(r);
+        })
+      : [];
     if (text) lines.push(`atendente: ${text}`);
-    const calls = (m as { tool_calls?: { name?: unknown }[] }).tool_calls;
-    if (Array.isArray(calls) && calls.length > 0) {
-      const names = calls
+    // Text beside a call that never ran ("your booking is confirmed" beside a vetoed booking) is
+    // kept, since the runtime may have recovered and sent it, and the record says that call did not
+    // run, so the text is never the only evidence that it did.
+    const unran = Array.isArray(calls)
+      ? calls.filter((c) => !ran.includes(c))
+      : [];
+    if (text && unran.length > 0)
+      lines.push(
+        `atendente [não executou: ${unran.map((c) => (typeof c?.name === "string" ? c.name : "?")).join(", ")}]`,
+      );
+    if (ran.length > 0) {
+      const names = ran
         .map((c) => (typeof c?.name === "string" ? c.name : "?"))
         .join(", ");
       lines.push(`atendente [usou ferramenta: ${names}]`);

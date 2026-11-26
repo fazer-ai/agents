@@ -1,6 +1,7 @@
-import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, type ToolMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { MessagesAnnotation } from "@langchain/langgraph";
+import { setAsideToolResult } from "./markers";
 import { HANDOFF_TOOL_NAME } from "./tools/catalog";
 
 // A batch that both closes the conversation and hands it to a person asks for two outcomes that
@@ -54,14 +55,8 @@ export function setAsideContradictedHandoffs(
       ...state,
       messages: [...state.messages.filter((m) => m !== last), view],
     },
-    answers: unanswered.map(
-      (c) =>
-        new ToolMessage({
-          content: CONTRADICTED_HANDOFF_RESULT,
-          tool_call_id: c.id ?? "",
-          name: c.name,
-          status: "error",
-        }),
+    answers: unanswered.map((c) =>
+      setAsideToolResult(c, CONTRADICTED_HANDOFF_RESULT),
     ),
   };
 }

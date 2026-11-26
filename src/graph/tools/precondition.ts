@@ -4,6 +4,7 @@ import type {
   ToolRunnableConfig,
 } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { markedSetAside } from "@/graph/markers";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type {
   PreconditionState,
@@ -75,16 +76,25 @@ export function guardedTool(
     // because a refusal that came back as a bare string where a ToolMessage was expected would
     // break the same message sequence in either case.
     const answer = (text: string) => {
-      const id =
-        (input as { type?: string; id?: string } | null)?.type === "tool_call"
-          ? (input as { id?: string }).id
-          : config?.toolCall?.id;
+      // A tool-call envelope is answered with a result even when the provider sent no id (an empty
+      // one, as `ToolNode` writes), so the refusal keeps its marker. Plain arguments get the text.
+      const envelope =
+        (input as { type?: string } | null)?.type === "tool_call";
+      const id = envelope
+        ? ((input as { id?: string }).id ?? "")
+        : config?.toolCall?.id;
       // REPORTED as a call that went nowhere, so a counter downstream can tell this apart from a
       // call that ran (effect-free.ts). Said on the way out rather than carried on the result: the
       // sibling exits inside the handlers include one that THROWS, and one channel covers both.
       onNoEffect?.(inner.name);
-      return id
-        ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
+      return envelope || id
+        ? markedSetAside(
+            new ToolMessage({
+              content: text,
+              tool_call_id: id ?? "",
+              name: inner.name,
+            }),
+          )
         : text;
     };
     let unmet: ToolPrecondition[] = [];

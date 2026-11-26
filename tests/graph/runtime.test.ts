@@ -9680,6 +9680,71 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       );
     });
 
+    // The other side of the booking below: a call to a tool the agent does not have never reached a
+    // handler (the graph checks the name against the toolset), so the turn did nothing and comes out.
+    test("a call to a tool the agent does not have is not an act", async () => {
+      await seedConversation(93161, null);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            { id: 2, content: "deixa", message_type: 0, private: false },
+          ],
+        }),
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      let n = 0;
+      const callsMissingTool = {
+        invoke: async () => new AIMessage("Agendado para terça às 10h."),
+        bindTools: () => ({
+          invoke: async () => {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    { name: "calendar_create_event", args: {}, id: "call_x" },
+                  ],
+                })
+              : new AIMessage("Agendado para terça às 10h.");
+          },
+        }),
+      };
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93161 }),
+        base: appDb,
+        deps: {
+          makeModel: () => callsMissingTool as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("superseded");
+      expect(sent).toEqual([]);
+      // The call and its answer stay and the reply goes, with no note of an unreported act.
+      const channel = await threadChannel(checkpointer, 93161);
+      expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93161 },
+      });
+      const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true },
+      });
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
+    });
+
     test("a booking whose confirmation was superseded leaves the note where the confirmation stood", async () => {
       await seedConversation(93160, null);
       const checkpointer = new MemorySaver();
@@ -9704,8 +9769,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           meta: { assignee_type: null, assignee: null },
         }),
       } as unknown as ChatwootClient;
-      // The call names a tool the agent does not have, so the graph answers it with an error result.
-      // The rollback judges an act by the call and never by its outcome, so this is the booking.
+      // A write the agent has, whose client call fails, so the graph answers it with an error result.
+      // The rollback judges an act by the call and never by its outcome, so this is the booking. A
+      // call refused before running (a tool the agent lacks) would be no act.
       let n = 0;
       const booksThenConfirms = {
         invoke: async () => new AIMessage("Agendado para terça às 10h."),
@@ -9716,7 +9782,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               ? new AIMessage({
                   content: "",
                   tool_calls: [
-                    { name: "calendar_create_event", args: {}, id: "call_cal" },
+                    {
+                      name: "private_note",
+                      args: { content: "agendado" },
+                      id: "call_cal",
+                    },
                   ],
                 })
               : new AIMessage("Agendado para terça às 10h.");
@@ -9774,7 +9844,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         level: "info",
         detail: expect.objectContaining({
           reason: "superseded_after_action",
-          tools: ["calendar_create_event"],
+          tools: ["private_note"],
         }),
       });
       expect(
@@ -11841,6 +11911,525 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[951, "TEMPLATE-NO-MODEL"]]);
+    });
+
+    // The turn review at the inbox: a review that cannot run under `onFailure: "hold"` must keep every
+    // write of the step from running AND still hand the conversation over. A held batch read as a
+    // called-off turn exits before the handover, leaving the customer with no answer and no person.
+    describe("turn review held", () => {
+      beforeAll(async () => {
+        await suDb.agentToolSelection.create({
+          data: {
+            tenantId: gTenantId,
+            agentId: gAgentId,
+            source: "NATIVE",
+            enabledTools: ["private_note", "handoff_to_human"],
+            knowledgeBaseIds: [],
+          },
+        });
+      });
+      afterAll(async () => {
+        await suDb.agentToolSelection.deleteMany({
+          where: { tenantId: gTenantId, agentId: gAgentId, source: "NATIVE" },
+        });
+      });
+
+      test("no write runs, the reviewer read the tool's guidance, and the conversation is handed over", async () => {
+        await suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff: {
+                mode: "route",
+                instructions: "ORIENTACAO-DA-TRANSFERENCIA",
+              },
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                onFailure: "hold",
+                input: { enabled: false },
+                output: {
+                  enabled: false,
+                  templateMessage: "TEMPLATE-OUT",
+                  handoffMessage: "HANDOFF-OUT",
+                },
+                turnReview: { enabled: true, action: "revise" },
+              },
+            },
+          },
+        });
+        const convId = 7931;
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const reviewerSaw: string[] = [];
+        const writer = {
+          async invoke() {
+            return new AIMessage("sem ferramentas");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "private_note",
+                      args: { content: "NOTA-DO-AGENTE" },
+                      id: `c${Math.random()}`,
+                    },
+                  ],
+                });
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    reviewerSaw.push(
+                      ...msgs.map((m) => String((m as BaseMessage).content)),
+                    );
+                    throw new Error("revisor fora");
+                  })
+                : writer,
+            makeClient: guardStub(sent, notes, toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(reviewerSaw.join("\n")).toContain("ORIENTACAO-DA-TRANSFERENCIA");
+        expect(notes.some(([, n]) => n.includes("NOTA-DO-AGENTE"))).toBe(false);
+        expect(outcome).toBe("posted");
+        expect(sent).toEqual([[convId, "HANDOFF-OUT"]]);
+        expect(toggles).toEqual([[convId, "open"]]);
+      });
+
+      // The bug it catches: the held review's private note went out as the review answered, before
+      // delivery read ownership again, so a turn that lost the conversation left the note behind.
+      for (const [lostAtDelivery, convId] of [
+        [false, 7961],
+        [true, 7962],
+      ] as const)
+        test(`the held review's note ${lostAtDelivery ? "is not posted when the turn lost the conversation after the review" : "is posted once the fallback passes the fence"}`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  onFailure: "hold",
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: { enabled: true, action: "revise" },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          const writer = {
+            async invoke() {
+              return new AIMessage("sem ferramentas");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "private_note",
+                        args: { content: "NOTA-DO-AGENTE" },
+                        id: `c${Math.random()}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          try {
+            await runAgentTurn({
+              tenantId: gTenantId,
+              instanceId: gInstanceId,
+              agentBotId: G_BOT,
+              event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+              base: appDb,
+              deps: {
+                makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+                  cfg.model === GUARD_MODEL
+                    ? guardrailModel(async () => {
+                        // Switched off while the review ran: every later fence read says lost.
+                        if (lostAtDelivery)
+                          await suDb.agent.update({
+                            where: { id: gAgentId },
+                            data: { enabled: false },
+                          });
+                        throw new Error("revisor fora");
+                      })
+                    : writer,
+                makeClient: guardStub(sent, notes, toggles),
+                checkpointer: new MemorySaver(),
+              },
+            });
+          } finally {
+            await suDb.agent.update({
+              where: { id: gAgentId },
+              data: { enabled: true },
+            });
+          }
+          // The review's own note and the turn's error note alike ("Guardrail (saída): segurou").
+          const guardNotes = notes.filter(([, n]) => n.includes("Guardrail"));
+          if (lostAtDelivery) {
+            expect(guardNotes).toEqual([]);
+            expect(sent).toEqual([]);
+          } else {
+            expect(guardNotes.length).toBeGreaterThan(0);
+            expect(sent).toEqual([[convId, "HANDOFF-OUT"]]);
+          }
+        });
+
+      // A call still flagged past the attempts does not run, a handoff included: the batch is
+      // refused with the held marker, no further generation is asked, and the fallback ends the
+      // turn through the output gate's own path, the one an output trip takes. Only the `handoff`
+      // fallback transfers, once.
+      for (const [tool, fallback, convId, expected, transfers] of [
+        ["private_note", "template", 7953, ["TEMPLATE-OUT"], 0],
+        ["private_note", "silent", 7955, [], 0],
+        ["private_note", "handoff", 7958, ["HANDOFF-OUT"], 1],
+        ["handoff_to_human", "template", 7933, ["TEMPLATE-OUT"], 0],
+        ["handoff_to_human", "silent", 7932, [], 0],
+        ["handoff_to_human", "handoff", 7935, ["HANDOFF-OUT"], 1],
+      ] as const)
+        test(`a ${tool} flagged past the attempts does not run and the ${fallback} fallback ends the turn`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback,
+                  },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          let asked = 0;
+          const calling = {
+            async invoke() {
+              asked += 1;
+              return new AIMessage("");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 2) return new AIMessage("FRASE-FINAL");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: tool,
+                        args:
+                          tool === "private_note"
+                            ? { content: "NOTA-DO-AGENTE" }
+                            : { customerMessage: "LINHA-DO-MODELO" },
+                        id: `c${asked}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          const checkpointer = new MemorySaver();
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingWith(
+                JSON.stringify({
+                  violated: true,
+                  categories: ["turn_review"],
+                  rationale: "Pergunte o pedido antes.",
+                  suggestedReply: null,
+                }),
+                calling,
+              ),
+              makeClient: guardStub(sent, notes, toggles),
+              checkpointer,
+            },
+          });
+          expect(asked).toBe(2);
+          expect(notes.some(([, n]) => n.includes("NOTA-DO-AGENTE"))).toBe(
+            false,
+          );
+          expect(sent.map(([, t]) => t)).toEqual([...expected]);
+          expect(toggles.filter(([, st]) => st === "open")).toHaveLength(
+            transfers,
+          );
+          // The refused call keeps its record, marked as not run.
+          const thread = await threadChannel(checkpointer, convId, {
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+          });
+          expect(
+            thread.some(
+              ([type, c]) =>
+                type === "tool" && c.includes("turn review stopped"),
+            ),
+          ).toBe(true);
+        });
+
+      // The closing line was reviewed with its `handoff_to_human` and approved: the fallback stands
+      // in for a step the review refused, never for one it passed. So after a completed transfer a
+      // later write still flagged past the attempts is refused and ends the turn, the approved line
+      // goes out, and nothing is transferred again.
+      for (const [fallback, convId] of [
+        ["silent", 7959],
+        ["template", 7960],
+      ] as const)
+        test(`after an approved handoff, a write flagged past the attempts keeps the approved line under the ${fallback} fallback`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                // The turn's error note on, so a decision the transfer overrode would show there.
+                conversationNotes: { errors: "note" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback,
+                  },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          let asked = 0;
+          const agent = {
+            async invoke() {
+              return new AIMessage("");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 3) return new AIMessage("");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      asked === 1
+                        ? {
+                            name: "handoff_to_human",
+                            args: { customerMessage: "LINHA-APROVADA" },
+                            id: "h1",
+                          }
+                        : {
+                            name: "private_note",
+                            args: { content: "NOTA-DO-AGENTE" },
+                            id: `n${asked}`,
+                          },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+                cfg.model === GUARD_MODEL
+                  ? guardrailModel(async (msgs) => {
+                      const flagged = msgs.some((m) =>
+                        String((m as BaseMessage).content).includes(
+                          'calls the tool "private_note"',
+                        ),
+                      );
+                      return {
+                        content: JSON.stringify({
+                          violated: flagged,
+                          categories: flagged ? ["turn_review"] : [],
+                          rationale: flagged ? "Não anote." : "",
+                          suggestedReply: null,
+                        }),
+                      };
+                    })
+                  : agent,
+              // The error note's repeat check reads the conversation: an empty one.
+              makeClient: async () =>
+                ({
+                  ...(await guardStub(sent, notes, toggles)()),
+                  getMessages: async () => ({ payload: [] }),
+                }) as unknown as ChatwootClient,
+              checkpointer: new MemorySaver(),
+            },
+          });
+          expect(notes.some(([, n]) => n.includes("NOTA-DO-AGENTE"))).toBe(
+            false,
+          );
+          expect(sent.map(([, t]) => t)).toEqual(["LINHA-APROVADA"]);
+          expect(toggles.filter(([, st]) => st === "open")).toHaveLength(1);
+          // The decision the completed transfer overrode is no "guardrail held" on any note.
+          expect(
+            [...notes, ...sent].some(([, n]) => n.includes("Guardrail")),
+          ).toBe(false);
+        });
+
+      // A transfer does not end the graph, and the ownership fence admits a call once this very turn
+      // handed the conversation over: a write after it is still reviewed, and a flagged one does not run.
+      test("a write after a completed transfer is still reviewed, and a flagged one does not run", async () => {
+        await suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff: { mode: "route" },
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                input: { enabled: false },
+                output: { enabled: false },
+                turnReview: { enabled: true, action: "revise", maxAttempts: 2 },
+              },
+            },
+          },
+        });
+        const convId = 7936;
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const steps = [
+          {
+            name: "handoff_to_human",
+            args: { customerMessage: "Um humano já te atende." },
+          },
+          { name: "private_note", args: { content: "NOTA-DEPOIS" } },
+        ];
+        let asked = 0;
+        const actor = {
+          async invoke() {
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                const step = steps[asked++];
+                return step
+                  ? new AIMessage({
+                      content: "",
+                      tool_calls: [{ ...step, id: `s${asked}` }],
+                    })
+                  : new AIMessage("");
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const judged: string[] = [];
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    const step = String(
+                      (msgs.at(-1) as BaseMessage | undefined)?.content,
+                    );
+                    const note = step.includes('"private_note"');
+                    judged.push(note ? "private_note" : "other");
+                    return {
+                      content: JSON.stringify({
+                        violated: note,
+                        categories: note ? ["turn_review"] : [],
+                        rationale: note
+                          ? "Não anote depois da transferência."
+                          : "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : actor,
+            makeClient: guardStub(sent, notes, toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(judged).toContain("private_note");
+        expect(notes.some(([, n]) => n.includes("NOTA-DEPOIS"))).toBe(false);
+        expect(toggles).toEqual([[convId, "open"]]);
+      });
     });
 
     // NOTE: Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only

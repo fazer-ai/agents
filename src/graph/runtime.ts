@@ -80,6 +80,7 @@ import {
   buildGuardrailGate,
   chatwootNoteSink,
   type GuardrailDecision,
+  type GuardrailReport,
   guardrailTripped,
   screenedByOperator,
   screenedText,
@@ -89,6 +90,7 @@ import {
   applyGuardrailHandoff,
   GuardrailHandoffFailedError,
 } from "@/modules/guardrails/handoff";
+import { buildTurnReviewGate } from "@/modules/guardrails/turn-review";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import {
@@ -1240,12 +1242,46 @@ async function runTurnBody(
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });
+  // The turn review, asked by the graph on each write call before it runs and on the final answer.
+  // A step still flagged past the attempts does not happen: its decision waits in `pending()` for
+  // the output gate below, ahead of the factual-grounding one.
+  // Its private notes, and the turn's error record of them, wait for the decision to pass the write
+  // fence at delivery (`writeCalledOff`), so a turn that lost the conversation meanwhile, or whose
+  // completed transfer came first, leaves neither: the verdict is in the flow log.
+  const turnReviewNotes: GuardrailReport[] = [];
+  const turnReview = buildTurnReviewGate({
+    cfg: loaded.guardrails,
+    reviewer: loaded.turnReviewer,
+    systemPrompt: loaded.systemPrompt,
+    flow,
+    logValues: loaded.logToolValues,
+    announce: async (r) => {
+      turnReviewNotes.push(r);
+    },
+    clock: { now: loaded.promptOpts.now, timezone: loaded.timezone },
+    makeModel: params.deps?.makeModel,
+    signal: params.signal,
+    persistUsage: params.deps?.persistUsage,
+    langfuseCfg: loaded.langfuseCfg,
+  });
   const graph = await buildModelAndGraph(loaded, tools, {
+    // A write after a completed transfer is still reviewed: the graph goes on, and the ownership
+    // fence admits a call once this very turn handed the conversation over. Only the reply, which
+    // nobody reads after a transfer, skips the review.
+    reviewCall: turnReview?.reviewCall,
+    reviewTurnReply: turnReview
+      ? (turn, reply, opts) =>
+          handoffState.completed
+            ? Promise.resolve(null)
+            : turnReview.reviewReply(turn, reply, opts)
+      : undefined,
+    turnReviewHalted: turnReview?.halted,
     // A completed transfer answers the turn (or silences it) and the model's text is dropped,
     // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
+    // Nor once the turn review decided the output: that decision wins at delivery.
     reviewReply: grounding
       ? (turn, reply) =>
-          handoffState.completed
+          handoffState.completed || turnReview?.pending()
             ? Promise.resolve(null)
             : grounding.review(turn, reply)
       : undefined,
@@ -2607,9 +2643,10 @@ async function runTurnBody(
       // A factual-grounding trip under `template` or `handoff` (or a revise that wrote nothing)
       // decides the reply in place of the screening, unless a transfer completed, with its own line
       // or with none: the conversation is a person's now, and nothing of the model's goes out.
+      // A turn-review decision comes first: it judged the step, the grounding check only its facts.
       const groundingTrip = handoffState.completed
         ? null
-        : grounding?.pending();
+        : (turnReview?.pending() ?? grounding?.pending());
       const outGuard =
         groundingTrip ??
         (screened ? await runGuardrail("output", screened) : null);
@@ -2620,6 +2657,13 @@ async function runTurnBody(
       // NOTE: `postBlocked` answered before this model call, and the suppressed branch returns
       // "blocked" without a later ask.
       if (await writeCalledOff()) return refused(standDown());
+      // The turn review's decision is the one applied below, past the fence: its notes go now, not
+      // awaited, so no write the fence admitted waits on them (the sink swallows its own failure).
+      if (groundingTrip && groundingTrip === turnReview?.pending())
+        for (const r of turnReviewNotes) {
+          turnErrors.guardrail(r);
+          void chatwootNoteSink(client, conversationId)(r);
+        }
       // A trip, from either judge: drops the queue and replaces, suppresses or hands over the
       // reply. Null to go on delivering; otherwise the turn's refusal.
       const settleOutputTrip = async (

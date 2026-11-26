@@ -1,10 +1,11 @@
 import {
   AIMessage,
   type BaseMessage,
-  ToolMessage,
+  type ToolMessage,
 } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { MessagesAnnotation } from "@langchain/langgraph";
+import { setAsideToolResult } from "./markers";
 import { contentToText } from "./message-text";
 import { isReadOnlyTool } from "./tools/reads";
 
@@ -94,14 +95,8 @@ export function setAsideRevisionCalls(
     (c) => typeof c.id === "string" && admitted.has(c.id),
   );
   const out = calls.filter((c) => !run.includes(c));
-  const answers = out.map(
-    (c) =>
-      new ToolMessage({
-        content: REVISION_REFUSED_RESULT,
-        tool_call_id: c.id ?? "",
-        name: c.name,
-        status: "error",
-      }),
+  const answers = out.map((c) =>
+    setAsideToolResult(c, REVISION_REFUSED_RESULT),
   );
   const names = {
     ran: run.map((c) => c.name),

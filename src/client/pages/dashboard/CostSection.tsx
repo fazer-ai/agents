@@ -84,6 +84,10 @@ export function useNodeLabel() {
       "dashboard.node.guardrailGrounding",
       "Guardrail: factual grounding",
     ),
+    guardrail_turn_review: t(
+      "dashboard.node.guardrailTurnReview",
+      "Guardrail: turn review",
+    ),
     choice_check: t("dashboard.node.choiceCheck", "Customer choice check"),
     memory_compact: t("dashboard.node.memoryCompact", "Memory compaction"),
     suggestion_review: t(

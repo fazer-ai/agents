@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BaseMessage } from "@langchain/core/messages";
+import { pairedResults } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { msgType } from "@/graph/trace";
 import { redactSecretsDeep, scrubbedClip } from "@/lib/redact";
@@ -86,31 +87,25 @@ export function turnToolCalls(
     }
   }
   const turn = messages.slice(start);
-  const results = new Map<string, { text: string; isError: boolean }>();
-  for (const m of turn) {
-    if (msgType(m) !== "tool") continue;
-    const tm = m as unknown as {
-      tool_call_id?: string;
-      content?: unknown;
-      status?: string;
-    };
-    if (tm.tool_call_id)
-      results.set(tm.tool_call_id, {
-        text: contentToText(tm.content as never),
-        isError: tm.status === "error",
-      });
-  }
+  // The pairing every reader of call outcomes uses: by id or, with none, by name, each result once.
+  const paired = pairedResults(turn);
   const out: ExternalToolCall[] = [];
   for (const m of turn) {
     if (msgType(m) !== "ai") continue;
     const calls = (
       m as unknown as {
-        tool_calls?: Array<{ name?: string; args?: unknown; id?: string }>;
+        tool_calls?: Array<{ name: string; args?: unknown; id?: string }>;
       }
     ).tool_calls;
     for (const c of calls ?? []) {
       if (out.length >= EXTERNAL_TOOL_CALLS_MAX) return out;
-      const res = c.id ? results.get(c.id) : undefined;
+      const r = paired.get(c);
+      const res = r
+        ? {
+            text: contentToText(r.content as never),
+            isError: (r as { status?: string }).status === "error",
+          }
+        : undefined;
       const argsText = JSON.stringify(c.args ?? {});
       const resultText = res?.text ?? "";
       out.push({

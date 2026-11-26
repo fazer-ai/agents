@@ -18,6 +18,7 @@ import {
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
   nudgeMessage,
+  turnReviewVetoToolResult,
   undeliveredProactiveNote,
   undeliveredReplyNote,
 } from "@/graph/markers";
@@ -262,6 +263,68 @@ describe("renderTranscript", () => {
     expect(t).toContain("calendar_create_event");
     expect(t).not.toContain("abc123");
     expect(t).toContain("atendente: Agendado para terça às 08h.");
+  });
+
+  // The bug it catches: a write the turn review vetoed was remembered as a tool used, and the
+  // reviewer reads this summary as the record of what was done.
+  test("a call answered by a refusal is not remembered as used, and its sibling that ran is", () => {
+    const t = renderTranscript([
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          { name: "agendar", args: {}, id: "call_a" },
+          { name: "marcar_etiqueta", args: {}, id: "call_b" },
+        ],
+      }),
+      turnReviewVetoToolResult(
+        { id: "call_a", name: "agendar" },
+        "Confirme o horário antes.",
+      ),
+      new ToolMessage({ content: "ok", tool_call_id: "call_b" }),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "transferir", args: {}, id: "call_c" }],
+      }),
+      turnReviewVetoToolResult(
+        { id: "call_c", name: "transferir" },
+        "Pergunte o convênio antes.",
+      ),
+      new AIMessage("Qual horário prefere?"),
+    ]);
+    expect(t).toBe(
+      "atendente [usou ferramenta: marcar_etiqueta]\natendente: Qual horário prefere?",
+    );
+  });
+
+  // The bug it catches: the text beside a vetoed booking ("your booking is confirmed") went into the
+  // memory as said, and became the only record that the booking happened. Kept, since the runtime may
+  // have recovered and sent it, with the record that the call did not run.
+  test("text beside a call that never ran is kept with the record that the call did not run", () => {
+    const t = renderTranscript([
+      new AIMessage({
+        content: "Seu agendamento está confirmado.",
+        tool_calls: [{ name: "agendar", args: {}, id: "v1" }],
+      }),
+      turnReviewVetoToolResult(
+        { id: "v1", name: "agendar" },
+        "Confirme o horário antes.",
+      ),
+      new AIMessage({
+        content: "Etiqueta aplicada.",
+        tool_calls: [{ name: "marcar_etiqueta", args: {}, id: "r1" }],
+      }),
+      new ToolMessage({ content: "ok", tool_call_id: "r1" }),
+      new AIMessage("Qual horário prefere?"),
+    ]);
+    expect(t).toBe(
+      [
+        "atendente: Seu agendamento está confirmado.",
+        "atendente [não executou: agendar]",
+        "atendente: Etiqueta aplicada.",
+        "atendente [usou ferramenta: marcar_etiqueta]",
+        "atendente: Qual horário prefere?",
+      ].join("\n"),
+    );
   });
 
   // The transcript is customer-written text placed inside a fence. Left alone, a customer could

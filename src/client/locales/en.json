@@ -1162,6 +1162,7 @@
       "decision": "Decision API",
       "guardrail": "Guardrail",
       "guardrailGrounding": "Guardrail: factual grounding",
+      "guardrailTurnReview": "Guardrail: turn review",
       "memoryCompact": "Memory compaction",
       "nudge": "Follow-up",
       "observer": "Observer",
@@ -1853,6 +1854,7 @@
       "tts": "Audio replies are on but have no API key set.",
       "ttsFallback": "A fallback voice is set on another provider with no API key of its own, so it cannot take a reply the main voice drops.",
       "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.",
+      "turnReview": "Turn review is on but the guardrails chat model it runs on has no API key set, so no step is reviewed: calls run and replies go out unreviewed, unless “When a check cannot run” is set to hold them.",
       "vision": "Image/document reading is on but has no API key set."
     },
     "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. Check “Guardrails model”, “Base URL” and “API key”.",
@@ -1874,6 +1876,7 @@
       "tts": "The audio-reply credential is referenced but not filled in yet.",
       "ttsFallback": "The fallback-voice credential is referenced but not filled in yet, so the fallback voice cannot take a reply.",
       "ttsNormalize": "The speech-rewrite credential is referenced but not filled in yet.",
+      "turnReview": "The guardrails chat model's credential, which turn review runs on, is referenced but not filled in yet, so no step is reviewed.",
       "vision": "The image-reading credential is referenced but not filled in yet."
     },
     "configIssuesTitle": "Configuration warnings",
@@ -1893,6 +1896,7 @@
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",
       "ttsFallback": "The fallback-voice credential no longer exists, so the fallback voice cannot take a reply.",
       "ttsNormalize": "The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.",
+      "turnReview": "The guardrails chat model's credential, which turn review runs on, no longer exists, so no step is reviewed.",
       "vision": "The image-reading credential no longer exists, so images and documents are not read."
     },
     "configIssueWatcherModel": "The model has no API key set, so this agent cannot analyze the conversations it observes.",
@@ -1915,6 +1919,7 @@
       "tts": "The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.",
       "ttsFallback": "The fallback-voice credential is a type that cannot be used as an API key, so the fallback voice cannot take a reply. Pick a credential that holds a single key.",
       "ttsNormalize": "The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.",
+      "turnReview": "The guardrails chat model's credential, which turn review runs on, is a type that cannot be used as an API key, so no step is reviewed. Pick a credential that holds a single key.",
       "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key."
     },
     "conflictToast": "This agent was changed elsewhere. Reload, or save again to overwrite.",
@@ -2465,6 +2470,7 @@
       "navModel": "Model",
       "navOutput": "Output",
       "navPolicy": "Policy",
+      "navTurnReview": "Turn review",
       "onFailure": "When a check cannot run",
       "onFailureHold": "Hold it and hand the conversation to the team",
       "onFailureHoldHint": "The message is stopped and the conversation goes to your team, with the direction's handoff message. Follow-ups the agent starts on its own still go out.",
@@ -2477,7 +2483,25 @@
       "template": "Template message",
       "templateFallbackHint": "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
       "templateInboundHelp": "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
-      "thresholdsHint": "The number beside each check is its threshold, from 0 to 1: the check trips when the API's probability reaches it. Lower blocks more; higher lets more through."
+      "thresholdsHint": "The number beside each check is its threshold, from 0 to 1: the check trips when the API's probability reaches it. Lower blocks more; higher lets more through.",
+      "turnReview": "Turn review",
+      "turnReviewAction": "When a step breaks the instructions",
+      "turnReviewActionObserve": "Only record it",
+      "turnReviewActionObserveHint": "The verdict goes to the Logs page and the step goes on as written. Use it to measure before letting the review act.",
+      "turnReviewActionRevise": "Send the agent back to redo the step",
+      "turnReviewActionReviseHint": "A flagged call does not run and a flagged reply is not sent: the agent reads why and redoes the step, with its tools. One reviewer call per reviewed step, plus one generation per redo.",
+      "turnReviewAttempts": "Redos per turn",
+      "turnReviewAttemptsHint": "Past this number, a step still flagged does not happen: the call does not run, the reply is not sent, and the turn ends with the action below.",
+      "turnReviewDesc": "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Only the tools that cannot change anything skip it: the knowledge search, the time, the calculator, code tools and an HTTP GET. MCP and integration calls are reviewed, since nothing guarantees they only read.",
+      "turnReviewEnabled": "Review the turn's actions and reply",
+      "turnReviewFallback": "When the redos run out",
+      "turnReviewFallbackHandoff": "Hand the conversation to the team",
+      "turnReviewFallbackHint": "Uses the messages set in Output.",
+      "turnReviewFallbackSilent": "Send nothing",
+      "turnReviewFallbackTemplate": "Send the template message",
+      "turnReviewHandoff": "Message to the customer (the same one as Output)",
+      "turnReviewModelHint": "Turn review runs on this chat model and its key.",
+      "turnReviewTemplate": "Template message (the same one as Output)"
     },
     "handoffAgentChoice": "Let the AI choose",
     "handoffAgentChoiceDecisions": "This handoff is set to let the AI choose, and questions and rules have no model to choose: pick Chatwoot routing or a specific agent or team.",
@@ -3847,18 +3871,22 @@
     },
     "guardrailHeld": {
       "input": "The check failed, so the customer's message was held and a hand-over to the team was requested",
-      "output": "The check failed, so the reply was held and a hand-over to the team was requested"
+      "output": "The check failed, so the reply was held and a hand-over to the team was requested",
+      "turnReviewCall": "The turn review could not judge the call to {{tool}}, so the call did not run and a hand-over to the team was requested"
     },
     "guardrailObserved": {
       "categories": "categories: {{categories}}",
       "input": "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
       "output": "The reply tripped the check; only recorded, it went out as written",
       "rationale": "rationale: {{rationale}}",
-      "rationaleHidden": "a rationale was given ({{chars}} characters), shown here only when \"Log the values sent to tools\" is on"
+      "rationaleHidden": "a rationale was given ({{chars}} characters), shown here only when \"Log the values sent to tools\" is on",
+      "turnReviewCall": "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
+      "turnReviewReply": "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it"
     },
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message was let through unchecked",
       "output": "The check failed, so the reply was let through unchecked",
+      "turnReviewCall": "The turn review could not judge the call to {{tool}}, and did not block it",
       "unknown": "The check failed; this older line does not record whether the message was let through"
     },
     "level": {
@@ -4679,6 +4707,14 @@
       "simulated": "simulated",
       "sources": "Sources",
       "toggle": "Execution details",
+      "turnReviewCall": "Turn review of the call to {{tool}}",
+      "turnReviewCallHeld": "could not be judged, so the call did not run and the case would go to the team",
+      "turnReviewCallRevised": "against the agent's instructions; the call did not run and the agent was told why",
+      "turnReviewCallUnavailable": "could not be judged; the review did not block the call",
+      "turnReviewClean": "follows the agent's instructions",
+      "turnReviewObserved": "against the agent's instructions; only recorded, the review did not block the step",
+      "turnReviewReply": "Turn review of the reply",
+      "turnReviewReplyRevised": "against the agent's instructions; the agent redid the reply",
       "visionDocument": "Document reading",
       "visionImage": "Image reading"
     },
@@ -5002,6 +5038,7 @@
       "decision": "decision API",
       "guardrail": "guardrail check",
       "guardrailGrounding": "factual grounding check",
+      "guardrailTurnReview": "turn review",
       "memoryCompact": "memory summary",
       "nudge": "proactive message",
       "observer": "observer",

@@ -26,6 +26,9 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   guardrails: "blocking",
   // The same consequence, observed rather than deduced: those turns already went out unscreened.
   guardrailsFailing: "blocking",
+  // Fail-open the same way: with no key the review never runs, so calls run and replies go out
+  // unreviewed.
+  turnReview: "blocking",
   // The gate fails closed, so the agent goes silent for every contact.
   contactAuth: "blocking",
   // The same, from the other direction: an enabled gate with no endpoint refuses every message.

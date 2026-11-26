@@ -77,6 +77,7 @@ export type ConfigIssueKey =
   | "decisions"
   | "guardrails"
   | "guardrailsFailing"
+  | "turnReview"
   | "contactAuth"
   // Not a missing credential: two switches that cancel each other out. The unlock flow needs the
   // conversation to still be the bot's when the code arrives, and the handoff gives it away on the
@@ -266,6 +267,9 @@ export interface ConfigHealthInput {
   // message is delivered as if it had been screened and approved.
   guardrailsEnabled?: boolean;
   guardrailsCredentialRef?: string;
+  // The turn reviewer's own credential, set only when it is not the screening one: turn review on
+  // while Decisions screens, since the reviewer always runs on the chat model's key.
+  turnReviewCredentialRef?: string;
   // What the screen actually DID, read back from the execution log (modules/guardrails/health.ts):
   // how many analyses could not run in the recent window, and when the last one was. Configuration
   // alone cannot see this half. A model id the vendor retired, a parameter it rejects on every call
@@ -927,6 +931,18 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "guardrails", tab: "guardrails", sectionId: "gr-model" },
     guardrailsCred,
+  );
+  // Each active model checked on its own: with Decisions screening, a good classification key says
+  // nothing about the chat key the turn reviewer runs on.
+  push(
+    { key: "turnReview", tab: "guardrails", sectionId: "gr-model" },
+    credIssue(
+      Boolean(input.guardrailsEnabled) &&
+        input.turnReviewCredentialRef !== undefined,
+      input.turnReviewCredentialRef ?? "",
+      "apiKey",
+      vault,
+    ),
   );
   // The credentialed guardrail that still could not run: same consequence (messages delivered
   // unscreened), a cause no ref check can reach. Suppressed while the credential verdict above is

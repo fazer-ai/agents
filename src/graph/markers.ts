@@ -1,4 +1,5 @@
 import {
+  AIMessage,
   type BaseMessage,
   HumanMessage,
   ToolMessage,
@@ -22,7 +23,20 @@ type SystemMarker =
   | "human_handback"
   | "undelivered_reply"
   | "undelivered_proactive"
-  | "called_off";
+  | "called_off"
+  | "turn_review_veto"
+  | "turn_review_held"
+  | "set_aside";
+
+// A message's type, read like `msgType` (./trace.ts): one rebuilt from a checkpoint may carry only
+// `_getType`. Every reader of tool results here uses it, so a pairing and the predicate it feeds
+// never disagree about the same message.
+function typeOf(m: BaseMessage | undefined): string {
+  const t = m as
+    | { getType?: () => string; _getType?: () => string }
+    | undefined;
+  return t?.getType?.() ?? t?._getType?.() ?? "";
+}
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
@@ -408,7 +422,130 @@ export function calledOffToolResult(call: {
 }
 
 export function isCalledOffToolResult(message: BaseMessage): boolean {
-  return message.getType() === "tool" && hasMarker(message, "called_off");
+  return typeOf(message) === "tool" && hasMarker(message, "called_off");
+}
+
+// What a write call gets back when the turn review flags it: the reviewer's note for the model, and
+// the MARKER for the side-effect accounting (./refused-turn.ts), which counts the call as never run.
+// The answer to a call the graph set aside without running it: a handoff beside a close
+// (./contradicted-handoff.ts) or a call a grounding rewrite may not make (./revision-calls.ts).
+export function setAsideToolResult(
+  call: { id?: string; name: string },
+  content: string,
+): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content,
+    status: "error",
+    additional_kwargs: { [MARKER_KWARG]: "set_aside" },
+  });
+}
+
+// The same marker on a result some other boundary wrote for a call it refused before running it
+// (a precondition, a tool the set lacks, arguments its schema rejects), so a reader of the record
+// does not take it for a call that ran and failed.
+export function markedSetAside<T extends BaseMessage>(message: T): T {
+  message.additional_kwargs = {
+    ...message.additional_kwargs,
+    [MARKER_KWARG]: "set_aside",
+  };
+  return message;
+}
+
+export function turnReviewVetoToolResult(
+  call: { id?: string; name: string },
+  note: string,
+): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content: note,
+    status: "error",
+    additional_kwargs: { [MARKER_KWARG]: "turn_review_veto" },
+  });
+}
+
+// What every call of a batch gets back when the turn review stopped it: a review held
+// (`onFailure: "hold"`), or a call still flagged past the attempts. Nothing ran, and the turn is NOT
+// called off: the caller still owns the conversation and applies the review's decision, so this
+// marker must never read as `called_off`, whose callers exit before it.
+export const TURN_REVIEW_HELD_TOOL_RESULT =
+  "Not executed: the turn review stopped this step, and the turn ends here.";
+
+export function turnReviewHeldToolResult(call: {
+  id?: string;
+  name: string;
+}): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content: TURN_REVIEW_HELD_TOOL_RESULT,
+    // An error like the veto: a refused read must not read as a source that answered.
+    status: "error",
+    additional_kwargs: { [MARKER_KWARG]: "turn_review_held" },
+  });
+}
+
+// Whether a tool result is the turn review keeping its call from running: a veto, or a held batch.
+// Every reader that decides something from a call (silence, recovery, what the turn did, evidence)
+// reads such a call as one that never happened.
+export function isTurnReviewRefusal(message: BaseMessage): boolean {
+  return (
+    typeOf(message) === "tool" &&
+    (hasMarker(message, "turn_review_veto") ||
+      hasMarker(message, "turn_review_held"))
+  );
+}
+
+// Each tool call of a slice with the result that answers it: by id, or, for a call a provider sent
+// with no id (its result then carries `""`), by name among the id-less results. Results are taken
+// one by one from their own batch in call order, so a sibling with a result of its own, or a second
+// call repeating an id, is never handed one already paired. The one pairing every reader of call
+// outcomes uses.
+export function pairedResults(
+  slice: readonly BaseMessage[],
+): Map<ToolCallLike, ToolMessage> {
+  const out = new Map<ToolCallLike, ToolMessage>();
+  slice.forEach((m, i) => {
+    if (typeOf(m) !== "ai") return;
+    const results: ToolMessage[] = [];
+    for (let j = i + 1; typeOf(slice[j]) === "tool"; j++)
+      results.push(slice[j] as ToolMessage);
+    const calls =
+      (m as unknown as { tool_calls?: ToolCallLike[] }).tool_calls ?? [];
+    for (const c of calls) {
+      const k = results.findIndex((r) =>
+        c.id ? r.tool_call_id === c.id : !r.tool_call_id && r.name === c.name,
+      );
+      if (k >= 0) out.set(c, results.splice(k, 1)[0] as ToolMessage);
+    }
+  });
+  return out;
+}
+
+type ToolCallLike = { id?: string; name: string; args?: unknown };
+
+// The calls of a slice the turn review kept from running (`isTurnReviewRefusal`).
+export function callsRefusedByReview(
+  slice: readonly BaseMessage[],
+): Set<ToolCallLike> {
+  const out = new Set<ToolCallLike>();
+  for (const [c, r] of pairedResults(slice))
+    if (isTurnReviewRefusal(r)) out.add(c);
+  return out;
+}
+
+// Whether a tool result says its call never ran: called off, vetoed by the turn review, refused by
+// a held review, or set aside by the graph.
+export function isUnranToolResult(message: BaseMessage): boolean {
+  return (
+    typeOf(message) === "tool" &&
+    (hasMarker(message, "called_off") ||
+      hasMarker(message, "turn_review_veto") ||
+      hasMarker(message, "turn_review_held") ||
+      hasMarker(message, "set_aside"))
+  );
 }
 
 // Whether the tool boundary refused this invoke's calls, asked by the caller of what `graph.invoke`
@@ -419,5 +556,20 @@ export function isCalledOffToolResult(message: BaseMessage): boolean {
 // in the thread cannot sit second to last, because every later invoke appends its own turn after it.
 export function turnWasCalledOff(produced: readonly BaseMessage[]): boolean {
   const beforeLast = produced.at(-2);
-  return beforeLast !== undefined && isCalledOffToolResult(beforeLast);
+  const last = produced.at(-1);
+  return (
+    (beforeLast !== undefined && isCalledOffToolResult(beforeLast)) ||
+    (last !== undefined &&
+      typeOf(last) === "ai" &&
+      hasMarker(last, "called_off"))
+  );
+}
+
+// The same refusal where no call is left to answer: the empty terminator itself carries the marker,
+// for a turn called off in the agent node (a reply's review awaited while the turn was lost).
+export function calledOffTerminator(): AIMessage {
+  return new AIMessage({
+    content: "",
+    additional_kwargs: { [MARKER_KWARG]: "called_off" },
+  });
 }

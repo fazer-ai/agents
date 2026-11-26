@@ -75,6 +75,25 @@ describe("an observed guardrail line on the Logs page", () => {
     ).toBeNull();
   });
 
+  // The bug it catches: a turn review of a write call that could not run read "the reply was let
+  // through unchecked", while what went on unreviewed (or was held) was the call.
+  test("a turn review of a call that could not run names the call", () => {
+    const call = {
+      direction: "output",
+      check: "turn_review",
+      step: "call",
+      tool: "agendar",
+      outcome: "analysis_failed",
+    };
+    expect([
+      guardrailUncheckedLabel("guardrail", { ...call, unchecked: true }, t),
+      guardrailUncheckedLabel("guardrail", { ...call, held: true }, t),
+    ]).toEqual([
+      "The turn review could not judge the call to agendar, and did not block it",
+      "The turn review could not judge the call to agendar, so the call did not run and a hand-over to the team was requested",
+    ]);
+  });
+
   test("its badge names the observed selector, and only for an observed trip", () => {
     expect(selectorOf("guardrail", { action: "observe" })).toBe(
       GUARDRAIL_OBSERVED,
@@ -110,5 +129,37 @@ describe("an external check line under observe", () => {
     expect(
       guardrailExternalLabel("guardrail", { ...base, decision: "allow" }, t),
     ).toBe("The external check allowed the reply · took 30 ms");
+  });
+
+  // The bug it catches: an observed write call told as a reply that went out, when no reply was sent;
+  // and a line written at the review claiming a run or a delivery that comes later, if at all.
+  test("a turn review line names the step: a call that ran, or a reply that went out", () => {
+    expect([
+      guardrailObservedLabel(
+        "guardrail",
+        {
+          check: "turn_review",
+          direction: "output",
+          action: "observe",
+          step: "call",
+          tool: "handoff_to_human",
+          rationaleChars: 10,
+        },
+        t,
+      )?.split(" · ")[0],
+      guardrailObservedLabel(
+        "guardrail",
+        {
+          check: "turn_review",
+          direction: "output",
+          action: "observe",
+          step: "reply",
+        },
+        t,
+      ),
+    ]).toEqual([
+      "The turn review found the call to handoff_to_human against the agent's instructions; only recorded, the turn review did not block it",
+      "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
+    ]);
   });
 });

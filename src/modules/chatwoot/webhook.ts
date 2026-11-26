@@ -155,8 +155,7 @@ import {
 import {
   armDebounce,
   debounceDedupeKey,
-  resolveDebounceConfig,
-  resolveMediaWaitConfig,
+  resolveArmConfig,
 } from "@/modules/debounce/service";
 import {
   advanceHandledWatermark,
@@ -5884,30 +5883,23 @@ export async function processChatwootDelivery(
               // Debounce off still answers through the flush while a file is on its way, since only the
               // flush can come back for it.
               const message = n.message;
-              const cfg =
-                (await resolveDebounceConfig(
-                  params.tenantId,
-                  params.instanceId,
-                  inboxId,
-                  base,
-                )) ??
-                (await resolveMediaWaitConfig({
-                  tenantId: params.tenantId,
-                  instanceId: params.instanceId,
-                  chatwootInboxId: inboxId,
-                  threadId,
-                  mediaArriving:
-                    message?.id != null &&
-                    mediaStillArriving({
-                      ...message,
-                      transcriptionUnavailable: mediaAnnotationFor(
-                        params.tenantId,
-                        params.instanceId,
-                        message.id,
-                      )?.transcriptionUnavailable,
-                    }),
-                  base,
-                }));
+              const cfg = await resolveArmConfig({
+                tenantId: params.tenantId,
+                instanceId: params.instanceId,
+                chatwootInboxId: inboxId,
+                threadId,
+                mediaArriving:
+                  message?.id != null &&
+                  mediaStillArriving({
+                    ...message,
+                    transcriptionUnavailable: mediaAnnotationFor(
+                      params.tenantId,
+                      params.instanceId,
+                      message.id,
+                    )?.transcriptionUnavailable,
+                  }),
+                base,
+              });
               if (!cfg) return null;
               return {
                 cfg,

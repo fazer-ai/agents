@@ -22,11 +22,12 @@ export function debounceDedupeKey(threadId: string): string {
 // then defers until the file can be read (`MEDIA_DEFER_*` in ./handler.ts).
 const MEDIA_WAIT_WINDOW_SECONDS = 5;
 
-// The flush an agent with debounce OFF takes instead of a direct turn: while a file of the message is
-// still being written to storage (`mediaArriving`), and for every message that arrives while that
-// flush is live, so the burst is answered once and in order. Null otherwise, and whenever debounce is
-// on (the ordinary arm answers) or the inbox has no enabled agent.
-export async function resolveMediaWaitConfig(params: {
+// The debounce config a delivery arms with, in one read of the binding: the agent's own when
+// debounce is on, and for an agent with debounce OFF the media-wait flush instead of a direct turn
+// while a file of the message is still being written to storage (`mediaArriving`) and for every
+// message that arrives while that flush is live, so the burst is answered once and in order. Null
+// (direct turn) otherwise, or when the inbox has no enabled agent.
+export async function resolveArmConfig(params: {
   tenantId: bigint;
   instanceId: bigint;
   chatwootInboxId: number;
@@ -53,7 +54,7 @@ export async function resolveMediaWaitConfig(params: {
     });
     if (!agent?.enabled) return null;
     const cfg = readDebounceConfig(agent.settings);
-    if (cfg.enabled) return null;
+    if (cfg.enabled) return cfg;
     if (!params.mediaArriving) {
       const live = await db.schedulerJob.findFirst({
         where: {

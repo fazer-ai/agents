@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
@@ -562,6 +563,75 @@ describe.skipIf(!dbUp)(
       expect(second.out).toEqual({ outcome: "done" });
       expect(p.calls.vision).toBe(2);
       expect(second.seen).not.toContain("verso.png");
+    });
+
+    // The download succeeded and the provider failed: the file is no longer on its way, so the
+    // flush answers instead of paying the provider again on every round until the ceiling.
+    test("a voice note downloaded at the flush stops the wait even when the provider fails", async () => {
+      await seedConversation(9712);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9712, 1, s.client(page), p.sttFetch);
+
+      s.state.stored = true;
+      const failing = {
+        ...p,
+        sttFetch: (async () => {
+          p.calls.stt++;
+          return new Response("upstream error", { status: 500 });
+        }) as unknown as typeof fetch,
+      };
+      const { out } = await flush(9712, s.client(page), failing, Date.now());
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+      expect(
+        mediaAnnotationFor(tenantId, instanceId, 1)?.transcriptionUnavailable,
+      ).toBe(false);
+    });
+
+    test("a download refused after a 404 stops the wait", async () => {
+      await seedConversation(9713);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9713, 1, s.client(page), p.sttFetch);
+
+      const refused = storage({ refusal: 403 });
+      const { out } = await flush(9713, refused.client(page), p, Date.now());
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(refused.state.sent).toBe(1);
+    });
+
+    // A flush that starts just inside the ceiling spends seconds retrying; it does not reschedule
+    // past the ceiling on a verdict taken before the retries.
+    test("the ceiling is asked after the retries, not only when the flush starts", async () => {
+      await seedConversation(9714);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9714, 1, s.client(page), p.sttFetch);
+      // Each download moves the clock two seconds on, as a slow storage would.
+      const real = Date.now.bind(Date);
+      let ahead = 0;
+      const slow = s.client(page);
+      const download = slow.downloadAttachment.bind(slow);
+      slow.downloadAttachment = (async (
+        ...args: Parameters<typeof download>
+      ) => {
+        ahead += 2_000;
+        return download(...args);
+      }) as typeof slow.downloadAttachment;
+      const clock = spyOn(Date, "now").mockImplementation(() => real() + ahead);
+
+      const { out } = await flush(9714, slow, p, real() - 59_000).finally(() =>
+        clock.mockRestore(),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
     });
 
     // Files over the per-message cap are counted unread and never tried: reading the message again

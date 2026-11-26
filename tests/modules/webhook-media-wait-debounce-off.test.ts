@@ -18,7 +18,7 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import {
   debounceDedupeKey,
-  resolveMediaWaitConfig,
+  resolveArmConfig,
 } from "@/modules/debounce/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -319,8 +319,8 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     expect(model.calls).toBeGreaterThan(0);
   });
 
-  // The ordinary arm owns an agent with debounce on, window and all: the media wait never stands in.
-  test("debounce on leaves the window to the ordinary arm", async () => {
+  // An agent with debounce on arms with its own window: the media wait never stands in for it.
+  test("debounce on arms with the agent's own window", async () => {
     const before = await suDb.agent.findFirstOrThrow({
       where: { tenantId },
       select: { settings: true },
@@ -332,7 +332,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       },
     });
     try {
-      const cfg = await resolveMediaWaitConfig({
+      const cfg = await resolveArmConfig({
         tenantId,
         instanceId,
         chatwootInboxId: CHATWOOT_INBOX_ID,
@@ -340,7 +340,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         mediaArriving: true,
         base: appDb,
       });
-      expect(cfg).toBeNull();
+      expect(cfg?.windowSeconds).toBe(30);
     } finally {
       await suDb.agent.updateMany({
         where: { tenantId },

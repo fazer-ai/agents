@@ -28,6 +28,7 @@ import { retireRedirectFollowUp } from "@/modules/channel-redirect/followup";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
   awaitOpenTranscriptions,
+  mediaAnnotationFor,
   mediaStillArriving,
   overlayMediaAnnotations,
 } from "@/modules/chatwoot/annotations";
@@ -210,9 +211,10 @@ export interface CoalesceTurnContext {
   // runs seconds after that pass, and the attachments it still finds unread are the ones attached
   // AFTER the message was created, which the arrival pass never saw.
   fillMissingMedia?: "all" | "untried";
-  // Whether the caller can come back later for media still being written (`mediaPending`). Only the
-  // flush can, and only below its media ceiling: the re-engage has nowhere to defer to.
-  mediaMayWait?: boolean;
+  // Until when (epoch ms) the caller can come back later for media still being written
+  // (`mediaPending`). Only the flush can, up to its media ceiling, and it is asked after the retries,
+  // which take seconds per file: the re-engage has nowhere to defer to.
+  mediaWaitUntil?: number;
   // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
   // everybody else's. Null when the caller has no bot to name, and then every outgoing message on the
   // page counts as somebody else's.
@@ -748,6 +750,10 @@ export async function fillMissingAudio(args: {
         err instanceof Error ? err.message : String(err),
       );
     }
+    // NOTE: The row carries what this attempt's download left, so `mediaPending` reads it.
+    m.transcriptionUnavailable =
+      mediaAnnotationFor(args.tenantId, args.instanceId, m.id)
+        ?.transcriptionUnavailable === true;
   }
   return attempted;
 }
@@ -801,9 +807,9 @@ export function oldestCreatedAt(rows: ChatwootMessageRow[]): Date | null {
   return dated > 1 ? oldest : null;
 }
 
-// `media-pending` only comes back to a caller that said it can come back (`mediaMayWait`).
+// `media-pending` only comes back to a caller that said it can come back (`mediaWaitUntil`).
 export async function coalesceAndRunTurn(
-  ctx: CoalesceTurnContext & { mediaMayWait?: false },
+  ctx: CoalesceTurnContext & { mediaWaitUntil?: undefined },
   base: PrismaClient,
   deps?: RuntimeDeps,
 ): Promise<RunAgentTurnOutcome | "empty">;
@@ -853,7 +859,12 @@ export async function coalesceAndRunTurn(
   );
   if (!burst) return "empty";
   // NOTE: Before any claim or invoke, so nothing is written and the burst stays owed to the return.
-  if (burst.mediaPending && ctx.mediaMayWait) return "media-pending";
+  if (
+    burst.mediaPending &&
+    ctx.mediaWaitUntil !== undefined &&
+    Date.now() < ctx.mediaWaitUntil
+  )
+    return "media-pending";
   const {
     client,
     pending,
@@ -2512,7 +2523,7 @@ export async function flushDebounceJob(
         // NOTE: Some transports attach the file after creating the message: the arrival pass saw
         // nothing to read, and this is the last read before the turn renders the file as unread.
         fillMissingMedia: "untried",
-        mediaMayWait: nowMs < deferringSince + MEDIA_DEFER_CEILING_MS,
+        mediaWaitUntil: deferringSince + MEDIA_DEFER_CEILING_MS,
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {

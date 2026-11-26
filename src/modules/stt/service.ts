@@ -205,6 +205,11 @@ async function transcribeOnce(
   // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
   let bytes: ArrayBuffer;
   let contentType: string | null;
+  const target = {
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    messageId: params.messageId,
+  };
   try {
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
@@ -221,18 +226,19 @@ async function transcribeOnce(
         errorMessage: err instanceof Error ? err.message : String(err),
       });
     }
-    // The provider was never asked, so the reply may try this voice note again for free.
-    if (isTransientAttachmentFailure(err))
-      stashMediaAnnotation(
-        {
-          tenantId: params.tenantId,
-          instanceId: params.instanceId,
-          messageId: params.messageId,
-        },
-        { transcriptionUnavailable: true },
-      );
+    // The mark follows the LATEST download: a failure that may pass lets the reply try again for
+    // free; any other one ends the wait.
+    stashMediaAnnotation(target, {
+      transcriptionUnavailable: isTransientAttachmentFailure(err),
+    });
     throw err;
   }
+  // The file is here: whatever the provider answers next, there is nothing left to wait for.
+  if (
+    mediaAnnotationFor(params.tenantId, params.instanceId, params.messageId)
+      ?.transcriptionUnavailable
+  )
+    stashMediaAnnotation(target, { transcriptionUnavailable: false });
   const result = await withFlowStage(
     params.flow,
     "stt",
@@ -274,7 +280,7 @@ async function transcribeOnce(
       instanceId: params.instanceId,
       messageId: params.messageId,
     },
-    { transcribedText: text, transcriptionUnavailable: false },
+    { transcribedText: text },
   );
 
   // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort: a write-back

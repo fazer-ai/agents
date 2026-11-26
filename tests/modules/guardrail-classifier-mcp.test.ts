@@ -115,4 +115,45 @@ describe.skipIf(!dbUp)("the guardrails classifier through MCP", () => {
     );
     expect(r.ok).toBe(true);
   });
+
+  // The server stores what a write gives it: a patch that changes only the provider keeps the saved
+  // endpoint, in the preview and in the apply alike. Clearing an old URL is the editor's, where it
+  // would ride along unseen.
+  test("a patch that changes only the provider keeps the saved endpoint", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          guardrails: {
+            enabled: true,
+            provider: "openai-compatible",
+            baseURL: "http://proxy.local/v1",
+            output: { enabled: true, action: "template" },
+          },
+        },
+      },
+    });
+    for (const dry_run of [undefined, false]) {
+      const r = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(agentId),
+          dry_run,
+          guardrails: { provider: "openrouter" },
+        } as never,
+        { base: appDb },
+      );
+      expect(r.ok, String(dry_run)).toBe(true);
+      const after = (
+        r as {
+          data?: { diff?: { guardrails?: { after?: { baseURL?: unknown } } } };
+        }
+      ).data?.diff?.guardrails?.after;
+      expect(after?.baseURL).toBe("http://proxy.local/v1");
+    }
+    expect(await storedGuardrails()).toMatchObject({
+      provider: "openrouter",
+      baseURL: "http://proxy.local/v1",
+    });
+  });
 });

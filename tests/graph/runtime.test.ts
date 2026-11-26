@@ -12039,6 +12039,100 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
       }
 
+      // The fallback line replaced the model's words, so a final sentence written after the transfer
+      // was never sent: it leaves the thread, while the transfer's call and result stay in it.
+      for (const [line, convId] of [
+        ["", 7949],
+        ["LINHA-DO-MODELO", 7950],
+      ] as const) {
+        test(`a final sentence after a handoff answered by the fallback leaves the thread${line ? ", the model's line replaced" : ""}`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback: "template",
+                  },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          let asked = 0;
+          const handingOver = {
+            async invoke() {
+              return new AIMessage("FRASE-FINAL");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 2) return new AIMessage("FRASE-FINAL");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: line },
+                        id: `h${asked}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          const checkpointer = new MemorySaver();
+          const result = await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingWith(
+                JSON.stringify({
+                  violated: true,
+                  categories: ["turn_review"],
+                  rationale: "Pergunte o pedido antes.",
+                  suggestedReply: null,
+                }),
+                handingOver,
+              ),
+              makeClient: guardStub(sent, notes, toggles),
+              checkpointer,
+            },
+          });
+          expect(sent).toEqual([[convId, "TEMPLATE-OUT"]]);
+          expect(result).toBe("posted");
+          const thread = await threadChannel(checkpointer, convId, {
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+          });
+          expect(thread.some(([, c]) => c.includes("FRASE-FINAL"))).toBe(false);
+          expect(thread.some(([type]) => type === "tool")).toBe(true);
+        });
+      }
+
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn
       // handed the conversation over: a write after it is still reviewed, and a flagged one does not run.
       test("a write after a completed transfer is still reviewed, and a flagged one does not run", async () => {

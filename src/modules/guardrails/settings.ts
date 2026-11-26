@@ -435,34 +435,6 @@ function readDecisions(v: unknown): GuardrailDecisionsConfig {
   };
 }
 
-// A settings write that changes the guardrails provider and carries the stored endpoint over
-// unchanged drops it: that URL was typed for the old provider, and OpenRouter's client honors one,
-// so kept it would send the new provider's key and the conversation to the old server. A URL the
-// write sets itself, or one kept with the provider, stands. Mutates `next` in place, like the other
-// write normalizers.
-export function carriedGuardrailsBaseUrlDropped(
-  next: unknown,
-  stored: unknown,
-): void {
-  const g = (bag: unknown) =>
-    bag && typeof bag === "object"
-      ? ((bag as Record<string, unknown>).guardrails as
-          | Record<string, unknown>
-          | undefined)
-      : undefined;
-  const after = g(next);
-  const before = g(stored);
-  if (!after || !before || typeof after !== "object") return;
-  const url = str(after.baseURL);
-  if (
-    url !== null &&
-    str(after.provider) !== null &&
-    str(after.provider) !== str(before.provider) &&
-    url === str(before.baseURL)
-  )
-    after.baseURL = null;
-}
-
 // Whether the guardrails chat model is an endpoint meant to run with no key: OpenAI-compatible, no
 // credential configured, and a dialable http(s) address (the credential's or the typed one; a
 // `localhost:8080` with no scheme is not one). A configured credential that did not resolve is a
@@ -685,10 +657,6 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     // leave every already-saved empty value broken.
     model: str(bag.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "",
     credentialRef: str(bag.credentialRef),
-    // As stored, for every provider: an endpoint saved on purpose (OpenRouter behind a proxy, say)
-    // must keep reaching that endpoint, or the call falls back to the provider's public one with the
-    // conversation and the key. A URL left over from another provider is cleared where the provider
-    // changes (the editor, and `carriedGuardrailsBaseUrlDropped` on every write), never here.
     baseURL: str(bag.baseURL),
     competitors: readCompetitors(bag.competitors),
     customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),

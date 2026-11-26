@@ -83,10 +83,7 @@ import {
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
-import {
-  carriedGuardrailsBaseUrlDropped,
-  readGuardrailsConfig,
-} from "@/modules/guardrails/settings";
+import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -2344,7 +2341,6 @@ export async function updateAgentAndGrants(
     assertSettingsReviseToolCalls(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     keepCallsSystemFields(rest.settings, before?.settings);
-    carriedGuardrailsBaseUrlDropped(rest.settings, before?.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
     stripDerivedFullDetailInPlace(rest.settings);
     assertSettingsProtectedLabels(rest.settings, before?.settings);

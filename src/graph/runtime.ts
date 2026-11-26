@@ -2522,12 +2522,18 @@ async function runTurnBody(
       if (handoffState.completed) turnState.resolveRequested = false;
       // The handoff's closing line decides this turn's reply: the model's own line, or, after a
       // completed transfer, the turn review's pending fallback standing in for it.
-      const handedOff =
-        handoffAnsweredTheTurn(handoffState) ||
-        (handoffState.completed && !!turnReview?.pending());
+      const byFallback = handoffState.completed && !!turnReview?.pending();
+      const handedOff = handoffAnsweredTheTurn(handoffState) || byFallback;
       // NOTE: The model's final text after a handoff duplicates the closing line, and the mirror may
       // still read bot-owned. Blanked, not returned, so queued images still pass every gate below.
-      if (handedOff) reply = "";
+      // Under a turn-review fallback that line is the operator's text, so the model's final words
+      // were never sent: they leave the thread through the deferred rollback the silence uses, and
+      // the transfer's call and result stay.
+      if (handedOff) {
+        if (byFallback && reply)
+          silenceProduced = result.messages as BaseMessage[];
+        reply = "";
+      }
       // NOTE: The transfer declared that this case gets no reply, so the model's next line is dropped
       // too. The proactive path needs nothing: its ownership probe already reads `open`.
       else if (handoffDeclaredSilence(handoffState)) {

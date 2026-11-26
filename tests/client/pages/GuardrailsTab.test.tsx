@@ -380,6 +380,30 @@ describe("GuardrailsTab thresholds beside their checks", () => {
     ]);
   });
 
+  test("after a provider switch cleared the endpoint, typing the same one again keeps it", () => {
+    mount((c) => {
+      c.classifier = "chat";
+      c.provider = "openai-compatible";
+      c.baseURL = "http://antigo.local/v1";
+    });
+    const provider = () =>
+      document.querySelector<HTMLSelectElement>('[data-testid="gr-provider"]');
+    fireEvent.change(provider() as HTMLSelectElement, {
+      target: { value: "openai" },
+    });
+    fireEvent.change(provider() as HTMLSelectElement, {
+      target: { value: "openai-compatible" },
+    });
+    const cleared = saved?.baseURL ?? null;
+    fireEvent.change(
+      document.querySelector<HTMLInputElement>(
+        '[data-testid="gr-base-url"]',
+      ) as HTMLInputElement,
+      { target: { value: "http://antigo.local/v1" } },
+    );
+    expect([cleared, saved?.baseURL]).toEqual([null, "http://antigo.local/v1"]);
+  });
+
   test("the failure choice starts on pass and stores hold", () => {
     mount();
     const select = document.querySelector<HTMLSelectElement>(

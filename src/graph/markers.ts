@@ -470,9 +470,10 @@ export function isTurnReviewRefusal(message: BaseMessage): boolean {
 }
 
 // Each tool call of a slice with the result that answers it: by id, or, for a call a provider sent
-// with no id (its result then carries `""`), by name among the id-less results of its own batch, in
-// order, so a sibling with a result of its own is never taken for it. The one pairing every reader of
-// call outcomes uses.
+// with no id (its result then carries `""`), by name among the id-less results. Results are taken
+// one by one from their own batch in call order, so a sibling with a result of its own, or a second
+// call repeating an id, is never handed one already paired. The one pairing every reader of call
+// outcomes uses.
 export function pairedResults(
   slice: readonly BaseMessage[],
 ): Map<ToolCallLike, ToolMessage> {
@@ -482,18 +483,13 @@ export function pairedResults(
     const results: ToolMessage[] = [];
     for (let j = i + 1; typeOf(slice[j]) === "tool"; j++)
       results.push(slice[j] as ToolMessage);
-    const byId = new Map(results.map((r) => [r.tool_call_id, r]));
-    const idless = results.filter((r) => !r.tool_call_id);
     const calls =
       (m as unknown as { tool_calls?: ToolCallLike[] }).tool_calls ?? [];
     for (const c of calls) {
-      let result: ToolMessage | undefined;
-      if (c.id) result = byId.get(c.id);
-      else {
-        const k = idless.findIndex((r) => r.name === c.name);
-        if (k >= 0) [result] = idless.splice(k, 1);
-      }
-      if (result) out.set(c, result);
+      const k = results.findIndex((r) =>
+        c.id ? r.tool_call_id === c.id : !r.tool_call_id && r.name === c.name,
+      );
+      if (k >= 0) out.set(c, results.splice(k, 1)[0] as ToolMessage);
     }
   });
   return out;

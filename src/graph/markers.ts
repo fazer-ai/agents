@@ -1,4 +1,5 @@
 import {
+  AIMessage,
   type BaseMessage,
   HumanMessage,
   ToolMessage,
@@ -555,5 +556,20 @@ export function isUnranToolResult(message: BaseMessage): boolean {
 // in the thread cannot sit second to last, because every later invoke appends its own turn after it.
 export function turnWasCalledOff(produced: readonly BaseMessage[]): boolean {
   const beforeLast = produced.at(-2);
-  return beforeLast !== undefined && isCalledOffToolResult(beforeLast);
+  const last = produced.at(-1);
+  return (
+    (beforeLast !== undefined && isCalledOffToolResult(beforeLast)) ||
+    (last !== undefined &&
+      typeOf(last) === "ai" &&
+      hasMarker(last, "called_off"))
+  );
+}
+
+// The same refusal where no call is left to answer: the empty terminator itself carries the marker,
+// for a turn called off in the agent node (a reply's review awaited while the turn was lost).
+export function calledOffTerminator(): AIMessage {
+  return new AIMessage({
+    content: "",
+    additional_kwargs: { [MARKER_KWARG]: "called_off" },
+  });
 }

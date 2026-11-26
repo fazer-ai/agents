@@ -17,6 +17,7 @@ import {
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { markRead, markReadOnly } from "@/graph/tools/reads";
+import { customerTurn } from "@/modules/guardrails/turn-review";
 
 // The turn review in the graph: a write call it flags never runs and the model reads why, a read is
 // never reviewed, and a reply it flags is redone with the whole toolset and reviewed again. A made-up
@@ -126,6 +127,7 @@ async function run(
     retrySilence?: () => boolean;
     standingNotices?: string[];
     spokenNotice?: () => string | null;
+    maxHistoryTokens?: number;
   } = {},
 ) {
   ran.length = 0;
@@ -137,6 +139,7 @@ async function run(
   const tools: Record<string, string>[] = [];
   const indexes: (number | undefined)[] = [];
   const replyInstructions: string[] = [];
+  const replyTurns: BaseMessage[][] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
@@ -149,6 +152,7 @@ async function run(
     retrySilence: opts.retrySilence,
     standingNotices: opts.standingNotices,
     spokenNotice: opts.spokenNotice,
+    maxHistoryTokens: opts.maxHistoryTokens,
     revisionPlan: opts.groundingReReview
       ? () => ({
           sourceTools: [],
@@ -167,7 +171,8 @@ async function run(
       indexes.push(o?.index);
       return hooks.call?.(call.name) ?? null;
     },
-    reviewTurnReply: async (_turn, reply, o) => {
+    reviewTurnReply: async (turn, reply, o) => {
+      replyTurns.push(turn);
       replies.push(reply);
       canRedo.push(o?.canRedo ?? true);
       replyInstructions.push(o?.instructions ?? "");
@@ -193,6 +198,7 @@ async function run(
     tools,
     replyInstructions,
     indexes,
+    replyTurns,
   };
 }
 
@@ -776,6 +782,105 @@ describe("the turn review in the graph", () => {
     expect(model.seen).toHaveLength(1);
     expect(messages.map(text)).not.toContain("Transferi você.");
     expect(text(messages.at(-1))).toBe("");
+    // Called off on the marker the caller reads, whatever the fence says by delivery.
+    expect(turnWasCalledOff(messages)).toBe(true);
+  });
+
+  // The bug it catches: the exit left the recovered draft the review refused in the thread, and an
+  // ordinary empty answer, so a caller whose fence said wanted again recovered and sent it.
+  test("a turn lost during the review of a recovered draft takes the draft out and is called off", async () => {
+    let reviewed = false;
+    const model = new BoundRecordingModel([
+      {
+        text: "Vou transferir você agora.",
+        calls: [{ name: "buscar_pedido" }],
+      },
+      { text: "" },
+      { text: "NUNCA-PEDIDO" },
+    ]);
+    const { messages, replies } = await run(
+      model,
+      {
+        reply: () => {
+          reviewed = true;
+          return REPLY_NOTE;
+        },
+      },
+      {
+        recoversReply: () => true,
+        // Lost only for the read after the review: the owner is back by delivery.
+        stillWanted: (() => {
+          let reads = 0;
+          return async () => !(reviewed && reads++ === 0);
+        })(),
+      },
+    );
+    expect(replies).toEqual(["Vou transferir você agora."]);
+    expect(model.seen).toHaveLength(2);
+    expect(turnWasCalledOff(messages)).toBe(true);
+    expect(replyWrittenThisTurn(messages)).toBe("");
+  });
+
+  // The bug it catches: the reply's review read the window the history ceiling cut, which keeps only
+  // the last customer message, so a long request before a short clarification never reached it.
+  test("the reply's review reads the customer's messages from the untrimmed thread", async () => {
+    const long = `PEDIDO-LONGO ${"palavra ".repeat(400)}`;
+    const { replyTurns } = await run(
+      new BoundRecordingModel([{ text: "Certo." }]),
+      {},
+      {
+        history: [new HumanMessage(long), new HumanMessage("ESCLARECIMENTO")],
+        maxHistoryTokens: 20,
+      },
+    );
+    const seen = customerTurn(replyTurns[0] ?? []);
+    expect(seen).toEqual([long.trim(), "ESCLARECIMENTO"]);
+  });
+
+  // The bug it catches: an MCP adapter that refused the arguments before sending them read as a
+  // call of unknown effect, beside a server failure that may have written.
+  test("an MCP argument refusal is marked as never run, a server failure is not", async () => {
+    const mcpError = (message: string, cause?: Error) => {
+      const e = new Error(message, cause ? { cause } : undefined);
+      e.name = "ToolException";
+      return e;
+    };
+    const zod = Object.assign(new Error("bad"), { name: "ZodError" });
+    const recusa = tool(
+      async () => {
+        throw mcpError("Invalid arguments for MCP tool recusa: x", zod);
+      },
+      { name: "recusa", description: "mcp", schema: z.object({}) },
+    );
+    const servidor = tool(
+      async () => {
+        throw mcpError("Error calling tool servidor: 500", zod);
+      },
+      { name: "servidor", description: "mcp", schema: z.object({}) },
+    );
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new BoundRecordingModel([
+        { text: "", calls: [{ name: "recusa" }, { name: "servidor" }] },
+        { text: "Pronto." },
+      ]) as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [recusa, servidor],
+    });
+    const out = await graph.invoke(
+      { messages: [new HumanMessage("Oi")] },
+      { configurable: { thread_id: `tr-${Math.random()}` } },
+    );
+    const results = (out.messages as BaseMessage[]).filter(
+      (m) => m.getType() === "tool",
+    ) as ToolMessage[];
+    expect(
+      results.map((r) => [r.name, r.status, isUnranToolResult(r)]),
+    ).toEqual([
+      ["recusa", "error", true],
+      ["servidor", "error", false],
+    ]);
   });
 
   test("ownership is read again after a batch only when a review ran in it", async () => {

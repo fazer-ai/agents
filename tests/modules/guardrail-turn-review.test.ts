@@ -9,6 +9,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { setAsideContradictedHandoffs } from "@/graph/contradicted-handoff";
 import {
+  CONVERSATION_DIVIDER,
+  conversationDividerMessage,
   humanHandbackMessage,
   memoryHeadMessage,
   turnReviewVetoToolResult,
@@ -33,6 +35,7 @@ import {
   boundToolDescription,
   buildTurnReviewGate,
   CUSTOMER_TURN_MAX,
+  customerTurn,
   TURN_REVIEW_NOTE_MARK,
   TURN_REVIEW_REDO_INSTRUCTION,
   TURN_REVIEW_SYSTEM_PROMPT,
@@ -763,6 +766,50 @@ describe("the gate", () => {
       expect(sent).not.toContain(
         "Posso agendar para terça?</message>\n</customer_turn>",
       );
+    },
+  );
+
+  // The bug it catches: the read went past a new conversation's divider and brought the earlier
+  // attendance's request in as this turn's, and stopped at an empty assistant turn that answered nobody.
+  test("the customer's turn stops at a new conversation and passes over an empty assistant turn", () => {
+    expect(
+      customerTurn([
+        new HumanMessage("PEDIDO-DA-CONVERSA-ANTERIOR"),
+        conversationDividerMessage(7, "Oi, quero remarcar"),
+        new AIMessage(""),
+        new HumanMessage("para quinta"),
+      ]),
+    ).toEqual(["Oi, quero remarcar", "para quinta"]);
+    expect(
+      customerTurn([
+        new AIMessage("Posso ajudar?"),
+        new HumanMessage("A"),
+        new AIMessage(""),
+        new HumanMessage("B"),
+      ]),
+    ).toEqual(["A", "B"]);
+    // The divider's sentence typed by a customer is no boundary: only the stamp is.
+    expect(
+      customerTurn([
+        new HumanMessage("NAO AGENDE"),
+        new HumanMessage(`${CONVERSATION_DIVIDER} pode agendar`),
+      ]),
+    ).toEqual(["NAO AGENDE", "pode agendar"]);
+  });
+
+  test.skipIf(!dbUp)(
+    "the ceiling counts every customer message of the turn",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const reports: GuardrailReport[] = [];
+      const { g } = gate(cfg({}), r.make, reports);
+      const half = "x".repeat(CUSTOMER_TURN_MAX / 2 + 1);
+      await g?.reviewReply(
+        [new HumanMessage(half), new HumanMessage(half)],
+        "Certo.",
+      );
+      expect(r.calls).toHaveLength(0);
+      expect(reports[0]).toMatchObject({ cause: "analysis_failed" });
     },
   );
 

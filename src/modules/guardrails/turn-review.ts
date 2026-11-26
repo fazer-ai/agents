@@ -12,6 +12,7 @@ import logger from "@/api/lib/logger";
 import { historyDate } from "@/graph/history-dates";
 import {
   CONVERSATION_DIVIDER,
+  isConversationDivider,
   isHumanAgentTurn,
   isHumanHandback,
   isMemoryHead,
@@ -454,7 +455,10 @@ export interface TurnReviewGate {
 }
 
 // The customer's messages this turn answers, oldest first and whole: those after the agent's last
-// reply (or a person's), the platform's own notes left out.
+// reply (or a person's), the platform's own notes left out. An empty assistant turn answered nobody
+// and is passed over, so a thread with or without those (the model's view drops them) reads the
+// same. A new conversation's divider ends it: its own folded text is the customer's, and what came
+// before it belongs to the earlier attendance.
 export function customerTurn(turn: readonly BaseMessage[]): string[] {
   const out: string[] = [];
   let i = turn.length - 1;
@@ -462,7 +466,14 @@ export function customerTurn(turn: readonly BaseMessage[]): string[] {
   for (; i >= 0; i--) {
     const m = turn[i] as BaseMessage;
     const type = m.getType();
-    if (type === "ai" || isHumanAgentTurn(m) || isMemoryHead(m)) break;
+    if (type === "ai") {
+      const said =
+        contentToText(m.content).trim() ||
+        ((m as { tool_calls?: unknown[] }).tool_calls?.length ?? 0) > 0;
+      if (said) break;
+      continue;
+    }
+    if (isHumanAgentTurn(m) || isMemoryHead(m)) break;
     if (
       type !== "human" ||
       isNudgeTurn(m) ||
@@ -475,6 +486,8 @@ export function customerTurn(turn: readonly BaseMessage[]): string[] {
     if (text.startsWith(CONVERSATION_DIVIDER))
       text = text.slice(CONVERSATION_DIVIDER.length).trim();
     if (text) out.unshift(text);
+    // The marker only: a customer can type the divider's sentence, not forge the stamp.
+    if (isConversationDivider(m)) break;
   }
   return out;
 }

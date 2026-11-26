@@ -55,6 +55,7 @@ import {
 } from "./client-tools";
 import { setAsideContradictedHandoffs } from "./contradicted-handoff";
 import {
+  calledOffTerminator,
   calledOffToolResult,
   callsRefusedByReview,
   droppedCallCount,
@@ -83,6 +84,7 @@ import {
   fenceReporterOf,
   withFenceReporter,
 } from "./tools/fence-report";
+import { isMcpArgumentRefusal } from "./tools/mcp";
 import { isReadOnlyTool, isReadTool } from "./tools/reads";
 import { isSchemaRefusal } from "./tools/refusal-log";
 import { unansweredInputs } from "./unanswered-inputs";
@@ -982,6 +984,12 @@ export function buildAgentGraph({
     // seen: on a PARALLEL batch the calling message is not the end of the turn, and a companion's
     // extra round would leave it standing. Undelivered either way: the runtime posts the LAST message.
     const narration = staySilent ? silenceNarration(history) : [];
+    // The reviewer reads the thread the call reviews read, not the window the model got: `view` starts
+    // with `history`, a suffix of `full`, so the trimmed front goes back ahead of it, and the customer
+    // messages of the turn (`customerTurn`) come from the same untrimmed thread for both reviews.
+    const dropped = full.length - history.length;
+    const reviewed = (view: BaseMessage[]) =>
+      dropped > 0 ? [...full.filter((_, i) => i < dropped), ...view] : view;
     // The turn review of the text headed for delivery, the one place it is asked. Every path that
     // can leave a reply for the runtime ends here exactly once with its final text: the final
     // answer, a silence retry and a redo (the loop below, `canRedo`), the draft the runtime recovers
@@ -994,7 +1002,7 @@ export function buildAgentGraph({
       canRedo: boolean,
     ): Promise<TurnReviewFeedback | null> =>
       reviewTurnReply && !noReplyChannel && !silentTurn && text
-        ? reviewTurnReply(view, text, {
+        ? reviewTurnReply(reviewed(view), text, {
             canRedo,
             instructions: reviewInstructions,
             tools: reviewTools,
@@ -1427,16 +1435,19 @@ export function buildAgentGraph({
       const draft = customerFacingReply(own || recovered).text;
       const note = await reviewHeadedOut(view, draft, true);
       if (!note) break;
-      // The review was an awaited model call: a turn lost meanwhile ends here, the flagged draft left
-      // out and nothing generated, and the caller's own fence settles it as called off.
+      if (!own && recovered)
+        draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
+      // The review was an awaited model call: a turn lost meanwhile is called off here, with the
+      // flagged draft already out and nothing generated, on the marker `turnWasCalledOff` reads, so
+      // an owner back by delivery cannot recover the refused text.
       if (await turnLost()) {
         logger.info(
           "graph: the turn was called off during the turn review of its reply, so no redo was asked",
         );
-        return { messages: [...narration, ...draftRemoved, new AIMessage("")] };
+        return {
+          messages: [...narration, ...draftRemoved, calledOffTerminator()],
+        };
       }
-      if (!own && recovered)
-        draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
       const redo = await ask(
         requestWith([note.instruction], draftRemoved, note.feedback),
       );
@@ -1562,8 +1573,9 @@ export function buildAgentGraph({
   let endedOnWrites = false;
   // Each tool behind a delegate that answers arguments its schema rejects (the typed
   // `ToolInputParsingException`, thrown before any handler runs) with the text `ToolNode` would write,
-  // marked as never run (`isSchemaRefusal`). Any other error stays `ToolNode`'s, a result whose
-  // effect is unknown.
+  // marked as never run (`isSchemaRefusal`), and an MCP tool's arguments the adapter refused before
+  // sending them (`isMcpArgumentRefusal`). Any other error, a server's or its response's included,
+  // stays `ToolNode`'s, a result whose effect is unknown.
   const unparsedRefused = (
     t: StructuredToolInterface,
   ): StructuredToolInterface => {
@@ -1572,7 +1584,7 @@ export function buildAgentGraph({
       try {
         return await t.invoke(input as never, config);
       } catch (e) {
-        if (!isSchemaRefusal(e)) throw e;
+        if (!isSchemaRefusal(e) && !isMcpArgumentRefusal(e)) throw e;
         return markedSetAside(
           new ToolMessage({
             status: "error",

@@ -1415,7 +1415,7 @@ export function GuardrailsTab({
                 title={t("editor.guardrails.turnReview", "Turn review")}
                 description={t(
                   "editor.guardrails.turnReviewDesc",
-                  "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Lookups are never reviewed.",
+                  "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Only the tools that cannot change anything skip it: the knowledge search, the time, the calculator, code tools and an HTTP GET. MCP and integration calls are reviewed, since nothing guarantees they only read.",
                 )}
               >
                 <SwitchField

@@ -2584,7 +2584,7 @@
       "turnReviewActionReviseHint": "Uma chamada apontada não roda e uma resposta apontada não sai: o agente lê o motivo e refaz o passo, com as ferramentas dele. Uma chamada ao revisor por passo revisado, mais uma geração por refação.",
       "turnReviewAttempts": "Refações por turno",
       "turnReviewAttemptsHint": "Passado esse número, um passo ainda apontado não acontece: a chamada não roda, a resposta não sai e o turno termina com a ação abaixo.",
-      "turnReviewDesc": "Antes de uma ação ter efeito, um modelo revisor lê as instruções do agente, a Política acima, a conversa e os resultados das ferramentas no turno, e julga se o passo segue o que elas pedem. Revisa cada chamada que muda alguma coisa (uma transferência, um agendamento, uma etiqueta) antes de ela rodar, e a resposta final antes de ela sair. Só ficam fora as consultas que não mudam nada, como a busca na base, a hora e uma chamada HTTP de leitura (GET).",
+      "turnReviewDesc": "Antes de uma ação ter efeito, um modelo revisor lê as instruções do agente, a Política acima, a conversa e os resultados das ferramentas no turno, e julga se o passo segue o que elas pedem. Revisa cada chamada que muda alguma coisa (uma transferência, um agendamento, uma etiqueta) antes de ela rodar, e a resposta final antes de ela sair. Só ficam fora as ferramentas que não mudam nada: a busca na base, a hora, a calculadora, as ferramentas de código e uma chamada HTTP de leitura (GET). Chamadas de MCP e de integrações são revisadas, porque nada garante que elas só leiam.",
       "turnReviewEnabled": "Revisar as ações e a resposta do turno",
       "turnReviewFallback": "Quando as refações acabam",
       "turnReviewFallbackHandoff": "Transferir a conversa para a equipe",

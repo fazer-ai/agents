@@ -473,12 +473,17 @@ async function buildPlaygroundGraph(params: {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
+      toolNames?: readonly string[];
     },
   ) => Promise<string | null>;
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
-    opts?: { canRedo: boolean; instructions?: string },
+    opts?: {
+      canRedo: boolean;
+      instructions?: string;
+      toolNames?: readonly string[];
+    },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
 }) {

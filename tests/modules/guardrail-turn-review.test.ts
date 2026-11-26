@@ -333,6 +333,73 @@ describe("what the reviewer reads", () => {
     ]);
   });
 
+  // The bug it catches: a truthful report of yesterday's booking read as a promise no call kept, and
+  // the redo, with the booking tool bound, booking again.
+  test("the earlier turns' calls reach the reviewer as a record, lean, and the rule tells a report from a promise", () => {
+    const [system, user] = turnReviewMessages({
+      instructions: PROMPT,
+      customPolicy: "",
+      conversation: [],
+      calls: [],
+      earlierCalls: [
+        ...Array.from({ length: 14 }, (_, i) => ({
+          name: `consulta_${i}`,
+          args: {},
+          result: "ok",
+          source: false,
+          turnsBack: 2,
+        })),
+        {
+          name: "agendar",
+          args: { dia: "terça" },
+          result: `agendado ${"x".repeat(2000)}`,
+          source: false,
+          turnsBack: 1,
+        },
+      ],
+      step: {
+        kind: "reply",
+        text: "Sim, seu horário de terça está confirmado.",
+      },
+    });
+    const usr = String(user?.content);
+    expect(usr).toContain('<tool_call name="agendar" turns_back="1">');
+    expect(usr).not.toContain('name="consulta_0"');
+    expect(usr.length).toBeLessThan(6000);
+    expect(String(system?.content)).toContain(
+      "Reporting an action an earlier call already did",
+    );
+  });
+
+  test.skipIf(!dbUp)(
+    "the gate hands the reviewer the calls of earlier turns in the thread",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const { g } = gate(cfg({}), r.make);
+      await g?.reviewReply(
+        [
+          new HumanMessage("Pode marcar terça às 10h?"),
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "agendar", args: { dia: "terça" }, id: "b1" }],
+          }),
+          new ToolMessage({
+            content: "agendado",
+            tool_call_id: "b1",
+            name: "agendar",
+          }),
+          new AIMessage("Agendado para terça às 10h."),
+          new HumanMessage("Meu horário de terça está confirmado?"),
+          new AIMessage("Sim, está confirmado para terça às 10h."),
+        ],
+        "Sim, está confirmado para terça às 10h.",
+      );
+      const sent = JSON.stringify(r.calls[0]);
+      expect(sent).toContain("earlier_tool_calls");
+      expect(sent).toContain("agendado");
+    },
+  );
+
   test("a reply step names the tools the turn called, so a promise with no call shows", () => {
     const [, none] = turnReviewMessages({
       instructions: PROMPT,
@@ -443,9 +510,14 @@ describe("the gate", () => {
         ["call", "handoff_to_human"],
         ["reply", undefined],
       ]);
+      // Flow lines are written fire-and-forget (`emitFlowEvent`), so their row order is not the
+      // order they were emitted in.
       const rows = await lines(f.turnId as string);
-      expect(rows.map((x) => x.outcome)).toEqual(["revised", "exhausted"]);
-      expect(rows[0]?.attempt).toBe(1);
+      expect(rows.map((x) => x.outcome).sort()).toEqual([
+        "exhausted",
+        "revised",
+      ]);
+      expect(rows.find((x) => x.outcome === "revised")?.attempt).toBe(1);
     },
   );
 
@@ -499,6 +571,37 @@ describe("the gate", () => {
     );
     expect(f.feedback.match(/<\/parecer_do_revisor>/g)).toHaveLength(1);
   });
+
+  // The bug it catches: the saved routing guidance of a handoff the toolset left out judged as a rule.
+  test.skipIf(!dbUp)(
+    "the reviewer reads the guidance of the tools the graph binds, and no other",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const g = buildTurnReviewGate({
+        cfg: cfg({}),
+        reviewer: RUNS,
+        systemPrompt: PROMPT,
+        toolGuidance: {
+          handoff_to_human: "ROTEAMENTO-SALVO",
+          set_labels: "ETIQUETAS-SALVAS",
+        },
+        flow: flow(),
+        clock: CLOCK,
+        makeModel: r.make,
+        langfuseCfg: null,
+      });
+      await g?.reviewCall(
+        turn(),
+        { name: "set_labels", args: {} },
+        { toolNames: ["set_labels", "buscar_faq"] },
+      );
+      const sent = JSON.stringify(r.calls[0]);
+      expect([
+        sent.includes("ETIQUETAS-SALVAS"),
+        sent.includes("ROTEAMENTO-SALVO"),
+      ]).toEqual([true, false]);
+    },
+  );
 
   test("an empty reply is not reviewed", async () => {
     const r = reviewer([VIOLATED]);

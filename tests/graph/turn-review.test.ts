@@ -129,6 +129,7 @@ async function run(
   const canRedo: boolean[] = [];
   const alongside: string[][] = [];
   const instructions: string[] = [];
+  const toolNames: string[][] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
@@ -154,6 +155,7 @@ async function run(
       calls.push(call.name);
       alongside.push((o?.alongside ?? []).map((c) => c.name));
       instructions.push(o?.instructions ?? "");
+      toolNames.push([...(o?.toolNames ?? [])]);
       return hooks.call?.(call.name) ?? null;
     },
     reviewTurnReply: async (_turn, reply, o) => {
@@ -178,6 +180,7 @@ async function run(
     canRedo,
     alongside,
     instructions,
+    toolNames,
   };
 }
 
@@ -538,12 +541,16 @@ describe("the turn review in the graph", () => {
       { text: "", calls: [{ name: "transferir" }] },
       { text: "Pronto." },
     ]);
-    const { instructions } = await run(
+    const { instructions, toolNames } = await run(
       model,
       {},
       { standingNotices: ["[Sistema] AVISO-DO-TURNO"] },
     );
     expect(instructions).toEqual(["PROMPT\n\n[Sistema] AVISO-DO-TURNO"]);
+    // And the tools it binds, so per-tool guidance is read only for those.
+    expect(toolNames).toEqual([
+      ["buscar_pedido", "consultar_agenda", "transferir", "skip_reply"],
+    ]);
   });
 
   test("a held review of a grounding rewrite stops grounding from reviewing it again", async () => {
@@ -594,5 +601,30 @@ describe("the turn review in the graph", () => {
         .filter((m) => m.getType() === "tool")
         .map((m) => (isUnranToolResult(m) ? "veto" : text(m))),
     ).toEqual(["transferido", "veto"]);
+  });
+
+  test("a grounding rewrite after a refused recovered draft does not read that draft back", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Rascunho recusado.", calls: [{ name: "buscar_pedido" }] },
+      { text: "" },
+      { text: "Abre às 16h." },
+      { text: "Abre às 18h." },
+    ]);
+    const { messages } = await run(
+      model,
+      { reply: (r) => (r === "Rascunho recusado." ? REPLY_NOTE : null) },
+      {
+        recoversReply: () => true,
+        grounding: (r) =>
+          r === "Abre às 16h." ? "[Sistema] NOTA-FACTUAL" : null,
+      },
+    );
+    expect(model.seen).toHaveLength(4);
+    expect(
+      model.seen[3]?.some(
+        (m) => m.getType() === "ai" && text(m).includes("Rascunho recusado."),
+      ),
+    ).toBe(false);
+    expect(text(messages.at(-1))).toBe("Abre às 18h.");
   });
 });

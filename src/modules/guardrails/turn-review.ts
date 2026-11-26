@@ -32,6 +32,7 @@ import type {
   GuardrailReport,
 } from "./gate";
 import {
+  earlierToolCalls,
   type GroundingToolCall,
   groundingConversation,
   groundingNow,
@@ -78,6 +79,9 @@ export interface TurnReviewInput {
   customPolicy: string;
   conversation: readonly DatedContextMessage[];
   calls: readonly GroundingToolCall[];
+  // Calls of earlier turns still in the window, with their results: the record that lets a reply
+  // report an action already done (yesterday's booking) without reading as a promise no call kept.
+  earlierCalls?: readonly GroundingToolCall[];
   step: TurnStep;
 }
 
@@ -96,22 +100,26 @@ const REVIEW_TIMEOUT_MS = 30_000;
 const NOW_TAG = "now";
 const CONVERSATION_TAG = "conversation_context";
 const TOOLS_TAG = "tool_results";
+const EARLIER_TAG = "earlier_tool_calls";
+// The earlier record is evidence, kept lean: the latest calls only, each result clipped short.
+const EARLIER_CALLS_MAX = 12;
+const EARLIER_RESULT_MAX = 600;
 const STEP_TAG = "proposed_step";
 const FENCES =
-  /<\s*\/?\s*(now|conversation_context|tool_results|tool_call|proposed_step|agent_instructions|tool_instructions|tool_instruction)[^>]*>/gi;
+  /<\s*\/?\s*(now|conversation_context|tool_results|tool_call|proposed_step|agent_instructions|tool_instructions|tool_instruction|earlier_tool_calls)[^>]*>/gi;
 const unfenced = (s: string) => s.replace(FENCES, "");
 
 // A new judge prompt behind an opt-in check, measured by the operator in `observe` before it acts. The
 // repo does not edit the prompt of an existing judge without an A/B battery, and this one is not one.
 export const TURN_REVIEW_SYSTEM_PROMPT = [
-  "You review ONE step a customer-service AI agent is about to take, before it takes effect, and decide whether that step follows the agent's instructions. You receive, in one user message: the recent CONVERSATION (tagged <conversation_context>), the TOOL RESULTS the agent read in this turn (tagged <tool_results>), and the PROPOSED STEP (tagged <proposed_step>): either a tool call that changes something (a transfer to a person, closing the conversation, staying silent, writing a record) or the reply it is about to send.",
+  "You review ONE step a customer-service AI agent is about to take, before it takes effect, and decide whether that step follows the agent's instructions. You receive, in one user message: the recent CONVERSATION (tagged <conversation_context>), the TOOL RESULTS the agent read in this turn (tagged <tool_results>), the calls of EARLIER turns with their results (tagged <earlier_tool_calls>, what was already done before this turn), and the PROPOSED STEP (tagged <proposed_step>): either a tool call that changes something (a transfer to a person, closing the conversation, staying silent, writing a record) or the reply it is about to send.",
   "",
   "The agent's instructions are in <agent_instructions> below. Judge the step against them and against the additional policy, when there is one.",
   "",
   "Flag the step ONLY when, in this situation, it does what the instructions forbid or skips what they require. Typical violations:",
   "- handing the conversation to a person before asking what the instructions say to ask first, when the customer has not answered it yet and nothing in the instructions says to transfer right away in this case;",
   "- handing over a question that the tool results of this turn already answer, when the instructions say the agent answers that kind of question itself;",
-  "- a reply telling the customer about an action (a transfer, a booking, a record) that no call of this turn performed;",
+  "- a reply announcing an action (a transfer, a booking, a record) as happening now, or stating it as done, when no call of this turn performed it and no call in <earlier_tool_calls> records it. Reporting an action an earlier call already did (confirming yesterday's booking, for example) is NOT a violation;",
   "- a reply that answers something the instructions say must go to a person, or that skips a step the instructions require in this situation;",
   "- staying silent, or closing the conversation, when the instructions say the customer must be answered.",
   "",
@@ -142,6 +150,21 @@ function toolInstructionsBlock(
       "</tool_instructions>",
     ].join("\n"),
   ];
+}
+
+// The earlier turns' calls, oldest first, the latest `EARLIER_CALLS_MAX` only, each result clipped.
+function earlierBlock(
+  earlier: readonly GroundingToolCall[] | undefined,
+): string[] {
+  // An array of calls, not text: no character is cut here.
+  const all = earlier ?? [];
+  const kept = all.slice(Math.max(0, all.length - EARLIER_CALLS_MAX));
+  if (kept.length === 0) return [];
+  const lines = kept.map(
+    (c) =>
+      `<tool_call name="${quotedName(c.name)}"${c.turnsBack !== undefined ? ` turns_back="${c.turnsBack}"` : ""}>\narguments: ${unfenced(JSON.stringify(c.args ?? {}))}\nresult:\n${unfenced(clipText(c.result, EARLIER_RESULT_MAX))}\n</tool_call>`,
+  );
+  return [`<${EARLIER_TAG}>\n${lines.join("\n")}\n</${EARLIER_TAG}>`];
 }
 
 const quotedName = (name: string) => unfenced(name).replace(/"/g, "");
@@ -196,6 +219,7 @@ export function turnReviewMessages(input: TurnReviewInput): BaseMessage[] {
   const user = [
     ...(input.now ? [`<${NOW_TAG}>${unfenced(input.now)}</${NOW_TAG}>`] : []),
     `<${CONVERSATION_TAG}>\n${conversation}\n</${CONVERSATION_TAG}>`,
+    ...earlierBlock(input.earlierCalls),
     `<${TOOLS_TAG}>\n${calls}\n</${TOOLS_TAG}>`,
     `<${STEP_TAG}>\n${stepBlock(input.step, input.calls)}\n</${STEP_TAG}>`,
   ].join("\n\n");
@@ -331,6 +355,7 @@ export interface TurnReviewGate {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
+      toolNames?: readonly string[];
     },
   ) => Promise<string | null>;
   // The graph's `reviewTurnReply`: the final reply, before the factual-grounding review and the send.
@@ -339,13 +364,28 @@ export interface TurnReviewGate {
   reviewReply: (
     turn: BaseMessage[],
     reply: string,
-    opts?: { canRedo: boolean; instructions?: string },
+    opts?: {
+      canRedo: boolean;
+      instructions?: string;
+      toolNames?: readonly string[];
+    },
   ) => Promise<TurnReviewFeedback | null>;
   // The fallback the caller's output gate applies, once the attempts ran out or a review held.
   pending: () => GuardrailDecision | null;
   // The graph's `turnReviewHalted`: a review held under `onFailure: "hold"`, so no write may run and
   // the round ends for the caller to hand the conversation over.
   halted: () => boolean;
+}
+
+// The guidance of the tools the toolset holds; all of it when the caller does not say which.
+function guidanceFor(
+  guidance: Readonly<Partial<Record<string, string>>> | undefined,
+  toolNames: readonly string[] | undefined,
+): Readonly<Partial<Record<string, string>>> | undefined {
+  if (!guidance || !toolNames) return guidance;
+  return Object.fromEntries(
+    Object.entries(guidance).filter(([name]) => toolNames.includes(name)),
+  );
 }
 
 // Null unless the check is on: the caller then passes no hooks, and nothing about the turn changes.
@@ -478,6 +518,8 @@ export function buildTurnReviewGate(
     canRedo = true,
     // The instructions the graph gave the model for this step; the stored prompt when absent.
     instructions?: string,
+    // The tools the graph binds: per-tool guidance of any other tool is left out.
+    toolNames?: readonly string[],
   ): Promise<{ rationale: string } | null> => {
     if (stopped || p.signal?.aborted) return null;
     const m = resolveModel();
@@ -500,10 +542,11 @@ export function buildTurnReviewGate(
         now: groundingNow(p.clock.now, p.clock.timezone),
         timezone: p.clock.timezone,
         instructions: instructions?.trim() ? instructions : p.systemPrompt,
-        toolInstructions: p.toolGuidance,
+        toolInstructions: guidanceFor(p.toolGuidance, toolNames),
         customPolicy: gr.customPolicy,
         conversation: groundingConversation(turn, TURN_REVIEW_CONTEXT_MESSAGES),
         calls,
+        earlierCalls: earlierToolCalls(turn, [], TURN_REVIEW_CONTEXT_MESSAGES),
         step,
       },
       verdictAskMode(reviewer.provider as ModelConfig["provider"]),
@@ -609,7 +652,13 @@ export function buildTurnReviewGate(
         args: call.args,
         alongside: opts?.alongside ?? [],
       };
-      const flagged = await review(turn, step, true, opts?.instructions);
+      const flagged = await review(
+        turn,
+        step,
+        true,
+        opts?.instructions,
+        opts?.toolNames,
+      );
       return flagged ? turnReviewNote(step, flagged.rationale) : null;
     },
     reviewReply: async (turn, reply, opts) => {
@@ -619,6 +668,7 @@ export function buildTurnReviewGate(
         { kind: "reply", text: reply },
         opts?.canRedo ?? true,
         opts?.instructions,
+        opts?.toolNames,
       );
       return flagged ? turnReviewFeedback(reply, flagged.rationale) : null;
     },

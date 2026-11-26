@@ -238,6 +238,7 @@ export interface BuildAgentGraphParams {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
+      toolNames?: readonly string[];
     },
   ) => Promise<string | null>;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
@@ -245,7 +246,11 @@ export interface BuildAgentGraphParams {
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
-    opts?: { canRedo: boolean; instructions?: string },
+    opts?: {
+      canRedo: boolean;
+      instructions?: string;
+      toolNames?: readonly string[];
+    },
   ) => Promise<TurnReviewFeedback | null>;
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
@@ -847,6 +852,9 @@ export function buildAgentGraph({
   const reviewInstructions = [systemPrompt, ...(standingNotices ?? [])]
     .filter((t) => t.trim())
     .join("\n\n");
+  // The tools this graph binds: the operator's per-tool guidance reaches the reviewer only for these,
+  // so a saved instruction of a tool the toolset left out (handoff switched off) is not a rule.
+  const reviewToolNames = (tools ?? []).map((t) => t.name);
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
   // Bound to the SAME toolset, or the fallback would answer a question the primary was asked
   // with tools it cannot call; the tool-call budget below counts calls, not models.
@@ -967,6 +975,7 @@ export function buildAgentGraph({
         ? reviewTurnReply(view, text, {
             canRedo,
             instructions: reviewInstructions,
+            toolNames: reviewToolNames,
           })
         : null;
     // The turn ends where the information ends, in three cases. A lone `skip_reply` asked for
@@ -1244,13 +1253,43 @@ export function buildAgentGraph({
       );
     };
 
+    // The request with late instructions after the history (or inside the one system prompt where
+    // a late system message is refused), over the history with the flagged drafts taken out.
+    // `feedback` is data about the step (the turn reviewer's reason and the refused draft): it goes
+    // after the history as a fenced message of its own, never into a system message, whose text the
+    // model obeys; only the fixed `extra` instructions do.
+    const requestWith = (
+      extra: readonly string[],
+      removed: readonly BaseMessage[],
+      feedback?: string,
+    ): BaseMessage[] => {
+      const view = withReplaced(shown, removed);
+      const data = feedback ? [new HumanMessage(feedback)] : [];
+      return lateSystemAccepted
+        ? [
+            new SystemMessage(prompt),
+            ...view,
+            ...wrapUp,
+            ...data,
+            ...extra.map((t) => new SystemMessage(t)),
+          ]
+        : [
+            new SystemMessage([prompt, ...extra].join("\n\n")),
+            ...view,
+            ...wrapUp,
+            ...data,
+          ];
+    };
     // One round of the factual-grounding rewrite. The note travels like the silence retry's
     // instruction, on every round, so it is in front of the model when it writes the answer. Calls go
     // to the tool node only while the cap has room; the first `room` of a batch are offered, and of
     // those only the sources run (`setAsideRevisionCalls`). A call written with no round left is
     // dropped, and the text beside it is the rewrite.
+    // `removed`: the drafts this round took out of the thread (a recovered draft the turn review or
+    // grounding refused), so the rewrite does not read them back as its own earlier answer.
     const askRevision = async (
       r: NonNullable<typeof revision>,
+      removed: readonly BaseMessage[] = [],
     ): Promise<BaseMessage> => {
       // Bounded by the turn's own budget too: the rewrite's calls are the turn's calls.
       const room = r.plan
@@ -1265,12 +1304,7 @@ export function buildAgentGraph({
               : undefined,
           }
         : { primary: model, fallback: fallback?.model };
-      let res = await ask(
-        lateSystemAccepted
-          ? [...messages, new SystemMessage(r.note)]
-          : [new SystemMessage(`${prompt}\n\n${r.note}`), ...shown, ...wrapUp],
-        bound,
-      );
+      let res = await ask(requestWith([r.note], removed), bound);
       const usage = (res as AIMessage).usage_metadata;
       r.info.inputTokens += usage?.input_tokens ?? 0;
       r.info.outputTokens += usage?.output_tokens ?? 0;
@@ -1307,33 +1341,6 @@ export function buildAgentGraph({
     };
     if (revision) return { messages: [await askRevision(revision)] };
 
-    // The request with late instructions after the history (or inside the one system prompt where
-    // a late system message is refused), over the history with the flagged drafts taken out.
-    // `feedback` is data about the step (the turn reviewer's reason and the refused draft): it goes
-    // after the history as a fenced message of its own, never into a system message, whose text the
-    // model obeys; only the fixed `extra` instructions do.
-    const requestWith = (
-      extra: readonly string[],
-      removed: readonly BaseMessage[],
-      feedback?: string,
-    ): BaseMessage[] => {
-      const view = withReplaced(shown, removed);
-      const data = feedback ? [new HumanMessage(feedback)] : [];
-      return lateSystemAccepted
-        ? [
-            new SystemMessage(prompt),
-            ...view,
-            ...wrapUp,
-            ...data,
-            ...extra.map((t) => new SystemMessage(t)),
-          ]
-        : [
-            new SystemMessage([prompt, ...extra].join("\n\n")),
-            ...view,
-            ...wrapUp,
-            ...data,
-          ];
-    };
     // The unexplained silence, asked once more per turn, a blank turn-review redo included. Only an
     // answer that says nothing (`saysNothing`), with no calls, in a turn that declared no silence
     // (`calledSkipThisTurn`), with no reply written beside a tool call on `view` (the thread as
@@ -1468,7 +1475,7 @@ export function buildAgentGraph({
             outputTokens: 0,
           },
         };
-        response = await askRevision(revision);
+        response = await askRevision(revision, draftRemoved);
       }
     }
     return { messages: [...narration, ...draftRemoved, silenced(response)] };
@@ -1679,6 +1686,7 @@ export function buildAgentGraph({
                     reviewCall(turn, call, {
                       ...o,
                       instructions: reviewInstructions,
+                      toolNames: reviewToolNames,
                     }),
                 )
               : null;

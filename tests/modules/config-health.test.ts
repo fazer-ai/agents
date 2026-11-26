@@ -1207,6 +1207,25 @@ describe("computeConfigIssues — the guardrails credential", () => {
     ).toEqual([{ key: "guardrails", ...at, pending: true, vaultId: "5" }]);
   });
 
+  // The bug it catches: a keyless OpenAI-compatible endpoint that screens fine reported as messages
+  // going out unscreened, a false alarm that also hides the failure count below it. Decisions still
+  // needs its key.
+  test("a keyless compatible chat model is no missing credential, and its failures still show", () => {
+    expect([
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "",
+        guardrailsKeyless: true,
+      }),
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "",
+        guardrailsKeyless: true,
+        guardrailsFailures: 3,
+      }).map((i) => i.key),
+    ]).toEqual([[], ["guardrailsFailing"]]);
+  });
+
   test("flags a guardrails credential whose entry is gone", () => {
     expect(
       computeConfigIssues({

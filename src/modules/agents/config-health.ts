@@ -266,6 +266,9 @@ export interface ConfigHealthInput {
   // message is delivered as if it had been screened and approved.
   guardrailsEnabled?: boolean;
   guardrailsCredentialRef?: string;
+  // The chat classifier on an OpenAI-compatible endpoint meant to run with no key
+  // (`guardrailsKeylessEndpoint`): no credential is missing. Decisions always needs its own.
+  guardrailsKeyless?: boolean;
   // What the screen actually DID, read back from the execution log (modules/guardrails/health.ts):
   // how many analyses could not run in the recent window, and when the last one was. Configuration
   // alone cannot see this half. A model id the vendor retired, a parameter it rejects on every call
@@ -919,7 +922,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     });
   }
   const guardrailsCred = credIssue(
-    Boolean(input.guardrailsEnabled),
+    Boolean(input.guardrailsEnabled) && !input.guardrailsKeyless,
     input.guardrailsCredentialRef ?? "",
     "apiKey",
     vault,

@@ -33,6 +33,7 @@ import {
 } from "@/modules/guardrails/health";
 import {
   guardrailCredentialRef,
+  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -278,6 +279,8 @@ export async function readAgentConfigHealth(
     contactAuthDenyMessage: contactAuth.denyMessage ?? "",
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
+    guardrailsKeyless:
+      guardrails.classifier === "chat" && guardrailsKeylessEndpoint(guardrails),
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,

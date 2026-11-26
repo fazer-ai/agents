@@ -257,6 +257,23 @@ describe("guardedTool under ToolNode", () => {
     expect(isUnranToolResult(answer as ToolMessage)).toBe(true);
   });
 
+  // The bug it catches: a provider call with no id got the bare text back, which `ToolNode` wrapped
+  // without the marker, so the refusal read as a call that ran.
+  test("a call envelope with no id gets a marked result, plain arguments the text", async () => {
+    const { tool: inner, calls } = spyTool();
+    const guarded = guardedTool(inner, [COND], unmet);
+    const out = await guarded.invoke({
+      type: "tool_call",
+      name: "handoff_to_human",
+      args: { reason: "2" },
+    } as never);
+    expect(out).toBeInstanceOf(ToolMessage);
+    expect((out as ToolMessage).tool_call_id).toBe("");
+    expect(isUnranToolResult(out as ToolMessage)).toBe(true);
+    expect(typeof (await guarded.invoke({ reason: "2" }))).toBe("string");
+    expect(calls).toHaveLength(0);
+  });
+
   test("a refusal is not an error: the turn continues", async () => {
     const { tool: inner } = spyTool();
     const node = new ToolNode([guardedTool(inner, [COND], unmet)]);

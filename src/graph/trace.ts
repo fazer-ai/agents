@@ -95,6 +95,7 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.step ? { step: r.step } : {}),
     ...(r.tool ? { tool: scrubbedClip(r.tool, CATEGORY_MAX) } : {}),
     ...(r.callId ? { callId: r.callId } : {}),
+    ...(r.callOrdinal ? { callOrdinal: r.callOrdinal } : {}),
     ...(r.afterCallId ? { afterCallId: r.afterCallId } : {}),
     ...(r.afterCalls ? { afterCalls: r.afterCalls } : {}),
     // The factual-grounding claims: model-written, quoting the reply and the tool results.
@@ -211,10 +212,11 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
 }
 
 // The turn's entries with each call verdict placed right after the call it judged (by id and tool
-// name, each verdict taken once, in order), as the review ran: before the call was answered. A turn
-// review of a reply goes after the results of the step of its `afterCallId` (or of the turn's
-// `afterCalls`-th call, when that one had no id), before the step a redo made, or ahead of every
-// call when the turn had made none. Any other verdict keeps its place after the entries.
+// name, each verdict taken once, in order, or for a call with no id by its place among the turn's
+// calls, `callOrdinal`), as the review ran: before the call was answered. A turn review of a reply
+// goes after the results of the step of its `afterCallId` (or of the turn's `afterCalls`-th call,
+// when that one had no id), before the step a redo made, or ahead of every call when the turn had
+// made none. Any other verdict keeps its place after the entries.
 export function withCallVerdicts(
   entries: readonly TraceEntry[],
   verdicts: readonly TraceGuardrail[],
@@ -259,6 +261,17 @@ export function withCallVerdicts(
     }
     if (e.type === "tool_result" && e.id)
       due.push(...take((v) => isReply(v) && v.afterCallId === e.id));
+    // A call with no id takes the verdict that names its place among the turn's calls.
+    if (e.type === "tool_call" && !e.id) {
+      const k = pending.findIndex(
+        (v) =>
+          v.step === "call" &&
+          v.callId === undefined &&
+          v.callOrdinal === callsSeen &&
+          (v.tool === undefined || e.name.startsWith(v.tool)),
+      );
+      if (k >= 0) out.push(...pending.splice(k, 1));
+    }
     if (e.type === "tool_call" && e.id) {
       // By id and tool name, in order: an id a provider repeats does not pair a verdict with the
       // wrong call.

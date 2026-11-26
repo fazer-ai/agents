@@ -476,6 +476,8 @@ async function buildPlaygroundGraph(params: {
     call: { name: string; args: unknown; id?: string },
     opts?: {
       alongside?: { name: string; args: unknown }[];
+      // The call's place among the calls of its step, from 0.
+      index?: number;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
     },

@@ -433,6 +433,13 @@ describe("what the reviewer reads", () => {
     expect(TURN_REVIEW_SYSTEM_PROMPT).toContain(
       'Only ran="no" proves a call did not run',
     );
+    // And a refusal proves only that its own call did not act: a later call that ran may have.
+    expect(TURN_REVIEW_SYSTEM_PROMPT).toContain(
+      "proves that this call did not perform its action",
+    );
+    expect(TURN_REVIEW_SYSTEM_PROMPT).not.toContain(
+      "proves the action did not happen",
+    );
   });
 
   // The bug it catches: two calls of a batch repeating one id both read the last result, so a
@@ -713,6 +720,33 @@ describe("the gate", () => {
         tool: "handoff_to_human",
         verdict: "clean",
       });
+    },
+  );
+
+  // The bug it catches: a write with no id carried nothing a trace could pair it by.
+  test.skipIf(!dbUp)(
+    "a call with no id reports its place among the turn's calls",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const reports: GuardrailReport[] = [];
+      const { g } = gate(cfg({}), r.make, reports);
+      await g?.reviewCall(
+        [
+          ...turn(),
+          new AIMessage({
+            content: "",
+            tool_calls: [
+              { name: "buscar_faq", args: {} },
+              { name: "agendar", args: {} },
+            ],
+          }),
+        ],
+        { name: "agendar", args: {} },
+        { index: 1 },
+      );
+      // One call (c1) before the step, then the second of the step.
+      expect(reports[0]?.callOrdinal).toBe(3);
+      expect(reports[0]?.callId).toBeUndefined();
     },
   );
 

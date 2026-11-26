@@ -6,7 +6,7 @@ import {
   type MessageContent,
   RemoveMessage,
   SystemMessage,
-  type ToolMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import type {
   StructuredToolInterface,
@@ -84,6 +84,7 @@ import {
   withFenceReporter,
 } from "./tools/fence-report";
 import { isReadOnlyTool, isReadTool } from "./tools/reads";
+import { isSchemaRefusal } from "./tools/refusal-log";
 import { unansweredInputs } from "./unanswered-inputs";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
@@ -242,6 +243,8 @@ export interface BuildAgentGraphParams {
     call: { name: string; args: unknown; id?: string },
     opts?: {
       alongside?: { name: string; args: unknown }[];
+      // The call's place among the calls of its step, from 0.
+      index?: number;
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
     },
@@ -1549,22 +1552,40 @@ export function buildAgentGraph({
   let calledOffAtTools = false;
   // Once per turn as well: the step just run ended an observation (see `endsOnWrites`).
   let endedOnWrites = false;
-  const toolNode = hasTools ? new ToolNode(tools) : null;
-  // `ToolNode`'s own answers to a call it refused before any handler ran: a name the set lacks, or
-  // arguments the schema rejects. Each is the error it catches, so it is recognized by that text on
-  // an error result, and marked as never run.
-  const refusedBeforeRunning = (m: BaseMessage): boolean => {
-    const t = m as ToolMessage;
-    const text = typeof t.content === "string" ? t.content : "";
-    return (
-      t.getType() === "tool" &&
-      t.status === "error" &&
-      (text.startsWith(`Error: Tool "${t.name}" not found.`) ||
-        text.startsWith(
-          "Error: Received tool input did not match expected schema",
-        ))
-    );
+  // Each tool behind a delegate that answers arguments its schema rejects (the typed
+  // `ToolInputParsingException`, thrown before any handler runs) with the text `ToolNode` would write,
+  // marked as never run (`isSchemaRefusal`). Any other error stays `ToolNode`'s, a result whose
+  // effect is unknown.
+  const unparsedRefused = (
+    t: StructuredToolInterface,
+  ): StructuredToolInterface => {
+    const d = Object.create(t) as StructuredToolInterface;
+    d.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
+      try {
+        return await t.invoke(input as never, config);
+      } catch (e) {
+        if (!isSchemaRefusal(e)) throw e;
+        return markedSetAside(
+          new ToolMessage({
+            status: "error",
+            content: `Error: ${(e as Error).message}\n Please fix your mistakes.`,
+            name: t.name,
+            tool_call_id: (input as { id?: string } | null)?.id ?? "",
+          }),
+        );
+      }
+    }) as StructuredToolInterface["invoke"];
+    return d;
   };
+  const toolNode = hasTools
+    ? new ToolNode((tools ?? []).map(unparsedRefused))
+    : null;
+  // A call to a name the toolset lacks never reached a handler: `ToolNode` answers it, read here
+  // against the toolset itself, never by the answer's text.
+  const unknownToolAnswer = (m: BaseMessage): boolean =>
+    m.getType() === "tool" &&
+    (m as ToolMessage).status === "error" &&
+    !toolsByName.has(String((m as ToolMessage).name));
   const runTools = async (
     view: typeof MessagesAnnotation.State,
     config: ToolRunnableConfig,
@@ -1572,7 +1593,7 @@ export function buildAgentGraph({
     // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
     const out = await toolNode!.invoke(view, config);
     for (const m of out.messages as BaseMessage[])
-      if (refusedBeforeRunning(m)) markedSetAside(m);
+      if (unknownToolAnswer(m)) markedSetAside(m);
     return out;
   };
   const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));
@@ -1724,15 +1745,24 @@ export function buildAgentGraph({
           // The turn review's veto, on what is left to run. A revision round runs only the sources it
           // admitted, which are reads, so it has nothing to review.
           let reviewsRan = false;
+          const judged = contradicted?.view ?? serverView;
+          // A call's place in the step as the model wrote it: the view may have dropped some.
+          const written = (state.messages.at(-1) as AIMessage).tool_calls ?? [];
+          const shown =
+            (judged.messages.at(-1) as AIMessage | undefined)?.tool_calls ?? [];
           const reviewed =
             reviewCall && !revision
               ? await setAsideReviewedCalls(
-                  contradicted?.view ?? serverView,
+                  judged,
                   isWriteName,
                   (turn, call, o) => {
                     reviewsRan = true;
+                    const index = written.indexOf(
+                      shown[o.index] as (typeof written)[number],
+                    );
                     return reviewCall(turn, call, {
                       ...o,
+                      index: index >= 0 ? index : undefined,
                       instructions: reviewInstructions,
                       tools: reviewTools,
                     });
@@ -1740,6 +1770,12 @@ export function buildAgentGraph({
                   turnLost,
                 )
               : null;
+          // A turn lost between two reviews refuses the whole batch on that read, as called off: a
+          // later read that says wanted again must not run the writes no review saw.
+          if (reviewed === "lost")
+            return refuseBatch(
+              (state.messages.at(-1) as AIMessage).tool_calls ?? [],
+            );
           // The reviews are awaited model calls, so ownership is read again before anything runs, and
           // a review that held ends the round with every call refused: the caller hands over next.
           if (reviewCall && !revision && turnReviewHalted?.()) {

@@ -124,6 +124,8 @@ export interface GuardrailReport {
   tool?: string;
   // The reviewed call's id, so a trace places the verdict beside the call it judged.
   callId?: string;
+  // The same pairing for a call with no id: its place among the turn's calls, from 1.
+  callOrdinal?: number;
   // On a reply's: the id of the turn's last call before it, so a trace places the verdict after that
   // call's step and before a corrective call the redo made.
   afterCallId?: string;

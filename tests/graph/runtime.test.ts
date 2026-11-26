@@ -9680,6 +9680,71 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       );
     });
 
+    // The other side of the booking below: a call to a tool the agent does not have never reached a
+    // handler (the graph checks the name against the toolset), so the turn did nothing and comes out.
+    test("a call to a tool the agent does not have is not an act", async () => {
+      await seedConversation(93161, null);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            { id: 2, content: "deixa", message_type: 0, private: false },
+          ],
+        }),
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      let n = 0;
+      const callsMissingTool = {
+        invoke: async () => new AIMessage("Agendado para terça às 10h."),
+        bindTools: () => ({
+          invoke: async () => {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    { name: "calendar_create_event", args: {}, id: "call_x" },
+                  ],
+                })
+              : new AIMessage("Agendado para terça às 10h.");
+          },
+        }),
+      };
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93161 }),
+        base: appDb,
+        deps: {
+          makeModel: () => callsMissingTool as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("superseded");
+      expect(sent).toEqual([]);
+      // The call and its answer stay and the reply goes, with no note of an unreported act.
+      const channel = await threadChannel(checkpointer, 93161);
+      expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93161 },
+      });
+      const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true },
+      });
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
+    });
+
     test("a booking whose confirmation was superseded leaves the note where the confirmation stood", async () => {
       await seedConversation(93160, null);
       const checkpointer = new MemorySaver();

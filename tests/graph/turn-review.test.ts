@@ -10,7 +10,11 @@ import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph, replyWrittenThisTurn } from "@/graph/graph";
-import { isUnranToolResult, turnWasCalledOff } from "@/graph/markers";
+import {
+  isCalledOffToolResult,
+  isUnranToolResult,
+  turnWasCalledOff,
+} from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { markRead, markReadOnly } from "@/graph/tools/reads";
 
@@ -131,6 +135,7 @@ async function run(
   const alongside: string[][] = [];
   const instructions: string[] = [];
   const tools: Record<string, string>[] = [];
+  const indexes: (number | undefined)[] = [];
   const replyInstructions: string[] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
@@ -159,6 +164,7 @@ async function run(
       alongside.push((o?.alongside ?? []).map((c) => c.name));
       instructions.push(o?.instructions ?? "");
       tools.push({ ...(o?.tools ?? {}) });
+      indexes.push(o?.index);
       return hooks.call?.(call.name) ?? null;
     },
     reviewTurnReply: async (_turn, reply, o) => {
@@ -186,6 +192,7 @@ async function run(
     instructions,
     tools,
     replyInstructions,
+    indexes,
   };
 }
 
@@ -593,6 +600,17 @@ describe("the turn review in the graph", () => {
         schema: z.object({ dia: z.string() }),
       },
     );
+    // A handler that ran and failed with the very words of a schema refusal: its effect is unknown,
+    // so the text alone must not mark it.
+    const imita = tool(
+      async () => {
+        ran.push("imita");
+        throw new Error(
+          'Received tool input did not match expected schema. Tool "imita" not found.',
+        );
+      },
+      { name: "imita", description: "imita", schema: z.object({}) },
+    );
     const graph = buildAgentGraph({
       primary: { provider: "openai", model: "test-model" },
       model: new BoundRecordingModel([
@@ -602,13 +620,14 @@ describe("the turn review in the graph", () => {
             { name: "inexistente" },
             { name: "agendar", args: { dia: 3 } },
             { name: "transferir" },
+            { name: "imita" },
           ],
         },
         { text: "Pronto." },
       ]) as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
-      tools: [agendar, transferir],
+      tools: [agendar, transferir, imita],
     });
     ran.length = 0;
     const out = await graph.invoke(
@@ -622,15 +641,19 @@ describe("the turn review in the graph", () => {
       ["inexistente", true],
       ["agendar", true],
       ["transferir", false],
+      ["imita", false],
     ]);
-    expect(ran).toEqual(["transferir"]);
+    expect(results.at(-1)?.status).toBe("error");
+    expect(ran).toEqual(["transferir", "imita"]);
   });
 
   // The bug it catches: a turn lost during the first review of a batch still paid one review per
   // write left in it.
-  test("a turn lost during a review stops the batch before the next review", async () => {
+  // And the one it caused: the batch was left to a later read, which a fence that answers wanted
+  // again (the bot reassigned, an ownership read that failed) passed, running an unreviewed write.
+  test("a turn lost during a review refuses the whole batch on that read", async () => {
     let asked = 0;
-    const { calls } = await run(
+    const { calls, messages } = await run(
       new BoundRecordingModel([
         {
           text: "",
@@ -639,11 +662,16 @@ describe("the turn review in the graph", () => {
         { text: "Pronto." },
       ]),
       {},
-      // Wanted on the read before the batch, lost from then on.
-      { stillWanted: async () => asked++ === 0 },
+      // Wanted before the batch, lost between the two reviews, wanted again from then on.
+      { stillWanted: async () => asked++ !== 1 },
     );
     expect(calls).toEqual(["transferir"]);
     expect(ran).toEqual([]);
+    expect(asked).toBe(2);
+    expect(turnWasCalledOff(messages)).toBe(true);
+    const results = messages.filter((m) => m.getType() === "tool");
+    expect(results).toHaveLength(2);
+    expect(results.every((m) => isCalledOffToolResult(m))).toBe(true);
   });
 
   test("the tools are described for the reviewer only when a review hook is passed", () => {
@@ -669,6 +697,61 @@ describe("the turn review in the graph", () => {
     expect(reads).toBe(0);
     build(true);
     expect(reads).toBeGreaterThan(0);
+  });
+
+  test("each review is told the call's place in the step as the model wrote it", async () => {
+    const { indexes } = await run(
+      new BoundRecordingModel([
+        {
+          text: "",
+          calls: [
+            { name: "buscar_pedido" },
+            { name: "transferir" },
+            { name: "consultar_agenda" },
+          ],
+        },
+        { text: "Pronto." },
+      ]),
+      {},
+    );
+    expect(indexes).toEqual([1, 2]);
+  });
+
+  test("a call's place counts a call the graph set aside before the review", async () => {
+    const write = (name: string) =>
+      tool(async () => name, { name, description: name, schema: z.object({}) });
+    const indexes: (number | undefined)[] = [];
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new BoundRecordingModel([
+        {
+          text: "",
+          calls: [
+            { name: "handoff_to_human" },
+            { name: "resolve_conversation" },
+            { name: "agendar" },
+          ],
+        },
+        { text: "Pronto." },
+      ]) as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [
+        write("handoff_to_human"),
+        write("resolve_conversation"),
+        write("agendar"),
+      ],
+      reviewCall: async (_turn, _call, o) => {
+        indexes.push(o?.index);
+        return null;
+      },
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("Oi")] },
+      { configurable: { thread_id: `tr-${Math.random()}` } },
+    );
+    // The handoff is answered as contradicted and left out of the reviewed view.
+    expect(indexes).toEqual([1, 2]);
   });
 
   test("ownership is read again after a batch only when a review ran in it", async () => {

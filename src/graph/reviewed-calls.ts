@@ -16,15 +16,19 @@ export async function setAsideReviewedCalls(
   review: (
     turn: typeof MessagesAnnotation.State.messages,
     call: { name: string; args: unknown; id?: string },
-    opts: { alongside: { name: string; args: unknown }[] },
+    opts: { alongside: { name: string; args: unknown }[]; index: number },
   ) => Promise<string | null>,
-  // Asked between two reviews: a turn superseded or taken over during one stops the batch, and the
-  // caller's own read before running refuses it.
+  // Asked between two reviews: a turn superseded or taken over during one stops the batch at once,
+  // and "lost" tells the caller to refuse all of it. No later read may run a write left unreviewed.
   turnLost?: () => Promise<boolean>,
-): Promise<{
-  view: typeof MessagesAnnotation.State;
-  answers: ToolMessage[];
-} | null> {
+): Promise<
+  | {
+      view: typeof MessagesAnnotation.State;
+      answers: ToolMessage[];
+    }
+  | "lost"
+  | null
+> {
   const last = state.messages.at(-1);
   if (last?.getType() !== "ai") return null;
   const ai = last as AIMessage;
@@ -37,13 +41,13 @@ export async function setAsideReviewedCalls(
   const setAside: { call: ToolCall; note: string }[] = [];
   const admitted: { name: string; args: unknown }[] = [];
   let reviewed = 0;
-  for (const c of calls) {
+  for (const [index, c] of calls.entries()) {
     if (!isWrite(c.name) || (c.id && answered.has(c.id))) continue;
-    if (reviewed++ > 0 && (await turnLost?.())) break;
+    if (reviewed++ > 0 && (await turnLost?.())) return "lost";
     const note = await review(
       state.messages,
       { name: c.name, args: c.args, ...(c.id ? { id: c.id } : {}) },
-      { alongside: [...admitted] },
+      { alongside: [...admitted], index },
     );
     if (note) setAside.push({ call: c, note });
     else admitted.push({ name: c.name, args: c.args });

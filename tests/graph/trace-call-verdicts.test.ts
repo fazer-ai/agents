@@ -219,3 +219,55 @@ describe("withCallVerdicts with a call that has no id", () => {
     ]);
   });
 });
+
+// The bug it catches: a write with no id kept its verdict pending, listed after the whole turn.
+describe("withCallVerdicts with a write that has no id", () => {
+  test("each verdict goes after the call at its place among the turn's calls", () => {
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: null, name: "agendar", args: {} },
+        { type: "tool_call", id: null, name: "agendar", args: {} },
+        {
+          type: "tool_result",
+          id: null,
+          name: "agendar",
+          output: "ok",
+          isError: false,
+        },
+      ],
+      [
+        {
+          type: "guardrail",
+          direction: "output",
+          outcome: "revised",
+          check: "turn_review",
+          step: "call",
+          tool: "agendar",
+          callOrdinal: 2,
+        },
+        {
+          type: "guardrail",
+          direction: "output",
+          outcome: "clean",
+          check: "turn_review",
+          step: "call",
+          tool: "agendar",
+          callOrdinal: 1,
+        },
+      ],
+    );
+    expect(
+      placed.map((e) =>
+        e.type === "guardrail"
+          ? `veredito:${(e as { callOrdinal?: number }).callOrdinal}`
+          : e.type,
+      ),
+    ).toEqual([
+      "tool_call",
+      "veredito:1",
+      "tool_call",
+      "veredito:2",
+      "tool_result",
+    ]);
+  });
+});

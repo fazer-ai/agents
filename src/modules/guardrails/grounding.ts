@@ -208,7 +208,7 @@ function toolCallsIn(
   turnsBackAt?: (index: number) => number,
 ): GroundingToolCall[] {
   // Paired per batch, an id-less call included (`pairedResults`). A call that never ran (called
-  // off, vetoed or held by the turn review) stays, marked: it proves the action did not happen.
+  // off, vetoed or held by the turn review) stays, marked: it proves that call did not do it.
   const paired = pairedResults(turn);
   const sources = new Set(sourceTools);
   const out: GroundingToolCall[] = [];

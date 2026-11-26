@@ -132,7 +132,7 @@ function refusedParams(
   };
 }
 
-function isSchemaRefusal(err: unknown): boolean {
+export function isSchemaRefusal(err: unknown): boolean {
   if (err instanceof ToolInputParsingException) return true;
   // Belt and braces for a duplicated `@langchain/core` in the tree, where `instanceof` answers false
   // across copies. The class is declared as an unnamed class expression, so its inferred name is the

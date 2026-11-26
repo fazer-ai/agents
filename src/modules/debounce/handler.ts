@@ -31,6 +31,7 @@ import {
   mediaAnnotationFor,
   mediaStillArriving,
   overlayMediaAnnotations,
+  transcriptionOpen,
 } from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
@@ -110,6 +111,7 @@ import {
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
+  readMediaWaitSince,
   readReactionArmed,
   readReactionFrom,
   stampDeferral,
@@ -539,8 +541,32 @@ export async function selectAnswerableBurst(
     inTurn: rendered.map((r) => r.message),
     text: rendered.map((r) => r.text).join("\n"),
     waitedOnMedia,
-    mediaPending: pending.some(mediaStillArriving),
+    mediaPending: await mediaStillRetryable(tenantId, ctx, pending, base),
   };
+}
+
+// Whether a file of the burst is still on its way AND the next flush would try it again: the agent
+// still reads that kind of file, and the conversation's media refusal mark does not cover it. A file
+// no flush will open is no reason to wait.
+async function mediaStillRetryable(
+  tenantId: bigint,
+  ctx: { fillMedia?: { convDbId: bigint }; settings: unknown },
+  pending: ChatwootMessageRow[],
+  base: PrismaClient,
+): Promise<boolean> {
+  if (!ctx.fillMedia) return false;
+  const sttOn = readSttConfig(ctx.settings).enabled;
+  const visionOn = readVisionConfig(ctx.settings).enabled;
+  const waiting = pending.filter(
+    (m) =>
+      (sttOn && m.transcriptionUnavailable === true && !m.transcribedText) ||
+      (visionOn &&
+        mediaStillArriving({ ...m, transcriptionUnavailable: false })),
+  );
+  if (waiting.length === 0) return false;
+  const fill = ctx.fillMedia;
+  const recusadaAte = await refusalMarkOrClosed({ tenantId, fill, base });
+  return waiting.some((m) => recusadaAte === null || m.id > recusadaAte);
 }
 
 // Extracts the burst's attachments nobody has read yet. Returns whether any extraction was attempted,
@@ -621,6 +647,14 @@ export async function fillMissingVisuals(args: {
     if (i > 0) {
       const agora = await refusalMarkOrClosed(args);
       if (agora !== null && m.id <= agora) continue;
+      // NOTE: An earlier message's download can run the media wait out; a file tried before is not
+      // opened again past it, and a file never tried still is.
+      if (
+        args.retryUntil !== undefined &&
+        Date.now() >= args.retryUntil &&
+        mediaStillArriving({ ...m, transcriptionUnavailable: false })
+      )
+        continue;
     }
     try {
       const lido = await extractMessageVisuals({
@@ -712,7 +746,11 @@ export async function fillMissingAudio(args: {
     (m) =>
       m.audio &&
       !m.transcribedText &&
-      (!args.onlyUnavailable || m.transcriptionUnavailable),
+      (!args.onlyUnavailable ||
+        (m.transcriptionUnavailable &&
+          // NOTE: The arrival pass is still retrying it: a second download would pay the provider
+          // twice, and the note stays on its way for the next round.
+          !transcriptionOpen(args.tenantId, args.instanceId, m.id))),
   );
   if (alvos.length === 0) return false;
   let attempted = false;
@@ -2420,9 +2458,9 @@ export async function flushDebounceJob(
   const deferringSince =
     readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? nowMs;
   const pastDeferralCeiling = nowMs >= deferringSince + DEFER_CEILING_MS;
-  // The media wait counts from the burst's first deferral, or from this flush when it has none: the
-  // debounce window before the first flush is not time spent waiting for a file.
-  const mediaSince = readDeferringSince(job.payload) ?? nowMs;
+  // The media wait counts from the flush that first found a file on its way, on its own stamp: the
+  // debounce window and the time spent waiting for a busy thread are not time spent waiting for it.
+  const mediaSince = readMediaWaitSince(job.payload) ?? nowMs;
   if (
     isTurnInFlight(graphThreadId) ||
     isFlushHeld(graphThreadId) ||
@@ -2472,7 +2510,10 @@ export async function flushDebounceJob(
     // NOTE: Inside the try so the `finally` always releases the hold, and best-effort: a stale stamp
     // costs an early ceiling later, smaller than a failed turn, and the `.catch` keeps it out of the
     // turn-failure handler below.
-    if (readDeferringSince(job.payload) !== null) {
+    if (
+      readDeferringSince(job.payload) !== null ||
+      readMediaWaitSince(job.payload) !== null
+    ) {
       await clearDeferral({ tenantId, threadId, base }).catch((e) =>
         logger.warn(
           "debounce flush: could not clear the deferral stamp on thread %s: %s",
@@ -2579,6 +2620,7 @@ export async function flushDebounceJob(
         tenantId,
         threadId,
         since: mediaSince,
+        field: "mediaWaitSince",
         base,
       });
       return {

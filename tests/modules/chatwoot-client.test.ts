@@ -657,6 +657,20 @@ describe("ChatwootClient", () => {
       expect(s.slept).toEqual([250, 750]);
     });
 
+    test("reports each 404 it will ask again before the backoff", async () => {
+      const s = downloadStub([404, 404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      const events: string[] = [];
+      await client.downloadAttachment(URL_, {
+        retryOnMissing: true,
+        sleep: async (ms) => {
+          events.push(`sleep ${ms}`);
+        },
+        onMissing: () => events.push("missing"),
+      });
+      expect(events).toEqual(["missing", "sleep 250", "missing", "sleep 750"]);
+    });
+
     test("does not retry by default (interactive media proxy fails fast)", async () => {
       const s = downloadStub([404, 200]);
       const client = await clientFor(s.fetchImpl);

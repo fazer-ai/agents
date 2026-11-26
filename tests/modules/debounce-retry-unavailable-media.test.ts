@@ -18,6 +18,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import {
   clearMediaAnnotations,
   mediaAnnotationFor,
+  openTranscription,
   overlayMediaAnnotations,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -72,6 +73,7 @@ const REPLY = "Anotado.";
 const WORDS = "quero remarcar a consulta de amanhã";
 const DESCRIPTION = "um comprovante de pagamento";
 const UNHEARD = "não audível";
+const BACK = "o verso do mesmo documento";
 
 class TurnCapturingModel extends BaseChatModel {
   humanTexts: string[] = [];
@@ -269,7 +271,10 @@ async function flush(
   convId: number,
   client: ChatwootClient,
   p: ReturnType<typeof provider>,
-  // When the burst first deferred, which the media ceiling counts from; absent, this flush.
+  // When the flush first deferred for a file on its way, which the media ceiling counts from;
+  // absent, this flush.
+  mediaWaitSince?: number,
+  // When the burst first deferred for a busy thread.
   deferringSince?: number,
 ) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
@@ -288,6 +293,7 @@ async function flush(
         threadId: thread,
         agentBotId: 9,
         burstStartedAt: 1,
+        ...(mediaWaitSince !== undefined ? { mediaWaitSince } : {}),
         ...(deferringSince !== undefined ? { deferringSince } : {}),
       },
     },
@@ -467,6 +473,16 @@ describe.skipIf(!dbUp)(
       expect(first.out.outcome).toBe("reschedule");
       expect(s.state.sent).toBe(0);
       expect(first.model.humanTexts).toEqual([]);
+      // The media wait keeps its own stamp, apart from the busy-thread deferral's.
+      const row = await suDb.schedulerJob.findFirstOrThrow({
+        where: {
+          tenantId,
+          dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9707`),
+        },
+        select: { payload: true },
+      });
+      expect(row.payload).toHaveProperty("mediaWaitSince");
+      expect(row.payload).not.toHaveProperty("deferringSince");
 
       s.state.stored = true;
       const second = await flush(9707, s.client(page), p, Date.now());
@@ -565,11 +581,23 @@ describe.skipIf(!dbUp)(
       expect(s.state.sent).toBe(0);
 
       s.state.stored = true;
-      const second = await flush(9711, s.client(page), p, Date.now());
+      const back = {
+        ...p,
+        visionFetch: (async () => {
+          p.calls.vision++;
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content: BACK } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      };
+      const second = await flush(9711, s.client(page), back, Date.now());
 
       expect(second.out).toEqual({ outcome: "done" });
       expect(p.calls.vision).toBe(2);
-      expect(second.seen).not.toContain("verso.png");
+      expect(second.seen).toContain(DESCRIPTION);
+      expect(second.seen).toContain(BACK);
+      expect(second.seen).not.toContain("anexos-nao-lidos");
     });
 
     // The download succeeded and the provider failed: the file is no longer on its way, so the
@@ -680,6 +708,113 @@ describe.skipIf(!dbUp)(
       ).toBe(true);
     });
 
+    test("an image download cut short keeps the mark a 404 left", async () => {
+      await seedConversation(9723);
+      const s = storage();
+      const p = provider();
+      const page = [image(1)];
+      await arriveImage(9723, 1, s.client(page), p.visionFetch);
+      const cut = s.client(page);
+      cut.downloadAttachment = (async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof cut.downloadAttachment;
+
+      const again = await arriveImage(9723, 1, cut, p.visionFetch);
+
+      expect(again?.unreadFiles).toEqual([
+        { name: "comprovante.png", cause: "failed", retryable: true },
+      ]);
+      const { out } = await flush(9723, s.client(page), p, Date.now());
+      expect(out.outcome).toBe("reschedule");
+    });
+
+    // The file is in storage and the provider failed on it: waiting longer only pays it again.
+    test("an image downloaded at the flush stops the wait even when the provider fails", async () => {
+      await seedConversation(9724);
+      const s = storage();
+      const p = provider();
+      const page = [image(1)];
+      await arriveImage(9724, 1, s.client(page), p.visionFetch);
+
+      s.state.stored = true;
+      const failing = {
+        ...p,
+        visionFetch: (async () => {
+          p.calls.vision++;
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        }) as unknown as typeof fetch,
+      };
+      const { out } = await flush(9724, s.client(page), failing, Date.now());
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+    });
+
+    // The flush's wait for the arrival pass is shorter than that pass's 404 backoff.
+    test("a voice note whose arrival download is still retrying is marked on its way from the first 404", async () => {
+      await seedConversation(9725);
+      let release: () => void = () => {};
+      const landed = new Promise<void>((r) => {
+        release = r;
+      });
+      let missed: () => void = () => {};
+      const firstMissing = new Promise<void>((r) => {
+        missed = r;
+      });
+      const s = storage();
+      const retrying = s.client([voice(1)]);
+      retrying.downloadAttachment = (async (
+        _url: string,
+        opts?: { onMissing?: () => void },
+      ) => {
+        opts?.onMissing?.();
+        missed();
+        await landed;
+        return {
+          bytes: new Uint8Array([0x4f, 0x67, 0x67, 0x53]).buffer,
+          contentType: "audio/ogg",
+        };
+      }) as typeof retrying.downloadAttachment;
+      const p = provider();
+      const arrival = arriveVoice(9725, 1, retrying, p.sttFetch);
+      await firstMissing;
+      const during = mediaAnnotationFor(
+        tenantId,
+        instanceId,
+        1,
+      )?.transcriptionUnavailable;
+      release();
+      await arrival;
+
+      expect(during).toBe(true);
+      expect(
+        mediaAnnotationFor(tenantId, instanceId, 1)?.transcriptionUnavailable,
+      ).toBe(false);
+    });
+
+    test("a flush that stops waiting while the arrival download retries defers without downloading again", async () => {
+      await seedConversation(9726);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      const target = { tenantId, instanceId, messageId: 1 };
+      const close = openTranscription(target);
+      stashMediaAnnotation(target, { transcriptionUnavailable: true });
+
+      const first = await flush(9726, s.client(page), p, Date.now()).finally(
+        close,
+      );
+
+      expect(first.out.outcome).toBe("reschedule");
+      expect(s.state.downloads).toBe(0);
+      expect(s.state.sent).toBe(0);
+
+      s.state.stored = true;
+      const second = await flush(9726, s.client(page), p, Date.now());
+      expect(second.out).toEqual({ outcome: "done" });
+      expect(second.seen).toContain(WORDS);
+    });
+
     test("no voice note is tried again once the media wait is over", async () => {
       await seedConversation(9716);
       const s = storage();
@@ -708,6 +843,75 @@ describe.skipIf(!dbUp)(
       expect(s.state.downloads - before).toBe(1);
     });
 
+    test("no late image is tried again once an earlier one ran the media wait out", async () => {
+      await seedConversation(9720);
+      const s = storage();
+      const p = provider();
+      const page = [image(1), image(2)];
+      await arriveImage(9720, 1, s.client(page), p.visionFetch);
+      await arriveImage(9720, 2, s.client(page), p.visionFetch);
+      const before = s.state.downloads;
+      const real = Date.now.bind(Date);
+      let ahead = 0;
+      const slow = s.client(page);
+      const download = slow.downloadAttachment.bind(slow);
+      slow.downloadAttachment = (async (
+        ...args: Parameters<typeof download>
+      ) => {
+        ahead += 2_000;
+        return download(...args);
+      }) as typeof slow.downloadAttachment;
+      const clock = spyOn(Date, "now").mockImplementation(() => real() + ahead);
+
+      const { out } = await flush(9720, slow, p, real() - 59_000).finally(() =>
+        clock.mockRestore(),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.downloads - before).toBe(1);
+    });
+
+    // The operator turned transcription off after the arrival pass: no flush will open the note.
+    test("a voice note the agent no longer transcribes does not defer the reply", async () => {
+      await seedConversation(9721);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9721, 1, s.client(page), p.sttFetch);
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { ...settings(), stt: { enabled: false } } },
+      });
+
+      const { out } = await flush(9721, s.client(page), p, Date.now()).finally(
+        () =>
+          suDb.agent.update({
+            where: { id: agentId },
+            data: { settings: settings() },
+          }),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+    });
+
+    test("a voice note under the media refusal mark does not defer the reply", async () => {
+      await seedConversation(9722);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9722, 1, s.client(page), p.sttFetch);
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 9722 },
+        data: { mediaRefusedThroughMessageId: 1n },
+      });
+
+      const { out } = await flush(9722, s.client(page), p, Date.now());
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+    });
+
     test("past the media ceiling a late image is not downloaded again", async () => {
       await seedConversation(9718);
       const s = storage();
@@ -720,6 +924,36 @@ describe.skipIf(!dbUp)(
 
       expect(out).toEqual({ outcome: "done" });
       expect(s.state.downloads).toBe(before);
+    });
+
+    // A burst that waited a long time for a busy thread has not waited for the file at all.
+    test("time spent waiting for a busy thread does not use up the media wait", async () => {
+      await seedConversation(9719);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9719, 1, s.client(page), p.sttFetch);
+
+      const first = await flush(
+        9719,
+        s.client(page),
+        p,
+        undefined,
+        Date.now() - 120_000,
+      );
+      expect(first.out.outcome).toBe("reschedule");
+      expect(s.state.sent).toBe(0);
+
+      s.state.stored = true;
+      const second = await flush(
+        9719,
+        s.client(page),
+        p,
+        undefined,
+        Date.now() - 120_000,
+      );
+      expect(second.out).toEqual({ outcome: "done" });
+      expect(second.seen).toContain(WORDS);
     });
 
     test("the next round of a media wait is never set past its ceiling", async () => {

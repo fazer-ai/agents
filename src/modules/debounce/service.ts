@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { upsertJobRow } from "@/modules/scheduler/service";
@@ -26,7 +27,9 @@ const MEDIA_WAIT_WINDOW_SECONDS = 5;
 // debounce is on, and for an agent with debounce OFF the media-wait flush instead of a direct turn
 // while a file of the message is still being written to storage (`mediaArriving`) and for every
 // message that arrives while that flush is live, so the burst is answered once and in order. Null
-// (direct turn) otherwise, or when the inbox has no enabled agent.
+// (direct turn) otherwise, or when the inbox has no enabled agent. The media wait is never armed
+// while the debounce worker is off: nothing would drain its row, and every later message of the
+// thread would join it.
 export async function resolveArmConfig(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -55,6 +58,7 @@ export async function resolveArmConfig(params: {
     if (!agent?.enabled) return null;
     const cfg = readDebounceConfig(agent.settings);
     if (cfg.enabled) return cfg;
+    if (!config.debounceWorker.enabled) return null;
     if (!params.mediaArriving) {
       const live = await db.schedulerJob.findFirst({
         where: {
@@ -110,6 +114,14 @@ export async function resolveDebounceConfig(
 export function readDeferringSince(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).deferringSince;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+// When the flush first deferred for a file still on its way. Its own stamp, apart from
+// `deferringSince`: time spent waiting for a busy thread is not time spent waiting for the file.
+export function readMediaWaitSince(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).mediaWaitSince;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
@@ -176,9 +188,13 @@ export async function stampDeferral(params: {
   tenantId: bigint;
   threadId: string;
   since: number;
+  field?: "deferringSince" | "mediaWaitSince";
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
+  const field = params.field ?? "deferringSince";
+  const read =
+    field === "deferringSince" ? readDeferringSince : readMediaWaitSince;
   const dedupeKey = debounceDedupeKey(params.threadId);
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
@@ -188,13 +204,13 @@ export async function stampDeferral(params: {
       });
       // No row means the flush that is deferring has already been completed or retired by somebody
       // else; there is nothing whose deadline this would be.
-      if (!row || readDeferringSince(row.payload) !== null) return;
+      if (!row || read(row.payload) !== null) return;
       await db.schedulerJob.update({
         where: { id: row.id },
         data: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
-            deferringSince: params.since,
+            [field]: params.since,
           },
         },
       });
@@ -219,11 +235,17 @@ export async function clearDeferral(params: {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { id: true, payload: true },
       });
-      if (!row || readDeferringSince(row.payload) === null) return;
-      const { deferringSince: _dropped, ...rest } = row.payload as Record<
-        string,
-        unknown
-      >;
+      if (
+        !row ||
+        (readDeferringSince(row.payload) === null &&
+          readMediaWaitSince(row.payload) === null)
+      )
+        return;
+      const {
+        deferringSince: _dropped,
+        mediaWaitSince: _droppedMedia,
+        ...rest
+      } = row.payload as Record<string, unknown>;
       await db.schedulerJob.update({
         where: { id: row.id },
         data: { payload: rest as Prisma.InputJsonObject },
@@ -272,6 +294,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const deferringSince = stillLive
         ? readDeferringSince(existing.payload)
         : null;
+      const mediaWaitSince = stillLive
+        ? readMediaWaitSince(existing.payload)
+        : null;
       // A live PENDING row is the burst this message joins; anything else (no row, DONE,
       // DEAD, or a claim in flight) means the previous flush is finished business and this message
       // opens a new burst. Every question below reads that one fact, so they cannot answer it
@@ -318,6 +343,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         ...(reactionArmed ? { reactionArmed: true } : {}),
         ...(reactionFrom !== null ? { reactionFrom } : {}),
         ...(deferringSince !== null ? { deferringSince } : {}),
+        ...(mediaWaitSince !== null ? { mediaWaitSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {
         tenantId,

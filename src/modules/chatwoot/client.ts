@@ -393,6 +393,9 @@ export interface AttachmentDownloadOptions {
   sleep?: (ms: number) => Promise<void>;
   // The caller's deadline, on top of the request timeout.
   signal?: AbortSignal;
+  // Called on each 404 that will be asked again, before the backoff: the file is known to be on its
+  // way from the first answer, not only once the retries are spent.
+  onMissing?: () => void;
 }
 
 // `activity` is a gray row of the timeline's own, never delivered to the channel nor shown to the
@@ -1665,6 +1668,7 @@ export class ChatwootClient {
       if (res.status !== 404 || delay === undefined) {
         throw new ChatwootApiError(res.status, "GET attachment");
       }
+      opts.onMissing?.();
       await sleep(delay);
     }
   }

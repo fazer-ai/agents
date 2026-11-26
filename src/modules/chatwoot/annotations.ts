@@ -196,6 +196,15 @@ const openTranscriptions = new Map<
   { count: number; waiters: Set<() => void> }
 >();
 
+// Whether this process is transcribing the message right now.
+export function transcriptionOpen(
+  tenantId: bigint,
+  instanceId: bigint,
+  messageId: number,
+): boolean {
+  return openTranscriptions.has(keyOf(tenantId, instanceId, messageId));
+}
+
 // Announces a transcription in flight for a message. The returned function closes it, once.
 export function openTranscription(target: {
   tenantId: bigint;

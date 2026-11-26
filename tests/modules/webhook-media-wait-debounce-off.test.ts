@@ -6,6 +6,7 @@ import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -346,6 +347,24 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         where: { tenantId },
         data: { settings: before.settings ?? {} },
       });
+    }
+  });
+
+  // With the debounce worker off nothing drains a DEBOUNCE row, so the file waits in the direct turn
+  // instead of in a flush that never runs and that every later message would join.
+  test("with the debounce worker off, a voice note still uploading takes the direct turn", async () => {
+    await seedConversation(9806);
+    const saved = config.debounceWorker.enabled;
+    config.debounceWorker.enabled = false;
+    try {
+      const { model } = await deliver(9806, {
+        audio: true,
+        storage: "uploading",
+      });
+      expect(await flushRows(9806)).toBe(0);
+      expect(model.calls).toBeGreaterThan(0);
+    } finally {
+      config.debounceWorker.enabled = saved;
     }
   });
 

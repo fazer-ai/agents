@@ -215,6 +215,9 @@ async function transcribeOnce(
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
       signal: params.signal,
+      // A flush that stops waiting while this backoff runs still sees the note as on its way.
+      onMissing: () =>
+        stashMediaAnnotation(target, { transcriptionUnavailable: true }),
     }));
   } catch (err) {
     if (params.flow) {

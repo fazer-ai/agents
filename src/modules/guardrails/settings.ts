@@ -437,6 +437,21 @@ function readDecisions(v: unknown): GuardrailDecisionsConfig {
 // The credential the guardrail screening actually uses: the chat model's, or the decisions
 // provider's. One answer for the runtime and the configuration check, so the two cannot look at
 // different fields.
+// Whether the guardrails chat model is an endpoint meant to run with no key: OpenAI-compatible, no
+// credential configured, and an address to call (the credential's or the typed one). A configured
+// credential that did not resolve is not this, it is a missing key. The one rule the screening gate,
+// the turn reviewer and the editor's playground toggle share.
+export function guardrailsKeylessEndpoint(
+  cfg: Pick<GuardrailsConfig, "provider" | "credentialRef" | "baseURL">,
+  credentialBaseUrl?: string | null,
+): boolean {
+  return (
+    cfg.provider === "openai-compatible" &&
+    !cfg.credentialRef &&
+    !!(credentialBaseUrl ?? cfg.baseURL)?.trim()
+  );
+}
+
 export function guardrailCredentialRef(cfg: GuardrailsConfig): string | null {
   return cfg.classifier === "decisions"
     ? cfg.decisions.credentialRef

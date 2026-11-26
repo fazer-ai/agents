@@ -8,6 +8,7 @@ import {
   type GuardrailsConfig,
   groundingHasSources,
   guardrailCredentialRef,
+  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import { overrideResolution } from "./modelOverrideForm";
@@ -27,6 +28,9 @@ export function playgroundGuardrailsUsable(
   return (
     g.enabled &&
     (!!guardrailCredentialRef(g) ||
+      // A keyless compatible endpoint screens too, under the chat classifier.
+      (g.classifier === "chat" &&
+        guardrailsKeylessEndpoint(g, credBaseUrls.guardrails)) ||
       g.onFailure === "hold" ||
       !!g.external.url ||
       turnReviewerCalls(g, credBaseUrls) ||
@@ -45,9 +49,7 @@ function turnReviewerCalls(
 ): boolean {
   return (
     g.turnReview.enabled &&
-    (!!g.credentialRef ||
-      (g.provider === "openai-compatible" &&
-        !!(credBaseUrls.guardrails ?? g.baseURL)?.trim()))
+    (!!g.credentialRef || guardrailsKeylessEndpoint(g, credBaseUrls.guardrails))
   );
 }
 

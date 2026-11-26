@@ -111,8 +111,11 @@ describe("playgroundGuardrailsUsable", () => {
   // skip it reads disabled.
   test("is usable when only the turn reviewer can call out", () => {
     const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    // Screening on Decisions with no key of its own, so only the reviewer can call out.
     const keyless = {
       ...on,
+      classifier: "decisions" as const,
+      decisions: { ...on.decisions, credentialRef: null },
       credentialRef: null,
       provider: "openai-compatible" as const,
       baseURL: "http://revisor.local/v1",
@@ -242,5 +245,22 @@ describe("playgroundGuardrailsUsable", () => {
         },
       }),
     ]).toEqual([true, false, true, false, true]);
+  });
+
+  // The bug it catches: a keyless compatible screening model that bills every playground turn while
+  // the toggle that would skip it reads disabled.
+  test("a keyless compatible screening model makes the toggle usable", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const keyless = {
+      ...on,
+      classifier: "chat" as const,
+      credentialRef: null,
+      provider: "openai-compatible" as const,
+      baseURL: "http://modelo.local/v1",
+    };
+    expect([
+      playgroundGuardrailsUsable(keyless),
+      playgroundGuardrailsUsable({ ...keyless, baseURL: null }),
+    ]).toEqual([true, false]);
   });
 });

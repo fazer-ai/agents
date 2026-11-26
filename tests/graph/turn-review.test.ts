@@ -20,7 +20,12 @@ import { markRead, markReadOnly } from "@/graph/tools/reads";
 
 type Step = {
   text: string;
-  calls?: Array<{ name: string; args?: Record<string, unknown> }>;
+  // `noId`: a provider may send a call with no id.
+  calls?: Array<{
+    name: string;
+    args?: Record<string, unknown>;
+    noId?: boolean;
+  }>;
 };
 
 // Answers by script and records, per call, the messages it saw and the tool names bound to it.
@@ -38,7 +43,7 @@ class BoundRecordingModel {
       tool_calls: (step.calls ?? []).map((c, i) => ({
         name: c.name,
         args: c.args ?? {},
-        id: `call_${this.seen.length}_${i}`,
+        ...(c.noId ? {} : { id: `call_${this.seen.length}_${i}` }),
       })),
       usage_metadata: {
         input_tokens: 100,
@@ -98,6 +103,8 @@ const pularResposta = tool(
 
 const CALL_NOTE = "[Sistema] Revisão do turno: NOTA-DA-CHAMADA";
 const REPLY_NOTE = "[Sistema] Revisão do turno: NOTA-DA-RESPOSTA";
+const REVIEWER_FEEDBACK =
+  "<parecer_do_revisor>\nMOTIVO-LIVRE-DO-REVISOR\n</parecer_do_revisor>";
 
 async function run(
   model: BoundRecordingModel,
@@ -152,7 +159,8 @@ async function run(
     reviewTurnReply: async (_turn, reply, o) => {
       replies.push(reply);
       canRedo.push(o?.canRedo ?? true);
-      return hooks.reply?.(reply) ?? null;
+      const note = hooks.reply?.(reply) ?? null;
+      return note ? { instruction: note, feedback: REVIEWER_FEEDBACK } : null;
     },
   });
   const out = await graph.invoke(
@@ -253,6 +261,27 @@ describe("the turn review in the graph", () => {
       messages.some((m) => text(m) === "Vou te passar para a equipe."),
     ).toBe(false);
     expect(text(messages.at(-1))).toBe("Pronto, a equipe já vai te atender.");
+  });
+
+  test("the reviewer's reason reaches the redo as data after the history, never in a system message", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Vou te passar para a equipe." },
+      { text: "Qual é o número do seu pedido?" },
+    ]);
+    await run(model, {
+      reply: (r) => (r === "Vou te passar para a equipe." ? REPLY_NOTE : null),
+    });
+    const redo = model.seen[1] ?? [];
+    expect(
+      redo.some(
+        (m) => m.getType() === "system" && text(m).includes("MOTIVO-LIVRE"),
+      ),
+    ).toBe(false);
+    expect(
+      redo.some(
+        (m) => m.getType() === "human" && text(m) === REVIEWER_FEEDBACK,
+      ),
+    ).toBe(true);
   });
 
   test("a redone reply is reviewed again, and the loop ends when the review lets it go", async () => {
@@ -542,5 +571,28 @@ describe("the turn review in the graph", () => {
       },
     );
     expect(reReviewed).toBe(0);
+  });
+
+  test("two id-less calls to one tool keep their own results, the admitted one first and the veto second", async () => {
+    const model = new BoundRecordingModel([
+      {
+        text: "",
+        calls: [
+          { name: "transferir", args: { equipe: "vendas" }, noId: true },
+          { name: "transferir", args: { equipe: "suporte" }, noId: true },
+        ],
+      },
+      { text: "Pronto." },
+    ]);
+    let reviewed = 0;
+    const { messages } = await run(model, {
+      call: () => (reviewed++ === 1 ? CALL_NOTE : null),
+    });
+    expect(ran).toEqual(["transferir"]);
+    expect(
+      messages
+        .filter((m) => m.getType() === "tool")
+        .map((m) => (isUnranToolResult(m) ? "veto" : text(m))),
+    ).toEqual(["transferido", "veto"]);
   });
 });

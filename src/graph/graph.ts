@@ -2,6 +2,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import {
   AIMessage,
   type BaseMessage,
+  HumanMessage,
   type MessageContent,
   RemoveMessage,
   SystemMessage,
@@ -42,6 +43,7 @@ import {
   providerFailure,
 } from "@/lib/provider-failure";
 import type { PermitClass } from "@/lib/semaphore";
+import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
 import { hiddenNotesOf, hiddenNotesThisTurn } from "./anthropic-progress-notes";
 import {
   clientToolsNode,
@@ -244,7 +246,7 @@ export interface BuildAgentGraphParams {
     turn: BaseMessage[],
     reply: string,
     opts?: { canRedo: boolean; instructions?: string },
-  ) => Promise<string | null>;
+  ) => Promise<TurnReviewFeedback | null>;
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
   turnReviewHalted?: () => boolean;
@@ -662,6 +664,37 @@ function textlessCopy(ai: AIMessage, id: string): AIMessage {
 
 // The reply `replyWrittenThisTurn` would recover, taken out of the thread once a factual-grounding
 // revise replaced it, so the refused draft is neither delivered nor read by the next turn as said.
+// A batch's results in the order the model wrote its calls: answers for the calls set aside (a veto,
+// a refused revision call, a contradicted handoff) and the results of the calls that ran. A call
+// with no id is answered with `""`, so its result is found by name, and a list built as "set aside
+// first, then ran" would hand an admitted call the veto of its namesake (`pairedResults`). Anything
+// left unmatched keeps its place at the end.
+function inCallOrder(
+  state: { messages: BaseMessage[] },
+  ranView: { messages: BaseMessage[] },
+  aside: readonly BaseMessage[],
+  results: readonly BaseMessage[],
+): BaseMessage[] {
+  const calls =
+    (state.messages.at(-1) as AIMessage | undefined)?.tool_calls ?? [];
+  const ranCalls =
+    (ranView.messages.at(-1) as AIMessage | undefined)?.tool_calls ?? [];
+  const pools = { aside: [...aside], ran: [...results] };
+  const out: BaseMessage[] = [];
+  for (const c of calls) {
+    const pool = ranCalls.includes(c) ? pools.ran : pools.aside;
+    const k = pool.findIndex((m) => {
+      if (m.getType() !== "tool") return false;
+      const r = m as ToolMessage;
+      return c.id
+        ? r.tool_call_id === c.id
+        : !r.tool_call_id && r.name === c.name;
+    });
+    if (k >= 0) out.push(...pool.splice(k, 1));
+  }
+  return [...out, ...pools.aside, ...pools.ran];
+}
+
 // The thread as the reducer will leave it once `replaced` is returned: each replacement takes the
 // place of the message with its id.
 function withReplaced(
@@ -929,7 +962,7 @@ export function buildAgentGraph({
       view: BaseMessage[],
       text: string,
       canRedo: boolean,
-    ): Promise<string | null> =>
+    ): Promise<TurnReviewFeedback | null> =>
       reviewTurnReply && !noReplyChannel && !silentTurn && text
         ? reviewTurnReply(view, text, {
             canRedo,
@@ -1274,38 +1307,46 @@ export function buildAgentGraph({
     };
     if (revision) return { messages: [await askRevision(revision)] };
 
-    // The unexplained silence, asked once more per turn, a blank turn-review redo included. Only an
-    // answer that says nothing (`saysNothing`), with no calls, in a turn that declared no silence
-    // (`calledSkipThisTurn`), with no reply written beside a tool call on `view` (the thread as
-    // delivery reads it), and not at the hard limit, where the tools the instruction names are gone.
-    // The caller's predicate is asked last: it knows what this node cannot (a completed transfer).
     // The request with late instructions after the history (or inside the one system prompt where
     // a late system message is refused), over the history with the flagged drafts taken out.
+    // `feedback` is data about the step (the turn reviewer's reason and the refused draft): it goes
+    // after the history as a fenced message of its own, never into a system message, whose text the
+    // model obeys; only the fixed `extra` instructions do.
     const requestWith = (
       extra: readonly string[],
       removed: readonly BaseMessage[],
+      feedback?: string,
     ): BaseMessage[] => {
       const view = withReplaced(shown, removed);
+      const data = feedback ? [new HumanMessage(feedback)] : [];
       return lateSystemAccepted
         ? [
             new SystemMessage(prompt),
             ...view,
             ...wrapUp,
+            ...data,
             ...extra.map((t) => new SystemMessage(t)),
           ]
         : [
             new SystemMessage([prompt, ...extra].join("\n\n")),
             ...view,
             ...wrapUp,
+            ...data,
           ];
     };
-    // `asked` and `removed` are the request the blank answer came from: a redo's note and the drafts
-    // it took out travel into the retry too, so the correction is not lost.
+    // The unexplained silence, asked once more per turn, a blank turn-review redo included. Only an
+    // answer that says nothing (`saysNothing`), with no calls, in a turn that declared no silence
+    // (`calledSkipThisTurn`), with no reply written beside a tool call on `view` (the thread as
+    // delivery reads it), and not at the hard limit, where the tools the instruction names are gone.
+    // The caller's predicate is asked last: it knows what this node cannot (a completed transfer).
+    // `asked`, `removed` and `feedback` are the request the blank answer came from: a redo's note,
+    // the drafts it took out and the reviewer's data travel into the retry too.
     const retryIfSilent = async (
       answer: BaseMessage,
       view: BaseMessage[],
       asked: readonly string[] = [],
       removed: readonly BaseMessage[] = [],
+      feedback?: string,
     ): Promise<BaseMessage> => {
       if (
         !retrySilence ||
@@ -1329,7 +1370,7 @@ export function buildAgentGraph({
       // everywhere else, and in a human message never. The empty answer is NOT sent back: it said
       // nothing, and an empty assistant turn is the shape some providers refuse. Neither is persisted:
       // only the second answer returns to the thread.
-      const again = await ask(requestWith([...asked, text], removed));
+      const again = await ask(requestWith([...asked, text], removed, feedback));
       onSilenceRetry?.({ outcome: silenceRetryOutcome(again) });
       return again;
     };
@@ -1358,12 +1399,15 @@ export function buildAgentGraph({
       if (!note) break;
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
-      const redo = await ask(requestWith([note], draftRemoved));
+      const redo = await ask(
+        requestWith([note.instruction], draftRemoved, note.feedback),
+      );
       response = await retryIfSilent(
         redo,
         withReplaced([...history, redo], draftRemoved),
-        [note],
+        [note.instruction],
         draftRemoved,
+        note.feedback,
       );
       if (fillerOnly(response)) response = withoutText(response);
       if (((response as AIMessage).tool_calls?.length ?? 0) > 0)
@@ -1666,7 +1710,14 @@ export function buildAgentGraph({
               return { messages: [...ran.messages, new AIMessage("")] };
             }
             return asideAnswers.length
-              ? { messages: [...asideAnswers, ...ran.messages] }
+              ? {
+                  messages: inCallOrder(
+                    state,
+                    serverView,
+                    asideAnswers,
+                    ran.messages,
+                  ),
+                }
               : ran;
           }
           // biome-ignore lint/style/noNonNullAssertion: one of the two set something aside.
@@ -1678,12 +1729,16 @@ export function buildAgentGraph({
                 await toolNode!.invoke(view, heard)
               : { messages: [] as BaseMessage[] };
           return {
-            messages: [
-              ...asideAnswers,
-              ...(contradicted?.answers ?? []),
-              ...(reviewed?.answers ?? []),
-              ...ran.messages,
-            ],
+            messages: inCallOrder(
+              state,
+              view,
+              [
+                ...asideAnswers,
+                ...(contradicted?.answers ?? []),
+                ...(reviewed?.answers ?? []),
+              ],
+              ran.messages,
+            ),
           };
         },
       )

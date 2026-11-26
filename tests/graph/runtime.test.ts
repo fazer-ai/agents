@@ -11947,11 +11947,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
       // A handoff flagged again past the attempts runs (a veto would only loop), and its closing line
       // is the turn's reply: the fallback the review chose decides it, with no second transfer.
-      for (const [fallback, convId, expected] of [
-        ["silent", 7932, []],
-        ["template", 7933, ["TEMPLATE-OUT"]],
+      for (const [fallback, convId, expected, line] of [
+        ["silent", 7932, [], "LINHA-DO-MODELO"],
+        ["template", 7933, ["TEMPLATE-OUT"], "LINHA-DO-MODELO"],
+        // With no line of the model's at all, the fallback is still the turn's reply.
+        ["template", 7934, ["TEMPLATE-OUT"], ""],
+        ["handoff", 7935, ["HANDOFF-OUT"], ""],
       ] as const) {
-        test(`a flagged handoff past the attempts sends the ${fallback} fallback as its closing line`, async () => {
+        test(`a flagged handoff past the attempts sends the ${fallback} fallback as its closing line${line ? "" : ", with no line of its own"}`, async () => {
           await suDb.agent.update({
             where: { id: gAgentId },
             data: {
@@ -11999,7 +12002,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                     tool_calls: [
                       {
                         name: "handoff_to_human",
-                        args: { customerMessage: "LINHA-DO-MODELO" },
+                        args: { customerMessage: line },
                         id: `h${Math.random()}`,
                       },
                     ],
@@ -12032,6 +12035,95 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           expect(toggles).toEqual([[convId, "open"]]);
         });
       }
+
+      // A transfer does not end the graph, and the ownership fence admits a call once this very turn
+      // handed the conversation over: a write after it is still reviewed, and a flagged one does not run.
+      test("a write after a completed transfer is still reviewed, and a flagged one does not run", async () => {
+        await suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff: { mode: "route" },
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                input: { enabled: false },
+                output: { enabled: false },
+                turnReview: { enabled: true, action: "revise", maxAttempts: 2 },
+              },
+            },
+          },
+        });
+        const convId = 7936;
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const steps = [
+          {
+            name: "handoff_to_human",
+            args: { customerMessage: "Um humano já te atende." },
+          },
+          { name: "private_note", args: { content: "NOTA-DEPOIS" } },
+        ];
+        let asked = 0;
+        const actor = {
+          async invoke() {
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                const step = steps[asked++];
+                return step
+                  ? new AIMessage({
+                      content: "",
+                      tool_calls: [{ ...step, id: `s${asked}` }],
+                    })
+                  : new AIMessage("");
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const judged: string[] = [];
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    const step = String(
+                      (msgs.at(-1) as BaseMessage | undefined)?.content,
+                    );
+                    const note = step.includes('"private_note"');
+                    judged.push(note ? "private_note" : "other");
+                    return {
+                      content: JSON.stringify({
+                        violated: note,
+                        categories: note ? ["turn_review"] : [],
+                        rationale: note
+                          ? "Não anote depois da transferência."
+                          : "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : actor,
+            makeClient: guardStub(sent, notes, toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(judged).toContain("private_note");
+        expect(notes.some(([, n]) => n.includes("NOTA-DEPOIS"))).toBe(false);
+        expect(toggles).toEqual([[convId, "open"]]);
+      });
     });
 
     // NOTE: Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only

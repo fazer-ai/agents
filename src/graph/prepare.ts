@@ -120,9 +120,11 @@ import {
   type GroundingReviewerModel,
   type GuardrailsConfig,
   guardrailCredentialRef,
+  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
   resolveGroundingReviewer,
 } from "@/modules/guardrails/settings";
+import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
 import {
   type HandoffConfig,
   readHandoffConfig,
@@ -685,8 +687,7 @@ export async function loadAgentConfig(
   let turnReviewer: GroundingReviewerModel | null = null;
   if (guardrails.enabled && guardrails.turnReview.enabled) {
     const parent = await resolveReviewerKey(guardrails.credentialRef);
-    const keyless =
-      !guardrails.credentialRef && guardrails.provider === "openai-compatible";
+    const keyless = guardrailsKeylessEndpoint(guardrails, parent.baseUrl);
     turnReviewer =
       parent.key || keyless
         ? {
@@ -2567,7 +2568,7 @@ export interface GraphBuildDeps {
     turn: BaseMessage[],
     reply: string,
     opts?: { canRedo: boolean; instructions?: string },
-  ) => Promise<string | null>;
+  ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
 }
 

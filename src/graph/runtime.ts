@@ -1262,13 +1262,10 @@ async function runTurnBody(
     langfuseCfg: loaded.langfuseCfg,
   });
   const graph = await buildModelAndGraph(loaded, tools, {
-    // After a completed transfer nothing is reviewed: the conversation is a person's now.
-    reviewCall: turnReview
-      ? (turn, call, opts) =>
-          handoffState.completed
-            ? Promise.resolve(null)
-            : turnReview.reviewCall(turn, call, opts)
-      : undefined,
+    // A write after a completed transfer is still reviewed: the graph goes on, and the ownership
+    // fence admits a call once this very turn handed the conversation over. Only the reply, which
+    // nobody reads after a transfer, skips the review.
+    reviewCall: turnReview?.reviewCall,
     reviewTurnReply: turnReview
       ? (turn, reply, opts) =>
           handoffState.completed
@@ -1771,14 +1768,14 @@ async function runTurnBody(
   const deliverHandoffPromise = async (
     messages: BaseMessage[] = [],
   ): Promise<void> => {
-    if (!handoffAnsweredTheTurn(handoffState)) return;
-    const line = handoffState.customerMessage;
+    // A turn-review fallback already decided this turn's reply, so after a completed transfer it is
+    // the closing line, whether or not the model wrote one: silent sends nothing, template and
+    // handoff send the operator's text. The transfer has happened, so nothing is handed over again.
+    const reviewed = handoffState.completed ? turnReview?.pending() : null;
+    if (!reviewed && !handoffAnsweredTheTurn(handoffState)) return;
+    const line = handoffState.customerMessage ?? "";
     try {
-      // A turn-review fallback already decided this turn's reply: the closing line is that reply, so
-      // the decision applies to it (silent sends nothing, template and handoff send the operator's
-      // text). The transfer has happened, so nothing is handed over again.
-      let guarded =
-        turnReview?.pending() ?? (await runGuardrail("output", line));
+      let guarded = reviewed ?? (await runGuardrail("output", line));
       // NOTE: A trip here drops the queued images too, as the main gate below does: a verdict on
       // this turn's customer-facing text applies to every artefact.
       if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;

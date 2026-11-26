@@ -110,6 +110,7 @@ import {
   screenedText,
 } from "@/modules/guardrails/gate";
 import { buildGroundingGate } from "@/modules/guardrails/grounding-gate";
+import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
 import { buildTurnReviewGate } from "@/modules/guardrails/turn-review";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
@@ -478,7 +479,7 @@ async function buildPlaygroundGraph(params: {
     turn: BaseMessage[],
     reply: string,
     opts?: { canRedo: boolean; instructions?: string },
-  ) => Promise<string | null>;
+  ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;

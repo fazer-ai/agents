@@ -196,6 +196,20 @@ describe("settings", () => {
     });
   });
 
+  // The bug it catches: a URL typed for an OpenAI-compatible model kept after a switch to OpenRouter,
+  // whose client honors it, so reviews and their key went to the old server.
+  test("a typed endpoint belongs to an OpenAI-compatible model only", () => {
+    const at = (provider: string) =>
+      readGuardrailsConfig({
+        guardrails: { provider, baseURL: "http://antigo.local/v1" },
+      }).baseURL;
+    expect([at("openai-compatible"), at("openrouter"), at("openai")]).toEqual([
+      "http://antigo.local/v1",
+      null,
+      null,
+    ]);
+  });
+
   test("an unknown action or fallback reads as the default, and attempts are clamped to 1-3", () => {
     const tr = readGuardrailsConfig({
       guardrails: {

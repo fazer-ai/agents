@@ -111,4 +111,35 @@ describe("an external check line under observe", () => {
       guardrailExternalLabel("guardrail", { ...base, decision: "allow" }, t),
     ).toBe("The external check allowed the reply · took 30 ms");
   });
+
+  // The bug it catches: an observed write call told as a reply that went out, when no reply was sent.
+  test("a turn review line names the step: a call that ran, or a reply that went out", () => {
+    expect([
+      guardrailObservedLabel(
+        "guardrail",
+        {
+          check: "turn_review",
+          direction: "output",
+          action: "observe",
+          step: "call",
+          tool: "handoff_to_human",
+          rationaleChars: 10,
+        },
+        t,
+      )?.split(" · ")[0],
+      guardrailObservedLabel(
+        "guardrail",
+        {
+          check: "turn_review",
+          direction: "output",
+          action: "observe",
+          step: "reply",
+        },
+        t,
+      ),
+    ]).toEqual([
+      "The call to handoff_to_human went against the agent's instructions; only recorded, it ran as written",
+      "The reply went against the agent's instructions; only recorded, it went out as written",
+    ]);
+  });
 });

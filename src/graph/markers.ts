@@ -442,6 +442,8 @@ export function turnReviewHeldToolResult(call: {
     tool_call_id: call.id ?? "",
     name: call.name,
     content: TURN_REVIEW_HELD_TOOL_RESULT,
+    // An error like the veto: a refused read must not read as a source that answered.
+    status: "error",
     additional_kwargs: { [MARKER_KWARG]: "turn_review_held" },
   });
 }

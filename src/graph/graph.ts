@@ -908,6 +908,20 @@ export function buildAgentGraph({
     // seen: on a PARALLEL batch the calling message is not the end of the turn, and a companion's
     // extra round would leave it standing. Undelivered either way: the runtime posts the LAST message.
     const narration = staySilent ? silenceNarration(history) : [];
+    // The turn review of the text headed for delivery, the one place it is asked. Every path that
+    // can leave a reply for the runtime ends here exactly once with its final text: the final
+    // answer, a silence retry and a redo (the loop below, `canRedo`), the draft the runtime recovers
+    // beside an earlier call (the loop, and the stall exit with no redo), and a factual-grounding
+    // rewrite (`askRevision`, no redo). With no redo, a flagged text meets the gate's fallback. The
+    // fallback itself is the operator's own text and is not reviewed.
+    const reviewHeadedOut = async (
+      view: BaseMessage[],
+      text: string,
+      canRedo: boolean,
+    ): Promise<string | null> =>
+      reviewTurnReply && !noReplyChannel && !silentTurn && text
+        ? reviewTurnReply(view, text, { canRedo })
+        : null;
     // The turn ends where the information ends, in three cases. A lone `skip_reply` asked for
     // again right after one adds nothing a further round could act on (see `reaffirmedSilenceAlone`).
     // A turn that decided silence alone and spent its budget can neither act nor speak, so a model call
@@ -924,15 +938,13 @@ export function buildAgentGraph({
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
       // The turn review of that same recovered reply, first: with no model call left to redo it, a
       // flagged one meets the fallback, and its draft leaves the thread.
-      const recoveredForTurn =
-        reviewTurnReply && !noReplyChannel && !silentTurn && recoversReply?.()
+      const turnFlagged = !!(await reviewHeadedOut(
+        history,
+        recoversReply?.()
           ? customerFacingReply(replyWrittenThisTurn(history)).text
-          : "";
-      const turnFlagged = recoveredForTurn
-        ? !!(await reviewTurnReply?.(history, recoveredForTurn, {
-            canRedo: false,
-          }))
-        : false;
+          : "",
+        false,
+      ));
       // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
       // no model call left to rewrite it, a revise reads as an empty rewrite.
       const recovered =
@@ -1233,29 +1245,39 @@ export function buildAgentGraph({
       if (fillerOnly(res)) res = withoutText(res);
       const reply = customerFacingReply(contentToText(res.content)).text;
       revision = null;
-      await r.plan?.review([...history, res], reply, r.info);
+      // The rewrite is the text headed out. A flagged one meets the turn review's fallback, which
+      // wins at delivery, so grounding does not review a text nobody reads.
+      const flagged = !!(await reviewHeadedOut(
+        [...history, res],
+        reply,
+        false,
+      ));
+      if (!flagged) await r.plan?.review([...history, res], reply, r.info);
       onReplyRevised?.(reply);
       return res;
     };
     if (revision) return { messages: [await askRevision(revision)] };
 
-    let response = await ask(messages);
-    // NOTE: the unexplained silence, asked once more. Only a final answer that says nothing: nothing
-    // to read (`saysNothing`), no calls, in a turn that declared no silence (`calledSkipThisTurn` covers the round right after
-    // the decision too), whose reply the model did not already write beside a tool call (that one is
-    // delivered as is), and not at the hard limit, where the model runs without the tools the
-    // instruction names. The caller's predicate is asked last, at the moment it would run: it knows
-    // what this node cannot (a transfer that completed, something already delivered).
-    if (
-      retrySilence &&
-      !silenceRetried &&
-      !noReplyChannel &&
-      !hardLimit &&
-      saidNothing(response) &&
-      !calledSkipThisTurn(history) &&
-      replyWrittenThisTurn([...history, response]) === "" &&
-      retrySilence()
-    ) {
+    // The unexplained silence, asked once more per turn, a blank turn-review redo included. Only an
+    // answer that says nothing (`saysNothing`), with no calls, in a turn that declared no silence
+    // (`calledSkipThisTurn`), with no reply written beside a tool call on `view` (the thread as
+    // delivery reads it), and not at the hard limit, where the tools the instruction names are gone.
+    // The caller's predicate is asked last: it knows what this node cannot (a completed transfer).
+    const retryIfSilent = async (
+      answer: BaseMessage,
+      view: BaseMessage[],
+    ): Promise<BaseMessage> => {
+      if (
+        !retrySilence ||
+        silenceRetried ||
+        noReplyChannel ||
+        hardLimit ||
+        !saidNothing(answer) ||
+        calledSkipThisTurn(history) ||
+        replyWrittenThisTurn(view) !== "" ||
+        !retrySilence()
+      )
+        return answer;
       silenceRetried = true;
       const canSkip = (tools ?? []).some((t) => t.name === SKIP_REPLY_TOOL);
       const text = silenceRetryText(
@@ -1270,9 +1292,12 @@ export function buildAgentGraph({
       const retried = lateSystemAccepted
         ? [...messages, new SystemMessage(text)]
         : [new SystemMessage(`${prompt}\n\n${text}`), ...shown, ...wrapUp];
-      response = await ask(retried);
-      onSilenceRetry?.({ outcome: silenceRetryOutcome(response) });
-    }
+      const again = await ask(retried);
+      onSilenceRetry?.({ outcome: silenceRetryOutcome(again) });
+      return again;
+    };
+    const first = await ask(messages);
+    let response = await retryIfSilent(first, [...history, first]);
     // NOTE: from here on a `—` is the empty answer: the review below must not take it as a candidate.
     if (fillerOnly(response)) response = withoutText(response);
     // The turn review of the final answer, before the factual-grounding one. A note asks the model
@@ -1292,14 +1317,18 @@ export function buildAgentGraph({
       const recovered =
         !own && recoversReply?.() ? replyWrittenThisTurn(view) : "";
       const draft = customerFacingReply(own || recovered).text;
-      const note = draft ? await reviewTurnReply(view, draft) : null;
+      const note = await reviewHeadedOut(view, draft, true);
       if (!note) break;
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
-      response = await ask(
+      const redo = await ask(
         lateSystemAccepted
           ? [...messages, new SystemMessage(note)]
           : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
+      );
+      response = await retryIfSilent(
+        redo,
+        withReplaced([...history, redo], draftRemoved),
       );
       if (fillerOnly(response)) response = withoutText(response);
       if (((response as AIMessage).tool_calls?.length ?? 0) > 0)

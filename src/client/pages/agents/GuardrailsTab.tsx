@@ -940,10 +940,12 @@ export function GuardrailsTab({
                     value={g.provider}
                     onChange={(e) => {
                       const provider = e.target.value;
+                      // The typed endpoint belongs to the provider it was typed for.
                       setG((s) => ({
                         ...s,
                         provider: provider as GuardrailsConfig["provider"],
                         model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
+                        baseURL: null,
                       }));
                     }}
                   >

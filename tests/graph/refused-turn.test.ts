@@ -888,4 +888,43 @@ describe("a call the turn review kept from running", () => {
       actedToolNames(produced),
     ]).toEqual([false, []]);
   });
+
+  // A provider may emit a call with no id, and the refusal then carries `""`: it answers the call
+  // of the same batch with that name, and a sibling that has its own result still ran.
+  test("a vetoed call with no id did not act, and an id-less sibling that ran still did", () => {
+    const veto = turnReviewVetoToolResult(
+      { name: "handoff_to_human" },
+      "[Sistema] Revisão do turno: não rodou",
+    );
+    const alone = [
+      h("h1", "quero falar com alguém"),
+      new AIMessage({
+        id: "a1",
+        content: "",
+        tool_calls: [{ name: "handoff_to_human", args: {} }],
+      }),
+      veto,
+      a("a2", "Qual é o número do seu pedido?"),
+    ];
+    const beside = [
+      h("h1", "quero falar com alguém"),
+      new AIMessage({
+        id: "a1",
+        content: "",
+        tool_calls: [
+          { name: "handoff_to_human", args: {} },
+          { name: "set_labels", args: {} },
+        ],
+      }),
+      veto,
+      new ToolMessage({ tool_call_id: "", name: "set_labels", content: "ok" }),
+      a("a2", "Qual é o número do seu pedido?"),
+    ];
+    expect([
+      turnActedBeforeItsReply(alone),
+      actedToolNames(alone),
+      turnActedBeforeItsReply(beside),
+      actedToolNames(beside),
+    ]).toEqual([false, [], true, ["set_labels"]]);
+  });
 });

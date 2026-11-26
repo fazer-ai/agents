@@ -639,7 +639,10 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     // leave every already-saved empty value broken.
     model: str(bag.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "",
     credentialRef: str(bag.credentialRef),
-    baseURL: str(bag.baseURL),
+    // A typed endpoint belongs to an OpenAI-compatible model only: OpenRouter's client honors one
+    // too, so a URL kept from before a provider switch would send reviews and the key elsewhere. A
+    // credential's own endpoint is resolved apart and still applies.
+    baseURL: provider === "openai-compatible" ? str(bag.baseURL) : null,
     competitors: readCompetitors(bag.competitors),
     customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),
     input: readInput(bag.input),

@@ -386,16 +386,28 @@ export function guardrailObservedLabel(
   const categories = Array.isArray(detail.categories)
     ? detail.categories.filter((c): c is string => typeof c === "string")
     : [];
+  // A turn review judges a step, and a step may be a write call, which sent no reply.
   const head =
-    detail.direction === "input"
-      ? t(
-          "logs.guardrailObserved.input",
-          "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
-        )
-      : t(
-          "logs.guardrailObserved.output",
-          "The reply tripped the check; only recorded, it went out as written",
-        );
+    detail.check === "turn_review"
+      ? detail.step === "call"
+        ? t("logs.guardrailObserved.turnReviewCall", {
+            defaultValue:
+              "The call to {{tool}} went against the agent's instructions; only recorded, it ran as written",
+            tool: typeof detail.tool === "string" ? detail.tool : "",
+          })
+        : t(
+            "logs.guardrailObserved.turnReviewReply",
+            "The reply went against the agent's instructions; only recorded, it went out as written",
+          )
+      : detail.direction === "input"
+        ? t(
+            "logs.guardrailObserved.input",
+            "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
+          )
+        : t(
+            "logs.guardrailObserved.output",
+            "The reply tripped the check; only recorded, it went out as written",
+          );
   return [
     head,
     categories.length

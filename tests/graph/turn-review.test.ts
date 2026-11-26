@@ -101,6 +101,8 @@ async function run(
     recoversReply?: () => boolean;
     halted?: () => boolean;
     stillWanted?: () => Promise<boolean>;
+    grounding?: (reply: string) => string | null;
+    retrySilence?: () => boolean;
   } = {},
 ) {
   ran.length = 0;
@@ -117,6 +119,10 @@ async function run(
     recoversReply: opts.recoversReply,
     turnReviewHalted: opts.halted,
     stillWanted: opts.stillWanted,
+    retrySilence: opts.retrySilence,
+    reviewReply: opts.grounding
+      ? async (_turn, reply) => opts.grounding?.(reply) ?? null
+      : undefined,
     reviewCall: async (_turn, call, o) => {
       calls.push(call.name);
       alongside.push((o?.alongside ?? []).map((c) => c.name));
@@ -285,6 +291,12 @@ describe("the turn review in the graph", () => {
     expect(messages.filter((m) => m.getType() === "tool")).toHaveLength(2);
     // Not a called-off turn: the caller still owns it and must reach the handover.
     expect(turnWasCalledOff(messages)).toBe(false);
+    // Errors, not results: a refused read must not read as a source that answered.
+    expect(
+      messages
+        .filter((m) => m.getType() === "tool")
+        .map((m) => (m as ToolMessage).status),
+    ).toEqual(["error", "error"]);
     expect(text(messages.at(-1))).toBe("");
   });
 
@@ -389,5 +401,47 @@ describe("the turn review in the graph", () => {
     expect(replies).toEqual(["Rascunho novo.", "Rascunho antigo."]);
     // Neither flagged draft is left for the runtime to recover.
     expect(replyWrittenThisTurn(messages)).toBe("");
+  });
+
+  test("a factual-grounding rewrite is the text headed out, so the turn review reads it, with no redo left", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Abre às 16h." },
+      { text: "Abre às 18h. Prometo reembolso." },
+    ]);
+    const { replies, canRedo, messages } = await run(
+      model,
+      { reply: (r) => (r.includes("reembolso") ? REPLY_NOTE : null) },
+      {
+        grounding: (r) =>
+          r === "Abre às 16h." ? "[Sistema] NOTA-FACTUAL" : null,
+      },
+    );
+    expect([replies, canRedo]).toEqual([
+      ["Abre às 16h.", "Abre às 18h. Prometo reembolso."],
+      [true, false],
+    ]);
+    expect(model.seen).toHaveLength(2);
+    expect(text(messages.at(-1))).toBe("Abre às 18h. Prometo reembolso.");
+  });
+
+  test("a blank redo gets the one silence retry, and what it writes is reviewed", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Vou te passar para a equipe." },
+      { text: "" },
+      { text: "Qual é o número do seu pedido?" },
+    ]);
+    const { replies, messages } = await run(
+      model,
+      {
+        reply: (r) =>
+          r === "Vou te passar para a equipe." ? REPLY_NOTE : null,
+      },
+      { retrySilence: () => true },
+    );
+    expect(replies).toEqual([
+      "Vou te passar para a equipe.",
+      "Qual é o número do seu pedido?",
+    ]);
+    expect(text(messages.at(-1))).toBe("Qual é o número do seu pedido?");
   });
 });

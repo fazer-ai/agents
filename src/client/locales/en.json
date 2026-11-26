@@ -3874,7 +3874,9 @@
       "input": "The customer's message tripped the check; only recorded, the turn went on as if it had passed",
       "output": "The reply tripped the check; only recorded, it went out as written",
       "rationale": "rationale: {{rationale}}",
-      "rationaleHidden": "a rationale was given ({{chars}} characters), shown here only when \"Log the values sent to tools\" is on"
+      "rationaleHidden": "a rationale was given ({{chars}} characters), shown here only when \"Log the values sent to tools\" is on",
+      "turnReviewCall": "The call to {{tool}} went against the agent's instructions; only recorded, it ran as written",
+      "turnReviewReply": "The reply went against the agent's instructions; only recorded, it went out as written"
     },
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message was let through unchecked",

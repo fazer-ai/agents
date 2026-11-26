@@ -4017,7 +4017,9 @@
       "input": "A mensagem do cliente disparou a checagem; só registrado, o turno seguiu como se ela tivesse passado",
       "output": "A resposta disparou a checagem; só registrado, ela saiu como foi escrita",
       "rationale": "justificativa: {{rationale}}",
-      "rationaleHidden": "o modelo deu uma justificativa ({{chars}} caracteres), mostrada aqui só com \"Registrar os valores enviados às ferramentas\" ligado"
+      "rationaleHidden": "o modelo deu uma justificativa ({{chars}} caracteres), mostrada aqui só com \"Registrar os valores enviados às ferramentas\" ligado",
+      "turnReviewCall": "A chamada a {{tool}} foi contra as instruções do agente; só registrada, ela rodou como foi escrita",
+      "turnReviewReply": "A resposta foi contra as instruções do agente; só registrado, ela saiu como foi escrita"
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",

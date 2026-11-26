@@ -32,7 +32,6 @@ import {
   buildModelAndGraph,
   buildSpeechNormalizer,
   loadAgentConfig,
-  reviewerToolGuidance,
 } from "@/graph/prepare";
 import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
 import { rememberWhatWasSent, undoRefusedTurn } from "@/graph/refused-turn";
@@ -478,7 +477,7 @@ async function buildPlaygroundGraph(params: {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   reviewTurnReply?: (
@@ -487,7 +486,7 @@ async function buildPlaygroundGraph(params: {
     opts?: {
       canRedo: boolean;
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
@@ -1023,7 +1022,6 @@ async function runPlaygroundTurnOnce(
         cfg: loadedConfig.guardrails,
         reviewer: loadedConfig.turnReviewer,
         systemPrompt: loadedConfig.systemPrompt,
-        toolGuidance: reviewerToolGuidance(loadedConfig),
         flow,
         logValues: loadedConfig.logToolValues,
         announce: (r) => {

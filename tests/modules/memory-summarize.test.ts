@@ -18,6 +18,7 @@ import {
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
   nudgeMessage,
+  turnReviewVetoToolResult,
   undeliveredProactiveNote,
   undeliveredReplyNote,
 } from "@/graph/markers";
@@ -262,6 +263,37 @@ describe("renderTranscript", () => {
     expect(t).toContain("calendar_create_event");
     expect(t).not.toContain("abc123");
     expect(t).toContain("atendente: Agendado para terça às 08h.");
+  });
+
+  // The bug it catches: a write the turn review vetoed was remembered as a tool used, and the
+  // reviewer reads this summary as the record of what was done.
+  test("a call answered by a refusal is not remembered as used, and its sibling that ran is", () => {
+    const t = renderTranscript([
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          { name: "agendar", args: {}, id: "call_a" },
+          { name: "marcar_etiqueta", args: {}, id: "call_b" },
+        ],
+      }),
+      turnReviewVetoToolResult(
+        { id: "call_a", name: "agendar" },
+        "Confirme o horário antes.",
+      ),
+      new ToolMessage({ content: "ok", tool_call_id: "call_b" }),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "transferir", args: {}, id: "call_c" }],
+      }),
+      turnReviewVetoToolResult(
+        { id: "call_c", name: "transferir" },
+        "Pergunte o convênio antes.",
+      ),
+      new AIMessage("Qual horário prefere?"),
+    ]);
+    expect(t).toBe(
+      "atendente [usou ferramenta: marcar_etiqueta]\natendente: Qual horário prefere?",
+    );
   });
 
   // The transcript is customer-written text placed inside a fence. Left alone, a customer could

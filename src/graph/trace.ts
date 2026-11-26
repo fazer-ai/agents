@@ -95,6 +95,7 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.step ? { step: r.step } : {}),
     ...(r.tool ? { tool: scrubbedClip(r.tool, CATEGORY_MAX) } : {}),
     ...(r.callId ? { callId: r.callId } : {}),
+    ...(r.afterCallId ? { afterCallId: r.afterCallId } : {}),
     // The factual-grounding claims: model-written, quoting the reply and the tool results.
     ...(r.claims?.length
       ? {
@@ -209,8 +210,10 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
 }
 
 // The turn's entries with each call verdict placed right after the call it judged (by id and tool
-// name, each verdict taken once, in order), as the review ran: before the call was answered. A verdict with no
-// call id, or whose call is not in the entries, keeps its place after them.
+// name, each verdict taken once, in order), as the review ran: before the call was answered. A turn
+// review of a reply goes after the results of the step its `afterCallId` belongs to, before the step
+// a redo made, or ahead of every call when the turn had made none. Any other verdict keeps its place
+// after the entries.
 export function withCallVerdicts(
   entries: readonly TraceEntry[],
   verdicts: readonly TraceGuardrail[],
@@ -221,9 +224,34 @@ export function withCallVerdicts(
   for (const e of entries)
     if (e.type === "tool_call" && e.id)
       idCount.set(e.id, (idCount.get(e.id) ?? 0) + 1);
+  const isReply = (v: TraceGuardrail) =>
+    v.check === "turn_review" && v.step === "reply";
+  const take = (keep: (v: TraceGuardrail) => boolean) => {
+    const out: TraceGuardrail[] = [];
+    for (let i = 0; i < pending.length; )
+      if (keep(pending[i] as TraceGuardrail)) out.push(...pending.splice(i, 1));
+      else i++;
+    return out;
+  };
+  // A reply review with no earlier call ran before the first step; the others wait for the results
+  // of theirs (`due`), and go out before the next entry that is not one.
   const out: TraceEntry[] = [];
-  for (const e of entries) {
+  let due: TraceGuardrail[] = [];
+  const firstCall = entries.findIndex((e) => e.type === "tool_call");
+  // The step opens on the text written beside its calls, when there is one.
+  const firstStep =
+    firstCall > 0 && entries[firstCall - 1]?.type === "assistant"
+      ? firstCall - 1
+      : firstCall;
+  entries.forEach((e, i) => {
+    if (e.type !== "tool_result") {
+      out.push(...due);
+      due = [];
+    }
+    if (i === firstStep) out.push(...take((v) => isReply(v) && !v.afterCallId));
     out.push(e);
+    if (e.type === "tool_result" && e.id)
+      due.push(...take((v) => isReply(v) && v.afterCallId === e.id));
     if (e.type === "tool_call" && e.id) {
       // By id and tool name, in order: an id a provider repeats does not pair a verdict with the
       // wrong call.
@@ -239,8 +267,8 @@ export function withCallVerdicts(
         );
       if (k >= 0) out.push(...pending.splice(k, 1));
     }
-  }
-  return [...out, ...pending];
+  });
+  return [...out, ...due, ...pending];
 }
 
 export function buildPlaygroundTrace(

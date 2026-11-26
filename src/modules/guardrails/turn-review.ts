@@ -6,6 +6,8 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 import type { LLMResult } from "@langchain/core/outputs";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import logger from "@/api/lib/logger";
 import { historyDate } from "@/graph/history-dates";
 import { type ModelConfig, verdictAskMode } from "@/graph/model-config";
@@ -71,14 +73,19 @@ export type TurnStep =
       // The writes of the same step already admitted: no result yet, they run together with this one.
       alongside?: readonly { name: string; args: unknown }[];
     }
-  | { kind: "reply"; text: string };
+  | {
+      kind: "reply";
+      text: string;
+      // The id of the turn's last call before the reply, carried to the report for the trace.
+      after?: string;
+    };
 
 export interface TurnReviewInput {
   now?: string;
   timezone?: string;
   instructions: string;
-  // The operator's guidance written on the tools (handoff rules, funnel notes): it reaches the agent
-  // in the tool descriptions, not in the system prompt, so the reviewer is handed it here.
+  // The bound write tools as the model reads them (`boundToolDescription`), by name: the operator's
+  // notes on them reach the agent in the tool descriptions, not in the system prompt.
   toolInstructions?: Readonly<Partial<Record<string, string>>>;
   customPolicy: string;
   conversation: readonly DatedContextMessage[];
@@ -112,8 +119,9 @@ const EARLIER_TAG = "earlier_tool_calls";
 // The earlier record is evidence, kept lean: the latest calls only, each result clipped short.
 const EARLIER_CALLS_MAX = 12;
 const EARLIER_RESULT_MAX = 600;
-// Each tool's guidance, an operator-written description included, kept to a bounded size.
-const TOOL_INSTRUCTION_MAX = 2000;
+// Each tool as the model reads it, kept to a bounded size: room for a native tool's own text, the
+// operator's note on it and its per-turn context.
+const TOOL_INSTRUCTION_MAX = 4000;
 const STEP_TAG = "proposed_step";
 // Data inside a block has its angle brackets escaped, so no text it carries can open or close a tag,
 // however nested. Removing known tags instead leaves a tag behind once an inner one is cut out.
@@ -142,18 +150,18 @@ export const TURN_REVIEW_SYSTEM_PROMPT = [
   'Respond with ONLY a JSON object (no markdown, no prose) of the form: {"violated": boolean, "categories": string[], "rationale": string, "suggestedReply": null}. When violated, `categories` is ["turn_review"] and `rationale` is ONE sentence addressed to the agent, in the language of the conversation, saying what it should do instead (for example: "Ask which health plan the patient has before transferring."). When nothing is violated, set "violated" to false, "categories" to [] and "rationale" to "".',
 ].join("\n");
 
-// The operator's per-tool guidance, one fenced entry per tool with text, in name order so the system
-// message stays the same bytes from turn to turn.
+// Each tool the agent can call to change something, as the model reads it, one fenced entry per
+// tool, in name order so the system message stays the same bytes from turn to turn.
 function toolInstructionsBlock(
-  guidance: Readonly<Partial<Record<string, string>>> | undefined,
+  described: Readonly<Partial<Record<string, string>>> | undefined,
 ): string[] {
-  const entries = Object.entries(guidance ?? {})
+  const entries = Object.entries(described ?? {})
     .filter((e): e is [string, string] => !!e[1]?.trim())
     .sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) return [];
   return [
     [
-      "The operator also wrote instructions on specific tools. They are part of the agent's instructions, for any call to that tool:",
+      "The tools the agent can call to change something, as the agent reads them: each description and what each argument is for. What they say about when and how to use a tool is part of the agent's instructions, for any call to that tool:",
       "<tool_instructions>",
       ...entries.map(
         ([name, text]) =>
@@ -162,6 +170,24 @@ function toolInstructionsBlock(
       "</tool_instructions>",
     ].join("\n"),
   ];
+}
+
+// What the model is given of a bound tool (`convertToOpenAITool`, the form observability records):
+// its description, then each top-level argument the schema describes.
+export function boundToolDescription(t: StructuredToolInterface): string {
+  const fn = convertToOpenAITool(t).function;
+  const props = (fn.parameters as { properties?: Record<string, unknown> })
+    ?.properties;
+  const args = Object.entries(props ?? {}).flatMap(([k, v]) => {
+    const d = (v as { description?: unknown })?.description;
+    return typeof d === "string" && d.trim() ? [`- ${k}: ${d.trim()}`] : [];
+  });
+  return [
+    fn.description?.trim() ?? "",
+    ...(args.length ? ["Arguments:", ...args] : []),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 // The earlier turns' calls, oldest first, the latest `EARLIER_CALLS_MAX` only, each result clipped.
@@ -349,8 +375,6 @@ export interface TurnReviewGateParams {
   reviewer: GroundingReviewerModel | null;
   // The agent's resolved system prompt: the instructions every step is judged against.
   systemPrompt: string;
-  // The operator's per-tool guidance (`operatorToolGuidance`), judged with the system prompt.
-  toolGuidance?: Readonly<Partial<Record<string, string>>>;
   flow: FlowContext;
   logValues?: boolean;
   announce?: GuardrailAnnounce;
@@ -369,7 +393,7 @@ export interface TurnReviewGate {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   // The graph's `reviewTurnReply`: the final reply, before the factual-grounding review and the send.
@@ -381,7 +405,7 @@ export interface TurnReviewGate {
     opts?: {
       canRedo: boolean;
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   // The fallback the caller's output gate applies in the reply's place, once a step was still flagged
@@ -393,15 +417,16 @@ export interface TurnReviewGate {
   halted: () => boolean;
 }
 
-// The guidance of the tools the toolset holds; all of it when the caller does not say which.
-function guidanceFor(
-  guidance: Readonly<Partial<Record<string, string>>> | undefined,
-  toolNames: readonly string[] | undefined,
-): Readonly<Partial<Record<string, string>>> | undefined {
-  if (!guidance || !toolNames) return guidance;
-  return Object.fromEntries(
-    Object.entries(guidance).filter(([name]) => toolNames.includes(name)),
-  );
+// The id of the last call the turn made before its reply, if any: the newest assistant message with
+// calls after the last customer message.
+function lastCallOfTurn(turn: readonly BaseMessage[]): { after?: string } {
+  for (let i = turn.length - 1; i >= 0; i--) {
+    const m = turn[i] as BaseMessage;
+    if (m.getType() === "human" || m.getType() === "system") return {};
+    const id = (m as { tool_calls?: { id?: string }[] }).tool_calls?.at(-1)?.id;
+    if (m.getType() === "ai" && id) return { after: id };
+  }
+  return {};
 }
 
 // Null unless the check is on: the caller then passes no hooks, and nothing about the turn changes.
@@ -487,7 +512,10 @@ export function buildTurnReviewGate(
           tool: step.name,
           ...(step.id ? { callId: step.id } : {}),
         }
-      : { step: "reply" as const };
+      : {
+          step: "reply" as const,
+          ...(step.after ? { afterCallId: step.after } : {}),
+        };
 
   const couldNotReview = async (
     step: TurnStep,
@@ -540,8 +568,8 @@ export function buildTurnReviewGate(
     canRedo = true,
     // The instructions the graph gave the model for this step; the stored prompt when absent.
     instructions?: string,
-    // The tools the graph binds: per-tool guidance of any other tool is left out.
-    toolNames?: readonly string[],
+    // The write tools the graph binds, as the model reads them (`boundToolDescription`).
+    tools?: Readonly<Record<string, string>>,
   ): Promise<{ rationale: string } | null> => {
     if (stopped || p.signal?.aborted) return null;
     const m = resolveModel();
@@ -564,7 +592,7 @@ export function buildTurnReviewGate(
         now: groundingNow(p.clock.now, p.clock.timezone),
         timezone: p.clock.timezone,
         instructions: instructions?.trim() ? instructions : p.systemPrompt,
-        toolInstructions: guidanceFor(p.toolGuidance, toolNames),
+        toolInstructions: tools,
         customPolicy: gr.customPolicy,
         conversation: groundingConversation(
           turn,
@@ -689,7 +717,7 @@ export function buildTurnReviewGate(
         step,
         true,
         opts?.instructions,
-        opts?.toolNames,
+        opts?.tools,
       );
       return flagged ? turnReviewNote(step, flagged.rationale) : null;
     },
@@ -697,10 +725,10 @@ export function buildTurnReviewGate(
       if (!reply.trim()) return null;
       const flagged = await review(
         turn,
-        { kind: "reply", text: reply },
+        { kind: "reply", text: reply, ...lastCallOfTurn(turn) },
         opts?.canRedo ?? true,
         opts?.instructions,
-        opts?.toolNames,
+        opts?.tools,
       );
       return flagged ? turnReviewFeedback(reply, flagged.rationale) : null;
     },

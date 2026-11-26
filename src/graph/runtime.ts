@@ -161,7 +161,6 @@ import {
   buildSpeechNormalizer,
   buildToolset,
   loadAgentConfig,
-  reviewerToolGuidance,
 } from "./prepare";
 import {
   actedToolNames,
@@ -1249,7 +1248,6 @@ async function runTurnBody(
     cfg: loaded.guardrails,
     reviewer: loaded.turnReviewer,
     systemPrompt: loaded.systemPrompt,
-    toolGuidance: reviewerToolGuidance(loaded),
     flow,
     logValues: loaded.logToolValues,
     announce: async (r) => {

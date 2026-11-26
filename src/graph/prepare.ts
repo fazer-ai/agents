@@ -1518,60 +1518,6 @@ export interface ToolBuildDeps {
 // Native Chatwoot tools + allowlisted custom HTTP tools + allowlisted MCP tools. buildNativeTools
 // is injected so this module does not import the native-tools file (which the nudge path may want
 // to vary), keeping the dependency graph shallow.
-// Operator-authored per-tool guidance (handoff transfer logic / funnel notes), appended to the
-// respective native tool descriptions, and read by the turn review, which judges calls against it.
-// Only keys with text are set.
-export function operatorToolGuidance(
-  cfg: Pick<AgentConfig, "toolGuidance" | "handoffConfig" | "kanbanConfig">,
-): Partial<Record<NativeToolName, string>> {
-  const toolInstructions: Partial<Record<NativeToolName, string>> = {
-    ...cfg.toolGuidance,
-  };
-  // NOTE: handoff/kanban guidance lives in their own grouped config; let it win over the flat map for those
-  // two tools (the editor writes them there, not into settings.toolGuidance).
-  if (cfg.handoffConfig.instructions) {
-    toolInstructions.handoff_to_human = cfg.handoffConfig.instructions;
-  }
-  if (cfg.kanbanConfig.instructions) {
-    toolInstructions.kanban_move_card = cfg.kanbanConfig.instructions;
-  }
-  return toolInstructions;
-}
-
-// What the turn reviewer reads as the operator's word on each tool: the guidance above, and for a
-// custom HTTP tool the description the operator wrote, with the arguments they described. A native
-// name is left to the native tool, which keeps it. Only the tools a turn binds reach the reviewer.
-export function reviewerToolGuidance(
-  cfg: Pick<
-    AgentConfig,
-    "toolGuidance" | "handoffConfig" | "kanbanConfig" | "httpToolDefs"
-  >,
-): Partial<Record<string, string>> {
-  const native = new Set<string>(NATIVE_TOOL_NAMES);
-  const custom: Record<string, string> = {};
-  for (const d of cfg.httpToolDefs) {
-    if (native.has(d.name)) continue;
-    const props = (d.inputSchema as { properties?: Record<string, unknown> })
-      ?.properties;
-    const args = Object.entries(props ?? {})
-      .map(([k, v]) => {
-        const desc = (v as { description?: unknown })?.description;
-        return typeof desc === "string" && desc.trim()
-          ? `- ${k}: ${desc.trim()}`
-          : null;
-      })
-      .filter((l): l is string => l !== null);
-    const text = [
-      d.description?.trim() ?? "",
-      ...(args.length ? ["Arguments:", ...args] : []),
-    ]
-      .filter(Boolean)
-      .join("\n");
-    if (text) custom[d.name] = text;
-  }
-  return { ...custom, ...operatorToolGuidance(cfg) };
-}
-
 export async function buildToolset(
   cfg: AgentConfig,
   ctx: ToolsetCtx,
@@ -1881,7 +1827,19 @@ export async function buildToolset(
       );
     }
   }
-  const toolInstructions = operatorToolGuidance(cfg);
+  // Operator-authored per-tool guidance (handoff transfer logic / funnel notes), appended to the
+  // respective native tool descriptions. Only keys with text are set.
+  const toolInstructions: Partial<Record<NativeToolName, string>> = {
+    ...cfg.toolGuidance,
+  };
+  // NOTE: handoff/kanban guidance lives in their own grouped config; let it win over the flat map for those
+  // two tools (the editor writes them there, not into settings.toolGuidance).
+  if (cfg.handoffConfig.instructions) {
+    toolInstructions.handoff_to_human = cfg.handoffConfig.instructions;
+  }
+  if (cfg.kanbanConfig.instructions) {
+    toolInstructions.kanban_move_card = cfg.kanbanConfig.instructions;
+  }
   // The order below IS the precedence when two sources claim one name — see unique-names.ts. Native
   // first, because those are the tools the operator cannot rename.
   const nativeTools = deps.buildNativeTools(
@@ -2593,7 +2551,7 @@ export interface GraphBuildDeps {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   reviewTurnReply?: (
@@ -2602,7 +2560,7 @@ export interface GraphBuildDeps {
     opts?: {
       canRedo: boolean;
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;

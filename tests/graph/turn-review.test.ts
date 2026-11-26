@@ -121,6 +121,7 @@ async function run(
     groundingReReview?: () => void;
     retrySilence?: () => boolean;
     standingNotices?: string[];
+    spokenNotice?: () => string | null;
   } = {},
 ) {
   ran.length = 0;
@@ -129,7 +130,8 @@ async function run(
   const canRedo: boolean[] = [];
   const alongside: string[][] = [];
   const instructions: string[] = [];
-  const toolNames: string[][] = [];
+  const tools: Record<string, string>[] = [];
+  const replyInstructions: string[] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
@@ -141,6 +143,7 @@ async function run(
     stillWanted: opts.stillWanted,
     retrySilence: opts.retrySilence,
     standingNotices: opts.standingNotices,
+    spokenNotice: opts.spokenNotice,
     revisionPlan: opts.groundingReReview
       ? () => ({
           sourceTools: [],
@@ -155,12 +158,13 @@ async function run(
       calls.push(call.name);
       alongside.push((o?.alongside ?? []).map((c) => c.name));
       instructions.push(o?.instructions ?? "");
-      toolNames.push([...(o?.toolNames ?? [])]);
+      tools.push({ ...(o?.tools ?? {}) });
       return hooks.call?.(call.name) ?? null;
     },
     reviewTurnReply: async (_turn, reply, o) => {
       replies.push(reply);
       canRedo.push(o?.canRedo ?? true);
+      replyInstructions.push(o?.instructions ?? "");
       const note = hooks.reply?.(reply) ?? null;
       return note ? { instruction: note, feedback: REVIEWER_FEEDBACK } : null;
     },
@@ -180,7 +184,8 @@ async function run(
     canRedo,
     alongside,
     instructions,
-    toolNames,
+    tools,
+    replyInstructions,
   };
 }
 
@@ -541,16 +546,61 @@ describe("the turn review in the graph", () => {
       { text: "", calls: [{ name: "transferir" }] },
       { text: "Pronto." },
     ]);
-    const { instructions, toolNames } = await run(
+    const { instructions, tools } = await run(
       model,
       {},
       { standingNotices: ["[Sistema] AVISO-DO-TURNO"] },
     );
     expect(instructions).toEqual(["PROMPT\n\n[Sistema] AVISO-DO-TURNO"]);
-    // And the tools it binds, so per-tool guidance is read only for those.
-    expect(toolNames).toEqual([
-      ["buscar_pedido", "consultar_agenda", "transferir", "skip_reply"],
+    // And the write tools it binds, each with the description the model was given.
+    expect(tools).toEqual([
+      {
+        consultar_agenda: "agenda",
+        transferir: "transfere",
+        skip_reply: "silêncio",
+      },
     ]);
+  });
+
+  test("the spoken-reply notice of a step reaches both of its reviews", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "transferir" }] },
+      { text: "Pronto." },
+    ]);
+    // The notice changes from one round to the next: each review reads the one its step was given.
+    const notices = ["[Sistema] AVISO-DE-VOZ-1", "[Sistema] AVISO-DE-VOZ-2"];
+    let round = 0;
+    const { instructions, replyInstructions } = await run(
+      model,
+      {},
+      { spokenNotice: () => notices[round++] ?? null },
+    );
+    expect(instructions).toEqual(["PROMPT\n\n[Sistema] AVISO-DE-VOZ-1"]);
+    expect(replyInstructions).toEqual(["PROMPT\n\n[Sistema] AVISO-DE-VOZ-2"]);
+  });
+
+  test("ownership is read again after a batch only when a review ran in it", async () => {
+    const reads = async (first: { name: string }[]) => {
+      let asked = 0;
+      await run(
+        new BoundRecordingModel([
+          { text: "", calls: first },
+          { text: "Pronto." },
+        ]),
+        {},
+        {
+          stillWanted: async () => {
+            asked++;
+            return true;
+          },
+        },
+      );
+      return asked;
+    };
+    // A read alone: the one read before the batch, nothing awaited after it.
+    expect(await reads([{ name: "buscar_pedido" }])).toBe(1);
+    // A write: read again once its review answered.
+    expect(await reads([{ name: "transferir" }])).toBe(2);
   });
 
   test("a held review of a grounding rewrite stops grounding from reviewing it again", async () => {

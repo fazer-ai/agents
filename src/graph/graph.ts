@@ -43,7 +43,10 @@ import {
   providerFailure,
 } from "@/lib/provider-failure";
 import type { PermitClass } from "@/lib/semaphore";
-import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
+import {
+  boundToolDescription,
+  type TurnReviewFeedback,
+} from "@/modules/guardrails/turn-review";
 import { hiddenNotesOf, hiddenNotesThisTurn } from "./anthropic-progress-notes";
 import {
   clientToolsNode,
@@ -239,7 +242,7 @@ export interface BuildAgentGraphParams {
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
@@ -250,7 +253,7 @@ export interface BuildAgentGraphParams {
     opts?: {
       canRedo: boolean;
       instructions?: string;
-      toolNames?: readonly string[];
+      tools?: Readonly<Record<string, string>>;
     },
   ) => Promise<TurnReviewFeedback | null>;
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
@@ -849,16 +852,23 @@ export function buildAgentGraph({
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
-  // What the turn review judges against: the instructions this graph gives the model (its system
-  // prompt, MCP server instructions included, and the turn's standing notices, such as a document
-  // waiting on approval), not only the agent's stored prompt. The budget wrap-ups are left out:
+  // What the turn review judges against: the instructions this graph gave the model for the step
+  // (its system prompt, MCP server instructions included, the spoken-reply notice of that round and
+  // the turn's standing notices, such as a document waiting on approval), not only the agent's stored
+  // prompt. Set again on every model call (`stepInstructions`). The budget wrap-ups are left out:
   // they pace the turn, they are not rules a step can break.
-  const reviewInstructions = [systemPrompt, ...(standingNotices ?? [])]
-    .filter((t) => t.trim())
-    .join("\n\n");
-  // The tools this graph binds: the operator's per-tool guidance reaches the reviewer only for these,
-  // so a saved instruction of a tool the toolset left out (handoff switched off) is not a rule.
-  const reviewToolNames = (tools ?? []).map((t) => t.name);
+  const stepInstructions = (notice: readonly string[]) =>
+    [systemPrompt, ...notice, ...(standingNotices ?? [])]
+      .filter((t) => t.trim())
+      .join("\n\n");
+  let reviewInstructions = stepInstructions([]);
+  // The write tools this graph binds, each as the model reads it: what the operator wrote on a tool
+  // reaches the reviewer through the very text the agent got, and a tool left out is not described.
+  const reviewTools: Record<string, string> = Object.fromEntries(
+    (tools ?? [])
+      .filter((t) => !isReadOnlyTool(t))
+      .map((t) => [t.name, boundToolDescription(t)]),
+  );
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
   // Bound to the SAME toolset, or the fallback would answer a question the primary was asked
   // with tools it cannot call; the tool-call budget below counts calls, not models.
@@ -979,7 +989,7 @@ export function buildAgentGraph({
         ? reviewTurnReply(view, text, {
             canRedo,
             instructions: reviewInstructions,
-            toolNames: reviewToolNames,
+            tools: reviewTools,
           })
         : null;
     // The turn ends where the information ends, in three cases. A lone `skip_reply` asked for
@@ -1070,6 +1080,7 @@ export function buildAgentGraph({
     // which can be spoken pass one, so an observation never carries it.
     const noticeText = spokenNotice?.()?.trim();
     const notice = noticeText ? [noticeText] : [];
+    reviewInstructions = stepInstructions(notice);
     const lateTexts = [
       ...notice,
       ...(standingNotices ?? []),
@@ -1679,26 +1690,30 @@ export function buildAgentGraph({
             onContradictedHandoff?.({ calls: contradicted.answers.length });
           // The turn review's veto, on what is left to run. A revision round runs only the sources it
           // admitted, which are reads, so it has nothing to review.
+          let reviewsRan = false;
           const reviewed =
             reviewCall && !revision
               ? await setAsideReviewedCalls(
                   contradicted?.view ?? serverView,
                   isWriteName,
-                  (turn, call, o) =>
-                    reviewCall(turn, call, {
+                  (turn, call, o) => {
+                    reviewsRan = true;
+                    return reviewCall(turn, call, {
                       ...o,
                       instructions: reviewInstructions,
-                      toolNames: reviewToolNames,
-                    }),
+                      tools: reviewTools,
+                    });
+                  },
                 )
               : null;
           // The reviews are awaited model calls, so ownership is read again before anything runs, and
           // a review that held ends the round with every call refused: the caller hands over next.
-          if (reviewCall && !revision) {
-            if (turnReviewHalted?.()) {
-              const last = state.messages.at(-1) as AIMessage;
-              return refuseBatch(last.tool_calls ?? [], true);
-            }
+          if (reviewCall && !revision && turnReviewHalted?.()) {
+            const last = state.messages.at(-1) as AIMessage;
+            return refuseBatch(last.tool_calls ?? [], true);
+          }
+          // A batch with no write had no review, so nothing was awaited since the read above.
+          if (reviewsRan) {
             const late = await refuseCalledOffCalls(state);
             if (late) return late;
           }

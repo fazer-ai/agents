@@ -124,6 +124,9 @@ export interface GuardrailReport {
   tool?: string;
   // The reviewed call's id, so a trace places the verdict beside the call it judged.
   callId?: string;
+  // On a reply's: the id of the turn's last call before it, so a trace places the verdict after that
+  // call's step and before a corrective call the redo made.
+  afterCallId?: string;
   claims?: GroundingClaim[];
   // Model-written, and only on a trip.
   categories?: string[];

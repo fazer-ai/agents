@@ -1245,8 +1245,9 @@ async function runTurnBody(
   // The turn review, asked by the graph on each write call before it runs and on the final answer.
   // A step still flagged past the attempts does not happen: its decision waits in `pending()` for
   // the output gate below, ahead of the factual-grounding one.
-  // Its private notes wait for the decision to pass the write fence at delivery (`writeCalledOff`),
-  // so a turn that lost the conversation meanwhile leaves no note: the verdict is in the flow log.
+  // Its private notes, and the turn's error record of them, wait for the decision to pass the write
+  // fence at delivery (`writeCalledOff`), so a turn that lost the conversation meanwhile, or whose
+  // completed transfer came first, leaves neither: the verdict is in the flow log.
   const turnReviewNotes: GuardrailReport[] = [];
   const turnReview = buildTurnReviewGate({
     cfg: loaded.guardrails,
@@ -1255,7 +1256,6 @@ async function runTurnBody(
     flow,
     logValues: loaded.logToolValues,
     announce: async (r) => {
-      turnErrors.guardrail(r);
       turnReviewNotes.push(r);
     },
     clock: { now: loaded.promptOpts.now, timezone: loaded.timezone },
@@ -2660,8 +2660,10 @@ async function runTurnBody(
       // The turn review's decision is the one applied below, past the fence: its notes go now, not
       // awaited, so no write the fence admitted waits on them (the sink swallows its own failure).
       if (groundingTrip && groundingTrip === turnReview?.pending())
-        for (const r of turnReviewNotes)
+        for (const r of turnReviewNotes) {
+          turnErrors.guardrail(r);
           void chatwootNoteSink(client, conversationId)(r);
+        }
       // A trip, from either judge: drops the queue and replaces, suppresses or hands over the
       // reply. Null to go on delivering; otherwise the turn's refusal.
       const settleOutputTrip = async (

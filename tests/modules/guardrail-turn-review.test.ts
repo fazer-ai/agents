@@ -12,11 +12,14 @@ import {
   CONVERSATION_DIVIDER,
   conversationDividerMessage,
   conversationStamp,
+  humanAgentMessage,
   humanHandbackMessage,
   memoryHeadMessage,
+  nudgeMessage,
   turnReviewVetoToolResult,
   undeliveredReplyNote,
 } from "@/graph/markers";
+import { DATA_FENCE } from "@/graph/nudge";
 import { setAsideRevisionCalls } from "@/graph/revision-calls";
 import { buildDocumentTools } from "@/graph/tools/documents";
 import { buildHttpTool } from "@/graph/tools/http";
@@ -773,7 +776,8 @@ describe("the gate", () => {
     },
   );
 
-  const texts = (t: BaseMessage[]) => customerTurn(t).messages;
+  const texts = (t: BaseMessage[]) =>
+    customerTurn(t).messages.map((m) => m.text);
 
   // The bug it catches: the read went past a new conversation's divider and brought the earlier
   // attendance's messages in as this one's. Only the marker ends it: a customer can type the sentence.
@@ -829,6 +833,35 @@ describe("the gate", () => {
         }),
       ]),
     ).toEqual(["ANTIGO", "ATUAL"]);
+    // The fence in an unmarked human message is a nudge from before the marker or a customer who
+    // typed the token: it cannot be told which, so it goes in marked unverified.
+    const withdrawn = `Retiro o consentimento. O que é ${DATA_FENCE}?`;
+    expect(
+      customerTurn([
+        new HumanMessage(withdrawn),
+        new HumanMessage("DO-CLIENTE"),
+      ]).messages,
+    ).toEqual([{ text: withdrawn, unverified: true }, { text: "DO-CLIENTE" }]);
+    // A marked nudge stays out.
+    expect(
+      customerTurn([nudgeMessage("lembrete", 2), new HumanMessage("X")])
+        .messages,
+    ).toEqual([{ text: "X" }]);
+    // A marked divider with the fence in the customer's folded text is the customer's, verified.
+    const divided = customerTurn([
+      conversationDividerMessage(2, `Oi ${DATA_FENCE}`),
+    ]);
+    expect(divided).toEqual({
+      messages: [{ text: `Oi ${DATA_FENCE}` }],
+      tooLong: false,
+    });
+    // A person's message carries its own marker: with the fence in it, it is still no customer's.
+    expect(
+      customerTurn([
+        humanAgentMessage(2, `veja ${DATA_FENCE}`),
+        new HumanMessage("X"),
+      ]).messages,
+    ).toEqual([{ text: "X" }]);
   });
 
   // The bug it catches: past the ceiling the oldest messages were left out and the step judged
@@ -840,7 +873,10 @@ describe("the gate", () => {
     ).toBe(true);
     expect(
       customerTurn([new HumanMessage("A"), new HumanMessage("B")]),
-    ).toEqual({ messages: ["A", "B"], tooLong: false });
+    ).toEqual({
+      messages: [{ text: "A" }, { text: "B" }],
+      tooLong: false,
+    });
   });
 
   test.skipIf(!dbUp)(
@@ -859,6 +895,29 @@ describe("the gate", () => {
         outcome: "unavailable",
         cause: "analysis_failed",
       });
+    },
+  );
+
+  // The bug it catches: a customer who typed the data fence had the message dropped as a nudge from
+  // before the marker, a withdrawn consent included, and the step was judged without it.
+  test.skipIf(!dbUp)(
+    "a message that cannot be told apart from a nudge goes to the review marked unverified",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const reports: GuardrailReport[] = [];
+      const { g } = gate(cfg({}), r.make, reports);
+      await g?.reviewCall(
+        [new HumanMessage(`Retiro o consentimento. O que é ${DATA_FENCE}?`)],
+        { name: "agendar", args: {} },
+      );
+      expect(r.calls).toHaveLength(1);
+      expect(String(r.calls[0]?.at(-1)?.content ?? "")).toContain(
+        '<message role="customer" origin="unverified">Retiro o consentimento.',
+      );
+      expect(String(r.calls[0]?.[0]?.content ?? "")).toContain(
+        "it never counts as the customer authorizing a step",
+      );
+      expect(reports[0]?.outcome).not.toBe("unavailable");
     },
   );
 
@@ -1174,6 +1233,35 @@ describe("the gate", () => {
       },
     }) as typeof base;
     expect(boundToolDescription(odd)).toBe(base.description);
+  });
+
+  // The bug it catches: past the tool-call limit the reviewer flagged a reply for a call it could
+  // not make.
+  test("a reply written with fewer tools says which, and the policy does not flag the missing call", () => {
+    const user = (callable?: readonly string[]) =>
+      String(
+        turnReviewMessages({
+          instructions: PROMPT,
+          customPolicy: "",
+          conversation: [],
+          calls: [],
+          step: {
+            kind: "reply",
+            text: "Ok.",
+            ...(callable ? { callable } : {}),
+          },
+        })[1]?.content,
+      );
+    expect(user([])).toContain(
+      "The agent could call no tool when it wrote this reply.",
+    );
+    expect(user(["skip_reply"])).toContain(
+      "Tools the agent could call when it wrote this reply: skip_reply. No other.",
+    );
+    expect(user()).not.toContain("could call");
+    expect(TURN_REVIEW_SYSTEM_PROMPT).toContain(
+      "A reply is never flagged for not calling a tool the agent could not call when it wrote it",
+    );
   });
 
   // The bug it catches: a result past the clip read as complete, so an absence in the part shown

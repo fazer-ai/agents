@@ -1382,7 +1382,7 @@ export function guardrailTraceLabel(
     if (entry.outcome === "observed")
       return t(
         "playground.trace.turnReviewObserved",
-        "against the agent's instructions; only recorded, the step went ahead",
+        "against the agent's instructions; only recorded, the review did not block the step",
       );
     if (entry.outcome === "clean")
       return t(

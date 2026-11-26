@@ -4712,7 +4712,7 @@
       "turnReviewCallRevised": "against the agent's instructions; the call did not run and the agent was told why",
       "turnReviewCallUnavailable": "could not be judged; the review did not block the call",
       "turnReviewClean": "follows the agent's instructions",
-      "turnReviewObserved": "against the agent's instructions; only recorded, the step went ahead",
+      "turnReviewObserved": "against the agent's instructions; only recorded, the review did not block the step",
       "turnReviewReply": "Turn review of the reply",
       "turnReviewReplyRevised": "against the agent's instructions; the agent redid the reply",
       "visionDocument": "Document reading",

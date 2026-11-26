@@ -50,7 +50,7 @@ export const CONTEXT_MESSAGE_MAX = 1000;
 
 // A proactive nudge, or the playground's simulated follow-up. DATA_FENCE catches the ones written
 // before the marker, as the summarizer does: renderNudge always embeds it.
-function isNudge(m: BaseMessage): boolean {
+export function isNudge(m: BaseMessage): boolean {
   return (
     isNudgeTurn(m) ||
     (m.getType() === "human" && contentToText(m.content).includes(DATA_FENCE))

@@ -12100,12 +12100,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               data: { enabled: true },
             });
           }
-          const guardNotes = notes.filter(([, n]) => n.startsWith("Guardrail"));
+          // The review's own note and the turn's error note alike ("Guardrail (saída): segurou").
+          const guardNotes = notes.filter(([, n]) => n.includes("Guardrail"));
           if (lostAtDelivery) {
             expect(guardNotes).toEqual([]);
             expect(sent).toEqual([]);
           } else {
-            expect(guardNotes).toHaveLength(1);
+            expect(guardNotes.length).toBeGreaterThan(0);
             expect(sent).toEqual([[convId, "HANDOFF-OUT"]]);
           }
         });
@@ -12239,6 +12240,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               settings: {
                 split: { enabled: false },
                 handoff: { mode: "route" },
+                // The turn's error note on, so a decision the transfer overrode would show there.
+                conversationNotes: { errors: "note" },
                 guardrails: {
                   enabled: true,
                   provider: "openai",
@@ -12319,7 +12322,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                       };
                     })
                   : agent,
-              makeClient: guardStub(sent, notes, toggles),
+              // The error note's repeat check reads the conversation: an empty one.
+              makeClient: async () =>
+                ({
+                  ...(await guardStub(sent, notes, toggles)()),
+                  getMessages: async () => ({ payload: [] }),
+                }) as unknown as ChatwootClient,
               checkpointer: new MemorySaver(),
             },
           });
@@ -12328,6 +12336,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           );
           expect(sent.map(([, t]) => t)).toEqual(["LINHA-APROVADA"]);
           expect(toggles.filter(([, st]) => st === "open")).toHaveLength(1);
+          // The decision the completed transfer overrode is no "guardrail held" on any note.
+          expect(
+            [...notes, ...sent].some(([, n]) => n.includes("Guardrail")),
+          ).toBe(false);
         });
 
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn

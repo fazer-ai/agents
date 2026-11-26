@@ -4917,7 +4917,7 @@
       "turnReviewCallRevised": "contra as instruções do agente; a chamada não rodou e o agente soube o motivo",
       "turnReviewCallUnavailable": "não pôde ser julgada; a revisão não bloqueou a chamada",
       "turnReviewClean": "segue as instruções do agente",
-      "turnReviewObserved": "contra as instruções do agente; só registrado, o passo seguiu",
+      "turnReviewObserved": "contra as instruções do agente; só registrado, a revisão não bloqueou o passo",
       "turnReviewReply": "Revisão do turno da resposta",
       "turnReviewReplyRevised": "contra as instruções do agente; o agente refez a resposta",
       "visionDocument": "Leitura de documento",

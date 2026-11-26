@@ -259,6 +259,7 @@ export interface BuildAgentGraphParams {
     reply: string,
     opts?: {
       canRedo: boolean;
+      callable?: readonly string[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
@@ -870,6 +871,9 @@ export function buildAgentGraph({
       .filter((t) => t.trim())
       .join("\n\n");
   let reviewInstructions = stepInstructions([]);
+  let reviewInstructionsThisRound = reviewInstructions;
+  // The tools the round that wrote the reply could call, when the tool-call limit left fewer.
+  let reviewCallable: readonly string[] | undefined;
   // The tools this graph binds, each as the model reads it: what the operator wrote on a tool
   // reaches the reviewer through the very text the agent got, and a tool left out is not described.
   // Built only when a review can read them. The read-only tools are described too, apart: never
@@ -1001,15 +1005,23 @@ export function buildAgentGraph({
     // beside an earlier call (the loop, and the stall exit with no redo), and a factual-grounding
     // rewrite (`askRevision`, no redo). With no redo, a flagged text meets the gate's fallback. The
     // fallback itself is the operator's own text and is not reviewed.
+    // `thisRound`: the text is the answer of this round, or of its redo (bound the same), so the
+    // round's tools and limit apply. A draft recovered from an earlier call and a rewrite were not.
     const reviewHeadedOut = async (
       view: BaseMessage[],
       text: string,
       canRedo: boolean,
+      thisRound = false,
     ): Promise<TurnReviewFeedback | null> =>
       reviewTurnReply && !noReplyChannel && !silentTurn && text
         ? reviewTurnReply(reviewed(view), text, {
             canRedo,
-            instructions: reviewInstructions,
+            ...(thisRound && reviewCallable
+              ? { callable: reviewCallable }
+              : {}),
+            instructions: thisRound
+              ? reviewInstructionsThisRound
+              : reviewInstructions,
             tools: reviewTools,
             readTools: reviewReadTools,
           })
@@ -1103,6 +1115,12 @@ export function buildAgentGraph({
     const noticeText = spokenNotice?.()?.trim();
     const notice = noticeText ? [noticeText] : [];
     reviewInstructions = stepInstructions(notice);
+    // The limit's instruction is one this round's text is judged with: it told the model to answer
+    // as is. A draft recovered from an earlier round was written without it.
+    reviewInstructionsThisRound = stepInstructions([
+      ...notice,
+      ...(toldOfCap ? [capText] : []),
+    ]);
     const lateTexts = [
       ...notice,
       ...(standingNotices ?? []),
@@ -1134,6 +1152,8 @@ export function buildAgentGraph({
       hardLimit && staySilent
         ? (tools ?? []).filter((t) => t.name === SKIP_REPLY_TOOL)
         : [];
+    // The reviewer is told the round's tools when the limit took them away.
+    reviewCallable = hardLimit ? silenceOnly.map((t) => t.name) : undefined;
     // What the HARD LIMIT invokes: the raw model, or the raw model with only that one tool bound.
     const capped =
       silenceOnly.length > 0
@@ -1439,7 +1459,7 @@ export function buildAgentGraph({
       const recovered =
         !own && recoversReply?.() ? replyWrittenThisTurn(view) : "";
       const draft = customerFacingReply(own || recovered).text;
-      const note = await reviewHeadedOut(view, draft, true);
+      const note = await reviewHeadedOut(view, draft, true, !!own);
       if (!note) break;
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];

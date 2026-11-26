@@ -488,6 +488,7 @@ async function buildPlaygroundGraph(params: {
     reply: string,
     opts?: {
       canRedo: boolean;
+      callable?: readonly string[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;

@@ -838,7 +838,7 @@ describe("the turn review in the graph", () => {
         maxHistoryTokens: 20,
       },
     );
-    const seen = customerTurn(replyTurns[0] ?? []).messages;
+    const seen = customerTurn(replyTurns[0] ?? []).messages.map((m) => m.text);
     expect(seen).toEqual([long.trim(), "ESCLARECIMENTO"]);
   });
 
@@ -957,6 +957,101 @@ describe("the turn review in the graph", () => {
     expect(turnWasCalledOff(messages)).toBe(true);
     const results = messages.filter((m) => m.getType() === "tool");
     expect(results.every((m) => isCalledOffToolResult(m))).toBe(true);
+  });
+
+  // The bug it catches: past the tool-call limit the model answers with no tools and an instruction
+  // to reply with what it has, and the reviewer, told neither, flagged the reply for a call it could
+  // not make.
+  test("past the tool-call limit the reply's review is told the round's tools and the limit", async () => {
+    const seen: { callable?: readonly string[]; instructions?: string }[] = [];
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new BoundRecordingModel([
+        { text: "", calls: [{ name: "transferir" }] },
+        { text: "Respondo com o que tenho." },
+      ]) as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [buscarPedido, transferir],
+      maxToolCalls: 1,
+      reviewCall: async () => null,
+      reviewTurnReply: async (_turn, _reply, o) => {
+        seen.push({ callable: o?.callable, instructions: o?.instructions });
+        return null;
+      },
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("Oi")] },
+      { configurable: { thread_id: `tr-${Math.random()}` } },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.callable).toEqual([]);
+    expect(seen[0]?.instructions).toContain(
+      "não há mais ferramentas disponíveis",
+    );
+  });
+
+  // The bug it catches: a draft recovered from an earlier round, with the whole toolset, was
+  // reviewed as if written in the capped round, so it passed for skipping a call it could make.
+  test("a recovered draft is not reviewed with the capped round's tools", async () => {
+    const seen: (readonly string[] | undefined)[] = [];
+    const told: string[] = [];
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new BoundRecordingModel([
+        { text: "RASCUNHO-ANTERIOR", calls: [{ name: "buscar_pedido" }] },
+        { text: "" },
+      ]) as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [buscarPedido, transferir],
+      maxToolCalls: 1,
+      recoversReply: () => true,
+      reviewCall: async () => null,
+      reviewTurnReply: async (_turn, _reply, o) => {
+        seen.push(o?.callable);
+        told.push(o?.instructions ?? "");
+        return null;
+      },
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("Oi")] },
+      { configurable: { thread_id: `tr-${Math.random()}` } },
+    );
+    expect(seen).toEqual([undefined]);
+    // Nor with the limit's instruction, which that draft was written without.
+    expect(told[0]).not.toContain("não há mais ferramentas disponíveis");
+  });
+
+  // The bug it catches: the redo a capped round asks is bound the same, and its text was reviewed
+  // as if every tool were there.
+  test("a redo in the capped round keeps the round's tools", async () => {
+    const seen: (readonly string[] | undefined)[] = [];
+    let reviews = 0;
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new BoundRecordingModel([
+        { text: "", calls: [{ name: "transferir" }] },
+        { text: "Primeira." },
+        { text: "Segunda." },
+      ]) as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [buscarPedido, transferir],
+      maxToolCalls: 1,
+      reviewCall: async () => null,
+      reviewTurnReply: async (_turn, _reply, o) => {
+        seen.push(o?.callable);
+        return reviews++ === 0
+          ? { instruction: REPLY_NOTE, feedback: REVIEWER_FEEDBACK }
+          : null;
+      },
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("Oi")] },
+      { configurable: { thread_id: `tr-${Math.random()}` } },
+    );
+    expect(seen).toEqual([[], []]);
   });
 
   test("ownership is read again after a batch only when a review ran in it", async () => {

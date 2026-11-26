@@ -59,6 +59,7 @@ import {
 } from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
+import { guardrailsChatModelShown } from "./guardrailsFormState";
 import { ManagedKnowledgeBaseCards } from "./KnowledgeBaseCards";
 import {
   ModelOverrideFields,
@@ -923,7 +924,7 @@ export function GuardrailsTab({
             )}
             {/* Turn review runs on the chat model whichever classifier screens, so its fields stay
                 in reach when screening uses Decisions. */}
-            {g.enabled && (!byClassifier || tr.enabled) && (
+            {guardrailsChatModelShown(g) && (
               <>
                 <FormField
                   label={t("editor.provider", "Provider")}

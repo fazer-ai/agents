@@ -56,6 +56,7 @@ import {
   callsRefusedByReview,
   droppedCallCount,
   droppedCallsStamp,
+  pairedResults,
   turnReviewHeldToolResult,
 } from "./markers";
 import { setAsideReviewedCalls } from "./reviewed-calls";
@@ -1551,23 +1552,21 @@ export function buildAgentGraph({
   // have is answered with an error, which keeps the call too. A responder always goes on: its last
   // message is the reply.
   const endsOnWrites = (
-    calls: { name: string; id?: string }[],
+    step: AIMessage,
     results: BaseMessage[],
     refused: boolean,
   ): boolean => {
+    const calls = step.tool_calls ?? [];
     if (!noReplyChannel || refused || calls.length === 0) return false;
     const writes = calls.every((c) => {
       const t = toolsByName.get(c.name);
       return t !== undefined && !isReadTool(t);
     });
     if (!writes) return false;
-    const answered = new Map(
-      results
-        .filter((m) => m.getType() === "tool")
-        .map((m) => [(m as ToolMessage).tool_call_id, m as ToolMessage]),
-    );
+    // The shared pairing, so a call repeating another's id still reads its own result.
+    const answered = pairedResults([step, ...results]);
     return calls.every((c) => {
-      const r = c.id ? answered.get(c.id) : undefined;
+      const r = answered.get(c);
       return r !== undefined && r.status !== "error";
     });
   };
@@ -1711,11 +1710,7 @@ export function buildAgentGraph({
             const nothingWritten = (noEffectCount?.() ?? 0) > before;
             if (
               turnReviewDecided?.() ||
-              endsOnWrites(
-                last.tool_calls ?? [],
-                ran.messages,
-                fenced || nothingWritten,
-              )
+              endsOnWrites(last, ran.messages, fenced || nothingWritten)
             ) {
               endedOnWrites = true;
               // The empty terminator the called-off path ends on, for the same reason: the runtime

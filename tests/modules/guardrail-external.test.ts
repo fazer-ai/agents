@@ -182,6 +182,42 @@ describe("the turn's tool calls", () => {
     expect(calls[0]?.argsSize).toBe(JSON.stringify(wide).length);
   });
 
+  // The bug it catches: results paired by an id map, so two calls repeating an id both read the
+  // last result and a call with no id read none.
+  test("each call gets its own result, a repeated id or a missing one included", () => {
+    const calls = turnToolCalls(
+      [
+        new HumanMessage("MSG"),
+        new AIMessage({
+          content: "",
+          tool_calls: [
+            { id: "dup", name: "agendar", args: {} },
+            { id: "dup", name: "agendar", args: {} },
+            { name: "sem_id", args: {} },
+          ],
+        }),
+        new ToolMessage({ tool_call_id: "dup", content: "PRIMEIRO" }),
+        new ToolMessage({
+          tool_call_id: "dup",
+          content: "SEGUNDO",
+          status: "error",
+        }),
+        new ToolMessage({
+          tool_call_id: "",
+          name: "sem_id",
+          content: "TERCEIRO",
+        }),
+        new AIMessage("FIM"),
+      ],
+      true,
+    );
+    expect(calls.map((c) => [c.result, c.isError])).toEqual([
+      ["PRIMEIRO", false],
+      ["SEGUNDO", true],
+      ["TERCEIRO", false],
+    ]);
+  });
+
   // The bug it catches: "send tool values" off still leaking an argument or a result.
   test("with values off, names and sizes go and nothing else", () => {
     const calls = turnToolCalls(messages(), false);

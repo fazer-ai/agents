@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  guardrailsChatModelShown,
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
 } from "@/client/pages/agents/guardrailsFormState";
@@ -102,6 +103,24 @@ describe("guardrails form state", () => {
         guardrails: { input: { templateMessage: null } },
       }).input.templateMessage.length,
     ).toBeGreaterThan(0);
+  });
+});
+
+// The bug it catches: the chat model's credential picker drawn for turn review under Decisions
+// screening, while a refusal of that credential was routed as if the picker were hidden.
+describe("guardrailsChatModelShown", () => {
+  test("the chat model fields show for the chat classifier, or for turn review under Decisions", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const decisions = { ...on, classifier: "decisions" as const };
+    expect([
+      guardrailsChatModelShown({ ...on, classifier: "chat" as const }),
+      guardrailsChatModelShown(decisions),
+      guardrailsChatModelShown({
+        ...decisions,
+        turnReview: { ...on.turnReview, enabled: true },
+      }),
+      guardrailsChatModelShown({ ...on, enabled: false }),
+    ]).toEqual([true, false, true, false]);
   });
 });
 

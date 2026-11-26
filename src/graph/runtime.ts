@@ -1744,6 +1744,9 @@ async function runTurnBody(
   // The operator's or the screening's text that went out in the model's reply's place. Written into
   // the thread in the `finally`, after the claims a rewrite stands down on are released.
   let sentInDraftsPlace: string | null = null;
+  // A fallback closing line that reached the customer only in part: the turn settles
+  // "posted-partial" with its badge, as a reply split the same way does.
+  let closingLinePartial: { unproven: boolean } | null = null;
   let replacedProduced: BaseMessage[] | null = null;
 
   // The contact's voice preference now: `set_voice_preference` writes it during the invoke.
@@ -1826,6 +1829,8 @@ async function runTurnBody(
         return;
       deliveredBalloons = delivered.delivered;
       if (reviewed) sentInDraftsPlace = screened;
+      if (reviewed && delivered.failed)
+        closingLinePartial = { unproven: delivered.unproven };
     } catch (e) {
       // NOTE: Best-effort: the transfer succeeded, so an error would stamp lastError on a thread a
       // human already owns, and on the failure path would mask the error that ended the turn.
@@ -2912,7 +2917,7 @@ async function runTurnBody(
         // still the turn's outcome, as for a screened one.
         if (!sent && !handedOff) return settled("empty");
         const postedFiles = postedOutcomeFor({
-          replyPartial: false,
+          replyPartial: closingLinePartial !== null,
           attachmentFailed: failed,
         });
         if (postedFiles === "posted-partial") {
@@ -2921,6 +2926,7 @@ async function runTurnBody(
             instanceId,
             conversationId,
             base,
+            unproven: closingLinePartial?.unproven,
           });
         }
         return settled(postedFiles);

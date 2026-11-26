@@ -72,6 +72,8 @@ export interface GroundingToolCall {
   // A call that never ran (called off, vetoed or held by the turn review), with the refusal as its
   // result: evidence that the action did not happen, never a source and never an act.
   notRun?: true;
+  // A call that ran and failed (its result has status "error").
+  isError?: true;
 }
 
 export interface GroundingReviewInput {
@@ -237,6 +239,7 @@ function toolCallsIn(
           res.text.trim() !== "",
         ...(turnsBackAt ? { turnsBack: turnsBackAt(index) } : {}),
         ...(notRun ? { notRun: true as const } : {}),
+        ...(res.isError && !notRun ? { isError: true as const } : {}),
       });
     }
   }

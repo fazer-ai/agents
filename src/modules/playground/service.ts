@@ -911,9 +911,15 @@ export async function estimateCallFloor(params: {
 }
 
 // The id of the last AI message in the invoke result (for linking the TTS audio to its turn).
-function lastAiMessageId(messages: unknown[]): string | undefined {
+// The last assistant message, searched back to `since` (the turn's own human message) when given,
+// so a turn with no answer of its own never takes the previous turn's.
+function lastAiMessageId(
+  messages: unknown[],
+  since?: string,
+): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] as { id?: unknown; getType?: () => string };
+    if (since !== undefined && m?.id === since) return undefined;
     const type = m?.getType?.();
     if (type === "ai" && typeof m.id === "string") return m.id;
   }
@@ -1348,16 +1354,23 @@ async function runPlaygroundTurnOnce(
     });
     reply = screenedText(judged, reply) ?? "";
   }
+  // The turn's own answer; with none (a failed save), the message the fallback is appended as.
+  let answerId = lastAiMessageId(result.messages, humanId);
   // NOTE: the next simulated turn reads the thread as production does, so a screening that changed
   // the reply leaves there what the simulated customer received, as in the inbox.
-  if (reply !== raw)
-    await rememberWhatWasSent({
+  if (reply !== raw) {
+    const appendedId = crypto.randomUUID();
+    const plan = await rememberWhatWasSent({
       checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
       graphThreadId: threadId,
       produced: result.messages as BaseMessage[],
       sent: reply,
+      appendedId,
       logPrefix: "playground",
     });
+    if (plan?.action === "remove" && plan.ids.length === 0)
+      answerId = appendedId;
+  }
   const trace: TraceEntry[] = [
     ...gTrace.slice(0, beforeGraph),
     // A call's verdict beside the call it judged, the rest after the graph's entries.
@@ -1384,7 +1397,7 @@ async function runPlaygroundTurnOnce(
       ctx,
       agentId,
       threadId,
-      messageId: lastAiMessageId(result.messages) ?? null,
+      messageId: answerId ?? null,
       anchorMessageId: null,
       // The reply this annotates can be empty (the agent said nothing), and the rebuild drops an
       // empty AI message, so `messageId` alone is not always an id the transcript shows. The human
@@ -1455,7 +1468,7 @@ async function runPlaygroundTurnOnce(
         },
         flow,
       });
-      const aiId = lastAiMessageId(result.messages);
+      const aiId = answerId;
       if (tts && aiId) {
         ttsMediaId =
           (await savePlaygroundMedia(base, {

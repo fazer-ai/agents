@@ -12156,6 +12156,98 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
       }
 
+      // The bug it catches: a fallback closing line split into balloons, one of which never arrived,
+      // settled as fully posted, so nobody was told part of it was missing.
+      test("a fallback closing line delivered in part settles as partial", async () => {
+        await suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: true, typingWpm: 99999 },
+              handoff: { mode: "route" },
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                input: { enabled: false },
+                output: {
+                  enabled: false,
+                  templateMessage: "Primeira parte.\n\nSegunda parte.",
+                },
+                turnReview: {
+                  enabled: true,
+                  action: "revise",
+                  maxAttempts: 1,
+                  fallback: "template",
+                },
+              },
+            },
+          },
+        });
+        const convId = 7956;
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        let asked = 0;
+        const handingOver = {
+          async invoke() {
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                asked += 1;
+                if (asked > 2) return new AIMessage("");
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "handoff_to_human",
+                      args: { customerMessage: "" },
+                      id: `h${asked}`,
+                    },
+                  ],
+                });
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        const result = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(
+              JSON.stringify({
+                violated: true,
+                categories: ["turn_review"],
+                rationale: "Pergunte o pedido antes.",
+                suggestedReply: null,
+              }),
+              handingOver,
+            ),
+            makeClient: async () => {
+              const c = await guardStub(sent, notes, toggles)();
+              const send = c.sendMessage.bind(c);
+              c.sendMessage = (async (id: number, content: string) => {
+                if (content.includes("Segunda")) throw new Error("HTTP 500");
+                return send(id, content);
+              }) as typeof c.sendMessage;
+              return c;
+            },
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect([sent, result]).toEqual([
+          [[convId, "Primeira parte."]],
+          "posted-partial",
+        ]);
+      });
+
       // Throws on the save that would record the second note's result, as a database or a deploy can
       // fail mid-turn, after the write ran.
       class FailsAfterTheWrite extends MemorySaver {
@@ -12214,6 +12306,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           const notes: Array<[number, string]> = [];
           const toggles: Array<[number, string]> = [];
           let asked = 0;
+          const checkpointer = failingSave
+            ? new FailsAfterTheWrite()
+            : new MemorySaver();
           const noting = {
             async invoke() {
               asked += 1;
@@ -12255,12 +12350,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                 noting,
               ),
               makeClient: guardStub(sent, notes, toggles),
-              checkpointer: failingSave
-                ? new FailsAfterTheWrite()
-                : new MemorySaver(),
+              checkpointer,
             },
           });
           expect([asked, sent]).toEqual([2, [[convId, "TEMPLATE-OUT"]]]);
+          // The thread records what the customer read, even when no draft of the model's stands
+          // to be replaced (the failed save left the write's call as the last message).
+          const thread = await threadChannel(checkpointer, convId, {
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+          });
+          expect(thread.at(-1)).toEqual(["ai", "TEMPLATE-OUT"]);
         });
 
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn

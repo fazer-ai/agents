@@ -204,6 +204,7 @@ import { followUpToForm, followUpToStored } from "./followUpFormState";
 import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import {
+  guardrailsChatModelShown,
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
 } from "./guardrailsFormState";
@@ -1374,8 +1375,7 @@ function AgentEditor() {
       observation.engine === "decisions" &&
       observation.decisions !== null,
     guardrailsEnabled: guardrails.enabled,
-    guardrailsChatModelShown:
-      guardrails.enabled && guardrails.classifier === "chat",
+    guardrailsChatModelShown: guardrailsChatModelShown(guardrails),
     guardrailsClassifierShown:
       guardrails.enabled && guardrails.classifier === "decisions",
     guardrailsGroundingModelShown:

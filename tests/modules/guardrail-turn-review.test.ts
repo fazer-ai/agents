@@ -15,7 +15,10 @@ import {
 import { setAsideRevisionCalls } from "@/graph/revision-calls";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
-import { groundingToolCalls } from "@/modules/guardrails/grounding";
+import {
+  earlierToolCalls,
+  groundingToolCalls,
+} from "@/modules/guardrails/grounding";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
@@ -377,6 +380,49 @@ describe("what the reviewer reads", () => {
         ["handoff_to_human", true],
       ]);
     }
+  });
+
+  // The bug it catches: a write that ran and failed shown to the reviewer like one that succeeded,
+  // so "booked" over a failed booking passed.
+  test("a call that ran and failed carries its error status, this turn's and an earlier one", () => {
+    const thread = [
+      new HumanMessage("Marca terça?"),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "agendar", args: { dia: "terça" }, id: "a1" }],
+      }),
+      new ToolMessage({
+        content: "HTTP 500",
+        tool_call_id: "a1",
+        name: "agendar",
+        status: "error",
+      }),
+      new AIMessage("Não consegui."),
+      new HumanMessage("Tenta quarta."),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "agendar", args: { dia: "quarta" }, id: "a2" }],
+      }),
+      new ToolMessage({
+        content: "HTTP 500",
+        tool_call_id: "a2",
+        name: "agendar",
+        status: "error",
+      }),
+    ];
+    const [, user] = turnReviewMessages({
+      instructions: PROMPT,
+      customPolicy: "",
+      conversation: [],
+      calls: groundingToolCalls(thread, []),
+      earlierCalls: earlierToolCalls(thread, [], 24),
+      step: { kind: "reply", text: "Agendado para quarta." },
+    });
+    const usr = String(user?.content);
+    expect(usr).toContain('<tool_call name="agendar" status="error">');
+    expect(usr).toContain(
+      '<tool_call name="agendar" status="error" turns_back="1">',
+    );
   });
 
   // The bug it catches: two calls of a batch repeating one id both read the last result, so a

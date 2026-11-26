@@ -15,6 +15,9 @@ export interface MediaAnnotation {
   // confidence). Kept so a later delivery of the same message does not draw a new sample, which
   // could be a hallucination the model happens to be sure of.
   transcriptionEmpty?: boolean;
+  // The voice note's download failed on something that may pass (`isTransientAttachmentFailure`),
+  // so it was never sent to the provider: the reply's turn tries it again.
+  transcriptionUnavailable?: boolean;
   imageDescription?: string;
   extractedText?: string;
   // How many attachments the eager pass did NOT read (over the cap, or failed): the model's move is
@@ -142,6 +145,8 @@ export function overlayMediaAnnotations(
     const hit = store.get(keyOf(tenantId, instanceId, row.id));
     if (!hit || nowMs - hit.at >= TTL_MS) continue;
     row.transcribedText ??= hit.note.transcribedText ?? null;
+    if (hit.note.transcriptionUnavailable && !row.transcribedText)
+      row.transcriptionUnavailable = true;
     // NOTE: the vision fields are aggregates, so "meta wins" inverts. The write-back is per
     // attachment, so a page with one of two meta writes landed carries a partial description that
     // `??=` would keep. The stash is written once by the pass that produced all of them (idempotent
@@ -269,4 +274,23 @@ export function clearMediaAnnotations(): void {
 // the TTL-deletion contract is assertable.
 export function mediaAnnotationCount(): number {
   return store.size + fileReads.size;
+}
+
+// A file of this message is still being written to storage rather than unreadable: the download
+// failed on something that may pass (`isTransientAttachmentFailure`) on the voice note, or on every
+// unread file the pass tried, read siblings or not (an album with one file late). A count above the
+// tried files means some went over the cap and were never tried, and those will not arrive by waiting.
+export function mediaStillArriving(m: {
+  transcribedText?: string | null;
+  transcriptionUnavailable?: boolean;
+  attachmentsUnread?: number | null;
+  unreadFiles?: UnreadFile[] | null;
+}): boolean {
+  if (m.transcriptionUnavailable && !m.transcribedText) return true;
+  const tried = m.unreadFiles ?? [];
+  return (
+    tried.length > 0 &&
+    tried.length === (m.attachmentsUnread ?? 0) &&
+    tried.every((f) => f.retryable)
+  );
 }

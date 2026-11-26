@@ -4,6 +4,7 @@ import {
   ChatwootApiError,
   ChatwootMissingTokenError,
   createChatwootClient,
+  isTransientAttachmentFailure,
 } from "@/modules/chatwoot/client";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 
@@ -677,15 +678,55 @@ describe("ChatwootClient", () => {
     });
 
     test("gives up after the bounded backoff", async () => {
-      const s = downloadStub([404, 404, 404, 404, 404]);
+      const s = downloadStub([404, 404, 404, 404, 404, 404]);
       const client = await clientFor(s.fetchImpl);
       const err = await client
         .downloadAttachment(URL_, { retryOnMissing: true, sleep: s.sleep })
         .catch((e) => e);
       expect((err as ChatwootApiError).status).toBe(404);
-      expect(s.count()).toBe(4);
-      expect(s.slept).toEqual([250, 750, 1500]);
+      expect(s.count()).toBe(5);
+      expect(s.slept).toEqual([250, 750, 1500, 3000]);
     });
+
+    // A file on external object storage lands after the disk-sized window.
+    test("returns a file that lands only on the last step of the window", async () => {
+      const s = downloadStub([404, 404, 404, 404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      const out = await client.downloadAttachment(URL_, {
+        retryOnMissing: true,
+        sleep: s.sleep,
+      });
+      expect(out.bytes.byteLength).toBe(3);
+      expect(s.slept).toEqual([250, 750, 1500, 3000]);
+    });
+  });
+
+  describe("isTransientAttachmentFailure", () => {
+    const cases: Array<[string, unknown, boolean]> = [
+      [
+        "404 on the attachment",
+        new ChatwootApiError(404, "GET attachment"),
+        true,
+      ],
+      ["408", new ChatwootApiError(408, "GET attachment"), true],
+      ["429", new ChatwootApiError(429, "GET attachment"), true],
+      ["500", new ChatwootApiError(500, "GET attachment"), true],
+      ["503", new ChatwootApiError(503, "GET attachment"), true],
+      ["400 (bad url)", new ChatwootApiError(400, "GET attachment"), false],
+      ["401", new ChatwootApiError(401, "GET attachment"), false],
+      ["403", new ChatwootApiError(403, "GET attachment"), false],
+      ["413 (too large)", new ChatwootApiError(413, "GET attachment"), false],
+      [
+        "404 on another endpoint",
+        new ChatwootApiError(404, "GET /conversations/1"),
+        false,
+      ],
+      ["a plain error", new Error("boom"), false],
+    ];
+    for (const [name, err, expected] of cases)
+      test(name, () => {
+        expect(isTransientAttachmentFailure(err)).toBe(expected);
+      });
   });
 
   test("throws ChatwootApiError (without body) on a non-auth non-2xx", async () => {

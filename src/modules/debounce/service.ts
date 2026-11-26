@@ -18,6 +18,61 @@ export function debounceDedupeKey(threadId: string): string {
   return `debounce:${threadId}`;
 }
 
+// The window of the flush an agent with debounce OFF still takes for a file on its way: the flush
+// then defers until the file can be read (`MEDIA_DEFER_*` in ./handler.ts).
+const MEDIA_WAIT_WINDOW_SECONDS = 5;
+
+// The flush an agent with debounce OFF takes instead of a direct turn: while a file of the message is
+// still being written to storage (`mediaArriving`), and for every message that arrives while that
+// flush is live, so the burst is answered once and in order. Null otherwise, and whenever debounce is
+// on (the ordinary arm answers) or the inbox has no enabled agent.
+export async function resolveMediaWaitConfig(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  chatwootInboxId: number;
+  threadId: string;
+  mediaArriving: boolean;
+  base?: PrismaClient;
+}): Promise<DebounceConfig | null> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const inbox = await db.inbox.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootInboxId: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: params.instanceId,
+          chatwootInboxId: params.chatwootInboxId,
+        },
+      },
+      select: { agentId: true },
+    });
+    if (!inbox?.agentId) return null;
+    const agent = await db.agent.findUnique({
+      where: { id: inbox.agentId },
+      select: { enabled: true, settings: true },
+    });
+    if (!agent?.enabled) return null;
+    const cfg = readDebounceConfig(agent.settings);
+    if (cfg.enabled) return null;
+    if (!params.mediaArriving) {
+      const live = await db.schedulerJob.findFirst({
+        where: {
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(params.threadId),
+          status: { in: ["PENDING", "CLAIMED"] },
+        },
+        select: { id: true },
+      });
+      if (!live) return null;
+    }
+    return {
+      ...cfg,
+      enabled: true,
+      windowSeconds: MEDIA_WAIT_WINDOW_SECONDS,
+    };
+  });
+}
+
 // Resolves the debounce config for the inbox's agent. Returns null when the agent is unbound,
 // disabled, or has debounce turned off — the caller then takes the direct (no-coalesce) path.
 export async function resolveDebounceConfig(

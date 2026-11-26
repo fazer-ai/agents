@@ -9,7 +9,10 @@ import {
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ChatwootClient,
+  isTransientAttachmentFailure,
+} from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { cleanTranscription } from "@/modules/chatwoot/render";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
@@ -218,6 +221,16 @@ async function transcribeOnce(
         errorMessage: err instanceof Error ? err.message : String(err),
       });
     }
+    // The provider was never asked, so the reply may try this voice note again for free.
+    if (isTransientAttachmentFailure(err))
+      stashMediaAnnotation(
+        {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          messageId: params.messageId,
+        },
+        { transcriptionUnavailable: true },
+      );
     throw err;
   }
   const result = await withFlowStage(
@@ -261,7 +274,7 @@ async function transcribeOnce(
       instanceId: params.instanceId,
       messageId: params.messageId,
     },
-    { transcribedText: text },
+    { transcribedText: text, transcriptionUnavailable: false },
   );
 
   // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort: a write-back

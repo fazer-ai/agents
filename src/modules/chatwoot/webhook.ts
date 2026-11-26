@@ -82,6 +82,8 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
+  mediaAnnotationFor,
+  mediaStillArriving,
   openTranscription,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -154,6 +156,7 @@ import {
   armDebounce,
   debounceDedupeKey,
   resolveDebounceConfig,
+  resolveMediaWaitConfig,
 } from "@/modules/debounce/service";
 import {
   advanceHandledWatermark,
@@ -5873,22 +5876,44 @@ export async function processChatwootDelivery(
         try {
           const arm = await retryWhileTransactionNeverStarted(
             async () => {
-              const cfg = await resolveDebounceConfig(
+              const threadId = chatwootThreadId(
                 params.tenantId,
                 params.instanceId,
-                inboxId,
-                base,
+                conversationId,
               );
+              // Debounce off still answers through the flush while a file is on its way, since only the
+              // flush can come back for it.
+              const message = n.message;
+              const cfg =
+                (await resolveDebounceConfig(
+                  params.tenantId,
+                  params.instanceId,
+                  inboxId,
+                  base,
+                )) ??
+                (await resolveMediaWaitConfig({
+                  tenantId: params.tenantId,
+                  instanceId: params.instanceId,
+                  chatwootInboxId: inboxId,
+                  threadId,
+                  mediaArriving:
+                    message?.id != null &&
+                    mediaStillArriving({
+                      ...message,
+                      transcriptionUnavailable: mediaAnnotationFor(
+                        params.tenantId,
+                        params.instanceId,
+                        message.id,
+                      )?.transcriptionUnavailable,
+                    }),
+                  base,
+                }));
               if (!cfg) return null;
               return {
                 cfg,
                 at: await armDebounce({
                   tenantId: params.tenantId,
-                  threadId: chatwootThreadId(
-                    params.tenantId,
-                    params.instanceId,
-                    conversationId,
-                  ),
+                  threadId,
                   agentBotId: params.agentBotId,
                   cfg,
                   lastMessageId: n.message?.id ?? undefined,

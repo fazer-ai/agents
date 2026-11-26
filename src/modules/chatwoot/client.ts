@@ -44,13 +44,13 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 // slow/unreachable — fail fast so the caller can degrade gracefully (serve metadata + a retry).
 const INTERACTIVE_TIMEOUT_MS = 10_000;
 
-// Chatwoot fires `message_created` (with the attachment's data_url already in the payload) BEFORE
-// ActiveStorage finishes writing the file, so an immediate GET on a fresh voice note can lose the race
-// and get a 404. On a disk-backed instance the blob row commits ~400ms before the file lands, and the
-// eager-media download fires ~70ms after the webhook. These delays cover that window with headroom
-// while staying well inside a typical debounce window.
-// Only 404 is retried (missing file); every other status is a real error and fails immediately.
-const ATTACHMENT_RETRY_DELAYS_MS = [250, 750, 1500];
+// Chatwoot fires `message_created` (with the attachment's data_url) BEFORE ActiveStorage finishes
+// writing the file, so an immediate GET on a fresh voice note can get a 404. On disk the file lands
+// ~400ms after the blob row; on external object storage (S3, Backblaze B2) the upload takes seconds.
+// The 5.5s window fits inside the flush's wait for an open transcription (`FLUSH_TRANSCRIPTION_WAIT_MS`)
+// and its later steps only run after a 404. A file later than that is the reply's to read again
+// (`isTransientAttachmentFailure`). Only 404 is retried here; every other status fails at once.
+const ATTACHMENT_RETRY_DELAYS_MS = [250, 750, 1500, 3000];
 
 const realSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -86,6 +86,20 @@ export class ChatwootApiError extends Error {
     this.reason = detail;
     this.retryAfter = opts.retryAfter === true;
   }
+}
+
+// An attachment download that may succeed if asked again a little later: the file not written yet
+// (404 past the arrival window), or Chatwoot or its storage briefly unable to serve it. A bad URL, a
+// refused token and an oversized file answer the same way every time.
+export function isTransientAttachmentFailure(err: unknown): boolean {
+  if (!(err instanceof ChatwootApiError) || err.endpoint !== "GET attachment")
+    return false;
+  return (
+    err.status === 404 ||
+    err.status === 408 ||
+    err.status === 429 ||
+    err.status >= 500
+  );
 }
 
 // A conditional toggle Chatwoot refused because the conversation no longer held the expected status.

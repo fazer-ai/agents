@@ -10,6 +10,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import { isTransientAttachmentFailure } from "@/modules/chatwoot/client";
 import {
   onChatwootHost,
   oneByBlob,
@@ -199,7 +200,10 @@ export async function extractMessageVisuals(params: {
               params.convLabel ?? String(params.conversationId),
               err instanceof Error ? err.message : String(err),
             );
-            return { unread: "failed" } as const;
+            // NOTE: An email body image was stored before its message existed: its 404 does not heal.
+            return visual.id !== null && isTransientAttachmentFailure(err)
+              ? ({ unread: "failed", retryable: true } as const)
+              : ({ unread: "failed" } as const);
           })
           .then((r) => ({ nome: visual.name, r }));
 
@@ -274,7 +278,11 @@ export async function extractMessageVisuals(params: {
     // Arquivo que não deu para ler NÃO é arquivo que não foi enviado. Contado junto com os que
     // passaram do teto porque o movimento do modelo é o mesmo: nomear o que falta e pedir de novo.
     if (isUnread(r)) {
-      unreadFiles.push({ name: nome, cause: r.unread });
+      unreadFiles.push({
+        name: nome,
+        cause: r.unread,
+        ...(r.retryable ? { retryable: true as const } : {}),
+      });
       continue;
     }
     (r.kind === "image" ? imagens : documentos).push(

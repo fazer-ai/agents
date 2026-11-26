@@ -278,9 +278,6 @@ export async function undoRefusedTurn(params: {
   // A reply recovered from a message that also called a tool (`recoveredDraftOf`): that message sits
   // outside the removable run, so its text is taken out in the same write, and its calls stay.
   draftBeside?: { original: BaseMessage; textless: BaseMessage } | null;
-  // What to add when the thread holds no reply of this turn to replace (a save failed before one was
-  // written): the message then records what was sent, appended in the same write.
-  orAppend?: BaseMessage;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -354,23 +351,6 @@ export async function undoRefusedTurn(params: {
           THREAD_STATE_NODE,
         );
         if (note) return { ...decided, noted: true };
-      }
-      // Only onto the thread this turn left: its last message is still the tail, read under this
-      // same claim, so a reset or a newer message in between keeps the thread untouched.
-      const tail = produced.at(-1)?.id;
-      if (
-        decided.action === "keep" &&
-        decided.reason === "no-turn-found" &&
-        params.orAppend &&
-        tail !== undefined &&
-        current.at(-1)?.id === tail
-      ) {
-        await graph.updateState(
-          threadCfg,
-          { messages: [params.orAppend] },
-          THREAD_STATE_NODE,
-        );
-        return { action: "remove", ids: [], noted: true };
       }
       return decided;
     } finally {
@@ -463,14 +443,12 @@ export async function rememberWhatWasSent(params: {
   produced: readonly BaseMessage[];
   // What reached the customer in the reply's place; empty when nothing did.
   sent: string;
-  // The id the message gets when it is appended, there being no draft to replace (see `orAppend`).
-  appendedId?: string;
   draftBeside?: { original: BaseMessage; textless: BaseMessage } | null;
   owner?: ThreadOwner | null;
   base?: PrismaClient;
   logPrefix: string;
 }): Promise<RollbackPlan | null> {
-  const { sent, logPrefix, appendedId, ...rest } = params;
+  const { sent, logPrefix, ...rest } = params;
   const plan = await undoRefusedTurn({
     ...rest,
     kind: "reactive",
@@ -478,9 +456,6 @@ export async function rememberWhatWasSent(params: {
     // it, and the turn keeps its terminal message, which is what a transcript rebuilt from the
     // thread reads as "no reply" instead of falling back to text written beside a tool call.
     replacement: (id: string) => new AIMessage({ content: sent, id }),
-    ...(sent
-      ? { orAppend: new AIMessage({ content: sent, id: appendedId }) }
-      : {}),
   }).catch((err) => {
     logger.warn(
       { err, thread: params.graphThreadId },

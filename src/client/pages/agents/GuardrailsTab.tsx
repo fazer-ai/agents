@@ -1478,7 +1478,7 @@ export function GuardrailsTab({
                           )}
                           description={t(
                             "editor.guardrails.turnReviewAttemptsHint",
-                            "Past this number, the turn stops reviewing: a flagged call runs as written and a flagged reply meets the action below.",
+                            "Past this number, a step still flagged does not happen: the call does not run, the reply is not sent, and the turn ends with the action below.",
                           )}
                         >
                           <Select

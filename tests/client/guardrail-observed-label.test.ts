@@ -89,7 +89,7 @@ describe("an observed guardrail line on the Logs page", () => {
       guardrailUncheckedLabel("guardrail", { ...call, unchecked: true }, t),
       guardrailUncheckedLabel("guardrail", { ...call, held: true }, t),
     ]).toEqual([
-      "The turn review could not judge the call to agendar, so the call ran unreviewed",
+      "The turn review could not judge the call to agendar, and did not block it",
       "The turn review could not judge the call to agendar, so the call did not run and a hand-over to the team was requested",
     ]);
   });

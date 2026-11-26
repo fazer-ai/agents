@@ -256,9 +256,6 @@ export interface BuildAgentGraphParams {
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
   turnReviewHalted?: () => boolean;
-  // Whether the turn review already decided the turn's reply (its fallback is pending): the round a
-  // decided step ran in ends the graph, so the decision never waits on another generation.
-  turnReviewDecided?: () => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -692,13 +689,16 @@ function inCallOrder(
   const out: BaseMessage[] = [];
   for (const c of calls) {
     const pool = ranCalls.includes(c) ? pools.ran : pools.aside;
-    const k = pool.findIndex((m) => {
+    const answers = (m: BaseMessage, byName: boolean) => {
       if (m.getType() !== "tool") return false;
       const r = m as ToolMessage;
-      return c.id
-        ? r.tool_call_id === c.id
-        : !r.tool_call_id && r.name === c.name;
-    });
+      if (!c.id) return !r.tool_call_id && r.name === c.name;
+      return r.tool_call_id === c.id && (!byName || r.name === c.name);
+    };
+    // By id and name first: the answers set aside are pooled by kind of refusal, so a repeated id
+    // alone could hand a call another call's answer.
+    let k = pool.findIndex((m) => answers(m, true));
+    if (k < 0) k = pool.findIndex((m) => answers(m, false));
     if (k >= 0) out.push(...pool.splice(k, 1));
   }
   return [...out, ...pools.aside, ...pools.ran];
@@ -846,7 +846,6 @@ export function buildAgentGraph({
   reviewCall,
   reviewTurnReply,
   turnReviewHalted,
-  turnReviewDecided,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -1708,10 +1707,7 @@ export function buildAgentGraph({
             const ran = await toolNode!.invoke(serverView, heard);
             const last = serverView.messages.at(-1) as AIMessage;
             const nothingWritten = (noEffectCount?.() ?? 0) > before;
-            if (
-              turnReviewDecided?.() ||
-              endsOnWrites(last, ran.messages, fenced || nothingWritten)
-            ) {
+            if (endsOnWrites(last, ran.messages, fenced || nothingWritten)) {
               endedOnWrites = true;
               // The empty terminator the called-off path ends on, for the same reason: the runtime
               // reads the turn's text off the LAST message, which must not be a tool result.
@@ -1736,22 +1732,18 @@ export function buildAgentGraph({
               ? // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
                 await toolNode!.invoke(view, heard)
               : { messages: [] as BaseMessage[] };
-          const answered = inCallOrder(
-            state,
-            view,
-            [
-              ...asideAnswers,
-              ...(contradicted?.answers ?? []),
-              ...(reviewed?.answers ?? []),
-            ],
-            ran.messages,
-          );
-          // A step the review decided ends the round here too, on the empty terminator.
-          if (turnReviewDecided?.()) {
-            endedOnWrites = true;
-            return { messages: [...answered, new AIMessage("")] };
-          }
-          return { messages: answered };
+          return {
+            messages: inCallOrder(
+              state,
+              view,
+              [
+                ...asideAnswers,
+                ...(contradicted?.answers ?? []),
+                ...(reviewed?.answers ?? []),
+              ],
+              ran.messages,
+            ),
+          };
         },
       )
       // NOTE: built on every graph so the edges type-check, and unreachable without client tools:

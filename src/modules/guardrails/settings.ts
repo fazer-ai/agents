@@ -190,8 +190,8 @@ const MAX_TOOL_NAME_LEN = 128;
 
 // What a turn-review trip does (./turn-review.ts, docs/turn-review.md). `observe` records the verdict
 // and lets the step happen. `revise` sends the step back to the agent with the reviewer's reason: a
-// write call does not run, and a reply is not sent. Past `maxAttempts` in one turn, `fallback` acts on
-// the reply with the Output direction's messages.
+// write call does not run, and a reply is not sent. Past `maxAttempts` in one turn a step still flagged
+// does not happen either, and `fallback` ends the turn with the Output direction's messages.
 export type TurnReviewAction = "observe" | "revise";
 export const TURN_REVIEW_ACTIONS: readonly TurnReviewAction[] = [
   "observe",

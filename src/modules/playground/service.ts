@@ -44,7 +44,6 @@ import {
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
 } from "@/graph/silence";
-import { buildThreadStateGraph } from "@/graph/thread-state";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { selectionsFromGrants } from "@/graph/tools/assemble";
 import {
@@ -492,7 +491,6 @@ async function buildPlaygroundGraph(params: {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
-  turnReviewDecided?: () => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -565,7 +563,6 @@ async function buildPlaygroundGraph(params: {
     reviewCall: params.reviewCall,
     reviewTurnReply: params.reviewTurnReply,
     turnReviewHalted: params.turnReviewHalted,
-    turnReviewDecided: params.turnReviewDecided,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -915,15 +912,9 @@ export async function estimateCallFloor(params: {
 }
 
 // The id of the last AI message in the invoke result (for linking the TTS audio to its turn).
-// The last assistant message, searched back to `since` (the turn's own human message) when given,
-// so a turn with no answer of its own never takes the previous turn's.
-function lastAiMessageId(
-  messages: unknown[],
-  since?: string,
-): string | undefined {
+function lastAiMessageId(messages: unknown[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] as { id?: unknown; getType?: () => string };
-    if (since !== undefined && m?.id === since) return undefined;
     const type = m?.getType?.();
     if (type === "ai" && typeof m.id === "string") return m.id;
   }
@@ -1069,7 +1060,6 @@ async function runPlaygroundTurnOnce(
       reviewCall: turnReview?.reviewCall,
       reviewTurnReply: turnReview?.reviewReply,
       turnReviewHalted: turnReview?.halted,
-      turnReviewDecided: turnReview ? () => !!turnReview.pending() : undefined,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,
@@ -1251,20 +1241,7 @@ async function runPlaygroundTurnOnce(
     );
   } catch (e) {
     if (e instanceof AppError) throw e;
-    // The turn review already decided the reply, as in the inbox: the decision is settled below on
-    // the thread as it stands, instead of the turn failing after a write of it ran.
-    const after = turnReview?.pending()
-      ? await buildThreadStateGraph(
-          params.deps?.checkpointer ?? (await getCheckpointer()),
-        )
-          .getState({ configurable: { thread_id: threadId } })
-          .then(
-            (st) => (st.values as { messages?: BaseMessage[] }).messages,
-            () => undefined,
-          )
-      : undefined;
-    if (!after?.some((m) => m.id === humanId)) throw toPlaygroundInvokeError(e);
-    result = { messages: after } as Awaited<ReturnType<typeof graph.invoke>>;
+    throw toPlaygroundInvokeError(e);
   } finally {
     toolLogger.settle();
   }
@@ -1358,23 +1335,16 @@ async function runPlaygroundTurnOnce(
     });
     reply = screenedText(judged, reply) ?? "";
   }
-  // The turn's own answer; with none (a failed save), the message the fallback is appended as.
-  let answerId = lastAiMessageId(result.messages, humanId);
   // NOTE: the next simulated turn reads the thread as production does, so a screening that changed
   // the reply leaves there what the simulated customer received, as in the inbox.
-  if (reply !== raw) {
-    const appendedId = crypto.randomUUID();
-    const plan = await rememberWhatWasSent({
+  if (reply !== raw)
+    await rememberWhatWasSent({
       checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
       graphThreadId: threadId,
       produced: result.messages as BaseMessage[],
       sent: reply,
-      appendedId,
       logPrefix: "playground",
     });
-    if (plan?.action === "remove" && plan.ids.length === 0)
-      answerId = appendedId;
-  }
   const trace: TraceEntry[] = [
     ...gTrace.slice(0, beforeGraph),
     // A call's verdict beside the call it judged, the rest after the graph's entries.
@@ -1401,7 +1371,7 @@ async function runPlaygroundTurnOnce(
       ctx,
       agentId,
       threadId,
-      messageId: answerId ?? null,
+      messageId: lastAiMessageId(result.messages) ?? null,
       anchorMessageId: null,
       // The reply this annotates can be empty (the agent said nothing), and the rebuild drops an
       // empty AI message, so `messageId` alone is not always an id the transcript shows. The human
@@ -1472,7 +1442,7 @@ async function runPlaygroundTurnOnce(
         },
         flow,
       });
-      const aiId = answerId;
+      const aiId = lastAiMessageId(result.messages);
       if (tts && aiId) {
         ttsMediaId =
           (await savePlaygroundMedia(base, {

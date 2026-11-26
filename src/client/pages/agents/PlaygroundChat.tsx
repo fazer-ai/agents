@@ -1358,7 +1358,7 @@ export function guardrailTraceLabel(
 ): string {
   // The turn review says what happened to the step it judged: a call that did not run, a reply redone.
   if (entry.check === "turn_review") {
-    // A call the review could not judge: it ran unreviewed, or, held, did not run at all.
+    // A call the review could not judge: not blocked by the review, or, held, not run at all.
     if (entry.step === "call" && entry.held)
       return t(
         "playground.trace.turnReviewCallHeld",
@@ -1367,7 +1367,7 @@ export function guardrailTraceLabel(
     if (entry.step === "call" && entry.outcome === "unavailable")
       return t(
         "playground.trace.turnReviewCallUnavailable",
-        "could not be judged, so the call ran unreviewed",
+        "could not be judged; the review did not block the call",
       );
     if (entry.outcome === "revised")
       return entry.step === "call"

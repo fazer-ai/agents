@@ -454,11 +454,12 @@ export function turnReviewVetoToolResult(
   });
 }
 
-// What every call of a batch gets back when the turn review held (`onFailure: "hold"`): nothing ran,
-// and the turn is NOT called off. The caller still owns the conversation and hands it over, so this
-// marker must never read as `called_off`, whose callers exit before the handover.
+// What every call of a batch gets back when the turn review stopped it: a review held
+// (`onFailure: "hold"`), or a call still flagged past the attempts. Nothing ran, and the turn is NOT
+// called off: the caller still owns the conversation and applies the review's decision, so this
+// marker must never read as `called_off`, whose callers exit before it.
 export const TURN_REVIEW_HELD_TOOL_RESULT =
-  "Not executed: the turn review could not check this step, so the conversation goes to the team.";
+  "Not executed: the turn review stopped this step, and the turn ends here.";
 
 export function turnReviewHeldToolResult(call: {
   id?: string;

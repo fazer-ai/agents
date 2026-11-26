@@ -100,26 +100,6 @@ function models(alwaysFlagged = false) {
   return { make, generations: () => generations };
 }
 
-// Throws on the save that would record the second note's result, after the write ran.
-class FailsAfterTheWrite extends MemorySaver {
-  override async put(
-    ...args: Parameters<MemorySaver["put"]>
-  ): ReturnType<MemorySaver["put"]> {
-    const msgs = (
-      args[1].channel_values as { messages?: BaseMessage[] } | undefined
-    )?.messages;
-    if (
-      msgs?.some(
-        (m) =>
-          m.getType() === "tool" &&
-          (m as { tool_call_id?: string }).tool_call_id === "nota-2",
-      )
-    )
-      throw new Error("checkpoint write failed");
-    return super.put(...args);
-  }
-}
-
 describe.skipIf(!dbUp)("the turn review in the playground trace", () => {
   beforeAll(async () => {
     tenantId = (
@@ -307,83 +287,18 @@ describe.skipIf(!dbUp)("the turn review in the playground trace", () => {
     expect(shape(reply?.trace ?? [])).toEqual(expected);
   });
 
-  // The bug it catches: a write run past the attempts left the fallback waiting on another
-  // generation, and a turn that failed there showed an error instead of the decided reply.
-  for (const failing of [false, true])
-    test(`a write past the attempts settles the fallback with no further generation${failing ? ", the graph failing after it" : ""}`, async () => {
-      const m = models(true);
-      const r = await runPlaygroundTurn({
-        ctx: ctx(tenantId),
-        agentId: agentFallback,
-        message: "anota aí",
-        base: appDb,
-        deps: {
-          makeModel: m.make,
-          checkpointer: failing ? new FailsAfterTheWrite() : new MemorySaver(),
-        },
-      });
-      expect([r.reply, m.generations()]).toEqual(["TEMPLATE-PG", 2]);
-    });
-
-  // The bug it catches: the reply recovered after a failed save was anchored on the session's
-  // previous answer, so the verdict and the fallback landed on the first turn.
-  test("a fallback settled after a failed save is anchored on its own turn", async () => {
-    const cp = new FailsAfterTheWrite();
-    const first = await runPlaygroundTurn({
+  // The bug it catches: a write flagged past the attempts ran, and the fallback waited on another
+  // generation. Now it does not run and the turn ends on the fallback.
+  test("a write flagged past the attempts does not run and the fallback ends the turn", async () => {
+    const m = models(true);
+    const r = await runPlaygroundTurn({
       ctx: ctx(tenantId),
       agentId: agentFallback,
-      message: "oi",
-      base: appDb,
-      deps: {
-        makeModel: ((args: { model?: string }) =>
-          args?.model === GUARD_MODEL
-            ? guardrailModel(async () => ({
-                content: JSON.stringify({
-                  violated: false,
-                  categories: [],
-                  rationale: "",
-                  suggestedReply: null,
-                }),
-              }))
-            : ({
-                async invoke() {
-                  return new AIMessage("OLA-PRIMEIRO");
-                },
-                bindTools() {
-                  return {
-                    async invoke() {
-                      return new AIMessage("OLA-PRIMEIRO");
-                    },
-                  };
-                },
-              } as unknown as BaseChatModel)) as never,
-        checkpointer: cp,
-      },
-    });
-    expect(first.reply).toBe("OLA-PRIMEIRO");
-    const second = await runPlaygroundTurn({
-      ctx: ctx(tenantId),
-      agentId: agentFallback,
-      threadId: first.threadId,
       message: "anota aí",
       base: appDb,
-      deps: { makeModel: models(true).make, checkpointer: cp },
+      deps: { makeModel: m.make, checkpointer: new MemorySaver() },
     });
-    expect(second.reply).toBe("TEMPLATE-PG");
-    const messages = (
-      (await cp.getTuple({ configurable: { thread_id: first.threadId } }))
-        ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
-    )?.messages as BaseMessage[];
-    const turns = applyTurnNotes(
-      rebuildPlaygroundTurns(messages),
-      await listThreadTurnNotes(appDb, ctx(tenantId), first.threadId),
-    );
-    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
-      "user:oi",
-      "assistant:OLA-PRIMEIRO",
-      "user:anota aí",
-      "assistant:TEMPLATE-PG",
-    ]);
+    expect([r.reply, m.generations()]).toEqual(["TEMPLATE-PG", 2]);
   });
 
   // The bug it catches: a silent fallback after a write past the attempts read as an agent that had

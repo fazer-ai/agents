@@ -1204,7 +1204,7 @@ const guardrails = z
         maxAttempts: ranged(GUARDRAIL_RANGES.turnReviewMaxAttempts).optional(),
         fallback: oneOf(TURN_REVIEW_FALLBACKS)
           .optional()
-          .describe("acts on the reply once maxAttempts is spent"),
+          .describe("ends the turn once maxAttempts is spent"),
       })
       .optional()
       .describe(

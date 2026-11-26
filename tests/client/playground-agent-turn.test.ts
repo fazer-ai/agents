@@ -101,7 +101,7 @@ describe("agentTurn", () => {
       guardrailTraceLabel(t, { ...call, outcome: "unavailable" }),
       guardrailTraceLabel(t, { ...call, outcome: "handed-off", held: true }),
     ]).toEqual([
-      "could not be judged, so the call ran unreviewed",
+      "could not be judged; the review did not block the call",
       "could not be judged, so the call did not run and the case would go to the team",
     ]);
   });

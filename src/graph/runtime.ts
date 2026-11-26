@@ -97,11 +97,7 @@ import {
   withOtherInboxesContext,
 } from "@/modules/other-inboxes/context";
 import { signatureFor } from "@/modules/signature/service";
-import {
-  deliverReply,
-  type ReplyDelivery,
-  splitReplyParts,
-} from "@/modules/split/service";
+import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import type { transcribeInboundAudio } from "@/modules/stt/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
 import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
@@ -364,11 +360,6 @@ export interface RuntimeDeps {
 // "posted-partial". The callers cannot write it: they read the outcome as an answer and
 // clear the badge. The cause stays in the flow log (`stage: "split"`); best-effort like
 // `recordConversationError`, so a delivered half-answer never becomes a thrown turn.
-// Recorded beside a closing line only part of which reached the customer, when the part cannot be
-// named: the next turn reads that the line was not received whole.
-const PARTIAL_LINE_NOTE =
-  "(Contexto do sistema: só parte desta mensagem chegou ao cliente.)";
-
 async function notePartialDelivery(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -1252,7 +1243,8 @@ async function runTurnBody(
     langfuseCfg: loaded.langfuseCfg,
   });
   // The turn review, asked by the graph on each write call before it runs and on the final answer.
-  // Its fallback waits in `pending()` for the output gate below, ahead of the factual-grounding one.
+  // A step still flagged past the attempts does not happen: its decision waits in `pending()` for
+  // the output gate below, ahead of the factual-grounding one.
   const turnReview = buildTurnReviewGate({
     cfg: loaded.guardrails,
     reviewer: loaded.turnReviewer,
@@ -1282,11 +1274,9 @@ async function runTurnBody(
             : turnReview.reviewReply(turn, reply, opts)
       : undefined,
     turnReviewHalted: turnReview?.halted,
-    turnReviewDecided: turnReview ? () => !!turnReview.pending() : undefined,
     // A completed transfer answers the turn (or silences it) and the model's text is dropped,
     // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
-    // Nor once the turn review decided the output (its fallback is pending, or a review held): that
-    // decision wins at delivery, so a grounding review would bill and rewrite a reply nobody reads.
+    // Nor once the turn review decided the output: that decision wins at delivery.
     reviewReply: grounding
       ? (turn, reply) =>
           handoffState.completed || turnReview?.pending()
@@ -1301,12 +1291,10 @@ async function runTurnBody(
       !turnDeliveredToCustomer(turnState, handoffState),
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
-    // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end. Nor
-    // is a turn whose reply the turn review's fallback already decided.
+    // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end.
     retrySilence: () =>
       loaded.retrySilence &&
       !handoffState.completed &&
-      !turnReview?.pending() &&
       !turnDeliveredToCustomer(turnState, handoffState),
     // NOTE: Written after the invoke: a retry that called tools only declared silence once
     // `skip_reply` ran and left its mark.
@@ -1753,9 +1741,6 @@ async function runTurnBody(
   // The operator's or the screening's text that went out in the model's reply's place. Written into
   // the thread in the `finally`, after the claims a rewrite stands down on are released.
   let sentInDraftsPlace: string | null = null;
-  // A fallback closing line that reached the customer only in part: the turn settles
-  // "posted-partial" with its badge, as a reply split the same way does.
-  let closingLinePartial: { unproven: boolean } | null = null;
   let replacedProduced: BaseMessage[] | null = null;
 
   // The contact's voice preference now: `set_voice_preference` writes it during the invoke.
@@ -1776,21 +1761,6 @@ async function runTurnBody(
     }
   };
 
-  // What of a line split into balloons reached the customer: the first `landed` pieces the split
-  // cut, as sent. A count that does not fit the cut (a voice note, say) cannot name the part that
-  // arrived, so the whole line goes with an explicit note that only part of it did.
-  const landedPart = (line: string, landed: number): string => {
-    const parts = loaded.splitConfig.enabled
-      ? splitReplyParts(line, loaded.splitConfig)
-      : { chunks: [line.trim()], seps: [""] };
-    if (landed > 0 && landed < parts.chunks.length)
-      return parts.chunks
-        .filter((_, i) => i < landed)
-        .map((c, i) => `${parts.seps[i] ?? ""}${c}`)
-        .join("");
-    return `${line}\n\n${PARTIAL_LINE_NOTE}`;
-  };
-
   // The sentence the transfer promised, delivered on the way out of the turn whatever that
   // way is: once the tool set `open`, every retry stops at its ownership gate. Two exclusive call
   // sites (the failure path rethrows); a third would own the at-most-once question.
@@ -1798,17 +1768,10 @@ async function runTurnBody(
   const deliverHandoffPromise = async (
     messages: BaseMessage[] = [],
   ): Promise<void> => {
-    // A turn-review fallback already decided this turn's reply, so after a completed transfer it is
-    // the closing line, whether or not the model wrote one: silent sends nothing, template and
-    // handoff send the operator's text. The transfer has happened, so nothing is handed over again.
-    const reviewed = handoffState.completed ? turnReview?.pending() : null;
-    if (!reviewed && !handoffAnsweredTheTurn(handoffState)) return;
-    // The thread keeps what the customer read in the closing line's place, the fallback text or
-    // nothing, so the next turn does not read the model's words as said.
-    if (reviewed) sentInDraftsPlace = "";
-    const line = handoffState.customerMessage ?? "";
+    if (!handoffAnsweredTheTurn(handoffState)) return;
+    const line = handoffState.customerMessage;
     try {
-      let guarded = reviewed ?? (await runGuardrail("output", line));
+      let guarded = await runGuardrail("output", line);
       // NOTE: A trip here drops the queued images too, as the main gate below does: a verdict on
       // this turn's customer-facing text applies to every artefact.
       if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;
@@ -1852,13 +1815,6 @@ async function runTurnBody(
       )
         return;
       deliveredBalloons = delivered.delivered;
-      if (reviewed) {
-        sentInDraftsPlace = delivered.failed
-          ? landedPart(screened, delivered.delivered)
-          : screened;
-        if (delivered.failed)
-          closingLinePartial = { unproven: delivered.unproven };
-      }
     } catch (e) {
       // NOTE: Best-effort: the transfer succeeded, so an error would stamp lastError on a thread a
       // human already owns, and on the failure path would mask the error that ended the turn.
@@ -2418,13 +2374,12 @@ async function runTurnBody(
         ),
     ).catch(async (e) => {
       toolLogger.settle();
-      let after: BaseMessage[] | undefined;
       // NOTE: LangGraph checkpoints as it goes, so a graph that threw may still have written the
       // customer's message; asked of the channel by this invoke's id. A failed read leaves coverage
       // unstated, the safe side (a duplicate line over lost words). A throw still delivers the
       // closing line a handoff already promised.
       try {
-        after = (
+        const after = (
           (
             await buildThreadStateGraph(
               params.deps?.checkpointer ?? (await getCheckpointer()),
@@ -2437,19 +2392,6 @@ async function runTurnBody(
           { err: readErr, conversationId: String(conversationId) },
           "turn: could not read the channel after a failed invoke; leaving coverage unstated",
         );
-      }
-      // The turn review already decided the reply and a write of this turn may have run: the
-      // decision is settled through the ordinary delivery below, with its ownership and called-off
-      // gates, on the channel as it stands, instead of a retry that would redo the turn.
-      if (
-        turnReview?.pending() &&
-        after?.some((m) => m.id === inputMessageId)
-      ) {
-        logger.warn(
-          { err: e, conversationId: String(conversationId) },
-          "turn: generation failed after the turn review decided the reply; settling that decision",
-        );
-        return { messages: after } as Awaited<ReturnType<typeof graph.invoke>>;
       }
       await deliverHandoffPromise();
       throw e;
@@ -2574,14 +2516,9 @@ async function runTurnBody(
       // NOTE: The deferred resolve falls with the transfer, even when its closing line never reached
       // the customer: the human queue's conversation is not ours to close.
       if (handoffState.completed) turnState.resolveRequested = false;
-      // The handoff's closing line decides this turn's reply: the model's own line, or, after a
-      // completed transfer, the turn review's pending fallback standing in for it.
-      const byFallback = handoffState.completed && !!turnReview?.pending();
-      const handedOff = handoffAnsweredTheTurn(handoffState) || byFallback;
+      const handedOff = handoffAnsweredTheTurn(handoffState);
       // NOTE: The model's final text after a handoff duplicates the closing line, and the mirror may
       // still read bot-owned. Blanked, not returned, so queued images still pass every gate below.
-      // Under a turn-review fallback the turn's last message records what was sent instead (see
-      // `deliverHandoffPromise`), and the transfer's call and result stay.
       if (handedOff) reply = "";
       // NOTE: The transfer declared that this case gets no reply, so the model's next line is dropped
       // too. The proactive path needs nothing: its ownership probe already reads `open`.
@@ -2704,8 +2641,7 @@ async function runTurnBody(
       // A factual-grounding trip under `template` or `handoff` (or a revise that wrote nothing)
       // decides the reply in place of the screening, unless a transfer completed, with its own line
       // or with none: the conversation is a person's now, and nothing of the model's goes out.
-      // A turn-review fallback comes first: it judged the step, the grounding check only its facts, and
-      // only one of the two decides the reply.
+      // A turn-review decision comes first: it judged the step, the grounding check only its facts.
       const groundingTrip = handoffState.completed
         ? null
         : (turnReview?.pending() ?? grounding?.pending());
@@ -2940,12 +2876,9 @@ async function runTurnBody(
           );
         }
         await handOverIfOwed(closed);
-        // A turn the handoff path answered is not empty: a pending turn-review fallback stands in
-        // for the closing line (`handedOff`), and a transfer whose line was withheld or failed is
-        // still the turn's outcome, as for a screened one.
         if (!sent && !handedOff) return settled("empty");
         const postedFiles = postedOutcomeFor({
-          replyPartial: closingLinePartial !== null,
+          replyPartial: false,
           attachmentFailed: failed,
         });
         if (postedFiles === "posted-partial") {
@@ -2954,7 +2887,6 @@ async function runTurnBody(
             instanceId,
             conversationId,
             base,
-            unproven: closingLinePartial?.unproven,
           });
         }
         return settled(postedFiles);
@@ -3065,27 +2997,7 @@ async function runTurnBody(
       return settled("posted");
     };
     const ended = await afterGeneration();
-    // A closing line known to have landed in part is recorded whatever the turn's outcome: the badge
-    // is a record, not a send, so a takeover by this turn's own transfer does not skip it.
-    // Set inside `deliverHandoffPromise`, which the narrowing above cannot see.
-    const partialLine = closingLinePartial as { unproven: boolean } | null;
-    if (partialLine && ended.outcome !== "posted-partial")
-      await notePartialDelivery({
-        tenantId,
-        instanceId,
-        conversationId,
-        base,
-        unproven: partialLine.unproven,
-      });
-    // A takeover this turn's own transfer caused, read after the fallback's closing line went out:
-    // the refusal still sends nothing more, but the thread records the line the customer read
-    // instead of losing the turn's last message.
-    const keepsSentLine =
-      ended.undo &&
-      ended.outcome === "taken-over" &&
-      handoffState.completed &&
-      sentInDraftsPlace !== null;
-    if ((!ended.undo || keepsSentLine) && sentInDraftsPlace !== null)
+    if (!ended.undo && sentInDraftsPlace !== null)
       replacedProduced = result.messages as BaseMessage[];
     // NOTE: A record for whoever reads the conversation, at `info`: the next turn tells the customer
     // from the note, so there is nothing to alert on. Read off the same slice the rollback reads, so
@@ -3107,9 +3019,7 @@ async function runTurnBody(
     // NOTE: Not awaited, and inside the `try`: `undoRefusedTurn` stands down while `isTurnInFlight`
     // holds, and the `finally` clears it before the queued rollback runs. The call still takes its
     // place in the `ingest:` queue now, before the durable claim is released.
-    return ended.undo && !keepsSentLine
-      ? rollBack(ended.outcome)
-      : ended.outcome;
+    return ended.undo ? rollBack(ended.outcome) : ended.outcome;
   } catch (err) {
     turnThrew = true;
     throw err;

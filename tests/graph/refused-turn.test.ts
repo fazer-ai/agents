@@ -3,7 +3,6 @@ import {
   AIMessage,
   type BaseMessage,
   HumanMessage,
-  RemoveMessage,
   ToolMessage,
 } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
@@ -724,60 +723,6 @@ describe("rememberWhatWasSent", () => {
       "tool:ok",
       "ai:ENVIADO",
     ]);
-  });
-
-  // With no reply of the turn to replace (a save failed after the delivery), what was sent is
-  // appended, but only onto the thread the turn left: a reset, or a newer customer message, between
-  // the delivery and this write keeps the thread as it is.
-  describe("appending when no draft stands", () => {
-    const produced = () => [h("h1", "oi"), calling("t1", "private_note")];
-    test("appends onto the turn's own tail", async () => {
-      const cp = await seeded("th-ap1", produced());
-      await rememberWhatWasSent({
-        checkpointer: cp,
-        graphThreadId: "th-ap1",
-        produced: produced(),
-        sent: "ENVIADO",
-        logPrefix: "test",
-      });
-      expect(shape(await read(cp, "th-ap1")).at(-1)).toBe("ai:ENVIADO");
-    });
-    test("a reset in between leaves the thread empty", async () => {
-      const cp = await seeded("th-ap2", produced());
-      await buildThreadStateGraph(cp).updateState(
-        { configurable: { thread_id: "th-ap2" } },
-        {
-          messages: produced().map(
-            (m) => new RemoveMessage({ id: m.id as string }),
-          ),
-        },
-        THREAD_STATE_NODE,
-      );
-      await rememberWhatWasSent({
-        checkpointer: cp,
-        graphThreadId: "th-ap2",
-        produced: produced(),
-        sent: "ENVIADO",
-        logPrefix: "test",
-      });
-      expect(shape(await read(cp, "th-ap2"))).toEqual([]);
-    });
-    test("a newer customer message in between stays the tail", async () => {
-      const cp = await seeded("th-ap3", produced());
-      await buildThreadStateGraph(cp).updateState(
-        { configurable: { thread_id: "th-ap3" } },
-        { messages: [h("h2", "outra")] },
-        THREAD_STATE_NODE,
-      );
-      await rememberWhatWasSent({
-        checkpointer: cp,
-        graphThreadId: "th-ap3",
-        produced: produced(),
-        sent: "ENVIADO",
-        logPrefix: "test",
-      });
-      expect(shape(await read(cp, "th-ap3")).at(-1)).toBe("human:outra");
-    });
   });
 
   test("nothing sent leaves an empty message in the draft's place", async () => {

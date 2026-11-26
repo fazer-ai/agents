@@ -628,3 +628,64 @@ describe("the turn review in the graph", () => {
     expect(text(messages.at(-1))).toBe("Abre às 18h.");
   });
 });
+
+// The bug it catches: the answers set aside pooled by kind of refusal, not by call, so with a
+// repeated id a vetoed write took the contradicted handoff's answer and the handoff took the veto.
+describe("answers set aside keep their call", () => {
+  test("a veto and a contradicted handoff sharing an id each stay with their own call", async () => {
+    const named = (name: string) =>
+      tool(async () => "feito", {
+        name,
+        description: name,
+        schema: z.object({}),
+      });
+    const steps: AIMessage[] = [
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          { name: "agendar", args: {}, id: "x" },
+          { name: "resolve_conversation", args: {}, id: "r" },
+          { name: "handoff_to_human", args: {}, id: "x" },
+        ],
+      }),
+    ];
+    let n = 0;
+    const model = {
+      async invoke() {
+        return steps[n++] ?? new AIMessage("ok");
+      },
+      bindTools() {
+        return this;
+      },
+    };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [
+        named("agendar"),
+        named("resolve_conversation"),
+        named("handoff_to_human"),
+      ],
+      maxToolCalls: 5,
+      reviewCall: async (_turn, call) =>
+        call.name === "agendar" ? CALL_NOTE : null,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("encerra")] },
+      { configurable: { thread_id: `ids-${Math.random()}` } },
+    );
+    const answers = (result.messages as BaseMessage[])
+      .filter((m) => m.getType() === "tool")
+      .map((m) => [
+        (m as ToolMessage).name,
+        contentToText(m.content).slice(0, 14),
+      ]);
+    expect(answers).toEqual([
+      ["agendar", CALL_NOTE.slice(0, 14)],
+      ["resolve_conversation", "feito"],
+      ["handoff_to_human", "Not transferre"],
+    ]);
+  });
+});

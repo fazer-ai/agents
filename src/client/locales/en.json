@@ -2491,7 +2491,7 @@
       "turnReviewActionRevise": "Send the agent back to redo the step",
       "turnReviewActionReviseHint": "A flagged call does not run and a flagged reply is not sent: the agent reads why and redoes the step, with its tools. One reviewer call per reviewed step, plus one generation per redo.",
       "turnReviewAttempts": "Redos per turn",
-      "turnReviewAttemptsHint": "Past this number, the turn stops reviewing: a flagged call runs as written and a flagged reply meets the action below.",
+      "turnReviewAttemptsHint": "Past this number, a step still flagged does not happen: the call does not run, the reply is not sent, and the turn ends with the action below.",
       "turnReviewDesc": "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Only lookups that cannot change anything skip it, such as the knowledge search, the time and an HTTP GET.",
       "turnReviewEnabled": "Review the turn's actions and reply",
       "turnReviewFallback": "When the redos run out",
@@ -3886,7 +3886,7 @@
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message was let through unchecked",
       "output": "The check failed, so the reply was let through unchecked",
-      "turnReviewCall": "The turn review could not judge the call to {{tool}}, so the call ran unreviewed",
+      "turnReviewCall": "The turn review could not judge the call to {{tool}}, and did not block it",
       "unknown": "The check failed; this older line does not record whether the message was let through"
     },
     "level": {
@@ -4710,7 +4710,7 @@
       "turnReviewCall": "Turn review of the call to {{tool}}",
       "turnReviewCallHeld": "could not be judged, so the call did not run and the case would go to the team",
       "turnReviewCallRevised": "against the agent's instructions; the call did not run and the agent was told why",
-      "turnReviewCallUnavailable": "could not be judged, so the call ran unreviewed",
+      "turnReviewCallUnavailable": "could not be judged; the review did not block the call",
       "turnReviewClean": "follows the agent's instructions",
       "turnReviewObserved": "against the agent's instructions; only recorded, the step went ahead",
       "turnReviewReply": "Turn review of the reply",

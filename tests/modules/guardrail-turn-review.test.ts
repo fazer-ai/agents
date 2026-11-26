@@ -30,6 +30,7 @@ import {
   buildTurnReviewGate,
   TURN_REVIEW_NOTE_MARK,
   TURN_REVIEW_REDO_INSTRUCTION,
+  TURN_REVIEW_SYSTEM_PROMPT,
   turnReviewFeedback,
   turnReviewMessages,
   turnReviewNote,
@@ -424,6 +425,10 @@ describe("what the reviewer reads", () => {
     expect(usr).toContain(
       '<tool_call name="agendar" status="error" turns_back="1">',
     );
+    // An error does not prove the write did not happen: only ran="no" does.
+    expect(TURN_REVIEW_SYSTEM_PROMPT).toContain(
+      'Only ran="no" proves a call did not run',
+    );
   });
 
   // The bug it catches: two calls of a batch repeating one id both read the last result, so a
@@ -758,6 +763,22 @@ describe("the gate", () => {
         "revised",
       ]);
       expect(rows.find((x) => x.outcome === "revised")?.attempt).toBe(1);
+    },
+  );
+
+  // The bug it catches: a call still flagged past the attempts that runs, so a step judged against
+  // the instructions takes effect before the fallback ends the turn.
+  test.skipIf(!dbUp)(
+    "a call still flagged past the attempts is refused, and the fallback ends the turn",
+    async () => {
+      const r = reviewer([VIOLATED]);
+      const { g } = gate(cfg({ maxAttempts: 1, fallback: "template" }), r.make);
+      expect(await g?.reviewCall(turn(), HANDOFF_CALL)).toContain(
+        TURN_REVIEW_NOTE_MARK,
+      );
+      expect(g?.halted()).toBe(false);
+      expect(await g?.reviewCall(turn(), HANDOFF_CALL)).toBeNull();
+      expect([g?.halted(), g?.pending()?.kind]).toEqual([true, "replaced"]);
     },
   );
 

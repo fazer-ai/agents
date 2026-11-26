@@ -11945,18 +11945,19 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(toggles).toEqual([[convId, "open"]]);
       });
 
-      // A handoff flagged again past the attempts runs (a veto would only loop), and its closing line
-      // is the turn's reply: the fallback the review chose decides it, with no second transfer.
-      // A transfer the handoff path answered is a posted turn, never "empty", the fallback line
-      // delivered or withheld, as a screened closing line already is.
-      for (const [fallback, convId, expected, line, outcome] of [
-        ["silent", 7932, [], "LINHA-DO-MODELO", "posted"],
-        ["template", 7933, ["TEMPLATE-OUT"], "LINHA-DO-MODELO", "posted"],
-        // With no line of the model's at all, the fallback is still the turn's reply.
-        ["template", 7934, ["TEMPLATE-OUT"], "", "posted"],
-        ["handoff", 7935, ["HANDOFF-OUT"], "", "posted"],
-      ] as const) {
-        test(`a flagged handoff past the attempts sends the ${fallback} fallback as its closing line${line ? "" : ", with no line of its own"}`, async () => {
+      // A call still flagged past the attempts does not run, a handoff included: the batch is
+      // refused with the held marker, no further generation is asked, and the fallback ends the
+      // turn through the output gate's own path, the one an output trip takes. Only the `handoff`
+      // fallback transfers, once.
+      for (const [tool, fallback, convId, expected, transfers] of [
+        ["private_note", "template", 7953, ["TEMPLATE-OUT"], 0],
+        ["private_note", "silent", 7955, [], 0],
+        ["private_note", "handoff", 7958, ["HANDOFF-OUT"], 1],
+        ["handoff_to_human", "template", 7933, ["TEMPLATE-OUT"], 0],
+        ["handoff_to_human", "silent", 7932, [], 0],
+        ["handoff_to_human", "handoff", 7935, ["HANDOFF-OUT"], 1],
+      ] as const)
+        test(`a ${tool} flagged past the attempts does not run and the ${fallback} fallback ends the turn`, async () => {
           await suDb.agent.update({
             where: { id: gAgentId },
             data: {
@@ -11988,105 +11989,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           const sent: Array<[number, string]> = [];
           const notes: Array<[number, string]> = [];
           const toggles: Array<[number, string]> = [];
-          // Calls the handoff twice (the veto, then the call past the attempts), then says nothing.
           let asked = 0;
-          const handingOver = {
+          const calling = {
             async invoke() {
+              asked += 1;
               return new AIMessage("");
-            },
-            bindTools() {
-              return {
-                async invoke() {
-                  asked += 1;
-                  if (asked > 2) return new AIMessage("");
-                  return new AIMessage({
-                    content: "",
-                    tool_calls: [
-                      {
-                        name: "handoff_to_human",
-                        args: { customerMessage: line },
-                        id: `h${Math.random()}`,
-                      },
-                    ],
-                  });
-                },
-              };
-            },
-          } as unknown as BaseChatModel;
-          const result = await runAgentTurn({
-            tenantId: gTenantId,
-            instanceId: gInstanceId,
-            agentBotId: G_BOT,
-            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
-            base: appDb,
-            deps: {
-              makeModel: branchingWith(
-                JSON.stringify({
-                  violated: true,
-                  categories: ["turn_review"],
-                  rationale: "Pergunte o pedido antes.",
-                  suggestedReply: null,
-                }),
-                handingOver,
-              ),
-              makeClient: guardStub(sent, notes, toggles),
-              checkpointer: new MemorySaver(),
-            },
-          });
-          expect(sent.map(([, t]) => t)).toEqual([...expected]);
-          expect(toggles).toEqual([[convId, "open"]]);
-          expect(result).toBe(outcome);
-        });
-      }
-
-      // The fallback line replaced the model's words: the thread ends on what the customer read
-      // instead, so a final sentence written after the transfer, never sent, is not read as said, and
-      // the transfer's call and result stay in it.
-      // The mirror reading `open` once the transfer lands is this turn's own doing: the line the
-      // customer read stays recorded, and nothing more is sent.
-      for (const [line, fallback, convId, out, mirrorOpens] of [
-        ["", "template", 7949, "TEMPLATE-OUT", false],
-        ["LINHA-DO-MODELO", "template", 7950, "TEMPLATE-OUT", false],
-        ["", "handoff", 7951, "HANDOFF-OUT", false],
-        ["", "silent", 7952, "", false],
-        ["", "template", 7954, "TEMPLATE-OUT", true],
-      ] as const) {
-        test(`after a handoff answered by the ${fallback} fallback the thread holds what was sent${line ? ", the model's line replaced" : ""}${mirrorOpens ? ", the mirror already open" : ""}`, async () => {
-          await suDb.agent.update({
-            where: { id: gAgentId },
-            data: {
-              settings: {
-                split: { enabled: false },
-                handoff: { mode: "route" },
-                guardrails: {
-                  enabled: true,
-                  provider: "openai",
-                  model: GUARD_MODEL,
-                  credentialRef: gVaultRef,
-                  input: { enabled: false },
-                  output: {
-                    enabled: false,
-                    templateMessage: "TEMPLATE-OUT",
-                    handoffMessage: "HANDOFF-OUT",
-                  },
-                  turnReview: {
-                    enabled: true,
-                    action: "revise",
-                    maxAttempts: 1,
-                    fallback,
-                  },
-                },
-              },
-            },
-          });
-          await seedConv(convId);
-          const sent: Array<[number, string]> = [];
-          const notes: Array<[number, string]> = [];
-          const toggles: Array<[number, string]> = [];
-          let asked = 0;
-          const handingOver = {
-            async invoke() {
-              return new AIMessage("FRASE-FINAL");
             },
             bindTools() {
               return {
@@ -12097,9 +12004,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                     content: "",
                     tool_calls: [
                       {
-                        name: "handoff_to_human",
-                        args: { customerMessage: line },
-                        id: `h${asked}`,
+                        name: tool,
+                        args:
+                          tool === "private_note"
+                            ? { content: "NOTA-DO-AGENTE" }
+                            : { customerMessage: "LINHA-DO-MODELO" },
+                        id: `c${asked}`,
                       },
                     ],
                   });
@@ -12108,261 +12018,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             },
           } as unknown as BaseChatModel;
           const checkpointer = new MemorySaver();
-          const result = await runAgentTurn({
-            tenantId: gTenantId,
-            instanceId: gInstanceId,
-            agentBotId: G_BOT,
-            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
-            base: appDb,
-            deps: {
-              makeModel: branchingWith(
-                JSON.stringify({
-                  violated: true,
-                  categories: ["turn_review"],
-                  rationale: "Pergunte o pedido antes.",
-                  suggestedReply: null,
-                }),
-                handingOver,
-              ),
-              makeClient: async () => {
-                const c = await guardStub(sent, notes, toggles)();
-                const toggle = c.toggleStatus.bind(c);
-                c.toggleStatus = (async (id: number, status: string) => {
-                  const r = await toggle(id, status as never);
-                  if (mirrorOpens)
-                    await suDb.conversation.updateMany({
-                      where: {
-                        tenantId: gTenantId,
-                        chatwootConversationId: id,
-                      },
-                      data: { status: "open" },
-                    });
-                  return r;
-                }) as typeof c.toggleStatus;
-                return c;
-              },
-              checkpointer,
-            },
-          });
-          expect(sent).toEqual(out ? [[convId, out]] : []);
-          expect(result).toBe(mirrorOpens ? "taken-over" : "posted");
-          const thread = await threadChannel(checkpointer, convId, {
-            tenantId: gTenantId,
-            instanceId: gInstanceId,
-          });
-          expect(thread.some(([, c]) => c.includes("FRASE-FINAL"))).toBe(false);
-          expect(thread.some(([type]) => type === "tool")).toBe(true);
-          expect(thread.at(-1)).toEqual(["ai", out]);
-        });
-      }
-
-      // The bug it catches: a fallback closing line split into balloons, one of which never arrived,
-      // settled as fully posted, so nobody was told part of it was missing.
-      // With the mirror already reading this turn's transfer the turn is a takeover, and the known
-      // failure is still recorded: the badge is a record, not a send.
-      for (const [convId, mirrorOpens] of [
-        [7956, false],
-        [7957, true],
-      ] as const)
-        test(`a fallback closing line delivered in part settles as partial${mirrorOpens ? ", the mirror already open" : ""}`, async () => {
-          await suDb.agent.update({
-            where: { id: gAgentId },
-            data: {
-              settings: {
-                split: { enabled: true, typingWpm: 99999 },
-                handoff: { mode: "route" },
-                guardrails: {
-                  enabled: true,
-                  provider: "openai",
-                  model: GUARD_MODEL,
-                  credentialRef: gVaultRef,
-                  input: { enabled: false },
-                  output: {
-                    enabled: false,
-                    templateMessage: "Primeira parte.\n\nSegunda parte.",
-                  },
-                  turnReview: {
-                    enabled: true,
-                    action: "revise",
-                    maxAttempts: 1,
-                    fallback: "template",
-                  },
-                },
-              },
-            },
-          });
-          await seedConv(convId);
-          const sent: Array<[number, string]> = [];
-          const notes: Array<[number, string]> = [];
-          const toggles: Array<[number, string]> = [];
-          const checkpointer = new MemorySaver();
-          let asked = 0;
-          const handingOver = {
-            async invoke() {
-              return new AIMessage("");
-            },
-            bindTools() {
-              return {
-                async invoke() {
-                  asked += 1;
-                  if (asked > 2) return new AIMessage("");
-                  return new AIMessage({
-                    content: "",
-                    tool_calls: [
-                      {
-                        name: "handoff_to_human",
-                        args: { customerMessage: "" },
-                        id: `h${asked}`,
-                      },
-                    ],
-                  });
-                },
-              };
-            },
-          } as unknown as BaseChatModel;
-          const result = await runAgentTurn({
-            tenantId: gTenantId,
-            instanceId: gInstanceId,
-            agentBotId: G_BOT,
-            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
-            base: appDb,
-            deps: {
-              makeModel: branchingWith(
-                JSON.stringify({
-                  violated: true,
-                  categories: ["turn_review"],
-                  rationale: "Pergunte o pedido antes.",
-                  suggestedReply: null,
-                }),
-                handingOver,
-              ),
-              makeClient: async () => {
-                const c = await guardStub(sent, notes, toggles)();
-                const toggle = c.toggleStatus.bind(c);
-                c.toggleStatus = (async (id: number, status: string) => {
-                  const r = await toggle(id, status as never);
-                  if (mirrorOpens)
-                    await suDb.conversation.updateMany({
-                      where: {
-                        tenantId: gTenantId,
-                        chatwootConversationId: id,
-                      },
-                      data: { status: "open" },
-                    });
-                  return r;
-                }) as typeof c.toggleStatus;
-                const send = c.sendMessage.bind(c);
-                c.sendMessage = (async (id: number, content: string) => {
-                  if (content.includes("Segunda")) throw new Error("HTTP 500");
-                  return send(id, content);
-                }) as typeof c.sendMessage;
-                return c;
-              },
-              checkpointer,
-            },
-          });
-          expect([sent, result]).toEqual([
-            [[convId, "Primeira parte."]],
-            mirrorOpens ? "taken-over" : "posted-partial",
-          ]);
-          const row = await suDb.conversation.findFirst({
-            where: { tenantId: gTenantId, chatwootConversationId: convId },
-            select: { lastError: true },
-          });
-          expect(row?.lastError ?? "").toContain("entrega");
-          // The thread holds the balloons that landed, not the whole line.
-          const thread = await threadChannel(checkpointer, convId, {
-            tenantId: gTenantId,
-            instanceId: gInstanceId,
-          });
-          expect(thread.at(-1)).toEqual(["ai", "Primeira parte."]);
-        });
-
-      // Throws on the save that would record the second note's result, as a database or a deploy can
-      // fail mid-turn, after the write ran.
-      class FailsAfterTheWrite extends MemorySaver {
-        override async put(
-          ...args: Parameters<MemorySaver["put"]>
-        ): ReturnType<MemorySaver["put"]> {
-          const msgs = (
-            args[1].channel_values as { messages?: BaseMessage[] } | undefined
-          )?.messages;
-          if (
-            msgs?.some(
-              (m) =>
-                m.getType() === "tool" &&
-                (m as { tool_call_id?: string }).tool_call_id === "n2",
-            )
-          )
-            throw new Error("checkpoint write failed");
-          return super.put(...args);
-        }
-      }
-
-      // The fallback already decided the reply once a write call past the attempts ran, so the round
-      // that ran it ends the turn: no further generation, so neither a silence retry nor a failed
-      // model call can stand between the decision and its delivery. With `failingSave`, the save
-      // after that round throws, and the decision is settled on the channel as it stands.
-      for (const [convId, failingSave] of [
-        [7953, false],
-        [7955, true],
-      ] as const)
-        test(`a write past the attempts settles the fallback with no further generation${failingSave ? ", the graph failing after it" : ""}`, async () => {
-          await suDb.agent.update({
-            where: { id: gAgentId },
-            data: {
-              settings: {
-                split: { enabled: false },
-                handoff: { mode: "route" },
-                guardrails: {
-                  enabled: true,
-                  provider: "openai",
-                  model: GUARD_MODEL,
-                  credentialRef: gVaultRef,
-                  input: { enabled: false },
-                  output: { enabled: false, templateMessage: "TEMPLATE-OUT" },
-                  turnReview: {
-                    enabled: true,
-                    action: "revise",
-                    maxAttempts: 1,
-                    fallback: "template",
-                  },
-                },
-              },
-            },
-          });
-          await seedConv(convId);
-          const sent: Array<[number, string]> = [];
-          const notes: Array<[number, string]> = [];
-          const toggles: Array<[number, string]> = [];
-          let asked = 0;
-          const checkpointer = failingSave
-            ? new FailsAfterTheWrite()
-            : new MemorySaver();
-          const noting = {
-            async invoke() {
-              asked += 1;
-              return new AIMessage("");
-            },
-            bindTools() {
-              return {
-                async invoke() {
-                  asked += 1;
-                  if (asked > 2) return new AIMessage("");
-                  return new AIMessage({
-                    content: "",
-                    tool_calls: [
-                      {
-                        name: "private_note",
-                        args: { content: "NOTA" },
-                        id: `n${asked}`,
-                      },
-                    ],
-                  });
-                },
-              };
-            },
-          } as unknown as BaseChatModel;
           await runAgentTurn({
             tenantId: gTenantId,
             instanceId: gInstanceId,
@@ -12377,20 +12032,31 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                   rationale: "Pergunte o pedido antes.",
                   suggestedReply: null,
                 }),
-                noting,
+                calling,
               ),
               makeClient: guardStub(sent, notes, toggles),
               checkpointer,
             },
           });
-          expect([asked, sent]).toEqual([2, [[convId, "TEMPLATE-OUT"]]]);
-          // The thread records what the customer read, even when no draft of the model's stands
-          // to be replaced (the failed save left the write's call as the last message).
+          expect(asked).toBe(2);
+          expect(notes.some(([, n]) => n.includes("NOTA-DO-AGENTE"))).toBe(
+            false,
+          );
+          expect(sent.map(([, t]) => t)).toEqual([...expected]);
+          expect(toggles.filter(([, st]) => st === "open")).toHaveLength(
+            transfers,
+          );
+          // The refused call keeps its record, marked as not run.
           const thread = await threadChannel(checkpointer, convId, {
             tenantId: gTenantId,
             instanceId: gInstanceId,
           });
-          expect(thread.at(-1)).toEqual(["ai", "TEMPLATE-OUT"]);
+          expect(
+            thread.some(
+              ([type, c]) =>
+                type === "tool" && c.includes("turn review stopped"),
+            ),
+          ).toBe(true);
         });
 
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn

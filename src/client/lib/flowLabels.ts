@@ -120,7 +120,7 @@ export function guardrailUncheckedLabel(
         })
       : t("logs.guardrailUnchecked.turnReviewCall", {
           defaultValue:
-            "The turn review could not judge the call to {{tool}}, so the call ran unreviewed",
+            "The turn review could not judge the call to {{tool}}, and did not block it",
           tool,
         });
   }

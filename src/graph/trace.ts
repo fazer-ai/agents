@@ -208,8 +208,8 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
   return out.length ? out : undefined;
 }
 
-// The turn's entries with each call verdict placed right after the call it judged (by id, each
-// verdict taken once, in order), as the review ran: before the call was answered. A verdict with no
+// The turn's entries with each call verdict placed right after the call it judged (by id and tool
+// name, each verdict taken once, in order), as the review ran: before the call was answered. A verdict with no
 // call id, or whose call is not in the entries, keeps its place after them.
 export function withCallVerdicts(
   entries: readonly TraceEntry[],
@@ -220,7 +220,10 @@ export function withCallVerdicts(
   for (const e of entries) {
     out.push(e);
     if (e.type === "tool_call" && e.id) {
-      const k = pending.findIndex((v) => v.callId === e.id);
+      // By id and tool name, in order: an id a provider repeats does not pair a verdict with the
+      // wrong call.
+      let k = pending.findIndex((v) => v.callId === e.id && v.tool === e.name);
+      if (k < 0) k = pending.findIndex((v) => v.callId === e.id);
       if (k >= 0) out.push(...pending.splice(k, 1));
     }
   }

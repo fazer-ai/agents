@@ -2583,7 +2583,7 @@
       "turnReviewActionRevise": "Mandar o agente refazer o passo",
       "turnReviewActionReviseHint": "Uma chamada apontada não roda e uma resposta apontada não sai: o agente lê o motivo e refaz o passo, com as ferramentas dele. Uma chamada ao revisor por passo revisado, mais uma geração por refação.",
       "turnReviewAttempts": "Refações por turno",
-      "turnReviewAttemptsHint": "Passado esse número, o turno para de revisar: uma chamada apontada roda como foi escrita e uma resposta apontada segue a ação abaixo.",
+      "turnReviewAttemptsHint": "Passado esse número, um passo ainda apontado não acontece: a chamada não roda, a resposta não sai e o turno termina com a ação abaixo.",
       "turnReviewDesc": "Antes de uma ação ter efeito, um modelo revisor lê as instruções do agente, a Política acima, a conversa e os resultados das ferramentas no turno, e julga se o passo segue o que elas pedem. Revisa cada chamada que muda alguma coisa (uma transferência, um agendamento, uma etiqueta) antes de ela rodar, e a resposta final antes de ela sair. Só ficam fora as consultas que não mudam nada, como a busca na base, a hora e uma chamada HTTP de leitura (GET).",
       "turnReviewEnabled": "Revisar as ações e a resposta do turno",
       "turnReviewFallback": "Quando as refações acabam",
@@ -4029,7 +4029,7 @@
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",
       "output": "A checagem falhou, e a resposta foi liberada sem checagem",
-      "turnReviewCall": "A revisão do turno não conseguiu julgar a chamada a {{tool}}, então a chamada rodou sem revisão",
+      "turnReviewCall": "A revisão do turno não conseguiu julgar a chamada a {{tool}} e não a bloqueou",
       "unknown": "A checagem falhou; esta linha antiga não registra se a mensagem foi liberada"
     },
     "level": {
@@ -4915,7 +4915,7 @@
       "turnReviewCall": "Revisão do turno da chamada a {{tool}}",
       "turnReviewCallHeld": "não pôde ser julgada, então a chamada não rodaria e o caso iria para a equipe",
       "turnReviewCallRevised": "contra as instruções do agente; a chamada não rodou e o agente soube o motivo",
-      "turnReviewCallUnavailable": "não pôde ser julgada, então a chamada rodaria sem revisão",
+      "turnReviewCallUnavailable": "não pôde ser julgada; a revisão não bloqueou a chamada",
       "turnReviewClean": "segue as instruções do agente",
       "turnReviewObserved": "contra as instruções do agente; só registrado, o passo seguiu",
       "turnReviewReply": "Revisão do turno da resposta",

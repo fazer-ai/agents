@@ -18,6 +18,7 @@ import {
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import {
+  armDebounce,
   debounceDedupeKey,
   resolveArmConfig,
 } from "@/modules/debounce/service";
@@ -366,6 +367,46 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     } finally {
       config.debounceWorker.enabled = saved;
     }
+  });
+
+  // A burst waiting for a file keeps its next retry when a message arrives with a long window.
+  test("a message that joins a media wait does not push its retry out", async () => {
+    const threadId = `${tenantId}:${instanceId}:9807`;
+    const retryAt = new Date(Date.now() + 5_000);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: retryAt,
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 10_000,
+          mediaWaitSince: Date.now() - 5_000,
+        },
+      },
+    });
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 90,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 600,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true },
+    });
+    expect(row.runAt.getTime()).toBeLessThanOrEqual(retryAt.getTime());
   });
 
   test("a text message with no flush live takes the direct turn as before", async () => {

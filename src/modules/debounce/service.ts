@@ -281,7 +281,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
     withEntityLock(db, `debounce-arm:${threadId}`, async () => {
       const existing = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { status: true, payload: true },
+        select: { status: true, payload: true, runAt: true },
       });
       // The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
       // `burstStartedAt`, which a claim in flight resets: it measures how long the burst has waited
@@ -329,9 +329,14 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
           : ownReactionFrom === null
             ? prevReactionFrom
             : Math.min(prevReactionFrom, ownReactionFrom);
+      // A burst waiting for a file keeps its next retry: a message pushing it out by the window could
+      // carry it past the media deadline.
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
+        mediaWaitSince !== null && existing?.runAt
+          ? existing.runAt.getTime()
+          : Number.POSITIVE_INFINITY,
       );
       const payload = {
         threadId,

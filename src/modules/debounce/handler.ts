@@ -409,7 +409,10 @@ export async function selectAnswerableBurst(
   let dropped: typeof pending = [];
 
   const cfg = readDebounceConfig(ctx.settings);
-  if (pending.length > cfg.maxMessagesPerBurst) {
+  // An agent with debounce off reaches a flush only through the media wait, and its burst is
+  // the late file plus what joined it: the cap of a debounce it never turned on would drop the file.
+  const capped = cfg.enabled || ctx.mediaWaitUntil === undefined;
+  if (capped && pending.length > cfg.maxMessagesPerBurst) {
     logger.warn(
       "%s: burst of %d messages capped to %d (conv=%s)",
       ctx.label,
@@ -557,10 +560,15 @@ async function mediaStillRetryable(
   if (!ctx.fillMedia) return false;
   const sttOn = readSttConfig(ctx.settings).enabled;
   const visionOn = readVisionConfig(ctx.settings).enabled;
+  // The fetched row still has to carry the file: an edit can remove it after the download failed.
   const waiting = pending.filter(
     (m) =>
-      (sttOn && m.transcriptionUnavailable === true && !m.transcribedText) ||
+      (sttOn &&
+        m.audio &&
+        m.transcriptionUnavailable === true &&
+        !m.transcribedText) ||
       (visionOn &&
+        hasUnextractedVisual(m.visuals) &&
         mediaStillArriving({ ...m, transcriptionUnavailable: false })),
   );
   if (waiting.length === 0) return false;
@@ -2610,9 +2618,15 @@ export async function flushDebounceJob(
         base,
       });
     }
-    // NOTE: The media wait's stamp outlives a failed attempt (a throw above leaves it on the row, so a
-    // retry keeps the deadline) and goes once the burst is settled some other way.
-    if (outcome !== "media-pending" && readMediaWaitSince(job.payload) !== null)
+    // NOTE: The media wait's stamp outlives every exit that leaves the same messages owed (a throw
+    // above, a busy thread, a superseded turn), so a retry keeps the deadline, and goes once the burst
+    // is settled.
+    if (
+      outcome !== "media-pending" &&
+      outcome !== "thread-busy" &&
+      outcome !== "superseded" &&
+      readMediaWaitSince(job.payload) !== null
+    )
       await clearDeferral({
         tenantId,
         threadId,

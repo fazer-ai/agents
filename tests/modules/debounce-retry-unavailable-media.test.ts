@@ -891,6 +891,72 @@ describe.skipIf(!dbUp)(
       expect(row.payload).toHaveProperty("mediaWaitSince", since);
     });
 
+    // A debounce it never turned on does not cap the media wait's burst: the late file is what it is for.
+    test("an agent with debounce off keeps the late voice note when a text joins its wait", async () => {
+      await seedConversation(9730);
+      const s = storage();
+      const p = provider();
+      const page = [
+        voice(1),
+        {
+          id: 2,
+          content: "consegue?",
+          message_type: 0,
+          private: false,
+          attachments: [],
+        },
+      ];
+      await arriveVoice(9730, 1, s.client(page), p.sttFetch);
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            ...settings(),
+            debounce: { enabled: false, maxMessagesPerBurst: 1 },
+          },
+        },
+      });
+      s.state.stored = true;
+
+      const { out, seen } = await flush(
+        9730,
+        s.client(page),
+        p,
+        Date.now(),
+      ).finally(() =>
+        suDb.agent.update({
+          where: { id: agentId },
+          data: { settings: settings() },
+        }),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(WORDS);
+      expect(seen).toContain("consegue?");
+    });
+
+    // The edit took the file away: nothing is left to download, so nothing is left to wait for.
+    test("a message whose failed file was edited away does not defer the reply", async () => {
+      await seedConversation(9731);
+      const s = storage();
+      const p = provider();
+      await arriveVoice(9731, 1, s.client([voice(1)]), p.sttFetch);
+      const edited = [
+        {
+          id: 1,
+          content: "esquece o áudio",
+          message_type: 0,
+          private: false,
+          attachments: [],
+        },
+      ];
+
+      const { out } = await flush(9731, s.client(edited), p, Date.now());
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+    });
+
     test("no voice note is tried again once the media wait is over", async () => {
       await seedConversation(9716);
       const s = storage();

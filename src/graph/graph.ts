@@ -51,6 +51,7 @@ import {
 import { setAsideContradictedHandoffs } from "./contradicted-handoff";
 import {
   calledOffToolResult,
+  callsRefusedByReview,
   droppedCallCount,
   droppedCallsStamp,
   turnReviewHeldToolResult,
@@ -232,14 +233,17 @@ export interface BuildAgentGraphParams {
   reviewCall?: (
     turn: BaseMessage[],
     call: { name: string; args: unknown },
-    opts?: { alongside: { name: string; args: unknown }[] },
+    opts?: {
+      alongside?: { name: string; args: unknown }[];
+      instructions?: string;
+    },
   ) => Promise<string | null>;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
   // fallback at once, and the note only says it was flagged.
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
-    opts?: { canRedo: boolean },
+    opts?: { canRedo: boolean; instructions?: string },
   ) => Promise<string | null>;
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
@@ -803,6 +807,13 @@ export function buildAgentGraph({
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
+  // What the turn review judges against: the instructions this graph gives the model (its system
+  // prompt, MCP server instructions included, and the turn's standing notices, such as a document
+  // waiting on approval), not only the agent's stored prompt. The budget wrap-ups are left out:
+  // they pace the turn, they are not rules a step can break.
+  const reviewInstructions = [systemPrompt, ...(standingNotices ?? [])]
+    .filter((t) => t.trim())
+    .join("\n\n");
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
   // Bound to the SAME toolset, or the fallback would answer a question the primary was asked
   // with tools it cannot call; the tool-call budget below counts calls, not models.
@@ -920,7 +931,10 @@ export function buildAgentGraph({
       canRedo: boolean,
     ): Promise<string | null> =>
       reviewTurnReply && !noReplyChannel && !silentTurn && text
-        ? reviewTurnReply(view, text, { canRedo })
+        ? reviewTurnReply(view, text, {
+            canRedo,
+            instructions: reviewInstructions,
+          })
         : null;
     // The turn ends where the information ends, in three cases. A lone `skip_reply` asked for
     // again right after one adds nothing a further round could act on (see `reaffirmedSilenceAlone`).
@@ -1252,7 +1266,9 @@ export function buildAgentGraph({
         reply,
         false,
       ));
-      if (!flagged) await r.plan?.review([...history, res], reply, r.info);
+      // A review that held returns no note but hands the conversation over: no re-review either.
+      if (!flagged && !turnReviewHalted?.())
+        await r.plan?.review([...history, res], reply, r.info);
       onReplyRevised?.(reply);
       return res;
     };
@@ -1263,9 +1279,33 @@ export function buildAgentGraph({
     // (`calledSkipThisTurn`), with no reply written beside a tool call on `view` (the thread as
     // delivery reads it), and not at the hard limit, where the tools the instruction names are gone.
     // The caller's predicate is asked last: it knows what this node cannot (a completed transfer).
+    // The request with late instructions after the history (or inside the one system prompt where
+    // a late system message is refused), over the history with the flagged drafts taken out.
+    const requestWith = (
+      extra: readonly string[],
+      removed: readonly BaseMessage[],
+    ): BaseMessage[] => {
+      const view = withReplaced(shown, removed);
+      return lateSystemAccepted
+        ? [
+            new SystemMessage(prompt),
+            ...view,
+            ...wrapUp,
+            ...extra.map((t) => new SystemMessage(t)),
+          ]
+        : [
+            new SystemMessage([prompt, ...extra].join("\n\n")),
+            ...view,
+            ...wrapUp,
+          ];
+    };
+    // `asked` and `removed` are the request the blank answer came from: a redo's note and the drafts
+    // it took out travel into the retry too, so the correction is not lost.
     const retryIfSilent = async (
       answer: BaseMessage,
       view: BaseMessage[],
+      asked: readonly string[] = [],
+      removed: readonly BaseMessage[] = [],
     ): Promise<BaseMessage> => {
       if (
         !retrySilence ||
@@ -1289,10 +1329,7 @@ export function buildAgentGraph({
       // everywhere else, and in a human message never. The empty answer is NOT sent back: it said
       // nothing, and an empty assistant turn is the shape some providers refuse. Neither is persisted:
       // only the second answer returns to the thread.
-      const retried = lateSystemAccepted
-        ? [...messages, new SystemMessage(text)]
-        : [new SystemMessage(`${prompt}\n\n${text}`), ...shown, ...wrapUp];
-      const again = await ask(retried);
+      const again = await ask(requestWith([...asked, text], removed));
       onSilenceRetry?.({ outcome: silenceRetryOutcome(again) });
       return again;
     };
@@ -1321,14 +1358,12 @@ export function buildAgentGraph({
       if (!note) break;
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
-      const redo = await ask(
-        lateSystemAccepted
-          ? [...messages, new SystemMessage(note)]
-          : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
-      );
+      const redo = await ask(requestWith([note], draftRemoved));
       response = await retryIfSilent(
         redo,
         withReplaced([...history, redo], draftRemoved),
+        [note],
+        draftRemoved,
       );
       if (fillerOnly(response)) response = withoutText(response);
       if (((response as AIMessage).tool_calls?.length ?? 0) > 0)
@@ -1596,7 +1631,11 @@ export function buildAgentGraph({
               ? await setAsideReviewedCalls(
                   contradicted?.view ?? serverView,
                   isWriteName,
-                  reviewCall,
+                  (turn, call, o) =>
+                    reviewCall(turn, call, {
+                      ...o,
+                      instructions: reviewInstructions,
+                    }),
                 )
               : null;
           // The reviews are awaited model calls, so ownership is read again before anything runs, and
@@ -1712,6 +1751,8 @@ export function replyWrittenThisTurn(messages: BaseMessage[]): string {
 // The message whose text `replyWrittenThisTurn` recovers, the one place that choice is made, so the
 // draft a revise takes out is the same message the recovery would have delivered.
 function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
+  // A `skip_reply` the turn review vetoed declared no silence (see `calledSkipThisTurn`).
+  const refused = callsRefusedByReview(sinceLastHuman(messages));
   let found: AIMessage | null = null;
   for (let i = messages.length - 2; i >= 0; i--) {
     const m = messages[i];
@@ -1719,7 +1760,11 @@ function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
     if (m.getType() === "human") break;
     if (m.getType() !== "ai") continue;
     const ai = m as AIMessage;
-    if ((ai.tool_calls ?? []).some((c) => c.name === SKIP_REPLY_TOOL))
+    if (
+      (ai.tool_calls ?? []).some(
+        (c) => c.name === SKIP_REPLY_TOOL && !refused.has(c),
+      )
+    )
       return null;
     if (found) continue;
     const last = lastWritten(ai);
@@ -1778,7 +1823,9 @@ function fillerOnly(m: BaseMessage): boolean {
 // `replyWrittenThisTurn`: an earlier "ok" answered with `skip_reply` is in this thread, and a
 // decision taken then says nothing about now. Read from the CALL, the conservative side: a refused
 // `skip_reply` is still the model choosing to say nothing, and a retry would argue with it.
+// A `skip_reply` the turn review vetoed is not one: the reviewer rejected that silence.
 function calledSkipThisTurn(history: BaseMessage[]): boolean {
+  const refused = callsRefusedByReview(sinceLastHuman(history));
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (!m) continue;
@@ -1786,12 +1833,19 @@ function calledSkipThisTurn(history: BaseMessage[]): boolean {
     if (m.getType() !== "ai") continue;
     if (
       ((m as AIMessage).tool_calls ?? []).some(
-        (c) => c.name === SKIP_REPLY_TOOL,
+        (c) => c.name === SKIP_REPLY_TOOL && !refused.has(c),
       )
     )
       return true;
   }
   return false;
+}
+
+// The messages after the last human one: this turn's, as the readers above bound it.
+function sinceLastHuman(history: BaseMessage[]): BaseMessage[] {
+  return history.slice(
+    history.findLastIndex((m) => m.getType() === "human") + 1,
+  );
 }
 
 // Both exits, named, and the second one is the point: most of these silences follow a thank-you and

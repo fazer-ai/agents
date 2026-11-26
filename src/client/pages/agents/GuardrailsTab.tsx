@@ -940,14 +940,17 @@ export function GuardrailsTab({
                     value={g.provider}
                     onChange={(e) => {
                       const provider = e.target.value;
-                      // The typed endpoint belongs to the provider it was typed for.
+                      // The key and the typed endpoint belong to the provider they were picked for,
+                      // as `overrideProviderChanged` clears them on every other model picker.
                       setG((s) => ({
                         ...s,
                         provider: provider as GuardrailsConfig["provider"],
                         model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
+                        credentialRef: null,
                         baseURL: null,
                       }));
                     }}
+                    data-testid="gr-provider"
                   >
                     {MODEL_PROVIDERS.map((p) => (
                       <option key={p} value={p}>

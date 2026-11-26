@@ -7,7 +7,11 @@ import {
 } from "@langchain/core/messages";
 import logger from "@/api/lib/logger";
 import { historyDate } from "@/graph/history-dates";
-import { isMemoryHead } from "@/graph/markers";
+import {
+  isMemoryHead,
+  isUnranToolResult,
+  pairedResults,
+} from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { partsInTimezone } from "@/graph/time";
@@ -198,32 +202,25 @@ function toolCallsIn(
   sourceTools: readonly string[],
   turnsBackAt?: (index: number) => number,
 ): GroundingToolCall[] {
-  const results = new Map<string, { text: string; isError: boolean }>();
-  for (const m of turn) {
-    if (msgType(m) !== "tool") continue;
-    const tm = m as unknown as {
-      tool_call_id?: string;
-      content?: unknown;
-      status?: string;
-    };
-    if (tm.tool_call_id)
-      results.set(tm.tool_call_id, {
-        text: contentToText(tm.content as never),
-        isError: tm.status === "error",
-      });
-  }
+  // Paired per batch, an id-less call included (`pairedResults`). A call that never ran (called
+  // off, vetoed or held by the turn review) is no evidence: nothing happened.
+  const paired = pairedResults(turn);
   const sources = new Set(sourceTools);
   const out: GroundingToolCall[] = [];
   for (const [index, m] of turn.entries()) {
     if (msgType(m) !== "ai") continue;
     const calls = (
       m as unknown as {
-        tool_calls?: Array<{ name?: string; args?: unknown; id?: string }>;
+        tool_calls?: Array<{ name: string; args?: unknown; id?: string }>;
       }
     ).tool_calls;
     for (const c of calls ?? []) {
-      const res = c.id ? results.get(c.id) : undefined;
-      if (!res) continue;
+      const r = paired.get(c);
+      if (!r || isUnranToolResult(r)) continue;
+      const res = {
+        text: contentToText(r.content as never),
+        isError: (r as { status?: string }).status === "error",
+      };
       const name = c.name ?? "tool";
       out.push({
         name,

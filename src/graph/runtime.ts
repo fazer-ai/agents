@@ -1774,7 +1774,11 @@ async function runTurnBody(
     if (!handoffAnsweredTheTurn(handoffState)) return;
     const line = handoffState.customerMessage;
     try {
-      let guarded = await runGuardrail("output", line);
+      // A turn-review fallback already decided this turn's reply: the closing line is that reply, so
+      // the decision applies to it (silent sends nothing, template and handoff send the operator's
+      // text). The transfer has happened, so nothing is handed over again.
+      let guarded =
+        turnReview?.pending() ?? (await runGuardrail("output", line));
       // NOTE: A trip here drops the queued images too, as the main gate below does: a verdict on
       // this turn's customer-facing text applies to every artefact.
       if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;

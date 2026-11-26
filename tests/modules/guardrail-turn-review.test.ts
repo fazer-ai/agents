@@ -7,8 +7,10 @@ import {
 } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { turnReviewVetoToolResult } from "@/graph/markers";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
+import { groundingToolCalls } from "@/modules/guardrails/grounding";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
@@ -297,6 +299,36 @@ describe("what the reviewer reads", () => {
     const usr = String(user?.content);
     expect(usr).toContain("not yet run");
     expect(usr).toContain('- "agendar" with arguments: {"dia":"quarta"}');
+  });
+
+  // The bug it catches: a booking made by a call with no id read as no call at all, so a truthful
+  // confirmation is sent back for a redo that books again; and a vetoed call read as one that ran.
+  test("the turn's calls pair id-less results in their batch, and leave out the ones that never ran", () => {
+    const calls = groundingToolCalls(
+      [
+        new HumanMessage("Pode marcar terça às 10h?"),
+        new AIMessage({
+          content: "",
+          tool_calls: [
+            { name: "agendar", args: { dia: "terça" } },
+            { name: "transferir", args: {} },
+          ],
+        }),
+        new ToolMessage({
+          content: "agendado",
+          tool_call_id: "",
+          name: "agendar",
+        }),
+        turnReviewVetoToolResult(
+          { name: "transferir" },
+          "[Sistema] Revisão do turno: não rodou",
+        ),
+      ],
+      [],
+    );
+    expect(calls.map((c) => [c.name, c.result])).toEqual([
+      ["agendar", "agendado"],
+    ]);
   });
 
   test("a reply step names the tools the turn called, so a promise with no call shows", () => {

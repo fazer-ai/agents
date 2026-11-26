@@ -11944,6 +11944,94 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(sent).toEqual([[convId, "HANDOFF-OUT"]]);
         expect(toggles).toEqual([[convId, "open"]]);
       });
+
+      // A handoff flagged again past the attempts runs (a veto would only loop), and its closing line
+      // is the turn's reply: the fallback the review chose decides it, with no second transfer.
+      for (const [fallback, convId, expected] of [
+        ["silent", 7932, []],
+        ["template", 7933, ["TEMPLATE-OUT"]],
+      ] as const) {
+        test(`a flagged handoff past the attempts sends the ${fallback} fallback as its closing line`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback,
+                  },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          // Calls the handoff twice (the veto, then the call past the attempts), then says nothing.
+          let asked = 0;
+          const handingOver = {
+            async invoke() {
+              return new AIMessage("");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 2) return new AIMessage("");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "handoff_to_human",
+                        args: { customerMessage: "LINHA-DO-MODELO" },
+                        id: `h${Math.random()}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingWith(
+                JSON.stringify({
+                  violated: true,
+                  categories: ["turn_review"],
+                  rationale: "Pergunte o pedido antes.",
+                  suggestedReply: null,
+                }),
+                handingOver,
+              ),
+              makeClient: guardStub(sent, notes, toggles),
+              checkpointer: new MemorySaver(),
+            },
+          });
+          expect(sent.map(([, t]) => t)).toEqual([...expected]);
+          expect(toggles).toEqual([[convId, "open"]]);
+        });
+      }
     });
 
     // NOTE: Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only

@@ -289,7 +289,10 @@ export interface TurnReviewGate {
   reviewCall: (
     turn: BaseMessage[],
     call: { name: string; args: unknown },
-    opts?: { alongside: { name: string; args: unknown }[] },
+    opts?: {
+      alongside?: { name: string; args: unknown }[];
+      instructions?: string;
+    },
   ) => Promise<string | null>;
   // The graph's `reviewTurnReply`: the final reply, before the factual-grounding review and the send.
   // With `canRedo: false` (no model call left) a flagged reply meets the fallback at once, and the
@@ -297,7 +300,7 @@ export interface TurnReviewGate {
   reviewReply: (
     turn: BaseMessage[],
     reply: string,
-    opts?: { canRedo: boolean },
+    opts?: { canRedo: boolean; instructions?: string },
   ) => Promise<string | null>;
   // The fallback the caller's output gate applies, once the attempts ran out or a review held.
   pending: () => GuardrailDecision | null;
@@ -434,6 +437,8 @@ export function buildTurnReviewGate(
     turn: BaseMessage[],
     step: TurnStep,
     canRedo = true,
+    // The instructions the graph gave the model for this step; the stored prompt when absent.
+    instructions?: string,
   ): Promise<string | null> => {
     if (stopped || p.signal?.aborted) return null;
     const m = resolveModel();
@@ -455,7 +460,7 @@ export function buildTurnReviewGate(
       {
         now: groundingNow(p.clock.now, p.clock.timezone),
         timezone: p.clock.timezone,
-        instructions: p.systemPrompt,
+        instructions: instructions?.trim() ? instructions : p.systemPrompt,
         toolInstructions: p.toolGuidance,
         customPolicy: gr.customPolicy,
         conversation: groundingConversation(turn, TURN_REVIEW_CONTEXT_MESSAGES),
@@ -559,15 +564,25 @@ export function buildTurnReviewGate(
 
   return {
     reviewCall: (turn, call, opts) =>
-      review(turn, {
-        kind: "call",
-        name: call.name,
-        args: call.args,
-        alongside: opts?.alongside ?? [],
-      }),
+      review(
+        turn,
+        {
+          kind: "call",
+          name: call.name,
+          args: call.args,
+          alongside: opts?.alongside ?? [],
+        },
+        true,
+        opts?.instructions,
+      ),
     reviewReply: (turn, reply, opts) =>
       reply.trim()
-        ? review(turn, { kind: "reply", text: reply }, opts?.canRedo ?? true)
+        ? review(
+            turn,
+            { kind: "reply", text: reply },
+            opts?.canRedo ?? true,
+            opts?.instructions,
+          )
         : Promise.resolve(null),
     pending: () => decision,
     halted: () => held,

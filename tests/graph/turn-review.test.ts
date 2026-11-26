@@ -87,6 +87,15 @@ const transferir = tool(
   { name: "transferir", description: "transfere", schema: z.object({}) },
 );
 
+// The silence tool by name: the graph's silence readers key on it.
+const pularResposta = tool(
+  async () => {
+    ran.push("skip_reply");
+    return "ok";
+  },
+  { name: "skip_reply", description: "silêncio", schema: z.object({}) },
+);
+
 const CALL_NOTE = "[Sistema] Revisão do turno: NOTA-DA-CHAMADA";
 const REPLY_NOTE = "[Sistema] Revisão do turno: NOTA-DA-RESPOSTA";
 
@@ -102,7 +111,9 @@ async function run(
     halted?: () => boolean;
     stillWanted?: () => Promise<boolean>;
     grounding?: (reply: string) => string | null;
+    groundingReReview?: () => void;
     retrySilence?: () => boolean;
+    standingNotices?: string[];
   } = {},
 ) {
   ran.length = 0;
@@ -110,22 +121,32 @@ async function run(
   const replies: string[] = [];
   const canRedo: boolean[] = [];
   const alongside: string[][] = [];
+  const instructions: string[] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
     systemPrompt: "PROMPT",
     checkpointer: new MemorySaver(),
-    tools: [buscarPedido, consultarAgenda, transferir],
+    tools: [buscarPedido, consultarAgenda, transferir, pularResposta],
     recoversReply: opts.recoversReply,
     turnReviewHalted: opts.halted,
     stillWanted: opts.stillWanted,
     retrySilence: opts.retrySilence,
+    standingNotices: opts.standingNotices,
+    revisionPlan: opts.groundingReReview
+      ? () => ({
+          sourceTools: [],
+          maxToolCalls: 0,
+          review: async () => opts.groundingReReview?.(),
+        })
+      : undefined,
     reviewReply: opts.grounding
       ? async (_turn, reply) => opts.grounding?.(reply) ?? null
       : undefined,
     reviewCall: async (_turn, call, o) => {
       calls.push(call.name);
       alongside.push((o?.alongside ?? []).map((c) => c.name));
+      instructions.push(o?.instructions ?? "");
       return hooks.call?.(call.name) ?? null;
     },
     reviewTurnReply: async (_turn, reply, o) => {
@@ -148,6 +169,7 @@ async function run(
     replies,
     canRedo,
     alongside,
+    instructions,
   };
 }
 
@@ -214,6 +236,7 @@ describe("the turn review in the graph", () => {
       "buscar_pedido",
       "consultar_agenda",
       "transferir",
+      "skip_reply",
     ]);
     expect(
       model.seen[1]?.some(
@@ -443,5 +466,81 @@ describe("the turn review in the graph", () => {
       "Qual é o número do seu pedido?",
     ]);
     expect(text(messages.at(-1))).toBe("Qual é o número do seu pedido?");
+    // The retry carries the reviewer's note: the correction is not lost on the way.
+    expect(
+      model.seen[2]?.some(
+        (m) => m.getType() === "system" && text(m).includes(REPLY_NOTE),
+      ),
+    ).toBe(true);
+  });
+
+  test("a skip_reply the review vetoed is no declared silence, so a blank answer gets the silence retry", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "skip_reply" }] },
+      { text: "" },
+      { text: "Posso ajudar em mais alguma coisa?" },
+    ]);
+    const { messages } = await run(
+      model,
+      { call: (name) => (name === "skip_reply" ? CALL_NOTE : null) },
+      { retrySilence: () => true },
+    );
+    expect(ran).toEqual([]);
+    expect(model.seen).toHaveLength(3);
+    expect(text(messages.at(-1))).toBe("Posso ajudar em mais alguma coisa?");
+  });
+
+  test("the text beside a vetoed skip_reply is still a reply the runtime recovers, and it is reviewed", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Até logo!", calls: [{ name: "skip_reply" }] },
+      { text: "" },
+    ]);
+    const { replies, messages } = await run(
+      model,
+      { call: (name) => (name === "skip_reply" ? CALL_NOTE : null) },
+      { recoversReply: () => true },
+    );
+    expect(replies).toEqual(["Até logo!"]);
+    expect(replyWrittenThisTurn(messages)).toBe("Até logo!");
+  });
+
+  test("the reviewer judges against the instructions the graph gives the model, standing notices included", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "transferir" }] },
+      { text: "Pronto." },
+    ]);
+    const { instructions } = await run(
+      model,
+      {},
+      { standingNotices: ["[Sistema] AVISO-DO-TURNO"] },
+    );
+    expect(instructions).toEqual(["PROMPT\n\n[Sistema] AVISO-DO-TURNO"]);
+  });
+
+  test("a held review of a grounding rewrite stops grounding from reviewing it again", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Abre às 16h." },
+      { text: "Abre às 18h." },
+    ]);
+    let held = false;
+    let reReviewed = 0;
+    await run(
+      model,
+      {
+        reply: (r) => {
+          if (r === "Abre às 18h.") held = true;
+          return null;
+        },
+      },
+      {
+        grounding: (r) =>
+          r === "Abre às 16h." ? "[Sistema] NOTA-FACTUAL" : null,
+        groundingReReview: () => {
+          reReviewed++;
+        },
+        halted: () => held,
+      },
+    );
+    expect(reReviewed).toBe(0);
   });
 });

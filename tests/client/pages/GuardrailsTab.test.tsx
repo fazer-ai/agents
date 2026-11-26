@@ -358,6 +358,28 @@ describe("GuardrailsTab thresholds beside their checks", () => {
   });
 
   // The bug it catches: the setting reachable by REST and MCP only, or a choice that never reaches state.
+  // The bug it catches: a provider switch that keeps the old key, so a keyless compatible endpoint
+  // typed next receives the previous provider's vault key.
+  test("a provider switch clears the key and the typed endpoint picked for the old one", () => {
+    mount((c) => {
+      c.classifier = "chat";
+      c.provider = "openai-compatible";
+      c.credentialRef = "vault:1";
+      c.baseURL = "http://antigo.local/v1";
+    });
+    const select = document.querySelector<HTMLSelectElement>(
+      '[data-testid="gr-provider"]',
+    );
+    fireEvent.change(select as HTMLSelectElement, {
+      target: { value: "openrouter" },
+    });
+    expect([saved?.provider, saved?.credentialRef, saved?.baseURL]).toEqual([
+      "openrouter",
+      null,
+      null,
+    ]);
+  });
+
   test("the failure choice starts on pass and stores hold", () => {
     mount();
     const select = document.querySelector<HTMLSelectElement>(

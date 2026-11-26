@@ -2,7 +2,6 @@ import {
   AIMessage,
   type BaseMessage,
   RemoveMessage,
-  type ToolMessage,
 } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
@@ -18,6 +17,7 @@ import {
   isCalledOffToolResult,
   isNudgeTurn,
   isUnranToolResult,
+  pairedResults,
 } from "./markers";
 import {
   claimIngestWrite,
@@ -74,29 +74,12 @@ function isInertToolCall(
   return calls.every((c) => inert.has(c.name) || unran.has(c));
 }
 
-// The calls of a slice that never ran. A turn-review veto answers one call of a batch whose
-// siblings may have run, so it is read per call: by id, or, for a call a provider sent with no id
-// (its result then carries `""`), by name among the id-less results of its own batch, in order, so
-// a sibling with a result of its own that ran is never taken for it.
+// The calls of a slice that never ran, per call (`pairedResults`): a turn-review veto answers one
+// call of a batch whose siblings may have run.
 function unranCalls(slice: readonly BaseMessage[]): Set<ToolCall> {
   const out = new Set<ToolCall>();
-  slice.forEach((m, i) => {
-    if (m.getType() !== "ai") return;
-    const results: ToolMessage[] = [];
-    for (let j = i + 1; slice[j]?.getType() === "tool"; j++)
-      results.push(slice[j] as ToolMessage);
-    const byId = new Map(results.map((r) => [r.tool_call_id, r]));
-    const idless = results.filter((r) => !r.tool_call_id);
-    for (const c of (m as AIMessage).tool_calls ?? []) {
-      let result: ToolMessage | undefined;
-      if (c.id) result = byId.get(c.id);
-      else {
-        const k = idless.findIndex((r) => r.name === c.name);
-        if (k >= 0) [result] = idless.splice(k, 1);
-      }
-      if (result && isUnranToolResult(result)) out.add(c);
-    }
-  });
+  for (const [c, r] of pairedResults(slice))
+    if (isUnranToolResult(r)) out.add(c as ToolCall);
   return out;
 }
 

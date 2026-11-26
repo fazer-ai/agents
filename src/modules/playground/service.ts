@@ -469,12 +469,15 @@ async function buildPlaygroundGraph(params: {
   reviewCall?: (
     turn: BaseMessage[],
     call: { name: string; args: unknown },
-    opts?: { alongside: { name: string; args: unknown }[] },
+    opts?: {
+      alongside?: { name: string; args: unknown }[];
+      instructions?: string;
+    },
   ) => Promise<string | null>;
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
-    opts?: { canRedo: boolean },
+    opts?: { canRedo: boolean; instructions?: string },
   ) => Promise<string | null>;
   turnReviewHalted?: () => boolean;
 }) {

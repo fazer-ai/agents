@@ -448,6 +448,66 @@ export function turnReviewHeldToolResult(call: {
   });
 }
 
+// Whether a tool result is the turn review keeping its call from running: a veto, or a held batch.
+// Every reader that decides something from a call (silence, recovery, what the turn did, evidence)
+// reads such a call as one that never happened.
+export function isTurnReviewRefusal(message: BaseMessage): boolean {
+  return (
+    message.getType() === "tool" &&
+    (hasMarker(message, "turn_review_veto") ||
+      hasMarker(message, "turn_review_held"))
+  );
+}
+
+// Each tool call of a slice with the result that answers it: by id, or, for a call a provider sent
+// with no id (its result then carries `""`), by name among the id-less results of its own batch, in
+// order, so a sibling with a result of its own is never taken for it. The one pairing every reader of
+// call outcomes uses.
+export function pairedResults(
+  slice: readonly BaseMessage[],
+): Map<ToolCallLike, ToolMessage> {
+  const out = new Map<ToolCallLike, ToolMessage>();
+  // Read like `msgType` (./trace.ts): a message rebuilt from a checkpoint may carry only `_getType`.
+  const typeOf = (m: BaseMessage | undefined) => {
+    const t = m as
+      | { getType?: () => string; _getType?: () => string }
+      | undefined;
+    return t?.getType?.() ?? t?._getType?.() ?? "";
+  };
+  slice.forEach((m, i) => {
+    if (typeOf(m) !== "ai") return;
+    const results: ToolMessage[] = [];
+    for (let j = i + 1; typeOf(slice[j]) === "tool"; j++)
+      results.push(slice[j] as ToolMessage);
+    const byId = new Map(results.map((r) => [r.tool_call_id, r]));
+    const idless = results.filter((r) => !r.tool_call_id);
+    const calls =
+      (m as unknown as { tool_calls?: ToolCallLike[] }).tool_calls ?? [];
+    for (const c of calls) {
+      let result: ToolMessage | undefined;
+      if (c.id) result = byId.get(c.id);
+      else {
+        const k = idless.findIndex((r) => r.name === c.name);
+        if (k >= 0) [result] = idless.splice(k, 1);
+      }
+      if (result) out.set(c, result);
+    }
+  });
+  return out;
+}
+
+type ToolCallLike = { id?: string; name: string; args?: unknown };
+
+// The calls of a slice the turn review kept from running (`isTurnReviewRefusal`).
+export function callsRefusedByReview(
+  slice: readonly BaseMessage[],
+): Set<ToolCallLike> {
+  const out = new Set<ToolCallLike>();
+  for (const [c, r] of pairedResults(slice))
+    if (isTurnReviewRefusal(r)) out.add(c);
+  return out;
+}
+
 // Whether a tool result says its call never ran: called off, vetoed by the turn review, or refused
 // by a held review.
 export function isUnranToolResult(message: BaseMessage): boolean {

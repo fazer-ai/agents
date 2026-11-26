@@ -31,17 +31,18 @@ Every path that leaves a reply for the runtime reaches the review exactly once w
 | The final answer | yes | yes |
 | The silence retry's answer | yes, after the retry | yes |
 | A redo the review asked for | yes, again | yes, while attempts last |
-| A blank redo | gets the turn's one silence retry first, then its answer is reviewed | yes |
+| A blank redo | gets the turn's one silence retry first, built from the redo's request (its note kept, the flagged drafts out), then its answer is reviewed | yes |
 | The draft recovered beside an earlier call | yes, on the thread as delivery reads it | yes |
 | The recovered draft on the stalled exit | yes | no: a flagged one meets `fallback` |
 | A factual-grounding rewrite | yes, before grounding reviews it again | no: a flagged one meets `fallback`, and grounding skips its own review |
 | The fallback message | no: it is the operator's text | |
+| A handoff's closing line, when a fallback is pending | replaced by that fallback (silent sends nothing), with no second transfer | |
 
 The reactive turn and the playground pass the hooks. A proactive turn (follow-up, re-engagement) does not, so it keeps its behavior. Once the turn completed a transfer, nothing more is reviewed: the conversation is a person's.
 
 ## What the reviewer reads
 
-One system message with the policy (`TURN_REVIEW_SYSTEM_PROMPT`), the agent's resolved system prompt fenced in `<agent_instructions>`, the operator's per-tool guidance (`operatorToolGuidance` in `prepare.ts`: `handoff.instructions`, `kanban.instructions`, `toolGuidance`) fenced in `<tool_instructions>`, since it reaches the agent in the tool descriptions and not in the prompt, and the additional policy when there is one. One user message with `<now>`, the last 24 messages of the conversation (`<conversation_context>`, the same window as factual grounding), the calls with their results (`<tool_results>`, each result clipped to 8,000 characters), and the step (`<proposed_step>`): the call with its arguments, or the reply with the names of the tools the turn called. A call is shown with the writes of the same step already admitted, listed as not yet run, so two bookings in one batch are judged together. Tag-like text inside any block is stripped, so a message cannot close a fence.
+One system message with the policy (`TURN_REVIEW_SYSTEM_PROMPT`), the instructions the graph gives the model fenced in `<agent_instructions>` (its system prompt, MCP server instructions included, and the turn's standing notices, such as a document waiting on approval, handed to the hooks as `instructions`; the agent's stored prompt when absent), the operator's per-tool guidance (`operatorToolGuidance` in `prepare.ts`: `handoff.instructions`, `kanban.instructions`, `toolGuidance`) fenced in `<tool_instructions>`, since it reaches the agent in the tool descriptions and not in the prompt, and the additional policy when there is one. One user message with `<now>`, the last 24 messages of the conversation (`<conversation_context>`, the same window as factual grounding), the calls with their results (`<tool_results>`, each result clipped to 8,000 characters), and the step (`<proposed_step>`): the call with its arguments, or the reply with the names of the tools the turn called. A call is shown with the writes of the same step already admitted, listed as not yet run, so two bookings in one batch are judged together. Tag-like text inside any block is stripped, so a message cannot close a fence.
 
 The verdict is the shared guardrail JSON (`VERDICT_SCHEMA`), and the rationale is one sentence addressed to the agent, in the conversation's language, saying what to do instead. The policy flags only a step that does what the instructions forbid or skips what they require in that situation. Style, tone, wording and anything left to the agent's judgment are not violations, and the prompt says to not flag when in doubt.
 
@@ -52,6 +53,8 @@ The verdict is the shared guardrail JSON (`VERDICT_SCHEMA`), and the rationale i
 - `revise`, a flagged reply: the draft never reaches the thread. The graph asks the model again with the note as a late system message quoting the draft, bound to the whole toolset, so a reply that promised a transfer can now make the call. A call in the new answer goes to the tools node and is reviewed there. A new reply is reviewed again.
 
 Each step sent back spends one attempt. Once they are spent, the next flagged step stops the review for the rest of the turn: a call runs as written, and the turn's reply meets `fallback` through the caller's output step (`pending()`), ahead of the factual-grounding decision and in place of the moderation screening, as a grounding `template` or `handoff` does. Once that decision is pending, the factual-grounding review of the reply is skipped, since nobody would read its rewrite. A call past the limit is let through because a veto would only loop: the model reads the note and calls again.
+
+Every reader that decides something from a call honors these markers through one pairing (`pairedResults` and `callsRefusedByReview` in `src/graph/markers.ts`): a `skip_reply` the review refused is no declared silence (`calledSkipThisTurn`, and `replyWrittenThisTurn` still recovers the text beside it), a refused call is not an act (`turnActedBeforeItsReply`, `actedToolNames`), and it is no evidence for either reviewer (`groundingToolCalls`, which also pairs a completed call with no id in its batch). A held review on a grounding rewrite also stops grounding from reviewing that rewrite again.
 
 The held refusals are errors (`status: "error"`) like the veto, so a refused read never reads as a source that answered. Vetoes and holds on a call a provider sent with no id are matched by name inside their batch.
 

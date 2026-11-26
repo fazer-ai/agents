@@ -838,7 +838,7 @@ describe("the turn review in the graph", () => {
         maxHistoryTokens: 20,
       },
     );
-    const seen = customerTurn(replyTurns[0] ?? []);
+    const seen = customerTurn(replyTurns[0] ?? []).messages;
     expect(seen).toEqual([long.trim(), "ESCLARECIMENTO"]);
   });
 

@@ -12015,6 +12015,101 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(toggles).toEqual([[convId, "open"]]);
       });
 
+      // The bug it catches: the held review's private note went out as the review answered, before
+      // delivery read ownership again, so a turn that lost the conversation left the note behind.
+      for (const [lostAtDelivery, convId] of [
+        [false, 7961],
+        [true, 7962],
+      ] as const)
+        test(`the held review's note ${lostAtDelivery ? "is not posted when the turn lost the conversation after the review" : "is posted once the fallback passes the fence"}`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  onFailure: "hold",
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: { enabled: true, action: "revise" },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          const writer = {
+            async invoke() {
+              return new AIMessage("sem ferramentas");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "private_note",
+                        args: { content: "NOTA-DO-AGENTE" },
+                        id: `c${Math.random()}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          try {
+            await runAgentTurn({
+              tenantId: gTenantId,
+              instanceId: gInstanceId,
+              agentBotId: G_BOT,
+              event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+              base: appDb,
+              deps: {
+                makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+                  cfg.model === GUARD_MODEL
+                    ? guardrailModel(async () => {
+                        // Switched off while the review ran: every later fence read says lost.
+                        if (lostAtDelivery)
+                          await suDb.agent.update({
+                            where: { id: gAgentId },
+                            data: { enabled: false },
+                          });
+                        throw new Error("revisor fora");
+                      })
+                    : writer,
+                makeClient: guardStub(sent, notes, toggles),
+                checkpointer: new MemorySaver(),
+              },
+            });
+          } finally {
+            await suDb.agent.update({
+              where: { id: gAgentId },
+              data: { enabled: true },
+            });
+          }
+          const guardNotes = notes.filter(([, n]) => n.startsWith("Guardrail"));
+          if (lostAtDelivery) {
+            expect(guardNotes).toEqual([]);
+            expect(sent).toEqual([]);
+          } else {
+            expect(guardNotes).toHaveLength(1);
+            expect(sent).toEqual([[convId, "HANDOFF-OUT"]]);
+          }
+        });
+
       // A call still flagged past the attempts does not run, a handoff included: the batch is
       // refused with the held marker, no further generation is asked, and the fallback ends the
       // turn through the output gate's own path, the one an output trip takes. Only the `handoff`

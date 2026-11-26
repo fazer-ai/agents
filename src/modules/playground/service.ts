@@ -109,6 +109,7 @@ import {
   screenedText,
 } from "@/modules/guardrails/gate";
 import { buildGroundingGate } from "@/modules/guardrails/grounding-gate";
+import { buildTurnReviewGate } from "@/modules/guardrails/turn-review";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
@@ -463,6 +464,15 @@ async function buildPlaygroundGraph(params: {
   reviewReply?: (turn: BaseMessage[], reply: string) => Promise<string | null>;
   revisionPlan?: () => RevisionPlan | null;
   onReplyRevised?: (text: string) => void;
+  // The turn review, built by the caller from the config it resolved.
+  reviewCall?: (
+    turn: BaseMessage[],
+    call: { name: string; args: unknown },
+  ) => Promise<string | null>;
+  reviewTurnReply?: (
+    turn: BaseMessage[],
+    reply: string,
+  ) => Promise<string | null>;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -532,6 +542,8 @@ async function buildPlaygroundGraph(params: {
     reviewReply: params.reviewReply,
     revisionPlan: params.revisionPlan,
     onReplyRevised: params.onReplyRevised,
+    reviewCall: params.reviewCall,
+    reviewTurnReply: params.reviewTurnReply,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -986,6 +998,25 @@ async function runPlaygroundTurnOnce(
         langfuseCfg: loadedConfig.langfuseCfg,
       })
     : null;
+  // The same turn review the inbox runs, with its rows in the trace like grounding's.
+  const turnReview = screensThisTurn(params)
+    ? buildTurnReviewGate({
+        cfg: loadedConfig.guardrails,
+        reviewer: loadedConfig.turnReviewer,
+        systemPrompt: loadedConfig.systemPrompt,
+        flow,
+        logValues: loadedConfig.logToolValues,
+        announce: (r) => {
+          gTrace.push(traceGuardrail(r));
+        },
+        clock: {
+          now: loadedConfig.promptOpts.now,
+          timezone: loadedConfig.timezone,
+        },
+        makeModel: params.deps?.makeModel,
+        langfuseCfg: loadedConfig.langfuseCfg,
+      })
+    : null;
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
       ctx,
@@ -1000,6 +1031,8 @@ async function runPlaygroundTurnOnce(
       reviewReply: grounding?.review,
       revisionPlan: grounding?.revisionPlan,
       onReplyRevised: grounding?.revised,
+      reviewCall: turnReview?.reviewCall,
+      reviewTurnReply: turnReview?.reviewReply,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,
@@ -1232,7 +1265,8 @@ async function runPlaygroundTurnOnce(
   }
   // A grounding decision stands even with no text: a revise that came back empty is what sets it.
   // Hand-overs are simulated here, so there is no transfer for it to yield to.
-  const groundingTrip = grounding?.pending() ?? null;
+  // The turn review's fallback stands ahead of grounding's, as in the inbox.
+  const groundingTrip = turnReview?.pending() ?? grounding?.pending() ?? null;
   const outGuard: GuardrailDecision = groundingTrip
     ? groundingTrip
     : raw

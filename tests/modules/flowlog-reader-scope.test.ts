@@ -240,6 +240,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/guardrail-health.test.ts": 1,
   "tests/modules/guardrail-observe.test.ts": 1,
   "tests/modules/guardrail-on-failure.test.ts": 1,
+  "tests/modules/guardrail-turn-review.test.ts": 1,
   "tests/modules/guardrail-unchecked-line.test.ts": 1,
   // NOTE: One reader answering both directions on the same query: the line that names a colleague's reply
   // nobody remembered, and its absence on the customer's own lost ingestion, which keeps the report

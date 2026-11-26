@@ -1,6 +1,6 @@
 # Factual grounding
 
-An output check of the guardrails (`guardrails.factualGrounding`). Before a reply goes out, a reviewer model compares it with what the agent's tools returned in that turn and with the recent conversation, and lists the claims the tool results do not support. Off by default.
+An output check of the guardrails (`guardrails.factualGrounding`). Before a reply goes out, a reviewer model compares it with what the agent's tools returned in that turn and with the recent conversation, and lists the claims the tool results do not support. Off by default. Whether the turn's actions follow the agent's instructions is a different question, judged by the [turn review](turn-review.md), which runs on the reply before this check.
 
 Code: `src/modules/guardrails/grounding.ts` (what the reviewer reads, the prompt, the verdict), `src/modules/guardrails/grounding-gate.ts` (when it runs, the flow line, what each action leaves behind), the `reviewReply` hook in `src/graph/graph.ts`, and its two callers, `src/graph/runtime.ts` and `src/modules/playground/service.ts`.
 

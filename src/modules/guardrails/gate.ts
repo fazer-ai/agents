@@ -30,6 +30,7 @@ import type { FACTUAL_GROUNDING_KEY, GroundingClaim } from "./grounding";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
+import type { TURN_REVIEW_KEY } from "./turn-review";
 
 // The moderation gate both runtimes call, one unit so the reactive and proactive (follow-up) paths
 // cannot drift. `GuardrailDecision` is what one screening DID, as a single union: separate flags for
@@ -117,7 +118,7 @@ export interface GuardrailReport {
   // As CARRIED OUT, and only on a trip. See the note on `effectiveAction` below.
   action?: GuardrailAction | "revise";
   // Set on a report of the factual-grounding check (./grounding-gate.ts), with the claims it found.
-  check?: typeof FACTUAL_GROUNDING_KEY;
+  check?: typeof FACTUAL_GROUNDING_KEY | typeof TURN_REVIEW_KEY;
   claims?: GroundingClaim[];
   // Model-written, and only on a trip.
   categories?: string[];

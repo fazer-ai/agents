@@ -89,6 +89,7 @@ import {
   applyGuardrailHandoff,
   GuardrailHandoffFailedError,
 } from "@/modules/guardrails/handoff";
+import { buildTurnReviewGate } from "@/modules/guardrails/turn-review";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import {
@@ -1240,7 +1241,38 @@ async function runTurnBody(
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });
+  // The turn review, asked by the graph on each write call before it runs and on the final answer.
+  // Its fallback waits in `pending()` for the output gate below, ahead of the factual-grounding one.
+  const turnReview = buildTurnReviewGate({
+    cfg: loaded.guardrails,
+    reviewer: loaded.turnReviewer,
+    systemPrompt: loaded.systemPrompt,
+    flow,
+    logValues: loaded.logToolValues,
+    announce: async (r) => {
+      turnErrors.guardrail(r);
+      await chatwootNoteSink(client, conversationId)(r);
+    },
+    clock: { now: loaded.promptOpts.now, timezone: loaded.timezone },
+    makeModel: params.deps?.makeModel,
+    signal: params.signal,
+    persistUsage: params.deps?.persistUsage,
+    langfuseCfg: loaded.langfuseCfg,
+  });
   const graph = await buildModelAndGraph(loaded, tools, {
+    // After a completed transfer nothing is reviewed: the conversation is a person's now.
+    reviewCall: turnReview
+      ? (turn, call) =>
+          handoffState.completed
+            ? Promise.resolve(null)
+            : turnReview.reviewCall(turn, call)
+      : undefined,
+    reviewTurnReply: turnReview
+      ? (turn, reply) =>
+          handoffState.completed
+            ? Promise.resolve(null)
+            : turnReview.reviewReply(turn, reply)
+      : undefined,
     // A completed transfer answers the turn (or silences it) and the model's text is dropped,
     // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
     reviewReply: grounding
@@ -2607,9 +2639,11 @@ async function runTurnBody(
       // A factual-grounding trip under `template` or `handoff` (or a revise that wrote nothing)
       // decides the reply in place of the screening, unless a transfer completed, with its own line
       // or with none: the conversation is a person's now, and nothing of the model's goes out.
+      // A turn-review fallback comes first: it judged the step, the grounding check only its facts, and
+      // only one of the two decides the reply.
       const groundingTrip = handoffState.completed
         ? null
-        : grounding?.pending();
+        : (turnReview?.pending() ?? grounding?.pending());
       const outGuard =
         groundingTrip ??
         (screened ? await runGuardrail("output", screened) : null);

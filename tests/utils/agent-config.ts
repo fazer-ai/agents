@@ -62,6 +62,7 @@ export function makeConfig(
     guardrailsExternalSecret: null,
     guardrailsExternalSecretMissing: false,
     groundingReviewer: null,
+    turnReviewer: null,
     groundingReference: null,
     transferWithSummary: false,
     nativeToolsAllow: undefined,

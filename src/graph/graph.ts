@@ -54,6 +54,7 @@ import {
   droppedCallCount,
   droppedCallsStamp,
 } from "./markers";
+import { setAsideReviewedCalls } from "./reviewed-calls";
 import {
   admitRevisionCalls,
   type RevisionInfo,
@@ -223,6 +224,18 @@ export interface BuildAgentGraphParams {
   // an empty answer (the runtime's recovery). Absent means it would not, and that text is not
   // reviewed: only what goes out is.
   recoversReply?: () => boolean;
+  // The turn review (modules/guardrails/turn-review.ts). `reviewCall` is asked in the tools node for
+  // each write call of a step, before it runs: a note back answers the call without running it, and
+  // the turn goes on. `reviewTurnReply` is asked on the final answer, before `reviewReply`: a note
+  // back asks the model once more with it and the whole toolset, so it can make the call it skipped.
+  reviewCall?: (
+    turn: BaseMessage[],
+    call: { name: string; args: unknown },
+  ) => Promise<string | null>;
+  reviewTurnReply?: (
+    turn: BaseMessage[],
+    reply: string,
+  ) => Promise<string | null>;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -765,6 +778,8 @@ export function buildAgentGraph({
   revisionPlan,
   onReplyRevised,
   recoversReply,
+  reviewCall,
+  reviewTurnReply,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -1226,6 +1241,28 @@ export function buildAgentGraph({
     }
     // NOTE: from here on a `—` is the empty answer: the review below must not take it as a candidate.
     if (fillerOnly(response)) response = withoutText(response);
+    // NOTE: the turn review of the final answer, before the factual-grounding one. A note asks the model
+    // again with the whole toolset: a reply that promised a transfer can now make it, and the draft
+    // never reaches the thread. A redone reply is reviewed again, a call goes to the tools node, and
+    // the gate stops sending notes once its attempts are spent.
+    while (reviewTurnReply && !noReplyChannel && !silentTurn) {
+      if (((response as AIMessage).tool_calls?.length ?? 0) > 0) break;
+      const draft = customerFacingReply(
+        contentToText(response.content).trim(),
+      ).text;
+      const note = draft
+        ? await reviewTurnReply([...history, response], draft)
+        : null;
+      if (!note) break;
+      response = await ask(
+        lateSystemAccepted
+          ? [...messages, new SystemMessage(note)]
+          : [new SystemMessage(`${prompt}\n\n${note}`), ...shown, ...wrapUp],
+      );
+      if (fillerOnly(response)) response = withoutText(response);
+      if (((response as AIMessage).tool_calls?.length ?? 0) > 0)
+        return { messages: [...narration, silenced(response)] };
+    }
     // The factual-grounding review's candidate, on a turn that answers somebody and did not decide
     // silence: the final text, or, when that is empty, the reply written beside an earlier call that
     // the runtime recovers and delivers (`replyWrittenThisTurn`). A revise note travels like the
@@ -1334,6 +1371,12 @@ export function buildAgentGraph({
   let endedOnWrites = false;
   const toolNode = hasTools ? new ToolNode(tools) : null;
   const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));
+  // A call the turn review judges: one to a tool of the set that is not a read. A name the toolset
+  // does not have is answered with an error by `ToolNode`, so there is nothing to judge.
+  const isWriteName = (name: string): boolean => {
+    const t = toolsByName.get(name);
+    return t !== undefined && !isReadTool(t);
+  };
 
   // An observation ends after a step of writes alone, every one accepted: its client is muted, so the
   // closing model call could only write text nobody receives, and it resends the whole window to do
@@ -1454,7 +1497,20 @@ export function buildAgentGraph({
             : config;
           const before = noEffectCount?.() ?? 0;
           const contradicted = setAsideContradictedHandoffs(serverView);
-          if (!contradicted) {
+          // A handoff set aside is a call that did not run, so the turn goes on.
+          if (contradicted)
+            onContradictedHandoff?.({ calls: contradicted.answers.length });
+          // The turn review's veto, on what is left to run. A revision round runs only the sources it
+          // admitted, which are reads, so it has nothing to review.
+          const reviewed =
+            reviewCall && !revision
+              ? await setAsideReviewedCalls(
+                  contradicted?.view ?? serverView,
+                  isWriteName,
+                  reviewCall,
+                )
+              : null;
+          if (!contradicted && !reviewed) {
             // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
             const ran = await toolNode!.invoke(serverView, heard);
             const last = serverView.messages.at(-1) as AIMessage;
@@ -1475,14 +1531,19 @@ export function buildAgentGraph({
               ? { messages: [...asideAnswers, ...ran.messages] }
               : ran;
           }
-          // A handoff set aside is a call that did not run, so the turn goes on.
-          onContradictedHandoff?.({ calls: contradicted.answers.length });
-          // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-          const ran = await toolNode!.invoke(contradicted.view, heard);
+          // biome-ignore lint/style/noNonNullAssertion: one of the two set something aside.
+          const view = (reviewed ?? contradicted)!.view;
+          const left = (view.messages.at(-1) as AIMessage).tool_calls ?? [];
+          const ran =
+            left.length > 0
+              ? // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
+                await toolNode!.invoke(view, heard)
+              : { messages: [] as BaseMessage[] };
           return {
             messages: [
               ...asideAnswers,
-              ...contradicted.answers,
+              ...(contradicted?.answers ?? []),
+              ...(reviewed?.answers ?? []),
               ...ran.messages,
             ],
           };

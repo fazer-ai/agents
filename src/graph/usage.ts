@@ -294,6 +294,8 @@ const IS_AGENT_TURN = {
   // The factual-grounding reviewer (modules/guardrails/grounding-gate.ts), inside the reply turn it
   // reviews. Its own node so its rate and cost read apart from the moderation calls.
   guardrail_grounding: true,
+  // The turn reviewer (modules/guardrails/turn-review.ts), inside the turn whose steps it judges.
+  guardrail_turn_review: true,
   tts_normalize: true,
   // The `customer_choice` precondition's judge, inside the turn whose tool call it decides. Not a turn
   // of its own: the reactive turn and the nudge that call it bill their own `agent`/`nudge` row, and

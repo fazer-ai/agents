@@ -113,8 +113,8 @@ const SETTINGS_DESC_CEILING = 2_000;
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
 // tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 38_550
-// with `calls`, `setLabels.removal`, the writable list, per-kind templates, `customer_choice`, `choiceCheck`; 38_660 with `conversationNotes`; 38_752 with `conversationNotes.errors` and both kinds on one format enum; 36_958 with the dialect and the empty `additionalProperties` left out of every listed schema (src/modules/mcp/tool-listing.ts); 37_891 with `guardrails.factualGrounding`, its descriptions cut to what the schema does not say; 38_005 with its reference bases, published with no description; 38_193 with the rewrite's `reviseWithTools` and `reviseMaxToolCalls`; 38_253 with the cap's range up to the agent's `limits.maxToolCalls`; 38_435 with `observability.fullDetailRetentionDays`; 38_738 with the contact gate rule's `effect`, declared on each top-level shape because the argument parse drops an undeclared key.
-const SETTINGS_SCHEMA_CEILING = 38_740;
+// with `calls`, `setLabels.removal`, the writable list, per-kind templates, `customer_choice`, `choiceCheck`; 38_660 with `conversationNotes`; 38_752 with `conversationNotes.errors` and both kinds on one format enum; 36_958 with the dialect and the empty `additionalProperties` left out of every listed schema (src/modules/mcp/tool-listing.ts); 37_891 with `guardrails.factualGrounding`, its descriptions cut to what the schema does not say; 38_005 with its reference bases, published with no description; 38_193 with the rewrite's `reviseWithTools` and `reviseMaxToolCalls`; 38_253 with the cap's range up to the agent's `limits.maxToolCalls`; 38_435 with `observability.fullDetailRetentionDays`; 38_738 with the contact gate rule's `effect`, declared on each top-level shape because the argument parse drops an undeclared key.; 39_231 with `guardrails.turnReview`
+const SETTINGS_SCHEMA_CEILING = 39_240;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -225,8 +225,8 @@ describe("MCP tool descriptions", () => {
   // 73_442 with the rewrite's `reviseWithTools` and `reviseMaxToolCalls`; 73_502 with the cap's range up
   // to `limits.maxToolCalls`; 73_684 with `observability.fullDetailRetentionDays`; 73_987 with the contact gate rule's `effect`;
   // 74_137 with `exclude_events` on the alert channel writes; 74_221 with the tenant's Langfuse
-  // `sample_rate`; 74_270 with `until` and `tz` on metrics_timeseries).
-  const totals = { desc: 34_050, schema: 74_280 };
+  // `sample_rate`; 74_270 with `until` and `tz` on metrics_timeseries; plus the 485 of `guardrails.turnReview` measured on Full).
+  const totals = { desc: 34_050, schema: 74_770 };
 
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema

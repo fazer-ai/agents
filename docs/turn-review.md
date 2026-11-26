@@ -1,0 +1,51 @@
+# Turn review
+
+A guardrails check of the agent's own steps (`guardrails.turnReview`). Before a write tool call runs, and before the final reply is sent, the guardrails chat model judges that one step against the agent's instructions and `guardrails.customPolicy`. Under `revise` a flagged step goes back to the agent with the reviewer's reason, so it can fix what it did inside the same turn. Off by default.
+
+It exists because the output checks judge the reply after the turn is over, when every call has already run. What goes wrong in a turn is often an action: a handoff before the question the instructions require, a handoff of a question a search of the same turn answered, a reply that promises a transfer no call made, an answer to a subject the instructions send to a person. `prompt_adherence` sees these but can only replace the reply. [Factual grounding](factual-grounding.md) has the same shape for one question (is the claim backed by a source?), and this check follows it.
+
+Code: `src/modules/guardrails/turn-review.ts` (what the reviewer reads, the prompt, the gate), `src/graph/reviewed-calls.ts` (the veto at the tool boundary), the `reviewCall` and `reviewTurnReply` hooks in `src/graph/graph.ts`, and their two callers, `src/graph/runtime.ts` and `src/modules/playground/service.ts`.
+
+## Settings
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Needs `guardrails.enabled` too. Independent of `output.enabled`. |
+| `action` | `observe` | `observe` (record the verdict, the step goes on) or `revise` (send the step back). |
+| `maxAttempts` | `1` | `revise` only. Steps sent back per turn, 1 to 3 (`GUARDRAIL_RANGES.turnReviewMaxAttempts`). |
+| `fallback` | `handoff` | `revise` only. What the turn's reply becomes once the attempts are spent and a step is flagged again: `handoff` (`output.handoffMessage` and a transfer), `template` (`output.templateMessage`) or `silent` (nothing is sent). |
+
+The reviewer has no model of its own: it is the guardrails chat model with its key (`turnReviewer` in `prepare.ts`), whichever classifier screens. The console draws the block in the Guardrails tab (section `gr-turn-review`). REST (`PATCH /v1/agents/:id`) and MCP (`agent_settings_set`) write it through the same schema.
+
+The block is its own and not a new value of `output.action`: every reader of `GuardrailAction` keeps its meaning, and `observe` lets an operator measure the rate on real traffic before letting the check act, as factual grounding does.
+
+## When a step is reviewed
+
+- **A write call**, in the graph's `tools` node, after the contradicted-handoff veto and before `ToolNode` runs. A write is a call to a tool of the set that is not a read (`isReadTool`, `src/graph/tools/reads.ts`): the native actions, `handoff_to_human`, `skip_reply`, an HTTP tool with a method other than GET. Reads (an HTTP GET, an MCP or integration tool, `search_knowledge`, the code tools, a utility native) are never reviewed. Each write of a step is reviewed in the order the model wrote it. A call that already has an answer in the thread is left alone, and a factual-grounding revision round, which runs only the sources it admitted, is not reviewed.
+- **The final reply**, in the agent node, after the filler cleanup and before the factual-grounding review. Only a turn that answers somebody: no reply channel, a silent turn, or an answer with tool calls is not a candidate, and an empty customer-facing text is not reviewed.
+
+The reactive turn and the playground pass the hooks. A proactive turn (follow-up, re-engagement) does not, so it keeps its behavior. Once the turn completed a transfer, nothing more is reviewed: the conversation is a person's.
+
+## What the reviewer reads
+
+One system message with the policy (`TURN_REVIEW_SYSTEM_PROMPT`), the agent's resolved system prompt fenced in `<agent_instructions>`, and the additional policy when there is one. One user message with `<now>`, the last 24 messages of the conversation (`<conversation_context>`, the same window as factual grounding), the calls with their results (`<tool_results>`, each result clipped to 8,000 characters), and the step (`<proposed_step>`): the call with its arguments, or the reply with the names of the tools the turn called. Tag-like text inside any block is stripped, so a message cannot close a fence.
+
+The verdict is the shared guardrail JSON (`VERDICT_SCHEMA`), and the rationale is one sentence addressed to the agent, in the conversation's language, saying what to do instead. The policy flags only a step that does what the instructions forbid or skips what they require in that situation. Style, tone, wording and anything left to the agent's judgment are not violations, and the prompt says to not flag when in doubt.
+
+## Actions
+
+- `observe`: the step goes on as written. The flow line and the trace carry the verdict.
+- `revise`, a flagged call: the call does not run. `ToolMessage` answers it with a note (`turnReviewNote`, Portuguese like the other agent-facing notes) saying the call was not executed and why, and the model continues the turn. A read in the same step still runs.
+- `revise`, a flagged reply: the draft never reaches the thread. The graph asks the model again with the note as a late system message quoting the draft, bound to the whole toolset, so a reply that promised a transfer can now make the call. A call in the new answer goes to the tools node and is reviewed there. A new reply is reviewed again.
+
+Each step sent back spends one attempt. Once they are spent, the next flagged step stops the review for the rest of the turn: a call runs as written, and the turn's reply meets `fallback` through the caller's output step (`pending()`), ahead of the factual-grounding decision and in place of the moderation screening, as a grounding `template` or `handoff` does. A call past the limit is let through because a veto would only loop: the model reads the note and calls again.
+
+A review that fails (no key, an unusable model, an error, an unreadable answer) lets the step through with a warn line, unless `guardrails.onFailure` is `hold` and the action is not `observe`. Then the turn stops reviewing and the conversation is handed over.
+
+## Logs
+
+One `guardrail` line per review, `check: "turn_review"`, with `step` (`call` or `reply`), `tool` on a call, `verdict` (`clean` or `violated`), `latencyMs`, `inputTokens` and `outputTokens`. A flagged step is `warn` and carries `action`, and under `revise` `outcome` (`revised` with the `attempt` number, or `exhausted` with the fallback as `action`). The rationale is logged only with `logToolValues` on (scrubbed, 500 characters), otherwise only its length (`rationaleChars`). A failed review writes `outcome` (`credential_not_found`, `model_unavailable`, `analysis_failed`) with `unchecked: true`, or `held: true` under `hold`. The playground trace shows each review as a guardrail row.
+
+## Cost
+
+One reviewer call per reviewed step, billed on its own ledger node, `guardrail_turn_review`, under the guardrails model, and covered by the turn's spend gate. A turn with two writes and a reply pays three calls. Plus one agent generation for each step sent back. The system message is the same bytes on every review of the agent while its prompt does not change, so providers that cache a prefix read it from the cache.

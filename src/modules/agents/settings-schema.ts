@@ -72,6 +72,8 @@ import {
   isExternalCheckUrl,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
+  TURN_REVIEW_ACTIONS,
+  TURN_REVIEW_FALLBACKS,
 } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import {
@@ -1193,6 +1195,21 @@ const guardrails = z
       })
       .optional()
       .describe("reviews the reply against recent source results"),
+    turnReview: z
+      .looseObject({
+        enabled: z.boolean().optional(),
+        action: oneOf(TURN_REVIEW_ACTIONS)
+          .optional()
+          .describe("revise sends a flagged step back to the agent"),
+        maxAttempts: ranged(GUARDRAIL_RANGES.turnReviewMaxAttempts).optional(),
+        fallback: oneOf(TURN_REVIEW_FALLBACKS)
+          .optional()
+          .describe("acts on the reply once maxAttempts is spent"),
+      })
+      .optional()
+      .describe(
+        "judges each write call and the final reply against the agent's instructions before they take effect",
+      ),
     onFailure: oneOf(GUARDRAIL_FAILURE_MODES)
       .optional()
       .describe(

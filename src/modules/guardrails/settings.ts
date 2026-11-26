@@ -148,6 +148,7 @@ export interface GuardrailsConfig {
   onFailure: GuardrailFailureMode;
   external: GuardrailExternalConfig;
   factualGrounding: GuardrailGroundingConfig;
+  turnReview: GuardrailTurnReviewConfig;
 }
 
 // What a factual-grounding trip does. `revise` gives the agent one more generation with the claims the
@@ -186,6 +187,31 @@ export interface GuardrailGroundingConfig {
 export const MAX_SOURCE_TOOLS = 50;
 export const MAX_REFERENCE_KNOWLEDGE_BASES = 20;
 const MAX_TOOL_NAME_LEN = 128;
+
+// What a turn-review trip does (./turn-review.ts, docs/turn-review.md). `observe` records the verdict
+// and lets the step happen. `revise` sends the step back to the agent with the reviewer's reason: a
+// write call does not run, and a reply is not sent. Past `maxAttempts` in one turn, `fallback` acts on
+// the reply with the Output direction's messages.
+export type TurnReviewAction = "observe" | "revise";
+export const TURN_REVIEW_ACTIONS: readonly TurnReviewAction[] = [
+  "observe",
+  "revise",
+];
+export type TurnReviewFallback = "template" | "silent" | "handoff";
+export const TURN_REVIEW_FALLBACKS: readonly TurnReviewFallback[] = [
+  "handoff",
+  "template",
+  "silent",
+];
+
+// The review of each step the agent is about to take (a write tool call, the final reply) against
+// its own instructions and `customPolicy`, by the guardrails chat model, before the step takes effect.
+export interface GuardrailTurnReviewConfig {
+  enabled: boolean;
+  action: TurnReviewAction;
+  maxAttempts: number;
+  fallback: TurnReviewFallback;
+}
 
 // An endpoint the operator runs that judges a reply before it is delivered (./external.ts). Active
 // when guardrails are on and `url` is set; a block fires the output direction's action.
@@ -265,6 +291,12 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     model: "",
     credentialRef: null,
     baseURL: null,
+  },
+  turnReview: {
+    enabled: false,
+    action: "observe",
+    maxAttempts: 1,
+    fallback: "handoff",
   },
 };
 
@@ -479,6 +511,25 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
   };
 }
 
+function readTurnReview(v: unknown): GuardrailTurnReviewConfig {
+  const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  const d = GUARDRAILS_DEFAULTS.turnReview;
+  return {
+    enabled: bool(b.enabled, d.enabled),
+    action: TURN_REVIEW_ACTIONS.includes(b.action as TurnReviewAction)
+      ? (b.action as TurnReviewAction)
+      : d.action,
+    maxAttempts: clampToRange(
+      b.maxAttempts,
+      GUARDRAIL_RANGES.turnReviewMaxAttempts,
+      d.maxAttempts,
+    ),
+    fallback: TURN_REVIEW_FALLBACKS.includes(b.fallback as TurnReviewFallback)
+      ? (b.fallback as TurnReviewFallback)
+      : d.fallback,
+  };
+}
+
 // The keys the reviewer may run on: its own credential's, and the guardrails chat model's (the model
 // it inherits from). "" when a credential is not configured or did not resolve.
 export interface GroundingReviewerKeys {
@@ -596,5 +647,6 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     onFailure: bag.onFailure === "hold" ? "hold" : "pass",
     external: readExternal(bag.external),
     factualGrounding: readGrounding(bag.factualGrounding),
+    turnReview: readTurnReview(bag.turnReview),
   };
 }

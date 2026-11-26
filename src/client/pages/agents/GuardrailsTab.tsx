@@ -1,5 +1,6 @@
 import {
   FileSearch,
+  ListChecks,
   MessageCircle,
   Send,
   ShieldCheck,
@@ -51,6 +52,10 @@ import {
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
   readCompetitors,
+  TURN_REVIEW_ACTIONS,
+  TURN_REVIEW_FALLBACKS,
+  type TurnReviewAction,
+  type TurnReviewFallback,
 } from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
@@ -237,6 +242,11 @@ export function GuardrailsTab({
       label: t("editor.guardrails.navGrounding", "Factual grounding"),
     },
     {
+      id: "gr-turn-review",
+      icon: ListChecks,
+      label: t("editor.guardrails.navTurnReview", "Turn review"),
+    },
+    {
       id: "gr-external",
       icon: Webhook,
       label: t("editor.guardrails.navExternal", "External check"),
@@ -248,6 +258,9 @@ export function GuardrailsTab({
       ...s,
       factualGrounding: { ...s.factualGrounding, ...patch },
     }));
+  const tr = g.turnReview;
+  const setTurnReview = (patch: Partial<GuardrailsConfig["turnReview"]>) =>
+    setG((s) => ({ ...s, turnReview: { ...s.turnReview, ...patch } }));
   const toolNames = useAgentToolNames(agentId, g.enabled && fg.enabled);
   // The reviewer's model, an override of the guardrails chat model drawn by the shared fields. The
   // stored block spells "unset" as null; the fields spell it as a blank string.
@@ -1380,6 +1393,147 @@ export function GuardrailsTab({
                         "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
                       )}
                     />
+                  </>
+                )}
+              </Section>
+              <Section
+                id="gr-turn-review"
+                icon={ListChecks}
+                title={t("editor.guardrails.turnReview", "Turn review")}
+                description={t(
+                  "editor.guardrails.turnReviewDesc",
+                  "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Lookups are never reviewed.",
+                )}
+              >
+                <SwitchField
+                  checked={tr.enabled}
+                  onCheckedChange={(v) => setTurnReview({ enabled: v })}
+                  label={t(
+                    "editor.guardrails.turnReviewEnabled",
+                    "Review the turn's actions and reply",
+                  )}
+                />
+                {tr.enabled && (
+                  <>
+                    <FormField
+                      label={t(
+                        "editor.guardrails.turnReviewAction",
+                        "When a step breaks the instructions",
+                      )}
+                      description={
+                        tr.action === "revise"
+                          ? t(
+                              "editor.guardrails.turnReviewActionReviseHint",
+                              "A flagged call does not run and a flagged reply is not sent: the agent reads why and redoes the step, with its tools. One reviewer call per reviewed step, plus one generation per redo.",
+                            )
+                          : t(
+                              "editor.guardrails.turnReviewActionObserveHint",
+                              "The verdict goes to the Logs page and the step goes on as written. Use it to measure before letting the review act.",
+                            )
+                      }
+                    >
+                      <Select
+                        value={tr.action}
+                        onChange={(e) =>
+                          setTurnReview({
+                            action: e.target.value as TurnReviewAction,
+                          })
+                        }
+                        data-testid="gr-turn-review-action"
+                      >
+                        {TURN_REVIEW_ACTIONS.map((a) => (
+                          <option key={a} value={a}>
+                            {a === "observe"
+                              ? t(
+                                  "editor.guardrails.turnReviewActionObserve",
+                                  "Only record it",
+                                )
+                              : t(
+                                  "editor.guardrails.turnReviewActionRevise",
+                                  "Send the agent back to redo the step",
+                                )}
+                          </option>
+                        ))}
+                      </Select>
+                    </FormField>
+                    {tr.action === "revise" && (
+                      <>
+                        <FormField
+                          label={t(
+                            "editor.guardrails.turnReviewAttempts",
+                            "Redos per turn",
+                          )}
+                          description={t(
+                            "editor.guardrails.turnReviewAttemptsHint",
+                            "Past this number, the turn stops reviewing: a flagged call runs as written and a flagged reply meets the action below.",
+                          )}
+                        >
+                          <Select
+                            value={String(tr.maxAttempts)}
+                            onChange={(e) =>
+                              setTurnReview({
+                                maxAttempts: Number(e.target.value),
+                              })
+                            }
+                            data-testid="gr-turn-review-attempts"
+                          >
+                            {Array.from(
+                              {
+                                length:
+                                  GUARDRAIL_RANGES.turnReviewMaxAttempts.max -
+                                  GUARDRAIL_RANGES.turnReviewMaxAttempts.min +
+                                  1,
+                              },
+                              (_, i) =>
+                                GUARDRAIL_RANGES.turnReviewMaxAttempts.min + i,
+                            ).map((n) => (
+                              <option key={n} value={n}>
+                                {n}
+                              </option>
+                            ))}
+                          </Select>
+                        </FormField>
+                        <FormField
+                          label={t(
+                            "editor.guardrails.turnReviewFallback",
+                            "When the redos run out",
+                          )}
+                          description={t(
+                            "editor.guardrails.turnReviewFallbackHint",
+                            "Uses the messages set in Output.",
+                          )}
+                        >
+                          <Select
+                            value={tr.fallback}
+                            onChange={(e) =>
+                              setTurnReview({
+                                fallback: e.target.value as TurnReviewFallback,
+                              })
+                            }
+                            data-testid="gr-turn-review-fallback"
+                          >
+                            {TURN_REVIEW_FALLBACKS.map((f) => (
+                              <option key={f} value={f}>
+                                {f === "handoff"
+                                  ? t(
+                                      "editor.guardrails.turnReviewFallbackHandoff",
+                                      "Hand the conversation to the team",
+                                    )
+                                  : f === "template"
+                                    ? t(
+                                        "editor.guardrails.turnReviewFallbackTemplate",
+                                        "Send the template message",
+                                      )
+                                    : t(
+                                        "editor.guardrails.turnReviewFallbackSilent",
+                                        "Send nothing",
+                                      )}
+                              </option>
+                            ))}
+                          </Select>
+                        </FormField>
+                      </>
+                    )}
                   </>
                 )}
               </Section>

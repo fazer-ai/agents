@@ -2856,6 +2856,10 @@ function AgentEditor() {
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
   // t('editor.configIssue.decisions', 'This agent decides with questions and rules, but its classifier has no API key set, so it decides nothing.')
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them.')
+  // t('editor.configIssue.turnReview', 'Turn review is on but the guardrails chat model it runs on has no API key set, so no step is reviewed: calls run and replies go out unreviewed, unless “When a check cannot run” is set to hold them.')
+  // t('editor.configIssuePending.turnReview', 'The guardrails chat model\'s credential, which turn review runs on, is referenced but not filled in yet, so no step is reviewed.')
+  // t('editor.configIssueUnresolved.turnReview', 'The guardrails chat model\'s credential, which turn review runs on, no longer exists, so no step is reviewed.')
+  // t('editor.configIssueWrongKind.turnReview', 'The guardrails chat model\'s credential, which turn review runs on, is a type that cannot be used as an API key, so no step is reviewed. Pick a credential that holds a single key.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them.')
   // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so no check can run: messages go out unscreened, unless “When a check cannot run” is set to hold them.')
   // t('editor.configIssueGuardrailsFailing', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. Check “Guardrails model”, “Base URL” and “API key”.")
@@ -3032,6 +3036,12 @@ function AgentEditor() {
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
     guardrailsKeyless:
       guardrails.classifier === "chat" && guardrailsKeylessEndpoint(guardrails),
+    ...(guardrails.classifier === "decisions" && guardrails.turnReview.enabled
+      ? {
+          turnReviewCredentialRef: guardrails.credentialRef ?? "",
+          turnReviewKeyless: guardrailsKeylessEndpoint(guardrails),
+        }
+      : {}),
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,

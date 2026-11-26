@@ -26,6 +26,16 @@ type SystemMarker =
   | "turn_review_veto"
   | "turn_review_held";
 
+// A message's type, read like `msgType` (./trace.ts): one rebuilt from a checkpoint may carry only
+// `_getType`. Every reader of tool results here uses it, so a pairing and the predicate it feeds
+// never disagree about the same message.
+function typeOf(m: BaseMessage | undefined): string {
+  const t = m as
+    | { getType?: () => string; _getType?: () => string }
+    | undefined;
+  return t?.getType?.() ?? t?._getType?.() ?? "";
+}
+
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
 }
@@ -410,7 +420,7 @@ export function calledOffToolResult(call: {
 }
 
 export function isCalledOffToolResult(message: BaseMessage): boolean {
-  return message.getType() === "tool" && hasMarker(message, "called_off");
+  return typeOf(message) === "tool" && hasMarker(message, "called_off");
 }
 
 // What a write call gets back when the turn review flags it: the reviewer's note for the model, and
@@ -453,7 +463,7 @@ export function turnReviewHeldToolResult(call: {
 // reads such a call as one that never happened.
 export function isTurnReviewRefusal(message: BaseMessage): boolean {
   return (
-    message.getType() === "tool" &&
+    typeOf(message) === "tool" &&
     (hasMarker(message, "turn_review_veto") ||
       hasMarker(message, "turn_review_held"))
   );
@@ -467,13 +477,6 @@ export function pairedResults(
   slice: readonly BaseMessage[],
 ): Map<ToolCallLike, ToolMessage> {
   const out = new Map<ToolCallLike, ToolMessage>();
-  // Read like `msgType` (./trace.ts): a message rebuilt from a checkpoint may carry only `_getType`.
-  const typeOf = (m: BaseMessage | undefined) => {
-    const t = m as
-      | { getType?: () => string; _getType?: () => string }
-      | undefined;
-    return t?.getType?.() ?? t?._getType?.() ?? "";
-  };
   slice.forEach((m, i) => {
     if (typeOf(m) !== "ai") return;
     const results: ToolMessage[] = [];
@@ -512,7 +515,7 @@ export function callsRefusedByReview(
 // by a held review.
 export function isUnranToolResult(message: BaseMessage): boolean {
   return (
-    message.getType() === "tool" &&
+    typeOf(message) === "tool" &&
     (hasMarker(message, "called_off") ||
       hasMarker(message, "turn_review_veto") ||
       hasMarker(message, "turn_review_held"))

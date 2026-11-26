@@ -281,6 +281,12 @@ export async function readAgentConfigHealth(
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
     guardrailsKeyless:
       guardrails.classifier === "chat" && guardrailsKeylessEndpoint(guardrails),
+    ...(guardrails.classifier === "decisions" && guardrails.turnReview.enabled
+      ? {
+          turnReviewCredentialRef: guardrails.credentialRef ?? "",
+          turnReviewKeyless: guardrailsKeylessEndpoint(guardrails),
+        }
+      : {}),
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,

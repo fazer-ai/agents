@@ -1,3 +1,4 @@
+import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { resolveModelOverride } from "@/graph/model-override";
@@ -434,24 +435,54 @@ function readDecisions(v: unknown): GuardrailDecisionsConfig {
   };
 }
 
-// The credential the guardrail screening actually uses: the chat model's, or the decisions
-// provider's. One answer for the runtime and the configuration check, so the two cannot look at
-// different fields.
+// A settings write that changes the guardrails provider and carries the stored endpoint over
+// unchanged drops it: that URL was typed for the old provider, and OpenRouter's client honors one,
+// so kept it would send the new provider's key and the conversation to the old server. A URL the
+// write sets itself, or one kept with the provider, stands. Mutates `next` in place, like the other
+// write normalizers.
+export function carriedGuardrailsBaseUrlDropped(
+  next: unknown,
+  stored: unknown,
+): void {
+  const g = (bag: unknown) =>
+    bag && typeof bag === "object"
+      ? ((bag as Record<string, unknown>).guardrails as
+          | Record<string, unknown>
+          | undefined)
+      : undefined;
+  const after = g(next);
+  const before = g(stored);
+  if (!after || !before || typeof after !== "object") return;
+  const url = str(after.baseURL);
+  if (
+    url !== null &&
+    str(after.provider) !== null &&
+    str(after.provider) !== str(before.provider) &&
+    url === str(before.baseURL)
+  )
+    after.baseURL = null;
+}
+
 // Whether the guardrails chat model is an endpoint meant to run with no key: OpenAI-compatible, no
-// credential configured, and an address to call (the credential's or the typed one). A configured
-// credential that did not resolve is not this, it is a missing key. The one rule the screening gate,
-// the turn reviewer and the editor's playground toggle share.
+// credential configured, and a dialable http(s) address (the credential's or the typed one; a
+// `localhost:8080` with no scheme is not one). A configured credential that did not resolve is a
+// missing key. The one rule the screening gate, the turn reviewer, the editor and the health share.
 export function guardrailsKeylessEndpoint(
   cfg: Pick<GuardrailsConfig, "provider" | "credentialRef" | "baseURL">,
   credentialBaseUrl?: string | null,
 ): boolean {
+  const url = (credentialBaseUrl ?? cfg.baseURL)?.trim() ?? "";
   return (
     cfg.provider === "openai-compatible" &&
     !cfg.credentialRef &&
-    !!(credentialBaseUrl ?? cfg.baseURL)?.trim()
+    url !== "" &&
+    isValidHttpUrl(url)
   );
 }
 
+// The credential the guardrail screening actually uses: the chat model's, or the decisions
+// provider's. One answer for the runtime and the configuration check, so the two cannot look at
+// different fields.
 export function guardrailCredentialRef(cfg: GuardrailsConfig): string | null {
   return cfg.classifier === "decisions"
     ? cfg.decisions.credentialRef
@@ -654,10 +685,11 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     // leave every already-saved empty value broken.
     model: str(bag.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "",
     credentialRef: str(bag.credentialRef),
-    // A typed endpoint belongs to an OpenAI-compatible model only: OpenRouter's client honors one
-    // too, so a URL kept from before a provider switch would send reviews and the key elsewhere. A
-    // credential's own endpoint is resolved apart and still applies.
-    baseURL: provider === "openai-compatible" ? str(bag.baseURL) : null,
+    // As stored, for every provider: an endpoint saved on purpose (OpenRouter behind a proxy, say)
+    // must keep reaching that endpoint, or the call falls back to the provider's public one with the
+    // conversation and the key. A URL left over from another provider is cleared where the provider
+    // changes (the editor, and `carriedGuardrailsBaseUrlDropped` on every write), never here.
+    baseURL: str(bag.baseURL),
     competitors: readCompetitors(bag.competitors),
     customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),
     input: readInput(bag.input),

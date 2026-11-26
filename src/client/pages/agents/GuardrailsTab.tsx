@@ -23,6 +23,7 @@ import {
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
+import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { inRange } from "@/lib/number-range";
@@ -990,6 +991,13 @@ export function GuardrailsTab({
                 {g.provider === "openai-compatible" && (
                   <FormField
                     label={t("editor.baseURL", "Base URL")}
+                    error={
+                      !guardrailsCredBaseUrl &&
+                      g.baseURL?.trim() &&
+                      !isValidHttpUrl(g.baseURL)
+                        ? t("common.invalidUrl", "Must be a valid http(s) URL.")
+                        : null
+                    }
                     description={
                       guardrailsCredBaseUrl
                         ? t(

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { inRange, type NumberRange } from "@/lib/number-range";
@@ -1114,7 +1115,14 @@ const guardrails = z
       .nullable()
       .optional()
       .describe("vault entry NAME (never the key itself)"),
-    baseURL: z.string().nullable().optional(),
+    baseURL: z
+      .string()
+      .refine(
+        (v) => !v.trim() || isValidHttpUrl(v),
+        "must be an http(s) URL, scheme included",
+      )
+      .nullable()
+      .optional(),
     // NOTE: Item type declared, count and length not: readCompetitors DROPS a non-string (so declaring it
     // turns a silent loss into a named refusal) but truncates the list and each name, which must keep
     // parsing.

@@ -2520,7 +2520,11 @@ async function runTurnBody(
       // NOTE: The deferred resolve falls with the transfer, even when its closing line never reached
       // the customer: the human queue's conversation is not ours to close.
       if (handoffState.completed) turnState.resolveRequested = false;
-      const handedOff = handoffAnsweredTheTurn(handoffState);
+      // The handoff's closing line decides this turn's reply: the model's own line, or, after a
+      // completed transfer, the turn review's pending fallback standing in for it.
+      const handedOff =
+        handoffAnsweredTheTurn(handoffState) ||
+        (handoffState.completed && !!turnReview?.pending());
       // NOTE: The model's final text after a handoff duplicates the closing line, and the mirror may
       // still read bot-owned. Blanked, not returned, so queued images still pass every gate below.
       if (handedOff) reply = "";
@@ -2881,6 +2885,9 @@ async function runTurnBody(
           );
         }
         await handOverIfOwed(closed);
+        // A turn the handoff path answered is not empty: a pending turn-review fallback stands in
+        // for the closing line (`handedOff`), and a transfer whose line was withheld or failed is
+        // still the turn's outcome, as for a screened one.
         if (!sent && !handedOff) return settled("empty");
         const postedFiles = postedOutcomeFor({
           replyPartial: false,

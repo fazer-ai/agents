@@ -35,6 +35,7 @@ const ALL_KEYS: Record<ConfigIssueKey, true> = {
   decisions: true,
   guardrails: true,
   guardrailsFailing: true,
+  turnReview: true,
   contactAuth: true,
   contactAuthUnlockHandoff: true,
   contactAuthSilentRefusal: true,

@@ -386,18 +386,20 @@ export function guardrailObservedLabel(
   const categories = Array.isArray(detail.categories)
     ? detail.categories.filter((c): c is string => typeof c === "string")
     : [];
-  // A turn review judges a step, and a step may be a write call, which sent no reply.
+  // A turn review judges a step, and a step may be a write call, which sent no reply. The line is
+  // written at the review, before the call runs or the reply is screened and sent, so it says only
+  // what the review did; running and delivery have lines of their own.
   const head =
     detail.check === "turn_review"
       ? detail.step === "call"
         ? t("logs.guardrailObserved.turnReviewCall", {
             defaultValue:
-              "The call to {{tool}} went against the agent's instructions; only recorded, it ran as written",
+              "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
             tool: typeof detail.tool === "string" ? detail.tool : "",
           })
         : t(
             "logs.guardrailObserved.turnReviewReply",
-            "The reply went against the agent's instructions; only recorded, it went out as written",
+            "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
           )
       : detail.direction === "input"
         ? t(

@@ -11947,12 +11947,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
       // A handoff flagged again past the attempts runs (a veto would only loop), and its closing line
       // is the turn's reply: the fallback the review chose decides it, with no second transfer.
-      for (const [fallback, convId, expected, line] of [
-        ["silent", 7932, [], "LINHA-DO-MODELO"],
-        ["template", 7933, ["TEMPLATE-OUT"], "LINHA-DO-MODELO"],
+      // A transfer the handoff path answered is a posted turn, never "empty", the fallback line
+      // delivered or withheld, as a screened closing line already is.
+      for (const [fallback, convId, expected, line, outcome] of [
+        ["silent", 7932, [], "LINHA-DO-MODELO", "posted"],
+        ["template", 7933, ["TEMPLATE-OUT"], "LINHA-DO-MODELO", "posted"],
         // With no line of the model's at all, the fallback is still the turn's reply.
-        ["template", 7934, ["TEMPLATE-OUT"], ""],
-        ["handoff", 7935, ["HANDOFF-OUT"], ""],
+        ["template", 7934, ["TEMPLATE-OUT"], "", "posted"],
+        ["handoff", 7935, ["HANDOFF-OUT"], "", "posted"],
       ] as const) {
         test(`a flagged handoff past the attempts sends the ${fallback} fallback as its closing line${line ? "" : ", with no line of its own"}`, async () => {
           await suDb.agent.update({
@@ -12011,7 +12013,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               };
             },
           } as unknown as BaseChatModel;
-          await runAgentTurn({
+          const result = await runAgentTurn({
             tenantId: gTenantId,
             instanceId: gInstanceId,
             agentBotId: G_BOT,
@@ -12033,6 +12035,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           });
           expect(sent.map(([, t]) => t)).toEqual([...expected]);
           expect(toggles).toEqual([[convId, "open"]]);
+          expect(result).toBe(outcome);
         });
       }
 

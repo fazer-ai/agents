@@ -8,13 +8,16 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { turnReviewVetoToolResult } from "@/graph/markers";
+import { assertSettingsClosedValues } from "@/modules/agents/service";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
 import { groundingToolCalls } from "@/modules/guardrails/grounding";
 import {
+  carriedGuardrailsBaseUrlDropped,
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
   type GuardrailTurnReviewConfig,
+  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import {
@@ -202,16 +205,59 @@ describe("settings", () => {
 
   // The bug it catches: a URL typed for an OpenAI-compatible model kept after a switch to OpenRouter,
   // whose client honors it, so reviews and their key went to the old server.
-  test("a typed endpoint belongs to an OpenAI-compatible model only", () => {
+  // The bug it catches: an OpenRouter model saved behind a proxy read with no endpoint, so the call
+  // fell back to the public OpenRouter with the conversation and the key. The reader keeps a saved
+  // URL for every provider; only a write that changes the provider drops the one it carried over.
+  test("a saved endpoint is read for every provider, and a provider switch drops only the carried one", () => {
     const at = (provider: string) =>
       readGuardrailsConfig({
-        guardrails: { provider, baseURL: "http://antigo.local/v1" },
+        guardrails: { provider, baseURL: "http://proxy.local/v1" },
       }).baseURL;
-    expect([at("openai-compatible"), at("openrouter"), at("openai")]).toEqual([
-      "http://antigo.local/v1",
-      null,
-      null,
+    expect([at("openai-compatible"), at("openrouter")]).toEqual([
+      "http://proxy.local/v1",
+      "http://proxy.local/v1",
     ]);
+    const write = (guardrails: Record<string, unknown>) => {
+      const next = { guardrails: { ...guardrails } };
+      carriedGuardrailsBaseUrlDropped(next, {
+        guardrails: {
+          provider: "openai-compatible",
+          baseURL: "http://antigo.local/v1",
+        },
+      });
+      return next.guardrails.baseURL;
+    };
+    expect([
+      write({ provider: "openrouter", baseURL: "http://antigo.local/v1" }),
+      write({ provider: "openrouter", baseURL: "http://proxy.local/v1" }),
+      write({
+        provider: "openai-compatible",
+        baseURL: "http://antigo.local/v1",
+      }),
+    ]).toEqual([null, "http://proxy.local/v1", "http://antigo.local/v1"]);
+  });
+
+  test("a keyless endpoint needs an http(s) URL, and a save refuses one without a scheme", () => {
+    const keyless = (baseURL: string) =>
+      guardrailsKeylessEndpoint({
+        provider: "openai-compatible",
+        credentialRef: null,
+        baseURL,
+      });
+    expect([
+      keyless("localhost:8080"),
+      keyless("http://localhost:8080"),
+    ]).toEqual([false, true]);
+    const refused = (baseURL: string) => {
+      try {
+        assertSettingsClosedValues({ guardrails: { baseURL } }, {});
+        return null;
+      } catch (e) {
+        return (e as { field?: string }).field ?? "refused";
+      }
+    };
+    expect(refused("localhost:8080")).not.toBeNull();
+    expect(refused("http://localhost:8080/v1")).toBeNull();
   });
 
   test("an unknown action or fallback reads as the default, and attempts are clamped to 1-3", () => {
@@ -399,6 +445,37 @@ describe("what the reviewer reads", () => {
       expect(sent).toContain("agendado");
     },
   );
+
+  // The bug it catches: a message rebuilt from a checkpoint carries only `_getType`, and a reader
+  // that calls `getType()` on it throws mid-review, the factual grounding's included.
+  test("calls are paired on checkpoint-shaped messages that only answer _getType", () => {
+    const old = (m: BaseMessage) => {
+      const t = m.getType();
+      return Object.assign(Object.create(null), m, {
+        _getType: () => t,
+      }) as BaseMessage;
+    };
+    const calls = groundingToolCalls(
+      [
+        old(new HumanMessage("Pode marcar?")),
+        old(
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "agendar", args: {}, id: "a1" }],
+          }),
+        ),
+        old(
+          new ToolMessage({
+            content: "agendado",
+            tool_call_id: "a1",
+            name: "agendar",
+          }),
+        ),
+      ],
+      [],
+    );
+    expect(calls.map((c) => c.name)).toEqual(["agendar"]);
+  });
 
   test("a reply step names the tools the turn called, so a promise with no call shows", () => {
     const [, none] = turnReviewMessages({

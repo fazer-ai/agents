@@ -5,7 +5,7 @@ import {
   type MessageContent,
   ToolMessage,
 } from "@langchain/core/messages";
-import { memoryHeadMessage } from "@/graph/markers";
+import { memoryHeadMessage, turnReviewVetoToolResult } from "@/graph/markers";
 import {
   earlierToolCalls,
   GROUNDING_MEMORY_MAX,
@@ -97,6 +97,54 @@ function laterTurn() {
     new HumanMessage("Tem certeza? Não era às 16h?"),
   ];
 }
+
+// The bug it catches: yesterday's booking and today's vetoed one, with the veto dropped, left the
+// reviewer reading "I booked it again" as backed by the earlier call.
+describe("a call that never ran", () => {
+  test("stays in the tool block, marked as not run and never a source", () => {
+    const thread = [
+      new HumanMessage("Marca terça?"),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "agendar", args: { dia: "terça" }, id: "a1" }],
+      }),
+      new ToolMessage({
+        content: "agendado",
+        tool_call_id: "a1",
+        name: "agendar",
+      }),
+      new AIMessage("Agendado para terça."),
+      new HumanMessage("Marca de novo, quarta."),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "agendar", args: { dia: "quarta" }, id: "a2" }],
+      }),
+      turnReviewVetoToolResult(
+        { name: "agendar", id: "a2" },
+        "[Sistema] Revisão do turno: a chamada a agendar NÃO foi executada",
+      ),
+    ];
+    const calls = [
+      ...earlierToolCalls(thread.slice(0, 5), ["agendar"], 4),
+      ...groundingToolCalls(thread, ["agendar"]),
+    ];
+    expect(calls.map((c) => [c.result, c.source, c.notRun ?? false])).toEqual([
+      ["agendado", true, false],
+      [
+        "[Sistema] Revisão do turno: a chamada a agendar NÃO foi executada",
+        false,
+        true,
+      ],
+    ]);
+    expect(
+      groundingUserMessage({
+        conversation: [],
+        calls,
+        reply: "Agendei de novo.",
+      }),
+    ).toContain('<tool_call name="agendar" source="no" ran="no">');
+  });
+});
 
 describe("earlierToolCalls", () => {
   test("every call an earlier turn in the window made comes whole, marked with how far back and whether it is a source", () => {

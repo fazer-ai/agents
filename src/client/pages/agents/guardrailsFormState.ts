@@ -8,7 +8,6 @@ import {
   type GuardrailsConfig,
   groundingHasSources,
   guardrailCredentialRef,
-  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import { overrideResolution } from "./modelOverrideForm";
@@ -28,28 +27,12 @@ export function playgroundGuardrailsUsable(
   return (
     g.enabled &&
     (!!guardrailCredentialRef(g) ||
-      // A keyless compatible endpoint screens too, under the chat classifier.
-      (g.classifier === "chat" &&
-        guardrailsKeylessEndpoint(g, credBaseUrls.guardrails)) ||
       g.onFailure === "hold" ||
       !!g.external.url ||
-      turnReviewerCalls(g, credBaseUrls) ||
+      (g.turnReview.enabled && !!g.credentialRef) ||
       (g.factualGrounding.enabled &&
         groundingHasSources(g.factualGrounding) &&
         groundingReviewerCalls(g, credBaseUrls)))
-  );
-}
-
-// Whether the turn reviewer calls out: it runs on the guardrails chat model and key whichever
-// classifier screens, or with no key on a compatible endpoint (resolved in graph/prepare). A keyless
-// endpoint needs its URL, from the credential or typed: without one the model is never built.
-function turnReviewerCalls(
-  g: GuardrailsConfig,
-  credBaseUrls: GroundingCredBaseUrls,
-): boolean {
-  return (
-    g.turnReview.enabled &&
-    (!!g.credentialRef || guardrailsKeylessEndpoint(g, credBaseUrls.guardrails))
   );
 }
 

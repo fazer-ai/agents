@@ -267,14 +267,9 @@ export interface ConfigHealthInput {
   // message is delivered as if it had been screened and approved.
   guardrailsEnabled?: boolean;
   guardrailsCredentialRef?: string;
-  // The chat classifier on an OpenAI-compatible endpoint meant to run with no key
-  // (`guardrailsKeylessEndpoint`): no credential is missing. Decisions always needs its own.
-  guardrailsKeyless?: boolean;
   // The turn reviewer's own credential, set only when it is not the screening one: turn review on
-  // while Decisions screens, since the reviewer always runs on the chat model's key. `Keyless` is the
-  // chat model's OpenAI-compatible endpoint with no key (`guardrailsKeylessEndpoint`).
+  // while Decisions screens, since the reviewer always runs on the chat model's key.
   turnReviewCredentialRef?: string;
-  turnReviewKeyless?: boolean;
   // What the screen actually DID, read back from the execution log (modules/guardrails/health.ts):
   // how many analyses could not run in the recent window, and when the last one was. Configuration
   // alone cannot see this half. A model id the vendor retired, a parameter it rejects on every call
@@ -928,7 +923,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     });
   }
   const guardrailsCred = credIssue(
-    Boolean(input.guardrailsEnabled) && !input.guardrailsKeyless,
+    Boolean(input.guardrailsEnabled),
     input.guardrailsCredentialRef ?? "",
     "apiKey",
     vault,
@@ -943,8 +938,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "turnReview", tab: "guardrails", sectionId: "gr-model" },
     credIssue(
       Boolean(input.guardrailsEnabled) &&
-        input.turnReviewCredentialRef !== undefined &&
-        !input.turnReviewKeyless,
+        input.turnReviewCredentialRef !== undefined,
       input.turnReviewCredentialRef ?? "",
       "apiKey",
       vault,

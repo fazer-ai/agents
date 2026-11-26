@@ -12039,13 +12039,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
       }
 
-      // The fallback line replaced the model's words, so a final sentence written after the transfer
-      // was never sent: it leaves the thread, while the transfer's call and result stay in it.
-      for (const [line, convId] of [
-        ["", 7949],
-        ["LINHA-DO-MODELO", 7950],
+      // The fallback line replaced the model's words: the thread ends on what the customer read
+      // instead, so a final sentence written after the transfer, never sent, is not read as said, and
+      // the transfer's call and result stay in it.
+      for (const [line, fallback, convId, out] of [
+        ["", "template", 7949, "TEMPLATE-OUT"],
+        ["LINHA-DO-MODELO", "template", 7950, "TEMPLATE-OUT"],
+        ["", "handoff", 7951, "HANDOFF-OUT"],
+        ["", "silent", 7952, ""],
       ] as const) {
-        test(`a final sentence after a handoff answered by the fallback leaves the thread${line ? ", the model's line replaced" : ""}`, async () => {
+        test(`after a handoff answered by the ${fallback} fallback the thread holds what was sent${line ? ", the model's line replaced" : ""}`, async () => {
           await suDb.agent.update({
             where: { id: gAgentId },
             data: {
@@ -12067,7 +12070,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                     enabled: true,
                     action: "revise",
                     maxAttempts: 1,
-                    fallback: "template",
+                    fallback,
                   },
                 },
               },
@@ -12122,7 +12125,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               checkpointer,
             },
           });
-          expect(sent).toEqual([[convId, "TEMPLATE-OUT"]]);
+          expect(sent).toEqual(out ? [[convId, out]] : []);
           expect(result).toBe("posted");
           const thread = await threadChannel(checkpointer, convId, {
             tenantId: gTenantId,
@@ -12130,8 +12133,88 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           });
           expect(thread.some(([, c]) => c.includes("FRASE-FINAL"))).toBe(false);
           expect(thread.some(([type]) => type === "tool")).toBe(true);
+          expect(thread.at(-1)).toEqual(["ai", out]);
         });
       }
+
+      // The fallback already decided the reply once a write call past the attempts ran, so a blank
+      // answer after it is no silence to ask about again: the model is not asked once more.
+      test("a blank answer after the fallback was decided is not retried as a silence", async () => {
+        await suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff: { mode: "route" },
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                input: { enabled: false },
+                output: { enabled: false, templateMessage: "TEMPLATE-OUT" },
+                turnReview: {
+                  enabled: true,
+                  action: "revise",
+                  maxAttempts: 1,
+                  fallback: "template",
+                },
+              },
+            },
+          },
+        });
+        const convId = 7953;
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        let asked = 0;
+        const noting = {
+          async invoke() {
+            asked += 1;
+            return new AIMessage("");
+          },
+          bindTools() {
+            return {
+              async invoke() {
+                asked += 1;
+                if (asked > 2) return new AIMessage("");
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "private_note",
+                      args: { content: "NOTA" },
+                      id: `n${asked}`,
+                    },
+                  ],
+                });
+              },
+            };
+          },
+        } as unknown as BaseChatModel;
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingWith(
+              JSON.stringify({
+                violated: true,
+                categories: ["turn_review"],
+                rationale: "Pergunte o pedido antes.",
+                suggestedReply: null,
+              }),
+              noting,
+            ),
+            makeClient: guardStub(sent, notes, toggles),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect([asked, sent]).toEqual([3, [[convId, "TEMPLATE-OUT"]]]);
+      });
 
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn
       // handed the conversation over: a write after it is still reviewed, and a flagged one does not run.

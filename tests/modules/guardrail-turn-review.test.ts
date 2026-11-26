@@ -7,8 +7,10 @@ import {
 } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { turnReviewVetoToolResult } from "@/graph/markers";
-import { assertSettingsClosedValues } from "@/modules/agents/service";
+import {
+  humanHandbackMessage,
+  turnReviewVetoToolResult,
+} from "@/graph/markers";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
 import { groundingToolCalls } from "@/modules/guardrails/grounding";
@@ -16,7 +18,6 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
   type GuardrailTurnReviewConfig,
-  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import {
@@ -203,44 +204,6 @@ describe("settings", () => {
     });
   });
 
-  // The bug it catches: a URL typed for an OpenAI-compatible model kept after a switch to OpenRouter,
-  // whose client honors it, so reviews and their key went to the old server.
-  // The bug it catches: an OpenRouter model saved behind a proxy read with no endpoint, so the call
-  // fell back to the public OpenRouter with the conversation and the key.
-  test("a saved endpoint is read for every provider", () => {
-    const at = (provider: string) =>
-      readGuardrailsConfig({
-        guardrails: { provider, baseURL: "http://proxy.local/v1" },
-      }).baseURL;
-    expect([at("openai-compatible"), at("openrouter")]).toEqual([
-      "http://proxy.local/v1",
-      "http://proxy.local/v1",
-    ]);
-  });
-
-  test("a keyless endpoint needs an http(s) URL, and a save refuses one without a scheme", () => {
-    const keyless = (baseURL: string) =>
-      guardrailsKeylessEndpoint({
-        provider: "openai-compatible",
-        credentialRef: null,
-        baseURL,
-      });
-    expect([
-      keyless("localhost:8080"),
-      keyless("http://localhost:8080"),
-    ]).toEqual([false, true]);
-    const refused = (baseURL: string) => {
-      try {
-        assertSettingsClosedValues({ guardrails: { baseURL } }, {});
-        return null;
-      } catch (e) {
-        return (e as { field?: string }).field ?? "refused";
-      }
-    };
-    expect(refused("localhost:8080")).not.toBeNull();
-    expect(refused("http://localhost:8080/v1")).toBeNull();
-  });
-
   test("an unknown action or fallback reads as the default, and attempts are clamped to 1-3", () => {
     const tr = readGuardrailsConfig({
       guardrails: {
@@ -331,8 +294,9 @@ describe("what the reviewer reads", () => {
   });
 
   // The bug it catches: a booking made by a call with no id read as no call at all, so a truthful
-  // confirmation is sent back for a redo that books again; and a vetoed call read as one that ran.
-  test("the turn's calls pair id-less results in their batch, and leave out the ones that never ran", () => {
+  // confirmation is sent back for a redo that books again; and a vetoed call read as one that ran, or
+  // dropped, so "I booked it again" over yesterday's booking found nothing against it.
+  test("the turn's calls pair id-less results in their batch, and mark the ones that never ran", () => {
     const calls = groundingToolCalls(
       [
         new HumanMessage("Pode marcar terça às 10h?"),
@@ -355,9 +319,21 @@ describe("what the reviewer reads", () => {
       ],
       [],
     );
-    expect(calls.map((c) => [c.name, c.result])).toEqual([
-      ["agendar", "agendado"],
+    expect(calls.map((c) => [c.name, c.notRun ?? false, c.source])).toEqual([
+      ["agendar", false, false],
+      ["transferir", true, false],
     ]);
+    const [, user] = turnReviewMessages({
+      instructions: PROMPT,
+      customPolicy: "",
+      conversation: [],
+      calls,
+      step: { kind: "reply", text: "Transferi você." },
+    });
+    const usr = String(user?.content);
+    expect(usr).toContain('<tool_call name="transferir" ran="no">');
+    expect(usr).toContain('<tool_call name="agendar">');
+    expect(usr).toContain("Tools called in this turn: agendar.");
   });
 
   // The bug it catches: two calls of a batch repeating one id both read the last result, so a
@@ -768,6 +744,40 @@ describe("the gate", () => {
         sent.includes("ETIQUETAS-SALVAS"),
         sent.includes("ROTEAMENTO-SALVO"),
       ]).toEqual([true, false]);
+    },
+  );
+
+  // The bug it catches: the reviewer read yesterday's transfer but not the conversation coming back,
+  // so a reply after the hand-back was judged against "after a transfer, do not answer".
+  test.skipIf(!dbUp)(
+    "the reviewer reads the hand-back as a system fact, apart from the customer's words",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const { g } = gate(cfg({}), r.make);
+      await g?.reviewReply(
+        [
+          new HumanMessage("Quero falar com alguém."),
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "handoff_to_human", args: {}, id: "h1" }],
+          }),
+          new ToolMessage({
+            content: "transferido",
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+          humanHandbackMessage(1),
+          ...turn(),
+        ],
+        "O prazo é de 10 dias úteis.",
+      );
+      const sent = String(r.calls[0]?.at(-1)?.content ?? "");
+      const block = sent.slice(
+        sent.indexOf("<conversation_context>"),
+        sent.indexOf("</conversation_context>"),
+      );
+      expect(block).toMatch(/^system: .*came back to the agent/m);
+      expect(block).not.toContain("customer: (Contexto do sistema");
     },
   );
 

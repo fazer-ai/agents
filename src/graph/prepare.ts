@@ -120,7 +120,6 @@ import {
   type GroundingReviewerModel,
   type GuardrailsConfig,
   guardrailCredentialRef,
-  guardrailsKeylessEndpoint,
   readGuardrailsConfig,
   resolveGroundingReviewer,
 } from "@/modules/guardrails/settings";
@@ -687,22 +686,20 @@ export async function loadAgentConfig(
   let turnReviewer: GroundingReviewerModel | null = null;
   if (guardrails.enabled && guardrails.turnReview.enabled) {
     const parent = await resolveReviewerKey(guardrails.credentialRef);
-    const keyless = guardrailsKeylessEndpoint(guardrails, parent.baseUrl);
-    turnReviewer =
-      parent.key || keyless
-        ? {
-            runnable: true,
-            provider: guardrails.provider,
-            model: guardrails.model,
-            baseURL: parent.baseUrl ?? guardrails.baseURL,
-            apiKey: parent.key,
-          }
-        : {
-            runnable: false,
-            reason: "credential_not_found",
-            provider: guardrails.provider,
-            model: guardrails.model,
-          };
+    turnReviewer = parent.key
+      ? {
+          runnable: true,
+          provider: guardrails.provider,
+          model: guardrails.model,
+          baseURL: parent.baseUrl ?? guardrails.baseURL,
+          apiKey: parent.key,
+        }
+      : {
+          runnable: false,
+          reason: "credential_not_found",
+          provider: guardrails.provider,
+          model: guardrails.model,
+        };
   }
   let guardrailsExternalSecret: string | null = null;
   let guardrailsExternalSecretMissing = false;

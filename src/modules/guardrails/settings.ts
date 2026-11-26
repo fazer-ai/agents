@@ -1,4 +1,3 @@
-import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { resolveModelOverride } from "@/graph/model-override";
@@ -433,23 +432,6 @@ function readDecisions(v: unknown): GuardrailDecisionsConfig {
     credentialRef: str(b.credentialRef),
     thresholds: readThresholds(b.thresholds),
   };
-}
-
-// Whether the guardrails chat model is an endpoint meant to run with no key: OpenAI-compatible, no
-// credential configured, and a dialable http(s) address (the credential's or the typed one; a
-// `localhost:8080` with no scheme is not one). A configured credential that did not resolve is a
-// missing key. The one rule the screening gate, the turn reviewer, the editor and the health share.
-export function guardrailsKeylessEndpoint(
-  cfg: Pick<GuardrailsConfig, "provider" | "credentialRef" | "baseURL">,
-  credentialBaseUrl?: string | null,
-): boolean {
-  const url = (credentialBaseUrl ?? cfg.baseURL)?.trim() ?? "";
-  return (
-    cfg.provider === "openai-compatible" &&
-    !cfg.credentialRef &&
-    url !== "" &&
-    isValidHttpUrl(url)
-  );
 }
 
 // The credential the guardrail screening actually uses: the chat model's, or the decisions

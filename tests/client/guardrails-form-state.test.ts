@@ -106,56 +106,27 @@ describe("guardrails form state", () => {
 });
 
 describe("playgroundGuardrailsUsable", () => {
-  // The bug it catches: a turn reviewer on a keyless compatible endpoint, or on the chat key while
-  // screening runs on Decisions, calls out on every write call and reply while the toggle that would
-  // skip it reads disabled.
+  // The bug it catches: a turn reviewer on the chat key while screening runs on Decisions calls out
+  // on every write call and reply while the toggle that would skip it reads disabled.
   test("is usable when only the turn reviewer can call out", () => {
     const on = readGuardrailsFormState({ guardrails: { enabled: true } });
     // Screening on Decisions with no key of its own, so only the reviewer can call out.
-    const keyless = {
+    const reviewer = {
       ...on,
       classifier: "decisions" as const,
       decisions: { ...on.decisions, credentialRef: null },
-      credentialRef: null,
-      provider: "openai-compatible" as const,
-      baseURL: "http://revisor.local/v1",
+      provider: "anthropic" as const,
+      credentialRef: "vault:3",
       turnReview: { ...on.turnReview, enabled: true },
     };
     expect([
-      playgroundGuardrailsUsable(keyless),
+      playgroundGuardrailsUsable(reviewer),
       playgroundGuardrailsUsable({
-        ...keyless,
-        turnReview: { ...keyless.turnReview, enabled: false },
+        ...reviewer,
+        turnReview: { ...reviewer.turnReview, enabled: false },
       }),
-      playgroundGuardrailsUsable({
-        ...keyless,
-        classifier: "decisions" as const,
-        provider: "anthropic" as const,
-        credentialRef: "vault:3",
-        decisions: { ...on.decisions, credentialRef: null },
-      }),
-    ]).toEqual([true, false, true]);
-  });
-
-  // The bug it catches: a keyless compatible reviewer with no endpoint anywhere read as usable, while
-  // the model it needs is never built.
-  test("a keyless turn reviewer needs an endpoint, typed or on the credential", () => {
-    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
-    const keyless = {
-      ...on,
-      credentialRef: null,
-      provider: "openai-compatible" as const,
-      baseURL: null,
-      turnReview: { ...on.turnReview, enabled: true },
-    };
-    expect([
-      playgroundGuardrailsUsable(keyless),
-      playgroundGuardrailsUsable(keyless, {
-        guardrails: "http://revisor.local/v1",
-        grounding: null,
-      }),
-      playgroundGuardrailsUsable({ ...keyless, baseURL: "   " }),
-    ]).toEqual([false, true, false]);
+      playgroundGuardrailsUsable({ ...reviewer, credentialRef: null }),
+    ]).toEqual([true, false, false]);
   });
 
   // The bug it catches: a grounding reviewer with its own key bills playground turns while the toggle
@@ -245,22 +216,5 @@ describe("playgroundGuardrailsUsable", () => {
         },
       }),
     ]).toEqual([true, false, true, false, true]);
-  });
-
-  // The bug it catches: a keyless compatible screening model that bills every playground turn while
-  // the toggle that would skip it reads disabled.
-  test("a keyless compatible screening model makes the toggle usable", () => {
-    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
-    const keyless = {
-      ...on,
-      classifier: "chat" as const,
-      credentialRef: null,
-      provider: "openai-compatible" as const,
-      baseURL: "http://modelo.local/v1",
-    };
-    expect([
-      playgroundGuardrailsUsable(keyless),
-      playgroundGuardrailsUsable({ ...keyless, baseURL: null }),
-    ]).toEqual([true, false]);
   });
 });

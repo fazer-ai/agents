@@ -1291,10 +1291,12 @@ async function runTurnBody(
       !turnDeliveredToCustomer(turnState, handoffState),
     standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
-    // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end.
+    // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end. Nor
+    // is a turn whose reply the turn review's fallback already decided.
     retrySilence: () =>
       loaded.retrySilence &&
       !handoffState.completed &&
+      !turnReview?.pending() &&
       !turnDeliveredToCustomer(turnState, handoffState),
     // NOTE: Written after the invoke: a retry that called tools only declared silence once
     // `skip_reply` ran and left its mark.
@@ -1773,6 +1775,9 @@ async function runTurnBody(
     // handoff send the operator's text. The transfer has happened, so nothing is handed over again.
     const reviewed = handoffState.completed ? turnReview?.pending() : null;
     if (!reviewed && !handoffAnsweredTheTurn(handoffState)) return;
+    // The thread keeps what the customer read in the closing line's place, the fallback text or
+    // nothing, so the next turn does not read the model's words as said.
+    if (reviewed) sentInDraftsPlace = "";
     const line = handoffState.customerMessage ?? "";
     try {
       let guarded = reviewed ?? (await runGuardrail("output", line));
@@ -1819,6 +1824,7 @@ async function runTurnBody(
       )
         return;
       deliveredBalloons = delivered.delivered;
+      if (reviewed) sentInDraftsPlace = screened;
     } catch (e) {
       // NOTE: Best-effort: the transfer succeeded, so an error would stamp lastError on a thread a
       // human already owns, and on the failure path would mask the error that ended the turn.
@@ -2526,14 +2532,9 @@ async function runTurnBody(
       const handedOff = handoffAnsweredTheTurn(handoffState) || byFallback;
       // NOTE: The model's final text after a handoff duplicates the closing line, and the mirror may
       // still read bot-owned. Blanked, not returned, so queued images still pass every gate below.
-      // Under a turn-review fallback that line is the operator's text, so the model's final words
-      // were never sent: they leave the thread through the deferred rollback the silence uses, and
-      // the transfer's call and result stay.
-      if (handedOff) {
-        if (byFallback && reply)
-          silenceProduced = result.messages as BaseMessage[];
-        reply = "";
-      }
+      // Under a turn-review fallback the turn's last message records what was sent instead (see
+      // `deliverHandoffPromise`), and the transfer's call and result stay.
+      if (handedOff) reply = "";
       // NOTE: The transfer declared that this case gets no reply, so the model's next line is dropped
       // too. The proactive path needs nothing: its ownership probe already reads `open`.
       else if (handoffDeclaredSilence(handoffState)) {

@@ -125,7 +125,6 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
   guardrailCredentialRef,
-  guardrailsKeylessEndpoint,
 } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import type { MonitoringEngine } from "@/modules/observe/settings";
@@ -3034,13 +3033,8 @@ function AgentEditor() {
     contactAuthDenyMessage: contactAuth.denyMessage,
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
-    guardrailsKeyless:
-      guardrails.classifier === "chat" && guardrailsKeylessEndpoint(guardrails),
     ...(guardrails.classifier === "decisions" && guardrails.turnReview.enabled
-      ? {
-          turnReviewCredentialRef: guardrails.credentialRef ?? "",
-          turnReviewKeyless: guardrailsKeylessEndpoint(guardrails),
-        }
+      ? { turnReviewCredentialRef: guardrails.credentialRef ?? "" }
       : {}),
     guardrailsFailures: guardrailHealth?.failures,
     guardrailsLastFailureAt: guardrailHealth?.lastAt,

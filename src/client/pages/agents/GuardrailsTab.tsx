@@ -23,7 +23,6 @@ import {
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
-import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { inRange } from "@/lib/number-range";
@@ -941,17 +940,12 @@ export function GuardrailsTab({
                     value={g.provider}
                     onChange={(e) => {
                       const provider = e.target.value;
-                      // The key and the typed endpoint belong to the provider they were picked for,
-                      // as `overrideProviderChanged` clears them on every other model picker.
                       setG((s) => ({
                         ...s,
                         provider: provider as GuardrailsConfig["provider"],
                         model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
-                        credentialRef: null,
-                        baseURL: null,
                       }));
                     }}
-                    data-testid="gr-provider"
                   >
                     {MODEL_PROVIDERS.map((p) => (
                       <option key={p} value={p}>
@@ -986,46 +980,6 @@ export function GuardrailsTab({
                     aria-label={t("editor.model", "Model")}
                   />
                 </FormField>
-                {/* An OpenAI-compatible endpoint needs its URL, from the credential or typed here: a
-                    keyless reviewer has no other place to get it. */}
-                {g.provider === "openai-compatible" && (
-                  <FormField
-                    label={t("editor.baseURL", "Base URL")}
-                    error={
-                      !guardrailsCredBaseUrl &&
-                      g.baseURL?.trim() &&
-                      !isValidHttpUrl(g.baseURL)
-                        ? t("common.invalidUrl", "Must be a valid http(s) URL.")
-                        : null
-                    }
-                    description={
-                      guardrailsCredBaseUrl
-                        ? t(
-                            "editor.baseURLFromCredential",
-                            "Defined by the selected credential.",
-                          )
-                        : t(
-                            "editor.baseURLHint",
-                            "Required for OpenAI-compatible providers.",
-                          )
-                    }
-                  >
-                    <Input
-                      value={guardrailsCredBaseUrl ?? g.baseURL ?? ""}
-                      onChange={(e) =>
-                        setG((s) => ({
-                          ...s,
-                          baseURL: e.target.value.trim()
-                            ? e.target.value
-                            : null,
-                        }))
-                      }
-                      disabled={!!guardrailsCredBaseUrl}
-                      placeholder="https://api.provider.com/v1"
-                      data-testid="gr-base-url"
-                    />
-                  </FormField>
-                )}
               </>
             )}
           </Section>

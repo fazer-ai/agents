@@ -29,11 +29,7 @@ import type { ExternalReport } from "./external";
 import type { FACTUAL_GROUNDING_KEY, GroundingClaim } from "./grounding";
 import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
-import {
-  type GuardrailAction,
-  type GuardrailsConfig,
-  guardrailsKeylessEndpoint,
-} from "./settings";
+import type { GuardrailAction, GuardrailsConfig } from "./settings";
 import type { TURN_REVIEW_KEY } from "./turn-review";
 
 // The moderation gate both runtimes call, one unit so the reactive and proactive (follow-up) paths
@@ -372,10 +368,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       // model that refuses to build. Kept apart from "the operator switched this off", or a deleted
       // vault entry would read as "no guardrail ran" and stay invisible. `credential_not_found` is the
       // fleet's name for this, used by the speech normalizer, vision, STT, TTS and memory compaction.
-      if (
-        !p.apiKey &&
-        !guardrailsKeylessEndpoint(gr, p.credentialBaseUrl ?? null)
-      ) {
+      if (!p.apiKey) {
         model = null;
         buildFailure = { outcome: "credential_not_found" };
       } else {

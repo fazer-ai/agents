@@ -1207,25 +1207,6 @@ describe("computeConfigIssues — the guardrails credential", () => {
     ).toEqual([{ key: "guardrails", ...at, pending: true, vaultId: "5" }]);
   });
 
-  // The bug it catches: a keyless OpenAI-compatible endpoint that screens fine reported as messages
-  // going out unscreened, a false alarm that also hides the failure count below it. Decisions still
-  // needs its key.
-  test("a keyless compatible chat model is no missing credential, and its failures still show", () => {
-    expect([
-      computeConfigIssues({
-        ...guarded,
-        guardrailsCredentialRef: "",
-        guardrailsKeyless: true,
-      }),
-      computeConfigIssues({
-        ...guarded,
-        guardrailsCredentialRef: "",
-        guardrailsKeyless: true,
-        guardrailsFailures: 3,
-      }).map((i) => i.key),
-    ]).toEqual([[], ["guardrailsFailing"]]);
-  });
-
   // The bug it catches: Decisions screening with its own key, turn review on, and no chat key: the
   // reviewer runs on the chat model, so no step is reviewed while the panel reads clean.
   test("with Decisions screening, the turn reviewer's chat key is checked on its own", () => {
@@ -1240,14 +1221,9 @@ describe("computeConfigIssues — the guardrails credential", () => {
       ),
       computeConfigIssues({
         ...decisions,
-        turnReviewCredentialRef: "",
-        turnReviewKeyless: true,
-      }).map((i) => i.key),
-      computeConfigIssues({
-        ...decisions,
         turnReviewCredentialRef: "vault:1",
       }).map((i) => i.key),
-    ]).toEqual([["turnReview"], [], []]);
+    ]).toEqual([["turnReview"], []]);
   });
 
   test("flags a guardrails credential whose entry is gone", () => {

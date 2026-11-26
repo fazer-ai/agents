@@ -126,10 +126,11 @@ export interface GuardrailReport {
   callId?: string;
   // The same pairing for a call with no id: its place among the turn's calls, from 1.
   callOrdinal?: number;
-  // On a reply's: the id of the turn's last call before it, so a trace places the verdict after that
-  // call's step and before a corrective call the redo made.
+  // On a verdict about a reply (a turn review's, a factual-grounding rewrite's): the id of the turn's
+  // last call before it, so a trace places the verdict after that call's step and before the calls
+  // a redo or a rewrite made.
   afterCallId?: string;
-  // The same place when that call has no id: how many calls the turn had made.
+  // The same place when that call has no id: how many calls the turn had made, 0 for none.
   afterCalls?: number;
   claims?: GroundingClaim[];
   // Model-written, and only on a trip.

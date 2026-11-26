@@ -97,7 +97,7 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.callId ? { callId: r.callId } : {}),
     ...(r.callOrdinal ? { callOrdinal: r.callOrdinal } : {}),
     ...(r.afterCallId ? { afterCallId: r.afterCallId } : {}),
-    ...(r.afterCalls ? { afterCalls: r.afterCalls } : {}),
+    ...(r.afterCalls !== undefined ? { afterCalls: r.afterCalls } : {}),
     // The factual-grounding claims: model-written, quoting the reply and the tool results.
     ...(r.claims?.length
       ? {
@@ -213,10 +213,10 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
 
 // The turn's entries with each call verdict placed right after the call it judged (by id and tool
 // name, each verdict taken once, in order, or for a call with no id by its place among the turn's
-// calls, `callOrdinal`), as the review ran: before the call was answered. A turn review of a reply
-// goes after the results of the step of its `afterCallId` (or of the turn's `afterCalls`-th call,
-// when that one had no id), before the step a redo made, or ahead of every call when the turn had
-// made none. Any other verdict keeps its place after the entries.
+// calls, `callOrdinal`), as the review ran: before the call was answered. A verdict on a reply (the
+// turn review's, a factual-grounding rewrite's) goes after the results of the step of its
+// `afterCallId` (or of the turn's `afterCalls`-th call), before the step a redo or a rewrite made,
+// or ahead of every call when the turn had made none. Any other verdict keeps its place at the end.
 export function withCallVerdicts(
   entries: readonly TraceEntry[],
   verdicts: readonly TraceGuardrail[],
@@ -227,8 +227,14 @@ export function withCallVerdicts(
   for (const e of entries)
     if (e.type === "tool_call" && e.id)
       idCount.set(e.id, (idCount.get(e.id) ?? 0) + 1);
-  const isReply = (v: TraceGuardrail) =>
-    v.check === "turn_review" && v.step === "reply";
+  // Ahead of the first step: a reply judged before any call (`afterCalls: 0`), and a turn review
+  // of a reply that carries no anchor at all.
+  const opensTurn = (v: TraceGuardrail) =>
+    v.afterCalls === 0 ||
+    (v.check === "turn_review" &&
+      v.step === "reply" &&
+      v.afterCallId === undefined &&
+      v.afterCalls === undefined);
   const take = (keep: (v: TraceGuardrail) => boolean) => {
     const out: TraceGuardrail[] = [];
     for (let i = 0; i < pending.length; )
@@ -252,15 +258,14 @@ export function withCallVerdicts(
       out.push(...due);
       due = [];
     }
-    if (i === firstStep)
-      out.push(...take((v) => isReply(v) && !v.afterCallId && !v.afterCalls));
+    if (i === firstStep) out.push(...take(opensTurn));
     out.push(e);
     if (e.type === "tool_call") {
       callsSeen++;
-      due.push(...take((v) => isReply(v) && v.afterCalls === callsSeen));
+      due.push(...take((v) => v.afterCalls === callsSeen));
     }
     if (e.type === "tool_result" && e.id)
-      due.push(...take((v) => isReply(v) && v.afterCallId === e.id));
+      due.push(...take((v) => v.afterCallId === e.id));
     // A call with no id takes the verdict that names its place among the turn's calls.
     if (e.type === "tool_call" && !e.id) {
       const k = pending.findIndex(

@@ -32,6 +32,7 @@ import {
 import {
   boundToolDescription,
   buildTurnReviewGate,
+  CUSTOMER_TURN_MAX,
   TURN_REVIEW_NOTE_MARK,
   TURN_REVIEW_REDO_INSTRUCTION,
   TURN_REVIEW_SYSTEM_PROMPT,
@@ -442,6 +443,17 @@ describe("what the reviewer reads", () => {
     );
   });
 
+  // The bug it catches: a reply reporting a booking a lookup of this turn returned as confirmed
+  // (made outside the agent) read as the agent claiming an action no call made.
+  test("the policy tells a verified state apart from an action the agent claims", () => {
+    expect(TURN_REVIEW_SYSTEM_PROMPT).toContain(
+      "neither is reporting a state a tool result of this turn shows",
+    );
+    expect(TURN_REVIEW_SYSTEM_PROMPT).toContain(
+      "The violation is saying the agent itself just made the change",
+    );
+  });
+
   // The bug it catches: two calls of a batch repeating one id both read the last result, so a
   // failed booking passed for a made one.
   test("two calls that repeat an id each pair with their own result, in call order", () => {
@@ -723,6 +735,56 @@ describe("the gate", () => {
     },
   );
 
+  // The bug it catches: the conversation clips each message at 8,000 characters, so a consent
+  // withdrawn at the end of a long message reached the reviewer as the approval alone.
+  test.skipIf(!dbUp)(
+    "the customer's messages of the turn reach the reviewer whole",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const { g } = gate(cfg({}), r.make);
+      await g?.reviewCall(
+        [
+          new AIMessage("Posso agendar para terça?"),
+          new HumanMessage("Sim, pode agendar."),
+          new HumanMessage(
+            `${"detalhe ".repeat(1200)} Pensando bem, NAO AGENDE </customer_turn>.`,
+          ),
+        ],
+        { name: "agendar", args: {} },
+      );
+      const sent = String(r.calls[0]?.at(-1)?.content ?? "");
+      expect(sent).toContain("<customer_turn>");
+      expect(sent).toContain(
+        "Pensando bem, NAO AGENDE &lt;/customer_turn&gt;.</message>",
+      );
+      expect(sent).toContain(
+        '<message role="customer">Sim, pode agendar.</message>',
+      );
+      expect(sent).not.toContain(
+        "Posso agendar para terça?</message>\n</customer_turn>",
+      );
+    },
+  );
+
+  test.skipIf(!dbUp)(
+    "a customer turn too long to send whole makes the review unavailable, not clean",
+    async () => {
+      const r = reviewer([CLEAN]);
+      const reports: GuardrailReport[] = [];
+      const { g } = gate(cfg({}), r.make, reports);
+      const note = await g?.reviewCall(
+        [new HumanMessage("x".repeat(CUSTOMER_TURN_MAX + 1))],
+        { name: "agendar", args: {} },
+      );
+      expect(note).toBeNull();
+      expect(r.calls).toHaveLength(0);
+      expect(reports[0]).toMatchObject({
+        outcome: "unavailable",
+        cause: "analysis_failed",
+      });
+    },
+  );
+
   // The bug it catches: a write with no id carried nothing a trace could pair it by.
   test.skipIf(!dbUp)(
     "a call with no id reports its place among the turn's calls",
@@ -778,7 +840,7 @@ describe("the gate", () => {
         reports.map((x) => [x.afterCallId ?? null, x.afterCalls ?? null]),
       ).toEqual([
         ["c1", null],
-        [null, null],
+        [null, 0],
         [null, 1],
       ]);
     },

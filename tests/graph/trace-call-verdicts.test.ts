@@ -271,3 +271,69 @@ describe("withCallVerdicts with a write that has no id", () => {
     ]);
   });
 });
+
+// The bug it catches: a factual-grounding rewrite's verdict was listed after the rewrite's own
+// calls, as if the draft it judged came last.
+describe("withCallVerdicts with a factual-grounding rewrite", () => {
+  const grounding = (anchor: { afterCallId?: string; afterCalls?: number }) =>
+    ({
+      type: "guardrail",
+      direction: "output",
+      outcome: "revised",
+      check: "factual_grounding",
+      ...anchor,
+    }) as const;
+  const result = (id: string) =>
+    ({
+      type: "tool_result",
+      id,
+      name: "buscar",
+      output: "ok",
+      isError: false,
+    }) as const;
+  const label = (e: { type: string; id?: string | null }) =>
+    e.type === "guardrail" ? "veredito" : `${e.type}:${e.id ?? ""}`;
+
+  test("the verdict sits after the draft's calls and before the rewrite's", () => {
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: "a", name: "buscar", args: {} },
+        result("a"),
+        { type: "tool_call", id: "b", name: "buscar", args: {} },
+        result("b"),
+      ],
+      [grounding({ afterCallId: "a" })],
+    );
+    expect(placed.map(label)).toEqual([
+      "tool_call:a",
+      "tool_result:a",
+      "veredito",
+      "tool_call:b",
+      "tool_result:b",
+    ]);
+  });
+
+  test("a draft written before any call puts the verdict ahead of the rewrite's calls", () => {
+    const placed = withCallVerdicts(
+      [{ type: "tool_call", id: "b", name: "buscar", args: {} }, result("b")],
+      [grounding({ afterCalls: 0 })],
+    );
+    expect(placed.map(label)).toEqual([
+      "veredito",
+      "tool_call:b",
+      "tool_result:b",
+    ]);
+  });
+
+  test("a verdict with no anchor, as saved before, keeps its place at the end", () => {
+    const placed = withCallVerdicts(
+      [{ type: "tool_call", id: "b", name: "buscar", args: {} }, result("b")],
+      [grounding({})],
+    );
+    expect(placed.map(label)).toEqual([
+      "tool_call:b",
+      "tool_result:b",
+      "veredito",
+    ]);
+  });
+});

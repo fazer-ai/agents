@@ -754,6 +754,30 @@ describe("the turn review in the graph", () => {
     expect(indexes).toEqual([1, 2]);
   });
 
+  // The bug it catches: a turn lost while the reply was being reviewed still paid a redo, a model
+  // call whose answer nobody would send.
+  test("a turn lost during the reply's review asks for no redo", async () => {
+    let reviewed = false;
+    const model = new BoundRecordingModel([
+      { text: "Transferi você." },
+      { text: "NUNCA-PEDIDO" },
+    ]);
+    const { messages, replies } = await run(
+      model,
+      {
+        reply: () => {
+          reviewed = true;
+          return REPLY_NOTE;
+        },
+      },
+      { stillWanted: async () => !reviewed },
+    );
+    expect(replies).toEqual(["Transferi você."]);
+    expect(model.seen).toHaveLength(1);
+    expect(messages.map(text)).not.toContain("Transferi você.");
+    expect(text(messages.at(-1))).toBe("");
+  });
+
   test("ownership is read again after a batch only when a review ran in it", async () => {
     const reads = async (first: { name: string }[]) => {
       let asked = 0;

@@ -1427,6 +1427,14 @@ export function buildAgentGraph({
       const draft = customerFacingReply(own || recovered).text;
       const note = await reviewHeadedOut(view, draft, true);
       if (!note) break;
+      // The review was an awaited model call: a turn lost meanwhile ends here, the flagged draft left
+      // out and nothing generated, and the caller's own fence settles it as called off.
+      if (await turnLost()) {
+        logger.info(
+          "graph: the turn was called off during the turn review of its reply, so no redo was asked",
+        );
+        return { messages: [...narration, ...draftRemoved, new AIMessage("")] };
+      }
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
       const redo = await ask(

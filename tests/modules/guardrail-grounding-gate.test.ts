@@ -365,6 +365,31 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     expect(gate?.pending()).toBeNull();
   });
 
+  // The bug it catches: a revised verdict carried no place in the turn, so a trace listed it after
+  // the rewrite and the calls the rewrite made.
+  test("a revised report names the draft's place in the turn", async () => {
+    const reports: GuardrailReport[] = [];
+    const gate = buildGroundingGate({
+      langfuseCfg: null,
+      clock: CLOCK,
+      cfg: cfg("revise"),
+      reviewer: RUNS,
+      flow: flow(),
+      makeModel: reviewer(VIOLATED).make,
+      announce: (rep) => {
+        reports.push(rep);
+      },
+    });
+    const t = turn();
+    await gate?.review(t);
+    const ids = t.flatMap(
+      (m) => (m as { tool_calls?: { id?: string }[] }).tool_calls ?? [],
+    );
+    expect(reports[0]?.outcome).toBe("revised");
+    expect(ids.at(-1)?.id).toBeTruthy();
+    expect(reports[0]?.afterCallId).toBe(ids.at(-1)?.id);
+  });
+
   test("an empty rewrite leaves the Output template as the decision", async () => {
     const gate = buildGroundingGate({
       langfuseCfg: null,

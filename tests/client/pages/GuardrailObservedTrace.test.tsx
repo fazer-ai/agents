@@ -34,4 +34,30 @@ describe("an observed trip in the playground trace", () => {
     expect(text.includes("unsafe_content — RAZAO-OBS-1")).toBe(true);
     expect(text.includes("only recorded")).toBe(true);
   });
+
+  // The bug it catches: a turn-review redo shown with its verdict but not its reason, which is what
+  // an operator tuning the instructions came to read.
+  test("a turn review that sent a step back shows the reason", () => {
+    const { container } = render(
+      withI18n(
+        <TraceRow
+          entry={{
+            type: "guardrail",
+            direction: "output",
+            outcome: "revised",
+            action: "revise",
+            check: "turn_review",
+            step: "call",
+            tool: "agendar",
+            categories: ["turn_review"],
+            rationale: "RAZAO-REVISAO-1",
+          }}
+        />,
+        createTestI18n("en", catalogs),
+      ),
+    );
+    expect((container.textContent ?? "").includes("RAZAO-REVISAO-1")).toBe(
+      true,
+    );
+  });
 });

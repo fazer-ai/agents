@@ -32,7 +32,7 @@ import {
   buildModelAndGraph,
   buildSpeechNormalizer,
   loadAgentConfig,
-  operatorToolGuidance,
+  reviewerToolGuidance,
 } from "@/graph/prepare";
 import { GROUNDING_DIRECTIVE } from "@/graph/prompt";
 import { rememberWhatWasSent, undoRefusedTurn } from "@/graph/refused-turn";
@@ -1023,7 +1023,7 @@ async function runPlaygroundTurnOnce(
         cfg: loadedConfig.guardrails,
         reviewer: loadedConfig.turnReviewer,
         systemPrompt: loadedConfig.systemPrompt,
-        toolGuidance: operatorToolGuidance(loadedConfig),
+        toolGuidance: reviewerToolGuidance(loadedConfig),
         flow,
         logValues: loadedConfig.logToolValues,
         announce: (r) => {

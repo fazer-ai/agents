@@ -216,6 +216,11 @@ export function withCallVerdicts(
   verdicts: readonly TraceGuardrail[],
 ): TraceEntry[] {
   const pending = [...verdicts];
+  // How many calls carry each id: the fallback by id alone is taken only when it cannot be wrong.
+  const idCount = new Map<string, number>();
+  for (const e of entries)
+    if (e.type === "tool_call" && e.id)
+      idCount.set(e.id, (idCount.get(e.id) ?? 0) + 1);
   const out: TraceEntry[] = [];
   for (const e of entries) {
     out.push(e);
@@ -223,7 +228,15 @@ export function withCallVerdicts(
       // By id and tool name, in order: an id a provider repeats does not pair a verdict with the
       // wrong call.
       let k = pending.findIndex((v) => v.callId === e.id && v.tool === e.name);
-      if (k < 0) k = pending.findIndex((v) => v.callId === e.id);
+      // By id alone only for a verdict that names no tool, or an id no other call carries whose
+      // tool name the trace may have clipped.
+      if (k < 0)
+        k = pending.findIndex(
+          (v) =>
+            v.callId === e.id &&
+            (v.tool === undefined ||
+              (idCount.get(e.id as string) === 1 && e.name.startsWith(v.tool))),
+        );
       if (k >= 0) out.push(...pending.splice(k, 1));
     }
   }

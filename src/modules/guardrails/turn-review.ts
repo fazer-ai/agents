@@ -112,6 +112,8 @@ const EARLIER_TAG = "earlier_tool_calls";
 // The earlier record is evidence, kept lean: the latest calls only, each result clipped short.
 const EARLIER_CALLS_MAX = 12;
 const EARLIER_RESULT_MAX = 600;
+// Each tool's guidance, an operator-written description included, kept to a bounded size.
+const TOOL_INSTRUCTION_MAX = 2000;
 const STEP_TAG = "proposed_step";
 // Data inside a block has its angle brackets escaped, so no text it carries can open or close a tag,
 // however nested. Removing known tags instead leaves a tag behind once an inner one is cut out.
@@ -155,7 +157,7 @@ function toolInstructionsBlock(
       "<tool_instructions>",
       ...entries.map(
         ([name, text]) =>
-          `<tool_instruction name="${quotedName(name)}">\n${asData(text.trim())}\n</tool_instruction>`,
+          `<tool_instruction name="${quotedName(name)}">\n${asData(clipText(text.trim(), TOOL_INSTRUCTION_MAX))}\n</tool_instruction>`,
       ),
       "</tool_instructions>",
     ].join("\n"),

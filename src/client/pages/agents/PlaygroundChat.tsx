@@ -1618,7 +1618,10 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
             ))}
           </ul>
         )}
-        {(tripped || entry.outcome === "observed") &&
+        {/* A turn-review redo carries the reviewer's reason too: it is what the agent was told. */}
+        {(tripped ||
+          entry.outcome === "observed" ||
+          (entry.check === "turn_review" && entry.outcome === "revised")) &&
           !entry.scores &&
           !entry.claims &&
           !entry.external && (

@@ -1538,6 +1538,40 @@ export function operatorToolGuidance(
   return toolInstructions;
 }
 
+// What the turn reviewer reads as the operator's word on each tool: the guidance above, and for a
+// custom HTTP tool the description the operator wrote, with the arguments they described. A native
+// name is left to the native tool, which keeps it. Only the tools a turn binds reach the reviewer.
+export function reviewerToolGuidance(
+  cfg: Pick<
+    AgentConfig,
+    "toolGuidance" | "handoffConfig" | "kanbanConfig" | "httpToolDefs"
+  >,
+): Partial<Record<string, string>> {
+  const native = new Set<string>(NATIVE_TOOL_NAMES);
+  const custom: Record<string, string> = {};
+  for (const d of cfg.httpToolDefs) {
+    if (native.has(d.name)) continue;
+    const props = (d.inputSchema as { properties?: Record<string, unknown> })
+      ?.properties;
+    const args = Object.entries(props ?? {})
+      .map(([k, v]) => {
+        const desc = (v as { description?: unknown })?.description;
+        return typeof desc === "string" && desc.trim()
+          ? `- ${k}: ${desc.trim()}`
+          : null;
+      })
+      .filter((l): l is string => l !== null);
+    const text = [
+      d.description?.trim() ?? "",
+      ...(args.length ? ["Arguments:", ...args] : []),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (text) custom[d.name] = text;
+  }
+  return { ...custom, ...operatorToolGuidance(cfg) };
+}
+
 export async function buildToolset(
   cfg: AgentConfig,
   ctx: ToolsetCtx,

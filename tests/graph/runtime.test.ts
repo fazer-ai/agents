@@ -12059,6 +12059,112 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           ).toBe(true);
         });
 
+      // The closing line was reviewed with its `handoff_to_human` and approved: the fallback stands
+      // in for a step the review refused, never for one it passed. So after a completed transfer a
+      // later write still flagged past the attempts is refused and ends the turn, the approved line
+      // goes out, and nothing is transferred again.
+      for (const [fallback, convId] of [
+        ["silent", 7959],
+        ["template", 7960],
+      ] as const)
+        test(`after an approved handoff, a write flagged past the attempts keeps the approved line under the ${fallback} fallback`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
+                  enabled: true,
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: {
+                    enabled: false,
+                    templateMessage: "TEMPLATE-OUT",
+                    handoffMessage: "HANDOFF-OUT",
+                  },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback,
+                  },
+                },
+              },
+            },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          let asked = 0;
+          const agent = {
+            async invoke() {
+              return new AIMessage("");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 3) return new AIMessage("");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      asked === 1
+                        ? {
+                            name: "handoff_to_human",
+                            args: { customerMessage: "LINHA-APROVADA" },
+                            id: "h1",
+                          }
+                        : {
+                            name: "private_note",
+                            args: { content: "NOTA-DO-AGENTE" },
+                            id: `n${asked}`,
+                          },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+                cfg.model === GUARD_MODEL
+                  ? guardrailModel(async (msgs) => {
+                      const flagged = msgs.some((m) =>
+                        String((m as BaseMessage).content).includes(
+                          'calls the tool "private_note"',
+                        ),
+                      );
+                      return {
+                        content: JSON.stringify({
+                          violated: flagged,
+                          categories: flagged ? ["turn_review"] : [],
+                          rationale: flagged ? "Não anote." : "",
+                          suggestedReply: null,
+                        }),
+                      };
+                    })
+                  : agent,
+              makeClient: guardStub(sent, notes, toggles),
+              checkpointer: new MemorySaver(),
+            },
+          });
+          expect(notes.some(([, n]) => n.includes("NOTA-DO-AGENTE"))).toBe(
+            false,
+          );
+          expect(sent.map(([, t]) => t)).toEqual(["LINHA-APROVADA"]);
+          expect(toggles.filter(([, st]) => st === "open")).toHaveLength(1);
+        });
+
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn
       // handed the conversation over: a write after it is still reviewed, and a flagged one does not run.
       test("a write after a completed transfer is still reviewed, and a flagged one does not run", async () => {

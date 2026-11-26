@@ -1353,11 +1353,34 @@ export function guardrailTraceLabel(
   t: (key: string, fallback: string) => string,
   entry: Pick<
     Extract<TraceEntry, { type: "guardrail" }>,
-    "direction" | "outcome" | "action" | "held" | "external" | "check"
+    "direction" | "outcome" | "action" | "held" | "external" | "check" | "step"
   >,
 ): string {
+  // The turn review says what happened to the step it judged: a call that did not run, a reply redone.
+  if (entry.check === "turn_review") {
+    if (entry.outcome === "revised")
+      return entry.step === "call"
+        ? t(
+            "playground.trace.turnReviewCallRevised",
+            "against the agent's instructions; the call did not run and the agent was told why",
+          )
+        : t(
+            "playground.trace.turnReviewReplyRevised",
+            "against the agent's instructions; the agent redid the reply",
+          );
+    if (entry.outcome === "observed")
+      return t(
+        "playground.trace.turnReviewObserved",
+        "against the agent's instructions; only recorded, the step went ahead",
+      );
+    if (entry.outcome === "clean")
+      return t(
+        "playground.trace.turnReviewClean",
+        "follows the agent's instructions",
+      );
+  }
   // The factual-grounding check names what it found, and under `revise` that the agent rewrote it.
-  if (entry.check) {
+  if (entry.check === "factual_grounding") {
     if (entry.outcome === "revised")
       return t(
         "playground.trace.groundingRevised",
@@ -1512,20 +1535,30 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
           <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
           {entry.external
             ? t("playground.trace.externalCheck", "External check on the reply")
-            : entry.check
-              ? t(
-                  "playground.trace.groundingCheck",
-                  "Factual grounding of the reply",
-                )
-              : entry.direction === "input"
-                ? t(
-                    "playground.trace.guardrailInput",
-                    "Guardrail on the message",
-                  )
+            : entry.check === "turn_review"
+              ? entry.step === "call"
+                ? t("playground.trace.turnReviewCall", {
+                    defaultValue: "Turn review of the call to {{tool}}",
+                    tool: entry.tool ?? "",
+                  })
                 : t(
-                    "playground.trace.guardrailOutput",
-                    "Guardrail on the reply",
-                  )}
+                    "playground.trace.turnReviewReply",
+                    "Turn review of the reply",
+                  )
+              : entry.check
+                ? t(
+                    "playground.trace.groundingCheck",
+                    "Factual grounding of the reply",
+                  )
+                : entry.direction === "input"
+                  ? t(
+                      "playground.trace.guardrailInput",
+                      "Guardrail on the message",
+                    )
+                  : t(
+                      "playground.trace.guardrailOutput",
+                      "Guardrail on the reply",
+                    )}
           <span className="text-text-muted font-normal">
             {guardrailTraceLabel(t, entry)}
           </span>

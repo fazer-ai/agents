@@ -4,14 +4,14 @@ import {
   AIMessage,
   type BaseMessage,
   HumanMessage,
-  type ToolMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import { contentToText } from "@/graph/message-text";
-import { markRead } from "@/graph/tools/reads";
+import { markRead, markReadOnly } from "@/graph/tools/reads";
 
 // The turn review in the graph: a write call it flags never runs and the model reads why, a read is
 // never reviewed, and a reply it flags is redone with the whole toolset and reviewed again. A made-up
@@ -56,13 +56,26 @@ class BoundRecordingModel {
 }
 
 const ran: string[] = [];
-const buscarPedido = markRead(
+const buscarPedido = markReadOnly(
+  markRead(
+    tool(
+      async () => {
+        ran.push("buscar_pedido");
+        return '{"pedido":"123","status":"em trânsito"}';
+      },
+      { name: "buscar_pedido", description: "pedido", schema: z.object({}) },
+    ),
+  ),
+);
+// A read whose result the model needs, with nothing saying it has no effect: an integration or MCP
+// tool is marked this way, and it is reviewed.
+const consultarAgenda = markRead(
   tool(
     async () => {
-      ran.push("buscar_pedido");
-      return '{"pedido":"123","status":"em trânsito"}';
+      ran.push("consultar_agenda");
+      return '{"livre":"amanhã 10h"}';
     },
-    { name: "buscar_pedido", description: "pedido", schema: z.object({}) },
+    { name: "consultar_agenda", description: "agenda", schema: z.object({}) },
   ),
 );
 const transferir = tool(
@@ -82,32 +95,45 @@ async function run(
     call?: (name: string) => string | null;
     reply?: (reply: string) => string | null;
   },
+  opts: {
+    history?: BaseMessage[];
+    recoversReply?: () => boolean;
+    halted?: () => boolean;
+    stillWanted?: () => Promise<boolean>;
+  } = {},
 ) {
   ran.length = 0;
   const calls: string[] = [];
   const replies: string[] = [];
+  const canRedo: boolean[] = [];
   const graph = buildAgentGraph({
     primary: { provider: "openai", model: "test-model" },
     model: model as unknown as BaseChatModel,
     systemPrompt: "PROMPT",
     checkpointer: new MemorySaver(),
-    tools: [buscarPedido, transferir],
+    tools: [buscarPedido, consultarAgenda, transferir],
+    recoversReply: opts.recoversReply,
+    turnReviewHalted: opts.halted,
+    stillWanted: opts.stillWanted,
     reviewCall: async (_turn, call) => {
       calls.push(call.name);
       return hooks.call?.(call.name) ?? null;
     },
-    reviewTurnReply: async (_turn, reply) => {
+    reviewTurnReply: async (_turn, reply, o) => {
       replies.push(reply);
+      canRedo.push(o?.canRedo ?? true);
       return hooks.reply?.(reply) ?? null;
     },
   });
   const out = await graph.invoke(
     {
-      messages: [new HumanMessage("Cadê meu pedido? Quero falar com alguém.")],
+      messages: opts.history ?? [
+        new HumanMessage("Cadê meu pedido? Quero falar com alguém."),
+      ],
     },
     { configurable: { thread_id: `tr-${Math.random()}` } },
   );
-  return { messages: out.messages as BaseMessage[], calls, replies };
+  return { messages: out.messages as BaseMessage[], calls, replies, canRedo };
 }
 
 const text = (m: BaseMessage | undefined) =>
@@ -167,7 +193,11 @@ describe("the turn review in the graph", () => {
     const { messages, calls, replies } = await run(model, {
       reply: (r) => (r === "Vou te passar para a equipe." ? REPLY_NOTE : null),
     });
-    expect(model.bound[1]).toEqual(["buscar_pedido", "transferir"]);
+    expect(model.bound[1]).toEqual([
+      "buscar_pedido",
+      "consultar_agenda",
+      "transferir",
+    ]);
     expect(
       model.seen[1]?.some(
         (m) => m.getType() === "system" && text(m).includes(REPLY_NOTE),
@@ -198,5 +228,110 @@ describe("the turn review in the graph", () => {
     expect(replies).toEqual(["rascunho 1", "rascunho 2", "rascunho 3"]);
     expect(text(messages.at(-1))).toBe("rascunho 3");
     expect(model.seen).toHaveLength(3);
+  });
+
+  test("a read-only tool is not reviewed, and a read that may have effects is", async () => {
+    const model = new BoundRecordingModel([
+      {
+        text: "",
+        calls: [{ name: "buscar_pedido" }, { name: "consultar_agenda" }],
+      },
+      { text: "Seu pedido está em trânsito." },
+    ]);
+    const { calls } = await run(model, {});
+    expect(calls).toEqual(["consultar_agenda"]);
+  });
+
+  test("a turn called off while the review ran refuses the call instead of running it", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "transferir" }] },
+      { text: "Pronto." },
+    ]);
+    let reads = 0;
+    const { calls, messages } = await run(
+      model,
+      {},
+      {
+        // Wanted at the veto before the review, gone by the read after it.
+        stillWanted: async () => reads++ === 0,
+      },
+    );
+    expect(calls).toEqual(["transferir"]);
+    expect(ran).toEqual([]);
+    expect(model.seen).toHaveLength(1);
+    expect(text(messages.at(-1))).toBe("");
+  });
+
+  test("a review that held ends the round with every call refused", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "buscar_pedido" }, { name: "transferir" }] },
+      { text: "Pronto." },
+    ]);
+    const { calls, messages } = await run(model, {}, { halted: () => true });
+    expect(calls).toEqual(["transferir"]);
+    expect(ran).toEqual([]);
+    expect(model.seen).toHaveLength(1);
+    expect(messages.filter((m) => m.getType() === "tool")).toHaveLength(2);
+    expect(text(messages.at(-1))).toBe("");
+  });
+
+  test("the reply written beside an earlier call is reviewed, and a flagged one leaves the thread before the redo", async () => {
+    const model = new BoundRecordingModel([
+      {
+        text: "Vou te passar para a equipe.",
+        calls: [{ name: "buscar_pedido" }],
+      },
+      { text: "" },
+      { text: "Seu pedido está em trânsito." },
+    ]);
+    const { messages, replies } = await run(
+      model,
+      {
+        reply: (r) =>
+          r === "Vou te passar para a equipe." ? REPLY_NOTE : null,
+      },
+      { recoversReply: () => true },
+    );
+    expect(replies).toEqual([
+      "Vou te passar para a equipe.",
+      "Seu pedido está em trânsito.",
+    ]);
+    expect(
+      messages.some((m) => text(m) === "Vou te passar para a equipe."),
+    ).toBe(false);
+    expect(text(messages.at(-1))).toBe("Seu pedido está em trânsito.");
+  });
+
+  test("on a stalled turn the recovered reply is reviewed with no redo, and a flagged one leaves the thread", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "buscar_pedido" }] },
+    ]);
+    const { messages, replies, canRedo } = await run(
+      model,
+      { reply: () => REPLY_NOTE },
+      {
+        recoversReply: () => true,
+        history: [
+          new HumanMessage("Cadê meu pedido?"),
+          new AIMessage({
+            content: "Vou te passar para a equipe.",
+            tool_calls: [{ name: "buscar_pedido", args: {}, id: "call_1_0" }],
+          }),
+          new ToolMessage({
+            content: '{"pedido":"123"}',
+            tool_call_id: "call_1_0",
+            name: "buscar_pedido",
+          }),
+        ],
+      },
+    );
+    expect([replies, canRedo]).toEqual([
+      ["Vou te passar para a equipe."],
+      [false],
+    ]);
+    expect(model.seen).toHaveLength(1);
+    expect(
+      messages.some((m) => text(m) === "Vou te passar para a equipe."),
+    ).toBe(false);
   });
 });

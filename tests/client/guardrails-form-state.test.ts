@@ -106,6 +106,34 @@ describe("guardrails form state", () => {
 });
 
 describe("playgroundGuardrailsUsable", () => {
+  // The bug it catches: a turn reviewer on a keyless compatible endpoint, or on the chat key while
+  // screening runs on Decisions, calls out on every write call and reply while the toggle that would
+  // skip it reads disabled.
+  test("is usable when only the turn reviewer can call out", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const keyless = {
+      ...on,
+      credentialRef: null,
+      provider: "openai-compatible" as const,
+      baseURL: "http://revisor.local/v1",
+      turnReview: { ...on.turnReview, enabled: true },
+    };
+    expect([
+      playgroundGuardrailsUsable(keyless),
+      playgroundGuardrailsUsable({
+        ...keyless,
+        turnReview: { ...keyless.turnReview, enabled: false },
+      }),
+      playgroundGuardrailsUsable({
+        ...keyless,
+        classifier: "decisions" as const,
+        provider: "anthropic" as const,
+        credentialRef: "vault:3",
+        decisions: { ...on.decisions, credentialRef: null },
+      }),
+    ]).toEqual([true, false, true]);
+  });
+
   // The bug it catches: a grounding reviewer with its own key bills playground turns while the toggle
   // that would skip it reads disabled.
   test("is usable when only the factual-grounding reviewer has a key", () => {

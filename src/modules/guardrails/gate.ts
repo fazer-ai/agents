@@ -119,6 +119,9 @@ export interface GuardrailReport {
   action?: GuardrailAction | "revise";
   // Set on a report of the factual-grounding check (./grounding-gate.ts), with the claims it found.
   check?: typeof FACTUAL_GROUNDING_KEY | typeof TURN_REVIEW_KEY;
+  // Set on a turn-review report: which step was judged, and the tool for a call.
+  step?: "call" | "reply";
+  tool?: string;
   claims?: GroundingClaim[];
   // Model-written, and only on a trip.
   categories?: string[];

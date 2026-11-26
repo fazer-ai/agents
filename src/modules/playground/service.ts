@@ -472,7 +472,9 @@ async function buildPlaygroundGraph(params: {
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
+    opts?: { canRedo: boolean },
   ) => Promise<string | null>;
+  turnReviewHalted?: () => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -544,6 +546,7 @@ async function buildPlaygroundGraph(params: {
     onReplyRevised: params.onReplyRevised,
     reviewCall: params.reviewCall,
     reviewTurnReply: params.reviewTurnReply,
+    turnReviewHalted: params.turnReviewHalted,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -1028,11 +1031,18 @@ async function runPlaygroundTurnOnce(
       turnId,
       flow,
       loaded: loadedConfig,
-      reviewReply: grounding?.review,
+      // Skipped once the turn review decided the output, as in the inbox: its fallback wins.
+      reviewReply: grounding
+        ? (turn, reply) =>
+            turnReview?.pending()
+              ? Promise.resolve(null)
+              : grounding.review(turn, reply)
+        : undefined,
       revisionPlan: grounding?.revisionPlan,
       onReplyRevised: grounding?.revised,
       reviewCall: turnReview?.reviewCall,
       reviewTurnReply: turnReview?.reviewReply,
+      turnReviewHalted: turnReview?.halted,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,

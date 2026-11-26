@@ -243,9 +243,18 @@ export interface TurnReviewGate {
     call: { name: string; args: unknown },
   ) => Promise<string | null>;
   // The graph's `reviewTurnReply`: the final reply, before the factual-grounding review and the send.
-  reviewReply: (turn: BaseMessage[], reply: string) => Promise<string | null>;
+  // With `canRedo: false` (no model call left) a flagged reply meets the fallback at once, and the
+  // note only tells the graph it was flagged.
+  reviewReply: (
+    turn: BaseMessage[],
+    reply: string,
+    opts?: { canRedo: boolean },
+  ) => Promise<string | null>;
   // The fallback the caller's output gate applies, once the attempts ran out or a review held.
   pending: () => GuardrailDecision | null;
+  // The graph's `turnReviewHalted`: a review held under `onFailure: "hold"`, so no write may run and
+  // the round ends for the caller to hand the conversation over.
+  halted: () => boolean;
 }
 
 // Null unless the check is on: the caller then passes no hooks, and nothing about the turn changes.
@@ -265,6 +274,7 @@ export function buildTurnReviewGate(
   // Revisions sent back this turn, and whether reviewing stopped (attempts spent, or a held review).
   let attempts = 0;
   let stopped = false;
+  let held = false;
   let model: BaseChatModel | null | undefined;
   let buildError: string | undefined;
   const resolveModel = (): BaseChatModel | null => {
@@ -348,18 +358,25 @@ export function buildTurnReviewGate(
     });
     if (holds) {
       stopped = true;
+      held = true;
       decision = {
         kind: "handed-off",
         reply: gr.output.handoffMessage || null,
       };
       await p.announce?.({
         ...base,
+        ...stepDetail(step),
         outcome: "handed-off",
         held: true,
         cause: outcome,
       });
     } else {
-      await p.announce?.({ ...base, outcome: "unavailable", cause: outcome });
+      await p.announce?.({
+        ...base,
+        ...stepDetail(step),
+        outcome: "unavailable",
+        cause: outcome,
+      });
     }
     return null;
   };
@@ -367,6 +384,7 @@ export function buildTurnReviewGate(
   const review = async (
     turn: BaseMessage[],
     step: TurnStep,
+    canRedo = true,
   ): Promise<string | null> => {
     if (stopped || p.signal?.aborted) return null;
     const m = resolveModel();
@@ -414,7 +432,7 @@ export function buildTurnReviewGate(
         level: "info",
         detail: { ...base, verdict: "clean", ...timed },
       });
-      await p.announce?.({ ...base, outcome: "clean" });
+      await p.announce?.({ ...base, ...stepDetail(step), outcome: "clean" });
       return null;
     }
     const rationale = verdict.rationale;
@@ -423,6 +441,7 @@ export function buildTurnReviewGate(
       : { rationaleChars: rationale.length };
     const report: GuardrailReport = {
       ...base,
+      ...stepDetail(step),
       outcome: "observed",
       categories: [TURN_REVIEW_KEY],
       rationale,
@@ -443,7 +462,7 @@ export function buildTurnReviewGate(
       await p.announce?.({ ...report, action: "observe" });
       return null;
     }
-    if (attempts < tr.maxAttempts) {
+    if (canRedo && attempts < tr.maxAttempts) {
       attempts += 1;
       emitFlowEvent(p.flow, {
         stage: "guardrail",
@@ -484,16 +503,18 @@ export function buildTurnReviewGate(
       action: tr.fallback,
       ...(step.kind === "reply" ? { refused: step.text } : {}),
     });
-    return null;
+    // A reply that cannot be redone is still flagged: the graph takes its draft out of the thread.
+    return canRedo ? null : turnReviewNote(step, rationale);
   };
 
   return {
     reviewCall: (turn, call) =>
       review(turn, { kind: "call", name: call.name, args: call.args }),
-    reviewReply: (turn, reply) =>
+    reviewReply: (turn, reply, opts) =>
       reply.trim()
-        ? review(turn, { kind: "reply", text: reply })
+        ? review(turn, { kind: "reply", text: reply }, opts?.canRedo ?? true)
         : Promise.resolve(null),
     pending: () => decision,
+    halted: () => held,
   };
 }

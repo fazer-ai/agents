@@ -74,7 +74,7 @@ import {
   fenceReporterOf,
   withFenceReporter,
 } from "./tools/fence-report";
-import { isReadTool } from "./tools/reads";
+import { isReadOnlyTool, isReadTool } from "./tools/reads";
 import { unansweredInputs } from "./unanswered-inputs";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
@@ -232,10 +232,16 @@ export interface BuildAgentGraphParams {
     turn: BaseMessage[],
     call: { name: string; args: unknown },
   ) => Promise<string | null>;
+  // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
+  // fallback at once, and the note only says it was flagged.
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
+    opts?: { canRedo: boolean },
   ) => Promise<string | null>;
+  // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
+  // runs nothing more and ends the round, so the caller hands the conversation over before any write.
+  turnReviewHalted?: () => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -780,6 +786,7 @@ export function buildAgentGraph({
   recoversReply,
   reviewCall,
   reviewTurnReply,
+  turnReviewHalted,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -902,9 +909,21 @@ export function buildAgentGraph({
       (silentTurn && hardLimit)
     ) {
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
+      // The turn review of that same recovered reply, first: with no model call left to redo it, a
+      // flagged one meets the fallback, and its draft leaves the thread.
+      const recoveredForTurn =
+        reviewTurnReply && !noReplyChannel && !silentTurn && recoversReply?.()
+          ? customerFacingReply(replyWrittenThisTurn(history)).text
+          : "";
+      const turnFlagged = recoveredForTurn
+        ? !!(await reviewTurnReply?.(history, recoveredForTurn, {
+            canRedo: false,
+          }))
+        : false;
       // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
       // no model call left to rewrite it, a revise reads as an empty rewrite.
       const recovered =
+        !turnFlagged &&
         reviewReply &&
         !replyRevised &&
         !noReplyChannel &&
@@ -929,7 +948,9 @@ export function buildAgentGraph({
       return {
         messages: [
           ...narration,
-          ...(replyRevised && recovered ? recoveredDraftRemoved(history) : []),
+          ...((replyRevised && recovered) || turnFlagged
+            ? recoveredDraftRemoved(history)
+            : []),
           ...(stalled ? dropRepeatedBatch(history) : []),
           new AIMessage(""),
         ],
@@ -1241,19 +1262,31 @@ export function buildAgentGraph({
     }
     // NOTE: from here on a `—` is the empty answer: the review below must not take it as a candidate.
     if (fillerOnly(response)) response = withoutText(response);
-    // NOTE: the turn review of the final answer, before the factual-grounding one. A note asks the model
+    // The turn review of the final answer, before the factual-grounding one. A note asks the model
     // again with the whole toolset: a reply that promised a transfer can now make it, and the draft
     // never reaches the thread. A redone reply is reviewed again, a call goes to the tools node, and
     // the gate stops sending notes once its attempts are spent.
+    // The reply under review is the one that would go out: the final text, or, when that is empty,
+    // the reply written beside an earlier call that the runtime recovers (`replyWrittenThisTurn`). A
+    // flagged recovered draft leaves the thread, so neither a later review nor the delivery finds it.
+    let draftRemoved: BaseMessage[] = [];
+    let recoveredGone = false;
     while (reviewTurnReply && !noReplyChannel && !silentTurn) {
       if (((response as AIMessage).tool_calls?.length ?? 0) > 0) break;
-      const draft = customerFacingReply(
-        contentToText(response.content).trim(),
-      ).text;
+      const own = contentToText(response.content).trim();
+      const recovered =
+        !own && !recoveredGone && recoversReply?.()
+          ? replyWrittenThisTurn([...history, response])
+          : "";
+      const draft = customerFacingReply(own || recovered).text;
       const note = draft
         ? await reviewTurnReply([...history, response], draft)
         : null;
       if (!note) break;
+      if (!own && recovered) {
+        draftRemoved = recoveredDraftRemoved([...history, response]);
+        recoveredGone = true;
+      }
       response = await ask(
         lateSystemAccepted
           ? [...messages, new SystemMessage(note)]
@@ -1261,7 +1294,9 @@ export function buildAgentGraph({
       );
       if (fillerOnly(response)) response = withoutText(response);
       if (((response as AIMessage).tool_calls?.length ?? 0) > 0)
-        return { messages: [...narration, silenced(response)] };
+        return {
+          messages: [...narration, ...draftRemoved, silenced(response)],
+        };
     }
     // The factual-grounding review's candidate, on a turn that answers somebody and did not decide
     // silence: the final text, or, when that is empty, the reply written beside an earlier call that
@@ -1275,12 +1310,11 @@ export function buildAgentGraph({
       ((response as AIMessage).tool_calls?.length ?? 0) === 0
         ? customerFacingReply(
             contentToText(response.content).trim() ||
-              (recoversReply?.()
+              (!recoveredGone && recoversReply?.()
                 ? replyWrittenThisTurn([...history, response])
                 : ""),
           ).text
         : "";
-    let draftRemoved: BaseMessage[] = [];
     if (reviewReply && candidate) {
       const note = await reviewReply([...history, response], candidate);
       if (note) {
@@ -1371,11 +1405,13 @@ export function buildAgentGraph({
   let endedOnWrites = false;
   const toolNode = hasTools ? new ToolNode(tools) : null;
   const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));
-  // A call the turn review judges: one to a tool of the set that is not a read. A name the toolset
+  // A call the turn review judges: one to a tool of the set that can change something, so every
+  // tool but the read-only ones (`isReadOnlyTool`: an HTTP GET, an effect-free tool, a utility
+  // native). An MCP or integration tool is reviewed: nothing says it only reads. A name the toolset
   // does not have is answered with an error by `ToolNode`, so there is nothing to judge.
   const isWriteName = (name: string): boolean => {
     const t = toolsByName.get(name);
-    return t !== undefined && !isReadTool(t);
+    return t !== undefined && !isReadOnlyTool(t);
   };
 
   // An observation ends after a step of writes alone, every one accepted: its client is muted, so the
@@ -1436,6 +1472,11 @@ export function buildAgentGraph({
     // fence, whose reads are the stretch a deadline can fire in.
     const wanted = fenceSays && !jobSignal?.aborted;
     if (wanted) return null;
+    return refuseBatch(calls);
+  };
+  const refuseBatch = (
+    calls: Parameters<typeof calledOffToolResult>[0][],
+  ): { messages: BaseMessage[] } => {
     calledOffAtTools = true;
     logger.info(
       "graph: the turn was called off mid-invoke, so %d tool call(s) were refused instead of run",
@@ -1510,6 +1551,16 @@ export function buildAgentGraph({
                   reviewCall,
                 )
               : null;
+          // The reviews are awaited model calls, so ownership is read again before anything runs, and
+          // a review that held ends the round with every call refused: the caller hands over next.
+          if (reviewCall && !revision) {
+            if (turnReviewHalted?.()) {
+              const last = state.messages.at(-1) as AIMessage;
+              return refuseBatch(last.tool_calls ?? []);
+            }
+            const late = await refuseCalledOffCalls(state);
+            if (late) return late;
+          }
           if (!contradicted && !reviewed) {
             // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
             const ran = await toolNode!.invoke(serverView, heard);

@@ -2586,7 +2586,10 @@
       "turnReviewFallbackHandoff": "Transferir a conversa para a equipe",
       "turnReviewFallbackHint": "Usa as mensagens definidas em Saída.",
       "turnReviewFallbackSilent": "Não enviar nada",
-      "turnReviewFallbackTemplate": "Enviar a mensagem template"
+      "turnReviewFallbackTemplate": "Enviar a mensagem template",
+      "turnReviewHandoff": "Mensagem ao cliente (a mesma de Saída)",
+      "turnReviewModelHint": "A revisão do turno usa este modelo de chat e a chave dele.",
+      "turnReviewTemplate": "Mensagem template (a mesma de Saída)"
     },
     "handoffAgentChoice": "A IA escolhe",
     "handoffAgentChoiceDecisions": "Esta transferência está em “A IA escolhe”, e perguntas e regras não têm modelo para escolher: troque para o roteamento do Chatwoot ou para um agente ou time específico.",
@@ -4901,6 +4904,12 @@
       "simulated": "simulado",
       "sources": "Fontes",
       "toggle": "Detalhes da execução",
+      "turnReviewCall": "Revisão do turno da chamada a {{tool}}",
+      "turnReviewCallRevised": "contra as instruções do agente; a chamada não rodou e o agente soube o motivo",
+      "turnReviewClean": "segue as instruções do agente",
+      "turnReviewObserved": "contra as instruções do agente; só registrado, o passo seguiu",
+      "turnReviewReply": "Revisão do turno da resposta",
+      "turnReviewReplyRevised": "contra as instruções do agente; o agente refez a resposta",
       "visionDocument": "Leitura de documento",
       "visionImage": "Leitura de imagem"
     },

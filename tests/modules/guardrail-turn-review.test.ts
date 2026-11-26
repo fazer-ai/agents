@@ -349,6 +349,11 @@ describe("the gate", () => {
       expect(await g?.reviewCall(turn(), HANDOFF_CALL)).toBeNull();
       expect(r.calls).toHaveLength(2);
       expect(reports.map((x) => x.outcome)).toEqual(["revised", "handed-off"]);
+      // The trace names the step each report came from.
+      expect(reports.map((x) => [x.step, x.tool])).toEqual([
+        ["call", "handoff_to_human"],
+        ["reply", undefined],
+      ]);
       const rows = await lines(f.turnId as string);
       expect(rows.map((x) => x.outcome)).toEqual(["revised", "exhausted"]);
       expect(rows[0]?.attempt).toBe(1);
@@ -375,6 +380,21 @@ describe("the gate", () => {
     },
   );
 
+  test.skipIf(!dbUp)(
+    "with no redo left, a flagged reply meets the fallback at once and still comes back flagged",
+    async () => {
+      const r = reviewer([VIOLATED]);
+      const reports: GuardrailReport[] = [];
+      const { g } = gate(cfg({ maxAttempts: 3 }), r.make, reports);
+      const note = await g?.reviewReply(turn(), "Vou te transferir.", {
+        canRedo: false,
+      });
+      expect(note).toContain(TURN_REVIEW_NOTE_MARK);
+      expect(g?.pending()).toEqual({ kind: "handed-off", reply: HANDOFF });
+      expect(reports.map((x) => x.outcome)).toEqual(["handed-off"]);
+    },
+  );
+
   test("an empty reply is not reviewed", async () => {
     const r = reviewer([VIOLATED]);
     const { g } = gate(cfg({}), r.make);
@@ -390,6 +410,7 @@ describe("the gate", () => {
       const { f, g } = gate(cfg({}), r.make, reports);
       expect(await g?.reviewCall(turn(), HANDOFF_CALL)).toBeNull();
       expect(g?.pending()).toBeNull();
+      expect(g?.halted()).toBe(false);
       expect(reports[0]).toMatchObject({
         outcome: "unavailable",
         cause: "analysis_failed",
@@ -404,6 +425,7 @@ describe("the gate", () => {
       const hg = gate(cfg({}, { onFailure: "hold" }), held.make).g;
       expect(await hg?.reviewReply(turn(), "Oi")).toBeNull();
       expect(hg?.pending()).toEqual({ kind: "handed-off", reply: HANDOFF });
+      expect(hg?.halted()).toBe(true);
       await hg?.reviewReply(turn(), "Oi de novo");
       expect(held.calls).toHaveLength(1);
     },

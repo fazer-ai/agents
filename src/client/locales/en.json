@@ -2494,7 +2494,10 @@
       "turnReviewFallbackHandoff": "Hand the conversation to the team",
       "turnReviewFallbackHint": "Uses the messages set in Output.",
       "turnReviewFallbackSilent": "Send nothing",
-      "turnReviewFallbackTemplate": "Send the template message"
+      "turnReviewFallbackTemplate": "Send the template message",
+      "turnReviewHandoff": "Message to the customer (the same one as Output)",
+      "turnReviewModelHint": "Turn review runs on this chat model and its key.",
+      "turnReviewTemplate": "Template message (the same one as Output)"
     },
     "handoffAgentChoice": "Let the AI choose",
     "handoffAgentChoiceDecisions": "This handoff is set to let the AI choose, and questions and rules have no model to choose: pick Chatwoot routing or a specific agent or team.",
@@ -4696,6 +4699,12 @@
       "simulated": "simulated",
       "sources": "Sources",
       "toggle": "Execution details",
+      "turnReviewCall": "Turn review of the call to {{tool}}",
+      "turnReviewCallRevised": "against the agent's instructions; the call did not run and the agent was told why",
+      "turnReviewClean": "follows the agent's instructions",
+      "turnReviewObserved": "against the agent's instructions; only recorded, the step went ahead",
+      "turnReviewReply": "Turn review of the reply",
+      "turnReviewReplyRevised": "against the agent's instructions; the agent redid the reply",
       "visionDocument": "Document reading",
       "visionImage": "Image reading"
     },

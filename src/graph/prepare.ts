@@ -2554,7 +2554,9 @@ export interface GraphBuildDeps {
   reviewTurnReply?: (
     turn: BaseMessage[],
     reply: string,
+    opts?: { canRedo: boolean },
   ) => Promise<string | null>;
+  turnReviewHalted?: () => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2716,6 +2718,7 @@ export async function buildModelAndGraph(
     recoversReply: deps.recoversReply,
     reviewCall: deps.reviewCall,
     reviewTurnReply: deps.reviewTurnReply,
+    turnReviewHalted: deps.turnReviewHalted,
     clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)

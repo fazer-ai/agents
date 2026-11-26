@@ -1268,16 +1268,19 @@ async function runTurnBody(
             : turnReview.reviewCall(turn, call)
       : undefined,
     reviewTurnReply: turnReview
-      ? (turn, reply) =>
+      ? (turn, reply, opts) =>
           handoffState.completed
             ? Promise.resolve(null)
-            : turnReview.reviewReply(turn, reply)
+            : turnReview.reviewReply(turn, reply, opts)
       : undefined,
+    turnReviewHalted: turnReview?.halted,
     // A completed transfer answers the turn (or silences it) and the model's text is dropped,
     // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
+    // Nor once the turn review decided the output (its fallback is pending, or a review held): that
+    // decision wins at delivery, so a grounding review would bill and rewrite a reply nobody reads.
     reviewReply: grounding
       ? (turn, reply) =>
-          handoffState.completed
+          handoffState.completed || turnReview?.pending()
             ? Promise.resolve(null)
             : grounding.review(turn, reply)
       : undefined,

@@ -921,9 +921,21 @@ export function GuardrailsTab({
                 </FormField>
               </>
             )}
-            {g.enabled && !byClassifier && (
+            {/* Turn review runs on the chat model whichever classifier screens, so its fields stay
+                in reach when screening uses Decisions. */}
+            {g.enabled && (!byClassifier || tr.enabled) && (
               <>
-                <FormField label={t("editor.provider", "Provider")}>
+                <FormField
+                  label={t("editor.provider", "Provider")}
+                  description={
+                    byClassifier
+                      ? t(
+                          "editor.guardrails.turnReviewModelHint",
+                          "Turn review runs on this chat model and its key.",
+                        )
+                      : undefined
+                  }
+                >
                   <Select
                     value={g.provider}
                     onChange={(e) => {
@@ -1532,6 +1544,40 @@ export function GuardrailsTab({
                             ))}
                           </Select>
                         </FormField>
+                        {tr.fallback !== "silent" && (
+                          <FormField
+                            label={
+                              tr.fallback === "template"
+                                ? t(
+                                    "editor.guardrails.turnReviewTemplate",
+                                    "Template message (the same one as Output)",
+                                  )
+                                : t(
+                                    "editor.guardrails.turnReviewHandoff",
+                                    "Message to the customer (the same one as Output)",
+                                  )
+                            }
+                          >
+                            <Textarea
+                              value={
+                                tr.fallback === "template"
+                                  ? g.output.templateMessage
+                                  : g.output.handoffMessage
+                              }
+                              onChange={(e) =>
+                                setDir(
+                                  "output",
+                                  tr.fallback === "template"
+                                    ? { templateMessage: e.target.value }
+                                    : { handoffMessage: e.target.value },
+                                )
+                              }
+                              rows={2}
+                              maxLength={TEMPLATE_MESSAGE_MAX}
+                              data-testid="gr-turn-review-message"
+                            />
+                          </FormField>
+                        )}
                       </>
                     )}
                   </>

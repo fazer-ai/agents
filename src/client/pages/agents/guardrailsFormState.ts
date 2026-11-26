@@ -29,9 +29,19 @@ export function playgroundGuardrailsUsable(
     (!!guardrailCredentialRef(g) ||
       g.onFailure === "hold" ||
       !!g.external.url ||
+      turnReviewerCalls(g) ||
       (g.factualGrounding.enabled &&
         groundingHasSources(g.factualGrounding) &&
         groundingReviewerCalls(g, credBaseUrls)))
+  );
+}
+
+// Whether the turn reviewer calls out: it runs on the guardrails chat model and key whichever
+// classifier screens, or with no key on a compatible endpoint (resolved in graph/prepare).
+function turnReviewerCalls(g: GuardrailsConfig): boolean {
+  return (
+    g.turnReview.enabled &&
+    (!!g.credentialRef || g.provider === "openai-compatible")
   );
 }
 

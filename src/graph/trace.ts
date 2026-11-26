@@ -92,6 +92,8 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.action ? { action: r.action } : {}),
     ...(r.held ? { held: true as const } : {}),
     ...(r.check ? { check: r.check } : {}),
+    ...(r.step ? { step: r.step } : {}),
+    ...(r.tool ? { tool: scrubbedClip(r.tool, CATEGORY_MAX) } : {}),
     // The factual-grounding claims: model-written, quoting the reply and the tool results.
     ...(r.claims?.length
       ? {

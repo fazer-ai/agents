@@ -44,6 +44,7 @@ import {
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
 } from "@/graph/silence";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { selectionsFromGrants } from "@/graph/tools/assemble";
 import {
@@ -72,6 +73,7 @@ import {
   type TraceLabelOpts,
   type TraceSource,
   traceGuardrail,
+  withCallVerdicts,
 } from "@/graph/trace";
 import { sumTurnUsage, type TurnTiming, type TurnUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
@@ -469,7 +471,7 @@ async function buildPlaygroundGraph(params: {
   // The turn review, built by the caller from the config it resolved.
   reviewCall?: (
     turn: BaseMessage[],
-    call: { name: string; args: unknown },
+    call: { name: string; args: unknown; id?: string },
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
@@ -486,6 +488,7 @@ async function buildPlaygroundGraph(params: {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
+  turnReviewDecided?: () => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -558,6 +561,7 @@ async function buildPlaygroundGraph(params: {
     reviewCall: params.reviewCall,
     reviewTurnReply: params.reviewTurnReply,
     turnReviewHalted: params.turnReviewHalted,
+    turnReviewDecided: params.turnReviewDecided,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -1055,6 +1059,7 @@ async function runPlaygroundTurnOnce(
       reviewCall: turnReview?.reviewCall,
       reviewTurnReply: turnReview?.reviewReply,
       turnReviewHalted: turnReview?.halted,
+      turnReviewDecided: turnReview ? () => !!turnReview.pending() : undefined,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,
@@ -1236,7 +1241,20 @@ async function runPlaygroundTurnOnce(
     );
   } catch (e) {
     if (e instanceof AppError) throw e;
-    throw toPlaygroundInvokeError(e);
+    // The turn review already decided the reply, as in the inbox: the decision is settled below on
+    // the thread as it stands, instead of the turn failing after a write of it ran.
+    const after = turnReview?.pending()
+      ? await buildThreadStateGraph(
+          params.deps?.checkpointer ?? (await getCheckpointer()),
+        )
+          .getState({ configurable: { thread_id: threadId } })
+          .then(
+            (st) => (st.values as { messages?: BaseMessage[] }).messages,
+            () => undefined,
+          )
+      : undefined;
+    if (!after?.some((m) => m.id === humanId)) throw toPlaygroundInvokeError(e);
+    result = { messages: after } as Awaited<ReturnType<typeof graph.invoke>>;
   } finally {
     toolLogger.settle();
   }
@@ -1342,8 +1360,11 @@ async function runPlaygroundTurnOnce(
     });
   const trace: TraceEntry[] = [
     ...gTrace.slice(0, beforeGraph),
-    ...buildPlaygroundTrace(result.messages, traceLabels),
-    ...gTrace.slice(beforeGraph),
+    // A call's verdict beside the call it judged, the rest after the graph's entries.
+    ...withCallVerdicts(
+      buildPlaygroundTrace(result.messages, traceLabels),
+      gTrace.slice(beforeGraph),
+    ),
   ];
   await upsertPlaygroundSession(
     base,

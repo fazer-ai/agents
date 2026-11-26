@@ -15,6 +15,7 @@ import {
   collectTraceSources,
   type TraceEntry,
   type TraceSource,
+  withCallVerdicts,
 } from "@/graph/trace";
 import {
   addUsageGroup,
@@ -300,7 +301,7 @@ interface Placement {
 function verdictsAround(note: LoadedTurnNote, own: TraceEntry[]): TraceEntry[] {
   const before = note.guardrails.filter((g) => g.direction === "input");
   const after = note.guardrails.filter((g) => g.direction !== "input");
-  return [...before, ...own, ...after];
+  return [...before, ...withCallVerdicts(own, after)];
 }
 
 // A reply the guardrail EMPTIED, which is not the same as an agent that had nothing to say. Read

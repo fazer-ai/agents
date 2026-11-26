@@ -94,6 +94,7 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.check ? { check: r.check } : {}),
     ...(r.step ? { step: r.step } : {}),
     ...(r.tool ? { tool: scrubbedClip(r.tool, CATEGORY_MAX) } : {}),
+    ...(r.callId ? { callId: r.callId } : {}),
     // The factual-grounding claims: model-written, quoting the reply and the tool results.
     ...(r.claims?.length
       ? {
@@ -205,6 +206,25 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
     });
   }
   return out.length ? out : undefined;
+}
+
+// The turn's entries with each call verdict placed right after the call it judged (by id, each
+// verdict taken once, in order), as the review ran: before the call was answered. A verdict with no
+// call id, or whose call is not in the entries, keeps its place after them.
+export function withCallVerdicts(
+  entries: readonly TraceEntry[],
+  verdicts: readonly TraceGuardrail[],
+): TraceEntry[] {
+  const pending = [...verdicts];
+  const out: TraceEntry[] = [];
+  for (const e of entries) {
+    out.push(e);
+    if (e.type === "tool_call" && e.id) {
+      const k = pending.findIndex((v) => v.callId === e.id);
+      if (k >= 0) out.push(...pending.splice(k, 1));
+    }
+  }
+  return [...out, ...pending];
 }
 
 export function buildPlaygroundTrace(

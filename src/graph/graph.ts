@@ -234,7 +234,7 @@ export interface BuildAgentGraphParams {
   // back asks the model once more with it and the whole toolset, so it can make the call it skipped.
   reviewCall?: (
     turn: BaseMessage[],
-    call: { name: string; args: unknown },
+    call: { name: string; args: unknown; id?: string },
     opts?: {
       alongside?: { name: string; args: unknown }[];
       instructions?: string;
@@ -255,6 +255,9 @@ export interface BuildAgentGraphParams {
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
   turnReviewHalted?: () => boolean;
+  // Whether the turn review already decided the turn's reply (its fallback is pending): the round a
+  // decided step ran in ends the graph, so the decision never waits on another generation.
+  turnReviewDecided?: () => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -842,6 +845,7 @@ export function buildAgentGraph({
   reviewCall,
   reviewTurnReply,
   turnReviewHalted,
+  turnReviewDecided,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -1706,6 +1710,7 @@ export function buildAgentGraph({
             const last = serverView.messages.at(-1) as AIMessage;
             const nothingWritten = (noEffectCount?.() ?? 0) > before;
             if (
+              turnReviewDecided?.() ||
               endsOnWrites(
                 last.tool_calls ?? [],
                 ran.messages,
@@ -1736,18 +1741,22 @@ export function buildAgentGraph({
               ? // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
                 await toolNode!.invoke(view, heard)
               : { messages: [] as BaseMessage[] };
-          return {
-            messages: inCallOrder(
-              state,
-              view,
-              [
-                ...asideAnswers,
-                ...(contradicted?.answers ?? []),
-                ...(reviewed?.answers ?? []),
-              ],
-              ran.messages,
-            ),
-          };
+          const answered = inCallOrder(
+            state,
+            view,
+            [
+              ...asideAnswers,
+              ...(contradicted?.answers ?? []),
+              ...(reviewed?.answers ?? []),
+            ],
+            ran.messages,
+          );
+          // A step the review decided ends the round here too, on the empty terminator.
+          if (turnReviewDecided?.()) {
+            endedOnWrites = true;
+            return { messages: [...answered, new AIMessage("")] };
+          }
+          return { messages: answered };
         },
       )
       // NOTE: built on every graph so the edges type-check, and unreachable without client tools:

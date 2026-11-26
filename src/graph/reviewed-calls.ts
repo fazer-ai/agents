@@ -15,7 +15,7 @@ export async function setAsideReviewedCalls(
   isWrite: (name: string) => boolean,
   review: (
     turn: typeof MessagesAnnotation.State.messages,
-    call: { name: string; args: unknown },
+    call: { name: string; args: unknown; id?: string },
     opts: { alongside: { name: string; args: unknown }[] },
   ) => Promise<string | null>,
 ): Promise<{
@@ -37,7 +37,7 @@ export async function setAsideReviewedCalls(
     if (!isWrite(c.name) || (c.id && answered.has(c.id))) continue;
     const note = await review(
       state.messages,
-      { name: c.name, args: c.args },
+      { name: c.name, args: c.args, ...(c.id ? { id: c.id } : {}) },
       { alongside: [...admitted] },
     );
     if (note) setAside.push({ call: c, note });

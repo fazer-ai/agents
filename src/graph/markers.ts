@@ -24,7 +24,8 @@ type SystemMarker =
   | "undelivered_proactive"
   | "called_off"
   | "turn_review_veto"
-  | "turn_review_held";
+  | "turn_review_held"
+  | "set_aside";
 
 // A message's type, read like `msgType` (./trace.ts): one rebuilt from a checkpoint may carry only
 // `_getType`. Every reader of tool results here uses it, so a pairing and the predicate it feeds
@@ -425,6 +426,21 @@ export function isCalledOffToolResult(message: BaseMessage): boolean {
 
 // What a write call gets back when the turn review flags it: the reviewer's note for the model, and
 // the MARKER for the side-effect accounting (./refused-turn.ts), which counts the call as never run.
+// The answer to a call the graph set aside without running it: a handoff beside a close
+// (./contradicted-handoff.ts) or a call a grounding rewrite may not make (./revision-calls.ts).
+export function setAsideToolResult(
+  call: { id?: string; name: string },
+  content: string,
+): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content,
+    status: "error",
+    additional_kwargs: { [MARKER_KWARG]: "set_aside" },
+  });
+}
+
 export function turnReviewVetoToolResult(
   call: { id?: string; name: string },
   note: string,
@@ -507,14 +523,15 @@ export function callsRefusedByReview(
   return out;
 }
 
-// Whether a tool result says its call never ran: called off, vetoed by the turn review, or refused
-// by a held review.
+// Whether a tool result says its call never ran: called off, vetoed by the turn review, refused by
+// a held review, or set aside by the graph.
 export function isUnranToolResult(message: BaseMessage): boolean {
   return (
     typeOf(message) === "tool" &&
     (hasMarker(message, "called_off") ||
       hasMarker(message, "turn_review_veto") ||
-      hasMarker(message, "turn_review_held"))
+      hasMarker(message, "turn_review_held") ||
+      hasMarker(message, "set_aside"))
   );
 }
 

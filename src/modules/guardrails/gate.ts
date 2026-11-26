@@ -122,6 +122,8 @@ export interface GuardrailReport {
   // Set on a turn-review report: which step was judged, and the tool for a call.
   step?: "call" | "reply";
   tool?: string;
+  // The reviewed call's id, so a trace places the verdict beside the call it judged.
+  callId?: string;
   claims?: GroundingClaim[];
   // Model-written, and only on a trip.
   categories?: string[];

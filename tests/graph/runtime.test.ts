@@ -12042,13 +12042,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // The fallback line replaced the model's words: the thread ends on what the customer read
       // instead, so a final sentence written after the transfer, never sent, is not read as said, and
       // the transfer's call and result stay in it.
-      for (const [line, fallback, convId, out] of [
-        ["", "template", 7949, "TEMPLATE-OUT"],
-        ["LINHA-DO-MODELO", "template", 7950, "TEMPLATE-OUT"],
-        ["", "handoff", 7951, "HANDOFF-OUT"],
-        ["", "silent", 7952, ""],
+      // The mirror reading `open` once the transfer lands is this turn's own doing: the line the
+      // customer read stays recorded, and nothing more is sent.
+      for (const [line, fallback, convId, out, mirrorOpens] of [
+        ["", "template", 7949, "TEMPLATE-OUT", false],
+        ["LINHA-DO-MODELO", "template", 7950, "TEMPLATE-OUT", false],
+        ["", "handoff", 7951, "HANDOFF-OUT", false],
+        ["", "silent", 7952, "", false],
+        ["", "template", 7954, "TEMPLATE-OUT", true],
       ] as const) {
-        test(`after a handoff answered by the ${fallback} fallback the thread holds what was sent${line ? ", the model's line replaced" : ""}`, async () => {
+        test(`after a handoff answered by the ${fallback} fallback the thread holds what was sent${line ? ", the model's line replaced" : ""}${mirrorOpens ? ", the mirror already open" : ""}`, async () => {
           await suDb.agent.update({
             where: { id: gAgentId },
             data: {
@@ -12121,12 +12124,28 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                 }),
                 handingOver,
               ),
-              makeClient: guardStub(sent, notes, toggles),
+              makeClient: async () => {
+                const c = await guardStub(sent, notes, toggles)();
+                const toggle = c.toggleStatus.bind(c);
+                c.toggleStatus = (async (id: number, status: string) => {
+                  const r = await toggle(id, status as never);
+                  if (mirrorOpens)
+                    await suDb.conversation.updateMany({
+                      where: {
+                        tenantId: gTenantId,
+                        chatwootConversationId: id,
+                      },
+                      data: { status: "open" },
+                    });
+                  return r;
+                }) as typeof c.toggleStatus;
+                return c;
+              },
               checkpointer,
             },
           });
           expect(sent).toEqual(out ? [[convId, out]] : []);
-          expect(result).toBe("posted");
+          expect(result).toBe(mirrorOpens ? "taken-over" : "posted");
           const thread = await threadChannel(checkpointer, convId, {
             tenantId: gTenantId,
             instanceId: gInstanceId,
@@ -12137,84 +12156,112 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
       }
 
-      // The fallback already decided the reply once a write call past the attempts ran, so a blank
-      // answer after it is no silence to ask about again: the model is not asked once more.
-      test("a blank answer after the fallback was decided is not retried as a silence", async () => {
-        await suDb.agent.update({
-          where: { id: gAgentId },
-          data: {
-            settings: {
-              split: { enabled: false },
-              handoff: { mode: "route" },
-              guardrails: {
-                enabled: true,
-                provider: "openai",
-                model: GUARD_MODEL,
-                credentialRef: gVaultRef,
-                input: { enabled: false },
-                output: { enabled: false, templateMessage: "TEMPLATE-OUT" },
-                turnReview: {
+      // Throws on the save that would record the second note's result, as a database or a deploy can
+      // fail mid-turn, after the write ran.
+      class FailsAfterTheWrite extends MemorySaver {
+        override async put(
+          ...args: Parameters<MemorySaver["put"]>
+        ): ReturnType<MemorySaver["put"]> {
+          const msgs = (
+            args[1].channel_values as { messages?: BaseMessage[] } | undefined
+          )?.messages;
+          if (
+            msgs?.some(
+              (m) =>
+                m.getType() === "tool" &&
+                (m as { tool_call_id?: string }).tool_call_id === "n2",
+            )
+          )
+            throw new Error("checkpoint write failed");
+          return super.put(...args);
+        }
+      }
+
+      // The fallback already decided the reply once a write call past the attempts ran, so the round
+      // that ran it ends the turn: no further generation, so neither a silence retry nor a failed
+      // model call can stand between the decision and its delivery. With `failingSave`, the save
+      // after that round throws, and the decision is settled on the channel as it stands.
+      for (const [convId, failingSave] of [
+        [7953, false],
+        [7955, true],
+      ] as const)
+        test(`a write past the attempts settles the fallback with no further generation${failingSave ? ", the graph failing after it" : ""}`, async () => {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: {
+              settings: {
+                split: { enabled: false },
+                handoff: { mode: "route" },
+                guardrails: {
                   enabled: true,
-                  action: "revise",
-                  maxAttempts: 1,
-                  fallback: "template",
+                  provider: "openai",
+                  model: GUARD_MODEL,
+                  credentialRef: gVaultRef,
+                  input: { enabled: false },
+                  output: { enabled: false, templateMessage: "TEMPLATE-OUT" },
+                  turnReview: {
+                    enabled: true,
+                    action: "revise",
+                    maxAttempts: 1,
+                    fallback: "template",
+                  },
                 },
               },
             },
-          },
+          });
+          await seedConv(convId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const toggles: Array<[number, string]> = [];
+          let asked = 0;
+          const noting = {
+            async invoke() {
+              asked += 1;
+              return new AIMessage("");
+            },
+            bindTools() {
+              return {
+                async invoke() {
+                  asked += 1;
+                  if (asked > 2) return new AIMessage("");
+                  return new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "private_note",
+                        args: { content: "NOTA" },
+                        id: `n${asked}`,
+                      },
+                    ],
+                  });
+                },
+              };
+            },
+          } as unknown as BaseChatModel;
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingWith(
+                JSON.stringify({
+                  violated: true,
+                  categories: ["turn_review"],
+                  rationale: "Pergunte o pedido antes.",
+                  suggestedReply: null,
+                }),
+                noting,
+              ),
+              makeClient: guardStub(sent, notes, toggles),
+              checkpointer: failingSave
+                ? new FailsAfterTheWrite()
+                : new MemorySaver(),
+            },
+          });
+          expect([asked, sent]).toEqual([2, [[convId, "TEMPLATE-OUT"]]]);
         });
-        const convId = 7953;
-        await seedConv(convId);
-        const sent: Array<[number, string]> = [];
-        const notes: Array<[number, string]> = [];
-        const toggles: Array<[number, string]> = [];
-        let asked = 0;
-        const noting = {
-          async invoke() {
-            asked += 1;
-            return new AIMessage("");
-          },
-          bindTools() {
-            return {
-              async invoke() {
-                asked += 1;
-                if (asked > 2) return new AIMessage("");
-                return new AIMessage({
-                  content: "",
-                  tool_calls: [
-                    {
-                      name: "private_note",
-                      args: { content: "NOTA" },
-                      id: `n${asked}`,
-                    },
-                  ],
-                });
-              },
-            };
-          },
-        } as unknown as BaseChatModel;
-        await runAgentTurn({
-          tenantId: gTenantId,
-          instanceId: gInstanceId,
-          agentBotId: G_BOT,
-          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
-          base: appDb,
-          deps: {
-            makeModel: branchingWith(
-              JSON.stringify({
-                violated: true,
-                categories: ["turn_review"],
-                rationale: "Pergunte o pedido antes.",
-                suggestedReply: null,
-              }),
-              noting,
-            ),
-            makeClient: guardStub(sent, notes, toggles),
-            checkpointer: new MemorySaver(),
-          },
-        });
-        expect([asked, sent]).toEqual([3, [[convId, "TEMPLATE-OUT"]]]);
-      });
 
       // A transfer does not end the graph, and the ownership fence admits a call once this very turn
       // handed the conversation over: a write after it is still reviewed, and a flagged one does not run.

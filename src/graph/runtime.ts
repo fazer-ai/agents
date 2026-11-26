@@ -1273,6 +1273,7 @@ async function runTurnBody(
             : turnReview.reviewReply(turn, reply, opts)
       : undefined,
     turnReviewHalted: turnReview?.halted,
+    turnReviewDecided: turnReview ? () => !!turnReview.pending() : undefined,
     // A completed transfer answers the turn (or silences it) and the model's text is dropped,
     // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
     // Nor once the turn review decided the output (its fallback is pending, or a review held): that
@@ -2384,12 +2385,13 @@ async function runTurnBody(
         ),
     ).catch(async (e) => {
       toolLogger.settle();
+      let after: BaseMessage[] | undefined;
       // NOTE: LangGraph checkpoints as it goes, so a graph that threw may still have written the
       // customer's message; asked of the channel by this invoke's id. A failed read leaves coverage
       // unstated, the safe side (a duplicate line over lost words). A throw still delivers the
       // closing line a handoff already promised.
       try {
-        const after = (
+        after = (
           (
             await buildThreadStateGraph(
               params.deps?.checkpointer ?? (await getCheckpointer()),
@@ -2402,6 +2404,19 @@ async function runTurnBody(
           { err: readErr, conversationId: String(conversationId) },
           "turn: could not read the channel after a failed invoke; leaving coverage unstated",
         );
+      }
+      // The turn review already decided the reply and a write of this turn may have run: the
+      // decision is settled through the ordinary delivery below, with its ownership and called-off
+      // gates, on the channel as it stands, instead of a retry that would redo the turn.
+      if (
+        turnReview?.pending() &&
+        after?.some((m) => m.id === inputMessageId)
+      ) {
+        logger.warn(
+          { err: e, conversationId: String(conversationId) },
+          "turn: generation failed after the turn review decided the reply; settling that decision",
+        );
+        return { messages: after } as Awaited<ReturnType<typeof graph.invoke>>;
       }
       await deliverHandoffPromise();
       throw e;
@@ -3016,7 +3031,15 @@ async function runTurnBody(
       return settled("posted");
     };
     const ended = await afterGeneration();
-    if (!ended.undo && sentInDraftsPlace !== null)
+    // A takeover this turn's own transfer caused, read after the fallback's closing line went out:
+    // the refusal still sends nothing more, but the thread records the line the customer read
+    // instead of losing the turn's last message.
+    const keepsSentLine =
+      ended.undo &&
+      ended.outcome === "taken-over" &&
+      handoffState.completed &&
+      sentInDraftsPlace !== null;
+    if ((!ended.undo || keepsSentLine) && sentInDraftsPlace !== null)
       replacedProduced = result.messages as BaseMessage[];
     // NOTE: A record for whoever reads the conversation, at `info`: the next turn tells the customer
     // from the note, so there is nothing to alert on. Read off the same slice the rollback reads, so
@@ -3038,7 +3061,9 @@ async function runTurnBody(
     // NOTE: Not awaited, and inside the `try`: `undoRefusedTurn` stands down while `isTurnInFlight`
     // holds, and the `finally` clears it before the queued rollback runs. The call still takes its
     // place in the `ingest:` queue now, before the durable claim is released.
-    return ended.undo ? rollBack(ended.outcome) : ended.outcome;
+    return ended.undo && !keepsSentLine
+      ? rollBack(ended.outcome)
+      : ended.outcome;
   } catch (err) {
     turnThrew = true;
     throw err;

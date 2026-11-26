@@ -888,6 +888,77 @@ describe("the turn review in the graph", () => {
     ]);
   });
 
+  // The bug it catches: a review that held on the first write still paid a review per write left,
+  // and an ownership read between them, before the batch was refused.
+  test("a review that halts the batch refuses it at once, with one ownership read", async () => {
+    let asked = 0;
+    let judged = 0;
+    const { calls, messages } = await run(
+      new BoundRecordingModel([
+        {
+          text: "",
+          calls: [{ name: "transferir" }, { name: "consultar_agenda" }],
+        },
+        { text: "Pronto." },
+      ]),
+      {
+        call: () => {
+          judged++;
+          return null;
+        },
+      },
+      {
+        // The first review held.
+        halted: () => judged > 0,
+        stillWanted: async () => {
+          asked++;
+          return true;
+        },
+      },
+    );
+    expect(calls).toEqual(["transferir"]);
+    expect(ran).toEqual([]);
+    // The read before the batch, and the one after the review that halted.
+    expect(asked).toBe(2);
+    const results = messages.filter((m) => m.getType() === "tool");
+    expect(results).toHaveLength(2);
+    expect(results.every((m) => isUnranToolResult(m))).toBe(true);
+    // Held, since the turn is still ours: the caller applies the fallback.
+    expect(results.some((m) => isCalledOffToolResult(m))).toBe(false);
+    expect(turnWasCalledOff(messages)).toBe(false);
+  });
+
+  // The bug it catches: an owner change during the review that halted went unread, so a stale turn
+  // applied its fallback (a handoff) to a conversation it no longer owned.
+  test("a review that halts while the turn was lost refuses the batch as called off", async () => {
+    let judged = 0;
+    const { calls, messages } = await run(
+      new BoundRecordingModel([
+        {
+          text: "",
+          calls: [{ name: "transferir" }, { name: "consultar_agenda" }],
+        },
+        { text: "Pronto." },
+      ]),
+      {
+        call: () => {
+          judged++;
+          return null;
+        },
+      },
+      {
+        halted: () => judged > 0,
+        // Ours before the batch, lost by the read after the review.
+        stillWanted: async () => judged === 0,
+      },
+    );
+    expect(calls).toEqual(["transferir"]);
+    expect(ran).toEqual([]);
+    expect(turnWasCalledOff(messages)).toBe(true);
+    const results = messages.filter((m) => m.getType() === "tool");
+    expect(results.every((m) => isCalledOffToolResult(m))).toBe(true);
+  });
+
   test("ownership is read again after a batch only when a review ran in it", async () => {
     const reads = async (first: { name: string }[]) => {
       let asked = 0;

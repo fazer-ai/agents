@@ -523,7 +523,9 @@ describe("what the reviewer reads", () => {
       },
     });
     const usr = String(user?.content);
-    expect(usr).toContain('<tool_call name="agendar" turns_back="1">');
+    expect(usr).toContain(
+      '<tool_call name="agendar" turns_back="1" truncated="true" chars="2009">',
+    );
     expect(usr).not.toContain('name="consulta_0"');
     expect(usr.length).toBeLessThan(6000);
     expect(String(system?.content)).toContain(
@@ -853,6 +855,18 @@ describe("the gate", () => {
         }),
       ]),
     ).toEqual(["NOVA-PERGUNTA"]);
+    // A silent step, calls alone and no text, reached nobody: the request goes on past it.
+    expect(
+      customerTurn([
+        new HumanMessage("PEDIDO"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ name: "skip_reply", args: {}, id: "k1" }],
+        }),
+        new ToolMessage({ content: "ok", tool_call_id: "k1" }),
+        new HumanMessage("ESCLARECIMENTO"),
+      ]),
+    ).toEqual(["PEDIDO", "ESCLARECIMENTO"]);
     // A reply that did reach the customer still ends the request.
     expect(
       customerTurn([
@@ -1181,6 +1195,39 @@ describe("the gate", () => {
       },
     }) as typeof base;
     expect(boundToolDescription(odd)).toBe(base.description);
+  });
+
+  // The bug it catches: a result past the clip read as complete, so an absence in the part shown
+  // passed for an absence in the result.
+  test("a clipped result says so, with its whole length, and a short one does not", () => {
+    const [system, user] = turnReviewMessages({
+      instructions: PROMPT,
+      customPolicy: "",
+      conversation: [],
+      calls: [
+        { name: "longa", args: {}, result: "z".repeat(9000), source: false },
+        { name: "curta", args: {}, result: "ok", source: false },
+      ],
+      earlierCalls: [
+        {
+          name: "antiga",
+          args: {},
+          result: "w".repeat(700),
+          source: false,
+          turnsBack: 1,
+        },
+      ],
+      step: { kind: "reply", text: "Pronto." },
+    });
+    const usr = String(user?.content);
+    expect(usr).toContain(
+      '<tool_call name="longa" truncated="true" chars="9000">',
+    );
+    expect(usr).toContain('<tool_call name="curta">');
+    expect(usr).toContain('turns_back="1" truncated="true" chars="700">');
+    expect(String(system?.content)).toContain(
+      "that the result lacks something cannot be concluded from it",
+    );
   });
 
   // The bug it catches: the read tools' descriptions were dropped with their review, so a rule an

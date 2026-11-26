@@ -21,12 +21,16 @@ export async function setAsideReviewedCalls(
   // Asked between two reviews: a turn superseded or taken over during one stops the batch at once,
   // and "lost" tells the caller to refuse all of it. No later read may run a write left unreviewed.
   turnLost?: () => Promise<boolean>,
+  // Asked after each review: a review that held, or a call flagged past the attempts, stops the
+  // batch on the spot ("halted"), with no further review, for the caller to refuse it all.
+  halted?: () => boolean,
 ): Promise<
   | {
       view: typeof MessagesAnnotation.State;
       answers: ToolMessage[];
     }
   | "lost"
+  | "halted"
   | null
 > {
   const last = state.messages.at(-1);
@@ -49,6 +53,7 @@ export async function setAsideReviewedCalls(
       { name: c.name, args: c.args, ...(c.id ? { id: c.id } : {}) },
       { alongside: [...admitted], index },
     );
+    if (halted?.()) return "halted";
     if (note) setAside.push({ call: c, note });
     else admitted.push({ name: c.name, args: c.args });
   }

@@ -1795,6 +1795,7 @@ export function buildAgentGraph({
                     });
                   },
                   turnLost,
+                  turnReviewHalted,
                 )
               : null;
           // A turn lost between two reviews refuses the whole batch on that read, as called off: a
@@ -1805,6 +1806,12 @@ export function buildAgentGraph({
             );
           // The reviews are awaited model calls, so ownership is read again before anything runs, and
           // a review that held ends the round with every call refused: the caller hands over next.
+          // A batch halted mid-way reads ownership once: a turn lost during that review is called
+          // off, so a stale turn applies no fallback.
+          if (reviewed === "halted") {
+            const last = state.messages.at(-1) as AIMessage;
+            return refuseBatch(last.tool_calls ?? [], !(await turnLost()));
+          }
           if (reviewCall && !revision && turnReviewHalted?.()) {
             const last = state.messages.at(-1) as AIMessage;
             return refuseBatch(last.tool_calls ?? [], true);

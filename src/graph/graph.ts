@@ -59,6 +59,7 @@ import {
   callsRefusedByReview,
   droppedCallCount,
   droppedCallsStamp,
+  markedSetAside,
   pairedResults,
   turnReviewHeldToolResult,
 } from "./markers";
@@ -864,11 +865,15 @@ export function buildAgentGraph({
   let reviewInstructions = stepInstructions([]);
   // The write tools this graph binds, each as the model reads it: what the operator wrote on a tool
   // reaches the reviewer through the very text the agent got, and a tool left out is not described.
-  const reviewTools: Record<string, string> = Object.fromEntries(
-    (tools ?? [])
-      .filter((t) => !isReadOnlyTool(t))
-      .map((t) => [t.name, boundToolDescription(t)]),
-  );
+  // Built only when a review can read them.
+  const reviewTools: Record<string, string> =
+    reviewCall || reviewTurnReply
+      ? Object.fromEntries(
+          (tools ?? [])
+            .filter((t) => !isReadOnlyTool(t))
+            .map((t) => [t.name, boundToolDescription(t)]),
+        )
+      : {};
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
   // Bound to the SAME toolset, or the fallback would answer a question the primary was asked
   // with tools it cannot call; the tool-call budget below counts calls, not models.
@@ -1545,6 +1550,31 @@ export function buildAgentGraph({
   // Once per turn as well: the step just run ended an observation (see `endsOnWrites`).
   let endedOnWrites = false;
   const toolNode = hasTools ? new ToolNode(tools) : null;
+  // `ToolNode`'s own answers to a call it refused before any handler ran: a name the set lacks, or
+  // arguments the schema rejects. Each is the error it catches, so it is recognized by that text on
+  // an error result, and marked as never run.
+  const refusedBeforeRunning = (m: BaseMessage): boolean => {
+    const t = m as ToolMessage;
+    const text = typeof t.content === "string" ? t.content : "";
+    return (
+      t.getType() === "tool" &&
+      t.status === "error" &&
+      (text.startsWith(`Error: Tool "${t.name}" not found.`) ||
+        text.startsWith(
+          "Error: Received tool input did not match expected schema",
+        ))
+    );
+  };
+  const runTools = async (
+    view: typeof MessagesAnnotation.State,
+    config: ToolRunnableConfig,
+  ): Promise<{ messages: BaseMessage[] }> => {
+    // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
+    const out = await toolNode!.invoke(view, config);
+    for (const m of out.messages as BaseMessage[])
+      if (refusedBeforeRunning(m)) markedSetAside(m);
+    return out;
+  };
   const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));
   // A call the turn review judges: one to a tool of the set that can change something, so every
   // tool but the read-only ones (`isReadOnlyTool`: an HTTP GET, an effect-free tool, a utility
@@ -1592,12 +1622,17 @@ export function buildAgentGraph({
   const refuseCalledOffCalls = async (
     state: typeof MessagesAnnotation.State,
   ): Promise<{ messages: BaseMessage[] } | null> => {
-    if (!stillWanted && !jobSignal) return null;
+    if (!(await turnLost())) return null;
     // No guard on an empty list: `toolsCondition` routes here only when the last message is an
     // assistant turn carrying tool calls.
     const last = state.messages.at(-1);
     const calls =
       last?.getType() === "ai" ? ((last as AIMessage).tool_calls ?? []) : [];
+    return refuseBatch(calls);
+  };
+  // Whether the turn is no longer this invoke's: the fence says so, or the job's deadline passed.
+  const turnLost = async (): Promise<boolean> => {
+    if (!stillWanted && !jobSignal) return false;
     const fenceSays = !stillWanted
       ? true
       : await stillWanted().catch((err) => {
@@ -1609,9 +1644,7 @@ export function buildAgentGraph({
         });
     // A run its job's deadline ended is called off like any other, and it is read AFTER the
     // fence, whose reads are the stretch a deadline can fire in.
-    const wanted = fenceSays && !jobSignal?.aborted;
-    if (wanted) return null;
-    return refuseBatch(calls);
+    return !(fenceSays && !jobSignal?.aborted);
   };
   // `held`: a turn review that held refused the batch. The turn is not called off (the caller still
   // owns it and hands it over), so its results carry their own marker, never `called_off`.
@@ -1704,6 +1737,7 @@ export function buildAgentGraph({
                       tools: reviewTools,
                     });
                   },
+                  turnLost,
                 )
               : null;
           // The reviews are awaited model calls, so ownership is read again before anything runs, and
@@ -1718,8 +1752,7 @@ export function buildAgentGraph({
             if (late) return late;
           }
           if (!contradicted && !reviewed) {
-            // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-            const ran = await toolNode!.invoke(serverView, heard);
+            const ran = await runTools(serverView, heard);
             const last = serverView.messages.at(-1) as AIMessage;
             const nothingWritten = (noEffectCount?.() ?? 0) > before;
             if (endsOnWrites(last, ran.messages, fenced || nothingWritten)) {
@@ -1744,8 +1777,7 @@ export function buildAgentGraph({
           const left = (view.messages.at(-1) as AIMessage).tool_calls ?? [];
           const ran =
             left.length > 0
-              ? // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-                await toolNode!.invoke(view, heard)
+              ? await runTools(view, heard)
               : { messages: [] as BaseMessage[] };
           return {
             messages: inCallOrder(

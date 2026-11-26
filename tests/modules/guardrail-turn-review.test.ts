@@ -721,7 +721,7 @@ describe("the gate", () => {
   test.skipIf(!dbUp)(
     "a reply's report names the last call the turn made before it",
     async () => {
-      const r = reviewer([VIOLATED, VIOLATED]);
+      const r = reviewer([VIOLATED, VIOLATED, VIOLATED]);
       const reports: GuardrailReport[] = [];
       const { g } = gate(cfg({ action: "observe" }), r.make, reports);
       await g?.reviewReply(turn(), "Vou transferir.");
@@ -729,7 +729,24 @@ describe("the gate", () => {
         [new HumanMessage("Oi")],
         "Olá, em que posso ajudar?",
       );
-      expect(reports.map((x) => x.afterCallId ?? null)).toEqual(["c1", null]);
+      await g?.reviewReply(
+        [
+          new HumanMessage("Oi"),
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "agendar", args: {} }],
+          }),
+          new ToolMessage({ content: "ok", tool_call_id: "" }),
+        ],
+        "Agendado.",
+      );
+      expect(
+        reports.map((x) => [x.afterCallId ?? null, x.afterCalls ?? null]),
+      ).toEqual([
+        ["c1", null],
+        [null, null],
+        [null, 1],
+      ]);
     },
   );
 
@@ -939,6 +956,22 @@ describe("the gate", () => {
     expect(sys).toContain("Operator guidance: NOTA-DO-AUDIO");
     expect(sys.match(/<\/tool_instruction>/g)).toHaveLength(4);
     expect(sys.length).toBeLessThan(PROMPT.length + 12_000);
+  });
+
+  // The bug it catches: a tool whose schema does not convert threw out of the graph's build.
+  test("a tool whose schema does not convert is described by its description", () => {
+    const base = buildReplyAsTextTool({
+      choice: { textChosen: false } as never,
+      note: null,
+    });
+    const odd = Object.create(base, {
+      schema: {
+        get() {
+          throw new Error("unserializable");
+        },
+      },
+    }) as typeof base;
+    expect(boundToolDescription(odd)).toBe(base.description);
   });
 
   test.skipIf(!dbUp)(

@@ -9704,8 +9704,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           meta: { assignee_type: null, assignee: null },
         }),
       } as unknown as ChatwootClient;
-      // The call names a tool the agent does not have, so the graph answers it with an error result.
-      // The rollback judges an act by the call and never by its outcome, so this is the booking.
+      // A write the agent has, whose client call fails, so the graph answers it with an error result.
+      // The rollback judges an act by the call and never by its outcome, so this is the booking. A
+      // call refused before running (a tool the agent lacks) would be no act.
       let n = 0;
       const booksThenConfirms = {
         invoke: async () => new AIMessage("Agendado para terça às 10h."),
@@ -9716,7 +9717,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               ? new AIMessage({
                   content: "",
                   tool_calls: [
-                    { name: "calendar_create_event", args: {}, id: "call_cal" },
+                    {
+                      name: "private_note",
+                      args: { content: "agendado" },
+                      id: "call_cal",
+                    },
                   ],
                 })
               : new AIMessage("Agendado para terça às 10h.");
@@ -9774,7 +9779,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         level: "info",
         detail: expect.objectContaining({
           reason: "superseded_after_action",
-          tools: ["calendar_create_event"],
+          tools: ["private_note"],
         }),
       });
       expect(

@@ -96,6 +96,7 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.tool ? { tool: scrubbedClip(r.tool, CATEGORY_MAX) } : {}),
     ...(r.callId ? { callId: r.callId } : {}),
     ...(r.afterCallId ? { afterCallId: r.afterCallId } : {}),
+    ...(r.afterCalls ? { afterCalls: r.afterCalls } : {}),
     // The factual-grounding claims: model-written, quoting the reply and the tool results.
     ...(r.claims?.length
       ? {
@@ -211,9 +212,9 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
 
 // The turn's entries with each call verdict placed right after the call it judged (by id and tool
 // name, each verdict taken once, in order), as the review ran: before the call was answered. A turn
-// review of a reply goes after the results of the step its `afterCallId` belongs to, before the step
-// a redo made, or ahead of every call when the turn had made none. Any other verdict keeps its place
-// after the entries.
+// review of a reply goes after the results of the step of its `afterCallId` (or of the turn's
+// `afterCalls`-th call, when that one had no id), before the step a redo made, or ahead of every
+// call when the turn had made none. Any other verdict keeps its place after the entries.
 export function withCallVerdicts(
   entries: readonly TraceEntry[],
   verdicts: readonly TraceGuardrail[],
@@ -243,13 +244,19 @@ export function withCallVerdicts(
     firstCall > 0 && entries[firstCall - 1]?.type === "assistant"
       ? firstCall - 1
       : firstCall;
+  let callsSeen = 0;
   entries.forEach((e, i) => {
     if (e.type !== "tool_result") {
       out.push(...due);
       due = [];
     }
-    if (i === firstStep) out.push(...take((v) => isReply(v) && !v.afterCallId));
+    if (i === firstStep)
+      out.push(...take((v) => isReply(v) && !v.afterCallId && !v.afterCalls));
     out.push(e);
+    if (e.type === "tool_call") {
+      callsSeen++;
+      due.push(...take((v) => isReply(v) && v.afterCalls === callsSeen));
+    }
     if (e.type === "tool_result" && e.id)
       due.push(...take((v) => isReply(v) && v.afterCallId === e.id));
     if (e.type === "tool_call" && e.id) {

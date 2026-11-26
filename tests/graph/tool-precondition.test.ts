@@ -3,6 +3,7 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
+import { isUnranToolResult } from "@/graph/markers";
 import { isEffectFreeTool, markEffectFree } from "@/graph/tools/effect-free";
 import { type CallReport, withFenceReporter } from "@/graph/tools/fence-report";
 import {
@@ -252,6 +253,8 @@ describe("guardedTool under ToolNode", () => {
     // Bound to THIS call, or the model cannot tell which of a batch of calls was refused.
     expect(answer?.tool_call_id).toBe("call_1");
     expect(String(answer?.content)).toContain("was not run");
+    // Marked as never run, so a reviewer of the record does not read it as a call that failed.
+    expect(isUnranToolResult(answer as ToolMessage)).toBe(true);
   });
 
   test("a refusal is not an error: the turn continues", async () => {

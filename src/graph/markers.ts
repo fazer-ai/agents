@@ -441,6 +441,17 @@ export function setAsideToolResult(
   });
 }
 
+// The same marker on a result some other boundary wrote for a call it refused before running it
+// (a precondition, a tool the set lacks, arguments its schema rejects), so a reader of the record
+// does not take it for a call that ran and failed.
+export function markedSetAside<T extends BaseMessage>(message: T): T {
+  message.additional_kwargs = {
+    ...message.additional_kwargs,
+    [MARKER_KWARG]: "set_aside",
+  };
+  return message;
+}
+
 export function turnReviewVetoToolResult(
   call: { id?: string; name: string },
   note: string,

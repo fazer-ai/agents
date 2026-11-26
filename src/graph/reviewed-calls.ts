@@ -18,6 +18,9 @@ export async function setAsideReviewedCalls(
     call: { name: string; args: unknown; id?: string },
     opts: { alongside: { name: string; args: unknown }[] },
   ) => Promise<string | null>,
+  // Asked between two reviews: a turn superseded or taken over during one stops the batch, and the
+  // caller's own read before running refuses it.
+  turnLost?: () => Promise<boolean>,
 ): Promise<{
   view: typeof MessagesAnnotation.State;
   answers: ToolMessage[];
@@ -33,8 +36,10 @@ export async function setAsideReviewedCalls(
   );
   const setAside: { call: ToolCall; note: string }[] = [];
   const admitted: { name: string; args: unknown }[] = [];
+  let reviewed = 0;
   for (const c of calls) {
     if (!isWrite(c.name) || (c.id && answered.has(c.id))) continue;
+    if (reviewed++ > 0 && (await turnLost?.())) break;
     const note = await review(
       state.messages,
       { name: c.name, args: c.args, ...(c.id ? { id: c.id } : {}) },

@@ -4,6 +4,7 @@ import type {
   ToolRunnableConfig,
 } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { markedSetAside } from "@/graph/markers";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type {
   PreconditionState,
@@ -84,7 +85,13 @@ export function guardedTool(
       // sibling exits inside the handlers include one that THROWS, and one channel covers both.
       onNoEffect?.(inner.name);
       return id
-        ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
+        ? markedSetAside(
+            new ToolMessage({
+              content: text,
+              tool_call_id: id,
+              name: inner.name,
+            }),
+          )
         : text;
     };
     let unmet: ToolPrecondition[] = [];

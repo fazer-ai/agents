@@ -579,6 +579,98 @@ describe("the turn review in the graph", () => {
     expect(replyInstructions).toEqual(["PROMPT\n\n[Sistema] AVISO-DE-VOZ-2"]);
   });
 
+  // The bug it catches: a call `ToolNode` refused before any handler ran read as status="error",
+  // a call that may have taken effect, so a reply saying it did not happen looked unproven.
+  test("a call to a missing tool, or with arguments the schema rejects, is marked as never run", async () => {
+    const agendar = tool(
+      async () => {
+        ran.push("agendar");
+        return "ok";
+      },
+      {
+        name: "agendar",
+        description: "agenda",
+        schema: z.object({ dia: z.string() }),
+      },
+    );
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new BoundRecordingModel([
+        {
+          text: "",
+          calls: [
+            { name: "inexistente" },
+            { name: "agendar", args: { dia: 3 } },
+            { name: "transferir" },
+          ],
+        },
+        { text: "Pronto." },
+      ]) as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [agendar, transferir],
+    });
+    ran.length = 0;
+    const out = await graph.invoke(
+      { messages: [new HumanMessage("Oi")] },
+      { configurable: { thread_id: `tr-${Math.random()}` } },
+    );
+    const results = (out.messages as BaseMessage[]).filter(
+      (m) => m.getType() === "tool",
+    ) as ToolMessage[];
+    expect(results.map((r) => [r.name, isUnranToolResult(r)])).toEqual([
+      ["inexistente", true],
+      ["agendar", true],
+      ["transferir", false],
+    ]);
+    expect(ran).toEqual(["transferir"]);
+  });
+
+  // The bug it catches: a turn lost during the first review of a batch still paid one review per
+  // write left in it.
+  test("a turn lost during a review stops the batch before the next review", async () => {
+    let asked = 0;
+    const { calls } = await run(
+      new BoundRecordingModel([
+        {
+          text: "",
+          calls: [{ name: "transferir" }, { name: "consultar_agenda" }],
+        },
+        { text: "Pronto." },
+      ]),
+      {},
+      // Wanted on the read before the batch, lost from then on.
+      { stillWanted: async () => asked++ === 0 },
+    );
+    expect(calls).toEqual(["transferir"]);
+    expect(ran).toEqual([]);
+  });
+
+  test("the tools are described for the reviewer only when a review hook is passed", () => {
+    let reads = 0;
+    const counted = Object.create(transferir, {
+      schema: {
+        get() {
+          reads++;
+          return z.object({});
+        },
+      },
+    }) as typeof transferir;
+    const build = (hooked: boolean) =>
+      buildAgentGraph({
+        primary: { provider: "openai", model: "test-model" },
+        model: new BoundRecordingModel([]) as unknown as BaseChatModel,
+        systemPrompt: "PROMPT",
+        checkpointer: new MemorySaver(),
+        tools: [counted],
+        ...(hooked ? { reviewCall: async () => null } : {}),
+      });
+    build(false);
+    expect(reads).toBe(0);
+    build(true);
+    expect(reads).toBeGreaterThan(0);
+  });
+
   test("ownership is read again after a batch only when a review ran in it", async () => {
     const reads = async (first: { name: string }[]) => {
       let asked = 0;

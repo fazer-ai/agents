@@ -185,3 +185,37 @@ describe("withCallVerdicts with a reply redone as a call", () => {
     ]);
   });
 });
+
+// The bug it catches: a call with no id gave the reply's verdict no anchor, so it moved ahead of
+// the write.
+describe("withCallVerdicts with a call that has no id", () => {
+  test("the reply's verdict follows the results of the turn's n-th call", () => {
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: null, name: "agendar", args: {} },
+        {
+          type: "tool_result",
+          id: null,
+          name: "agendar",
+          output: "ok",
+          isError: false,
+        },
+      ],
+      [
+        {
+          type: "guardrail",
+          direction: "output",
+          outcome: "clean",
+          check: "turn_review",
+          step: "reply",
+          afterCalls: 1,
+        },
+      ],
+    );
+    expect(placed.map((e) => e.type)).toEqual([
+      "tool_call",
+      "tool_result",
+      "guardrail",
+    ]);
+  });
+});

@@ -189,6 +189,10 @@ export async function stampDeferral(params: {
   threadId: string;
   since: number;
   field?: "deferringSince" | "mediaWaitSince";
+  // The retry the deferring flush asks for. A message that re-armed the row during the flush already
+  // set its own runAt, which the flush's reschedule can no longer touch (it needs the row CLAIMED), so
+  // a later one is brought forward to this here.
+  retryAt?: Date;
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
@@ -200,18 +204,24 @@ export async function stampDeferral(params: {
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
       const row = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { id: true, payload: true },
+        select: { id: true, payload: true, status: true, runAt: true },
       });
       // No row means the flush that is deferring has already been completed or retired by somebody
       // else; there is nothing whose deadline this would be.
-      if (!row || read(row.payload) !== null) return;
+      if (!row) return;
+      const forward =
+        params.retryAt !== undefined &&
+        row.status === "PENDING" &&
+        row.runAt.getTime() > params.retryAt.getTime();
+      if (read(row.payload) !== null && !forward) return;
       await db.schedulerJob.update({
         where: { id: row.id },
         data: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
-            [field]: params.since,
+            [field]: read(row.payload) ?? params.since,
           },
+          ...(forward ? { runAt: params.retryAt } : {}),
         },
       });
     }),

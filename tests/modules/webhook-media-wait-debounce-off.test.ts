@@ -21,6 +21,7 @@ import {
   armDebounce,
   debounceDedupeKey,
   resolveArmConfig,
+  stampDeferral,
 } from "@/modules/debounce/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -407,6 +408,44 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       select: { runAt: true },
     });
     expect(row.runAt.getTime()).toBeLessThanOrEqual(retryAt.getTime());
+  });
+
+  // A text re-armed the row while the first flush was retrying: the flush's own reschedule can no
+  // longer reach it, so the stamp brings that row's run forward to the retry.
+  test("the first media wait brings a row re-armed during the flush forward to its retry", async () => {
+    const threadId = `${tenantId}:${instanceId}:9808`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 90_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+        },
+      },
+    });
+    const since = Date.now() - 1_000;
+    const retryAt = new Date(Date.now() + 5_000);
+
+    await stampDeferral({
+      tenantId,
+      threadId,
+      since,
+      field: "mediaWaitSince",
+      retryAt,
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true, payload: true },
+    });
+    expect(row.runAt.getTime()).toBe(retryAt.getTime());
+    expect(row.payload).toHaveProperty("mediaWaitSince", since);
   });
 
   test("a text message with no flush live takes the direct turn as before", async () => {

@@ -2625,6 +2625,7 @@ export async function flushDebounceJob(
       outcome !== "media-pending" &&
       outcome !== "thread-busy" &&
       outcome !== "superseded" &&
+      outcome !== "agent-unavailable" &&
       readMediaWaitSince(job.payload) !== null
     )
       await clearDeferral({
@@ -2642,22 +2643,21 @@ export async function flushDebounceJob(
     // NOTE: A file of the burst is still being written to storage. Nothing was claimed or invoked; the
     // stamp carries the burst's start across re-arms, so the media ceiling holds.
     if (outcome === "media-pending") {
+      const retryAt = new Date(
+        Math.min(
+          Date.now() + MEDIA_DEFER_MS,
+          mediaSince + MEDIA_DEFER_CEILING_MS,
+        ),
+      );
       await stampDeferral({
         tenantId,
         threadId,
         since: mediaSince,
         field: "mediaWaitSince",
+        retryAt,
         base,
       });
-      return {
-        outcome: "reschedule",
-        runAt: new Date(
-          Math.min(
-            Date.now() + MEDIA_DEFER_MS,
-            mediaSince + MEDIA_DEFER_CEILING_MS,
-          ),
-        ),
-      };
+      return { outcome: "reschedule", runAt: retryAt };
     }
     // NOTE: Nothing was written and the burst is still owed: another invoke held the thread at claim
     // time. Deferred like the busy thread above, with the stamp keeping the ceiling honest.

@@ -307,6 +307,8 @@ export async function clearDeferral(params: {
   tenantId: bigint;
   threadId: string;
   field?: "deferringSince" | "mediaWaitSince";
+  // The claim that settled the burst: a row that has moved on to another claim keeps its stamp.
+  job?: { id: bigint; claimSeq: number };
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
@@ -318,9 +320,14 @@ export async function clearDeferral(params: {
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
       const row = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { id: true, payload: true },
+        select: { id: true, payload: true, claimSeq: true },
       });
       if (!row || read(row.payload) === null) return;
+      if (
+        params.job &&
+        (row.id !== params.job.id || row.claimSeq !== params.job.claimSeq)
+      )
+        return;
       const { [field]: _dropped, ...rest } = row.payload as Record<
         string,
         unknown
@@ -421,7 +428,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       // already waiting for a file): the joining delivery's config does not turn an ordinary burst
       // into a media-only one.
       const sameBurst =
-        continuingBurst || (stillLive && mediaWaitSince !== null);
+        continuingBurst ||
+        (stillLive &&
+          (mediaWaitSince !== null || readLateMedia(existing.payload)));
       const mediaOnly =
         (stillLive && readMediaOnly(existing.payload)) ||
         (!sameBurst && cfg.mediaOnly === true);

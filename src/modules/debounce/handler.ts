@@ -2711,6 +2711,7 @@ export async function flushDebounceJob(
         tenantId,
         threadId,
         field: "mediaWaitSince",
+        job,
         base,
       }).catch((e) =>
         logger.warn(

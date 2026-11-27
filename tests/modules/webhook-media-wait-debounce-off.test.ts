@@ -24,6 +24,7 @@ import {
 } from "@/modules/chatwoot/webhook";
 import {
   armDebounce,
+  clearDeferral,
   debounceDedupeKey,
   resolveArmConfig,
   stampDeferral,
@@ -107,16 +108,13 @@ const client = (async () =>
 
 // What `transcribeInboundAudio` does: on a 404 past the window it marks the note and throws; with
 // the file served it returns the words.
-function transcriber(state: "uploading" | "stored" | "recovered") {
+function transcriber(state: "uploading" | "stored") {
   return async (p: {
     tenantId: bigint;
     instanceId: bigint;
     messageId: number;
-    onMediaMissing?: () => void;
   }) => {
     if (state === "stored") return WORDS;
-    p.onMediaMissing?.();
-    if (state === "recovered") return WORDS;
     stashMediaAnnotation(
       {
         tenantId: p.tenantId,
@@ -145,7 +143,12 @@ async function seedConversation(convId: number) {
 
 async function deliver(
   convId: number,
-  opts: { audio: boolean; storage?: "uploading" | "stored" | "recovered" },
+  opts: {
+    audio: boolean;
+    storage?: "uploading" | "stored";
+    // Stands in for the transcription call, to hold it open.
+    transcribe?: () => Promise<string | null>;
+  },
 ) {
   const messageId = 7000 + nextId++;
   const n = normalizeChatwootEvent({
@@ -199,7 +202,8 @@ async function deliver(
     deps: {
       makeClient: client,
       makeModel: () => model,
-      transcribe: transcriber(opts.storage ?? "stored") as never,
+      transcribe: (opts.transcribe ??
+        transcriber(opts.storage ?? "stored")) as never,
     },
   });
   return { model };
@@ -338,9 +342,133 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     expect(model.calls).toBeGreaterThan(0);
   });
 
-  // The download answered 404 once and then read the file: the delivery's own mark is not a reason
-  // to queue a reply that is ready.
-  test("a voice note read after one 404 takes the direct turn", async () => {
+  // The note is downloaded and the provider is still transcribing it when the text arrives.
+  test("a text sent while a voice note is being transcribed waits with it", async () => {
+    await seedConversation(9829);
+    let finish: (words: string) => void = () => {};
+    const transcribing = new Promise<string>((r) => {
+      finish = r;
+    });
+    let started: () => void = () => {};
+    const reached = new Promise<void>((r) => {
+      started = r;
+    });
+    const note = deliver(9829, {
+      audio: true,
+      transcribe: () => {
+        started();
+        return transcribing;
+      },
+    });
+    await reached;
+
+    const text = await deliver(9829, { audio: false });
+    finish(WORDS);
+    const voice = await note;
+
+    expect(text.model.calls).toBe(0);
+    expect(voice.model.calls).toBe(0);
+    expect(await flushRows(9829)).toBe(1);
+  });
+
+  // An ordinary burst armed for a late file is on its first retry when debounce is turned off and a
+  // text joins it: the burst keeps its cap.
+  test("an ordinary burst on its first retry for a late file stays ordinary when a text joins", async () => {
+    const threadId = `${tenantId}:${instanceId}:9830`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+          lateMedia: true,
+        },
+      },
+    });
+    const joining = await resolveArmConfig({
+      tenantId,
+      instanceId,
+      chatwootInboxId: CHATWOOT_INBOX_ID,
+      threadId,
+      mediaArriving: false,
+      base: appDb,
+    });
+    if (!joining) throw new Error("unreachable: the live row holds a file");
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: joining,
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(joining.mediaOnly).toBe(true);
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+    expect(row.payload).toHaveProperty("lateMedia", true);
+  });
+
+  // The flush that settled a burst clears its own wait stamp, never one a newer claim left.
+  test("a flush that settles after its claim moved on leaves the newer wait stamp alone", async () => {
+    const threadId = `${tenantId}:${instanceId}:9831`;
+    const since = Date.now() - 3_000;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: since,
+          mediaWaitSince: since,
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const stamp = async () =>
+      (
+        (
+          await suDb.schedulerJob.findFirstOrThrow({
+            where: { id: row.id },
+            select: { payload: true },
+          })
+        ).payload as { mediaWaitSince?: number }
+      ).mediaWaitSince;
+
+    await clearDeferral({
+      tenantId,
+      threadId,
+      field: "mediaWaitSince",
+      job: { id: row.id, claimSeq: row.claimSeq - 1 },
+      base: appDb,
+    });
+    const afterStale = await stamp();
+    await clearDeferral({
+      tenantId,
+      threadId,
+      field: "mediaWaitSince",
+      job: row,
+      base: appDb,
+    });
+
+    expect(afterStale).toBe(since);
+    expect(await stamp()).toBeUndefined();
+  });
+
+  // The file was read: the delivery's own mark is not a reason to queue a reply that is ready.
+  test("a voice note read at arrival lets go of the conversation when it takes the direct turn", async () => {
     await seedConversation(9827);
     let heldDuringTurn: boolean | null = null;
     duringTurn = () => {
@@ -348,7 +476,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     };
     const { model } = await deliver(9827, {
       audio: true,
-      storage: "recovered",
+      storage: "stored",
     }).finally(() => {
       duringTurn = null;
     });

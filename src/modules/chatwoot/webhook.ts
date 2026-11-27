@@ -2095,6 +2095,10 @@ export async function runEagerMedia(
     // failed pays the whole provider bill again at the second call site.
     !n.message.attachmentsUnread &&
     !n.message.bodyRead;
+  // NOTE: Held while this delivery reads its file, a download backing off and a provider call alike:
+  // a message of the conversation that arrives meanwhile joins the wait instead of answering first.
+  if ((audio && !n.message.transcribedText) || visionPending)
+    owner.arriving?.mark();
   // Asked at most once, and only once a provider config resolved.
   // NOTE: The verdict is asked once; the refusal mark is re-read before each later extraction, since
   // a newer message may be refused while the first one runs.
@@ -2149,7 +2153,6 @@ export async function runEagerMedia(
             cfg: sttCfg,
             base,
             flow: flow(),
-            onMediaMissing: () => owner.arriving?.mark(),
             deps: {
               makeClient: owner.deps?.makeClient,
               fetchImpl: owner.deps?.sttFetch,
@@ -2223,7 +2226,6 @@ export async function runEagerMedia(
           base,
           flow: flow(),
           convLabel,
-          onMediaMissing: () => owner.arriving?.mark(),
           deps: {
             makeClient: owner.deps?.makeClient,
             fetchImpl: owner.deps?.visionFetch,

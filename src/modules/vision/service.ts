@@ -285,8 +285,6 @@ export interface ExtractInboundParams {
   signal?: AbortSignal;
   // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
   downloadRetryUntil?: number;
-  // Called on the first 404 the download will ask again: the caller's file is on its way.
-  onMediaMissing?: () => void;
   // The ledger step the call is billed under: an agent's reading by default, the occurrence
   // monitor's when it reads again what upstream Chatwoot no longer holds.
   usageNode?: Extract<UsageNode, "vision" | "occurrence_vision">;
@@ -597,7 +595,6 @@ async function extractInboundOnce(
       retryUntil: params.downloadRetryUntil,
       onMissing: () => {
         missing = true;
-        params.onMediaMissing?.();
       },
     }));
   } catch (caught) {

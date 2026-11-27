@@ -96,8 +96,6 @@ export interface TranscribeInboundParams {
   signal?: AbortSignal;
   // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
   downloadRetryUntil?: number;
-  // Called on the first 404 the download will ask again: the caller's file is on its way.
-  onMediaMissing?: () => void;
 }
 
 // Downloads, transcribes, and writes the transcription back to Chatwoot. Returns the transcription
@@ -228,10 +226,8 @@ async function transcribeOnce(
       retryUntil: params.downloadRetryUntil,
       // A flush that stops waiting while this backoff runs still sees the note as on its way, and so
       // does a message that arrives in the conversation meanwhile.
-      onMissing: () => {
-        stashMediaAnnotation(target, { transcriptionUnavailable: true });
-        params.onMediaMissing?.();
-      },
+      onMissing: () =>
+        stashMediaAnnotation(target, { transcriptionUnavailable: true }),
     }));
   } catch (err) {
     if (params.flow) {

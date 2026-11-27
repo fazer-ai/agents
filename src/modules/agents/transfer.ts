@@ -3185,6 +3185,7 @@ export function renameTurnRuleTools(
       normalizeToolName(to),
     ]),
   );
+  const granted = new Set([...customToolNames].map(normalizeToolName));
   let touched = false;
   const next = rules.map((rule) => {
     const tool =
@@ -3194,9 +3195,11 @@ export function renameTurnRuleTools(
     if (typeof tool !== "string") return rule;
     // Looked up as the reader stores it (`readTurnRule` trims the name).
     const name = tool.trim();
-    const to =
-      byModelName.get(name) ??
-      (customToolNames.has(name) ? name : currentNativeToolName(name));
+    // A stored rename counts only for a tool the bundle grants: a component it merely carries,
+    // renamed because a native owns its name, must not take the native's rule with it.
+    const to = granted.has(name)
+      ? (byModelName.get(name) ?? name)
+      : currentNativeToolName(name);
     if (to === name) return rule;
     touched = true;
     return { ...(rule as Record<string, unknown>), unlessTool: to };

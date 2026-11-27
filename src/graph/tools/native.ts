@@ -3,7 +3,6 @@ import type {
   StructuredToolInterface,
   ToolRunnableConfig,
 } from "@langchain/core/tools";
-import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
@@ -22,11 +21,7 @@ import {
   type SkipReplyReason,
 } from "@/graph/silence";
 import { SKIP_NOTE_DETAIL_MAX as SKIP_DETAIL_MAX } from "@/graph/skip-handover";
-import {
-  failableTool,
-  type ToolFailure,
-  toolFailure,
-} from "@/graph/tools/failure";
+import { failableTool, outcomeTool, toolFailure } from "@/graph/tools/failure";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -622,43 +617,10 @@ function handoffTargetsXml(targets: HandoffTargets | undefined): string {
   return `<handoff_targets>\n${lines.join("\n")}\n</handoff_targets>`;
 }
 
-// How every native tool is built: its handler answers an `Outcome` (call-scope.ts), so each answer
-// says whether the call acted or did nothing, and a bare string does not compile. The mark is what
-// the registry test reads, so a tool built another way fails it.
-const DECLARES_OUTCOME = Symbol.for("fazerai.tool.declaresOutcome");
-export function declaresOutcome(t: StructuredToolInterface): boolean {
-  return (t as unknown as Record<symbol, unknown>)[DECLARES_OUTCOME] === true;
-}
-function declaring(t: StructuredToolInterface): StructuredToolInterface {
-  (t as unknown as Record<symbol, boolean>)[DECLARES_OUTCOME] = true;
-  return t;
-}
-type NativeFields = {
-  name: string;
-  description: string;
-  schema: z.ZodTypeAny;
-};
-// `never`: assignable from any concretely typed handler, as in failure.ts.
-function nativeTool(
-  fn: (
-    input: never,
-    config: ToolRunnableConfig,
-  ) => Promise<Outcome | ToolMessage>,
-  fields: NativeFields,
-): StructuredToolInterface {
-  return declaring(
-    tool(fn as never, fields) as unknown as StructuredToolInterface,
-  );
-}
-function nativeFailable(
-  fn: (
-    input: never,
-    config: ToolRunnableConfig,
-  ) => Promise<Outcome | ToolFailure>,
-  fields: NativeFields,
-): StructuredToolInterface {
-  return declaring(failableTool(fn as never, fields));
-}
+// How every native tool is built: `outcomeTool` and `failableTool` (failure.ts), whose handlers
+// answer an `Outcome`, so each answer says whether the call acted or did nothing.
+const nativeTool = outcomeTool;
+const nativeFailable = failableTool;
 
 function handoffTool(ctx: ToolCtx) {
   const mode = ctx.handoff?.mode ?? "route";

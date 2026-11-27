@@ -1,6 +1,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
+import { acted, didNothing } from "@/graph/tools/call-scope";
 import { failableTool, ToolFailure, toolFailure } from "@/graph/tools/failure";
 import { fetchBoundedBytes } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -496,10 +497,10 @@ function buildAppendTool(
         if (read instanceof ToolFailure) return read;
         const header = readHeader(read.rows[0]);
         if (header.names.length === 0)
-          return refusedWrite(NO_HEADER, NOTHING_WRITTEN);
+          return didNothing(refusedWrite(NO_HEADER, NOTHING_WRITTEN));
         const placed = placeValues(header, input.values);
         if (typeof placed === "string")
-          return refusedWrite(placed, NOTHING_WRITTEN);
+          return didNothing(refusedWrite(placed, NOTHING_WRITTEN));
         // `appendCells` addresses the tab by id and writes from column A after the last row with data
         // anywhere in it, atomically on Google's side, so cell N is always column N. `values:append`
         // instead starts at the first column of a table it detects, which an unlabeled column can move.
@@ -531,7 +532,7 @@ function buildAppendTool(
         );
         if (res.status < 200 || res.status >= 300)
           return toolFailure(httpMessage(res.status, res.json));
-        return "Added the row at the end of the spreadsheet tab.";
+        return acted("Added the row at the end of the spreadsheet tab.");
       } catch (err) {
         return unreachable(err, "append");
       }
@@ -559,18 +560,20 @@ function buildFindTool(
     }) => {
       const filtering = input.column !== undefined || input.value !== undefined;
       if (filtering && (!input.column?.trim() || input.value === undefined))
-        return "To filter, give both column and value; omit both to list every row.";
+        return didNothing(
+          "To filter, give both column and value; omit both to list every row.",
+        );
       try {
         const loc = await locateTab(sel, ctx);
         if (loc instanceof ToolFailure) return loc;
         const read = await readRows(loc, MAX_SCAN_ROWS + 1, ctx);
         if (read instanceof ToolFailure) return read;
         const header = readHeader(read.rows[0]);
-        if (header.names.length === 0) return NO_HEADER;
+        if (header.names.length === 0) return didNothing(NO_HEADER);
         let col = -1;
         if (filtering) {
           const at = locateColumn(header, input.column as string);
-          if (typeof at === "string") return at;
+          if (typeof at === "string") return didNothing(at);
           col = at;
         }
         const data = read.rows.slice(1);
@@ -614,8 +617,10 @@ function buildFindTool(
           out = reply();
         }
         if (out.length > MAX_FIND_OUTPUT_CHARS)
-          return "The matching row is too wide to return in full. Filter by a more specific value, or ask the operator to move long text out of this tab.";
-        return out;
+          return didNothing(
+            "The matching row is too wide to return in full. Filter by a more specific value, or ask the operator to move long text out of this tab.",
+          );
+        return acted(out);
       } catch (err) {
         return unreachable(err, "find");
       }
@@ -647,12 +652,13 @@ function buildUpdateTool(
         if (read instanceof ToolFailure) return read;
         const header = readHeader(read.rows[0]);
         if (header.names.length === 0)
-          return refusedWrite(NO_HEADER, NOTHING_CHANGED);
+          return didNothing(refusedWrite(NO_HEADER, NOTHING_CHANGED));
         const key = locateColumn(header, input.column);
-        if (typeof key === "string") return refusedWrite(key, NOTHING_CHANGED);
+        if (typeof key === "string")
+          return didNothing(refusedWrite(key, NOTHING_CHANGED));
         const placed = placeValues(header, input.values);
         if (typeof placed === "string")
-          return refusedWrite(placed, NOTHING_CHANGED);
+          return didNothing(refusedWrite(placed, NOTHING_CHANGED));
         const incomplete = pastTheScan(loc, read.rows.length - 1);
         const data = read.rows.slice(1, MAX_SCAN_ROWS + 1);
         const hits: number[] = [];
@@ -660,18 +666,26 @@ function buildUpdateTool(
           if (rowMatches(r, key, input.value, "equals")) hits.push(i + 2);
         });
         if (hits.length === 0)
-          return incomplete
-            ? `No row among the first ${MAX_SCAN_ROWS} of the tab has "${input.value}" in the column "${input.column}", and the rows after them are not searched. ${NOTHING_CHANGED}`
-            : `No row has "${input.value}" in the column "${input.column}". ${NOTHING_CHANGED}`;
+          return didNothing(
+            incomplete
+              ? `No row among the first ${MAX_SCAN_ROWS} of the tab has "${input.value}" in the column "${input.column}", and the rows after them are not searched. ${NOTHING_CHANGED}`
+              : `No row has "${input.value}" in the column "${input.column}". ${NOTHING_CHANGED}`,
+          );
         if (incomplete && input.row === undefined)
-          return `The tab has more than ${MAX_SCAN_ROWS} rows and only the first ${MAX_SCAN_ROWS} are searched, so a match there may not be the only one. Rows found: ${hits.join(", ")}. Call again with the row number of the one to change. ${NOTHING_CHANGED}`;
+          return didNothing(
+            `The tab has more than ${MAX_SCAN_ROWS} rows and only the first ${MAX_SCAN_ROWS} are searched, so a match there may not be the only one. Rows found: ${hits.join(", ")}. Call again with the row number of the one to change. ${NOTHING_CHANGED}`,
+          );
         let target: number;
         if (input.row !== undefined) {
           if (!hits.includes(input.row))
-            return `Row ${input.row} does not have "${input.value}" in the column "${input.column}" (the rows that do: ${hits.join(", ")}). ${NOTHING_CHANGED}`;
+            return didNothing(
+              `Row ${input.row} does not have "${input.value}" in the column "${input.column}" (the rows that do: ${hits.join(", ")}). ${NOTHING_CHANGED}`,
+            );
           target = input.row;
         } else if (hits.length > 1) {
-          return `Several rows have "${input.value}" in the column "${input.column}": rows ${hits.join(", ")}. Call again with the row number of the one to change. ${NOTHING_CHANGED}`;
+          return didNothing(
+            `Several rows have "${input.value}" in the column "${input.column}": rows ${hits.join(", ")}. Call again with the row number of the one to change. ${NOTHING_CHANGED}`,
+          );
         } else {
           target = hits[0] as number;
         }
@@ -692,7 +706,7 @@ function buildUpdateTool(
         );
         if (res.status < 200 || res.status >= 300)
           return toolFailure(httpMessage(res.status, res.json));
-        return `Updated row ${target} of the spreadsheet.`;
+        return acted(`Updated row ${target} of the spreadsheet.`);
       } catch (err) {
         return unreachable(err, "update");
       }

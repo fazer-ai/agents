@@ -988,6 +988,16 @@ describe("an imported rule on a renamed tool", () => {
       "handoff_to_human",
       null,
     ]);
+    // A component the bundle carries without granting it, renamed because a native owns its
+    // name, does not take the native's rule.
+    const carried = renameTurnRuleTools(
+      { guardrails: { turnReview: { rules: [rule("set_labels")] } } },
+      new Map([["set_labels", "set_labels_2"]]),
+      new Set(),
+    );
+    expect(carried.guardrails).toEqual({
+      turnReview: { rules: [rule("set_labels")] },
+    });
     // A bundle's own tool under a native's retired name keeps its rule.
     const own = renameTurnRuleTools(
       { guardrails: { turnReview: { rules: [rule("assign_label")] } } },

@@ -6,7 +6,9 @@ import { xmlAttr, xmlEscape } from "@/lib/xml";
 import { sysCtx } from "@/modules/rag/documents";
 import { createSuggestion, searchKnowledge } from "@/modules/rag/service";
 import type { ChunkHit } from "@/modules/rag/sql";
+import { acted, didNothing } from "./call-scope";
 import { markEffectFree } from "./effect-free";
+import { outcomeTool } from "./failure";
 
 // RAG tools the agent can call mid-turn. search_knowledge retrieves from the tenant's knowledge
 // bases (RLS-scoped); suggest_kb_entry proposes a new entry that a human must approve before it is
@@ -285,7 +287,7 @@ function suggestTool(ctx: RagToolCtx) {
       })
     : z.object({ content, title, rationale });
 
-  return tool(
+  return outcomeTool(
     async (args: {
       content: string;
       title?: string;
@@ -298,7 +300,7 @@ function suggestTool(ctx: RagToolCtx) {
         ctx.knowledgeBaseIds,
       );
       if (targetId == null) {
-        return "No knowledge base is configured for suggestions.";
+        return didNothing("No knowledge base is configured for suggestions.");
       }
       const { created } = await createSuggestion({
         ctx: sysCtx(ctx.tenantId),
@@ -311,9 +313,14 @@ function suggestTool(ctx: RagToolCtx) {
         base: ctx.base,
       });
       if (!created) {
-        return "This entry was already suggested for this knowledge base and a human has it. Nothing new was queued; do not suggest it again.";
+        // Already with a human, which is what the call asked for.
+        return acted(
+          "This entry was already suggested for this knowledge base and a human has it. Nothing new was queued; do not suggest it again.",
+        );
       }
-      return "Suggestion queued for human review. It will NOT be used until a human approves it.";
+      return acted(
+        "Suggestion queued for human review. It will NOT be used until a human approves it.",
+      );
     },
     {
       name: "suggest_kb_entry",

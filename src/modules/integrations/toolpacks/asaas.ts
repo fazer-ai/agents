@@ -3,6 +3,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import type { Prisma } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { acted, didNothing } from "@/graph/tools/call-scope";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fetchBounded } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -298,7 +299,9 @@ function buildCreateLinkTool(
           err,
         });
       }
-      return `Payment link created. Send this URL to the customer: ${url}\n(paymentLinkId: ${linkId})`;
+      return acted(
+        `Payment link created. Send this URL to the customer: ${url}\n(paymentLinkId: ${linkId})`,
+      );
     },
     {
       name: "asaas_payment_link_create",
@@ -335,7 +338,9 @@ function buildCreatePixChargeTool(
 
       const cpfCnpj = input.cpfCnpj.replace(/\D/g, "");
       if (cpfCnpj.length !== 11 && cpfCnpj.length !== 14)
-        return "Invalid CPF/CNPJ: provide 11 digits (CPF) or 14 (CNPJ).";
+        return didNothing(
+          "Invalid CPF/CNPJ: provide 11 digits (CPF) or 14 (CNPJ).",
+        );
 
       // 1) Find-or-create the customer by CPF/CNPJ (reuse avoids duplicate customers on Asaas).
       let customerId: string | null = null;
@@ -565,7 +570,7 @@ function buildCreatePixChargeTool(
           "The charge exists but no payment code was returned; check the Asaas dashboard.",
         );
       lines.push(`(paymentId: ${paymentId})`);
-      return lines.join("\n");
+      return acted(lines.join("\n"));
     },
     {
       name: "asaas_create_pix_charge",
@@ -601,8 +606,8 @@ function buildStatusTool(
         (paymentId && looksLikeUrl(paymentId)) ||
         (linkId && looksLikeUrl(linkId))
       )
-        return guidance;
-      if (!paymentId && !linkId) return guidance;
+        return didNothing(guidance);
+      if (!paymentId && !linkId) return didNothing(guidance);
       // Path-interpolated ids are URL-encoded; the origin stays the fixed constant above.
       // When both arrive, the payment wins: its status is the terminal fact (a link stays
       // `active` even after it was paid).
@@ -620,7 +625,9 @@ function buildStatusTool(
         // An invoice-URL SLUG is shape-indistinguishable from a real link id, so it can only be
         // caught here: turn the provider's 404 into recoverable guidance instead of a dead end.
         if (res.status === 404)
-          return "The payment provider returned HTTP 404 (id not found). If this value was extracted from an invoice/payment URL, that slug is not a valid id — use the paymentId returned by asaas_create_pix_charge or the paymentLinkId returned by asaas_payment_link_create.";
+          return didNothing(
+            "The payment provider returned HTTP 404 (id not found). If this value was extracted from an invoice/payment URL, that slug is not a valid id — use the paymentId returned by asaas_create_pix_charge or the paymentLinkId returned by asaas_payment_link_create.",
+          );
         return toolFailure(
           withEnvironmentHint(
             `The payment provider returned HTTP ${res.status}.`,
@@ -634,22 +641,26 @@ function buildStatusTool(
       // netValue (merchant-facing fee math), invoiceUrl (possibly stale page) and
       // externalReference (internal correlation token).
       if (paymentId) {
-        return JSON.stringify({
+        return acted(
+          JSON.stringify({
+            id: d.id,
+            status: d.status,
+            value: d.value,
+            billingType: d.billingType,
+            dueDate: d.dueDate,
+            paymentDate: d.paymentDate,
+          }),
+        );
+      }
+      return acted(
+        JSON.stringify({
           id: d.id,
-          status: d.status,
+          active: d.active,
           value: d.value,
           billingType: d.billingType,
-          dueDate: d.dueDate,
-          paymentDate: d.paymentDate,
-        });
-      }
-      return JSON.stringify({
-        id: d.id,
-        active: d.active,
-        value: d.value,
-        billingType: d.billingType,
-        chargeType: d.chargeType,
-      });
+          chargeType: d.chargeType,
+        }),
+      );
     },
     {
       name: "asaas_payment_status",

@@ -1,6 +1,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
+import { acted, didNothing, type Outcome } from "@/graph/tools/call-scope";
 import { failableTool, ToolFailure, toolFailure } from "@/graph/tools/failure";
 import { fetchBounded } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -67,6 +68,11 @@ const CONFIRMED_PREFIX = "[CONFIRMADO] ";
 // calendar): fail-closed, so the tools refuse until the operator explicitly picks a calendar, instead
 // of silently falling back to the connected account's own "primary" (which would dump appointments on
 // whoever connected the Google account). De-duplicated; path-encoded at call sites.
+// A refusal as the tool's answer: a failure stays one, and text is a call that did nothing.
+function refusedAs(refusal: string | ToolFailure): Outcome | ToolFailure {
+  return typeof refusal === "string" ? didNothing(refusal) : refusal;
+}
+
 function resolveAllowedCalendarIds(config: Record<string, unknown>): string[] {
   const raw = config.calendarIds;
   if (Array.isArray(raw)) {
@@ -661,11 +667,11 @@ function buildListEventsTool(
       calendarId?: string;
     }) => {
       const stamp = contactStamp(ctx);
-      if (!stamp) return NO_CONTACT;
+      if (!stamp) return didNothing(NO_CONTACT);
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
-      if ("error" in pick) return pick.error;
+      if ("error" in pick) return didNothing(pick.error);
       const calendarId = pick.id;
       const params = new URLSearchParams({
         singleEvents: "true",
@@ -710,7 +716,7 @@ function buildListEventsTool(
           "gcal: list re-verify dropped events the server-side contact fence returned",
         );
       }
-      return JSON.stringify(owned.map(projectEvent));
+      return acted(JSON.stringify(owned.map(projectEvent)));
     },
     {
       name: "calendar_list_events",
@@ -977,18 +983,24 @@ function buildCheckAvailabilityTool(
       const minMs = Date.parse(input.timeMin);
       const maxMs = Date.parse(input.timeMax);
       if (Number.isNaN(minMs) || Number.isNaN(maxMs) || maxMs <= minMs) {
-        return "Invalid range: provide ISO 8601 timeMin and timeMax, with timeMax after timeMin.";
+        return didNothing(
+          "Invalid range: provide ISO 8601 timeMin and timeMax, with timeMax after timeMin.",
+        );
       }
       if (maxMs - minMs > MAX_AVAILABILITY_RANGE_MS) {
-        return "Please search at most 24 hours at a time. Narrow the range to a single day and call again for other days.";
+        return didNothing(
+          "Please search at most 24 hours at a time. Narrow the range to a single day and call again for other days.",
+        );
       }
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickAvailabilityCalendars(allowed, labels, input.calendarId);
-      if ("error" in pick) return pick.error;
+      if ("error" in pick) return didNothing(pick.error);
       const calendarIds = pick.ids;
       if (calendarIds.length > MAX_AGGREGATE_CALENDARS) {
-        return `Too many calendars are configured to search at once (${calendarIds.length}; the limit is ${MAX_AGGREGATE_CALENDARS}). Pass calendarId to check one calendar, or reduce the calendars in the integration settings.`;
+        return didNothing(
+          `Too many calendars are configured to search at once (${calendarIds.length}; the limit is ${MAX_AGGREGATE_CALENDARS}). Pass calendarId to check one calendar, or reduce the calendars in the integration settings.`,
+        );
       }
       const read = await readBusySources(
         calendarIds,
@@ -999,7 +1011,7 @@ function buildCheckAvailabilityTool(
         token,
         ctx,
       );
-      if (!read.ok) return read.refusal;
+      if (!read.ok) return refusedAs(read.refusal);
       const { sources, unreadable } = read;
       const blocked = await readBlockingWindows(
         blockingIds,
@@ -1010,7 +1022,7 @@ function buildCheckAvailabilityTool(
         token,
         ctx,
       );
-      if (!blocked.ok) return blocked.refusal;
+      if (!blocked.ok) return refusedAs(blocked.refusal);
       const blockingWindows = blocked.windows;
       // The service hours bounding bookable slots: the integration's chosen BusinessHours (windows +
       // its own timezone). Unset/missing ⇒ no time-of-day filter ("always on"); we then fall back to
@@ -1044,12 +1056,16 @@ function buildCheckAvailabilityTool(
       // NOTE: A list of bookable start times (start/end ISO + a human label), each tagged with the calendar
       // that can take it. Empty ⇒ nothing free in range. `coveredUntil` appears only when the entry
       // ceiling stopped the search early, and is the timeMin to continue from.
-      return JSON.stringify({
-        slots: slots.slots,
-        timeZone: schedule?.timezone ?? timeZone,
-        ...(slots.coveredUntil ? { coveredUntil: slots.coveredUntil } : {}),
-        ...(unreadable.length > 0 ? { unavailableCalendars: unreadable } : {}),
-      });
+      return acted(
+        JSON.stringify({
+          slots: slots.slots,
+          timeZone: schedule?.timezone ?? timeZone,
+          ...(slots.coveredUntil ? { coveredUntil: slots.coveredUntil } : {}),
+          ...(unreadable.length > 0
+            ? { unavailableCalendars: unreadable }
+            : {}),
+        }),
+      );
     },
     {
       name: "calendar_check_availability",
@@ -1294,7 +1310,7 @@ function buildCreateEventTool(
       attendeeEmail?: string;
     }) => {
       const stamp = contactStamp(ctx);
-      if (!stamp) return NO_CONTACT;
+      if (!stamp) return didNothing(NO_CONTACT);
       // Checked before anything leaves, so a refused address books nothing. The arg only exists in
       // "agent" mode (createArgSchema), so in the others it never reaches here.
       const agentEmail = input.attendeeEmail?.trim() || null;
@@ -1307,7 +1323,7 @@ function buildCreateEventTool(
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
-      if ("error" in pick) return pick.error;
+      if ("error" in pick) return didNothing(pick.error);
       const calendarId = pick.id;
       const judged = await judgeWrite({
         sel,
@@ -1322,7 +1338,7 @@ function buildCreateEventTool(
         end: input.end,
         excludeBusy: null,
       });
-      if (!judged.ok) return judged.refusal;
+      if (!judged.ok) return refusedAs(judged.refusal);
       const invite = await resolveInvitee(inviteMode, agentEmail, ctx);
       const body: Record<string, unknown> = {
         summary: input.summary,
@@ -1420,11 +1436,13 @@ function buildCreateEventTool(
           calendarLabel: labels[calendarId] ?? null,
         });
       }
-      return JSON.stringify({
-        ...projectEvent(data),
-        ...(invite.email ? { invitedEmail: invite.email } : {}),
-        ...(invite.notSent ? { inviteNotSent: invite.notSent } : {}),
-      });
+      return acted(
+        JSON.stringify({
+          ...projectEvent(data),
+          ...(invite.email ? { invitedEmail: invite.email } : {}),
+          ...(invite.notSent ? { inviteNotSent: invite.notSent } : {}),
+        }),
+      );
     },
     {
       name: "calendar_create_event",
@@ -1456,11 +1474,11 @@ function buildUpdateEventTool(
       calendarId?: string;
     }) => {
       const stamp = contactStamp(ctx);
-      if (!stamp) return NO_CONTACT;
+      if (!stamp) return didNothing(NO_CONTACT);
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
-      if ("error" in pick) return pick.error;
+      if ("error" in pick) return didNothing(pick.error);
       const calendarId = pick.id;
       const body: Record<string, unknown> = {};
       if (input.summary !== undefined) body.summary = input.summary;
@@ -1471,7 +1489,9 @@ function buildUpdateEventTool(
         input.start === undefined &&
         input.end === undefined
       ) {
-        return "No fields provided. Set at least one of summary, start, end or description.";
+        return didNothing(
+          "No fields provided. Set at least one of summary, start, end or description.",
+        );
       }
       // Ownership gate: re-fetch the event and refuse unless it carries THIS customer's stamp, so the
       // agent can never edit another customer's (or a staff-created) appointment by guessing an id.
@@ -1488,12 +1508,12 @@ function buildUpdateEventTool(
           "Failed to reach Google Calendar. Try again shortly.",
         );
       }
-      if (owner.status === 404) return FOREIGN_EVENT;
+      if (owner.status === 404) return didNothing(FOREIGN_EVENT);
       if (owner.status < 200 || owner.status >= 300) {
         return toolFailure(`Google Calendar returned HTTP ${owner.status}.`);
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
-      if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
+      if (eventStamp(ownerEv) !== stamp) return didNothing(FOREIGN_EVENT);
       // A move is judged by the same rule a create is, and only a move. "A move" is the
       // INSTANTS differing, not the fields being present: a caller resending the current times
       // while renaming would otherwise be refused for a past time, the minimum notice, or
@@ -1547,10 +1567,12 @@ function buildUpdateEventTool(
           // the request, so a legacy all-day appointment contributes the days it really occupies.
           excludeBusy: eventBusyWindow(ownerEv, timeZone),
         });
-        if (!judged.ok) return judged.refusal;
+        if (!judged.ok) return refusedAs(judged.refusal);
       }
       if (Object.keys(body).length === 0) {
-        return "The appointment already has those times, and nothing else was given to change.";
+        return acted(
+          "The appointment already has those times, and nothing else was given to change.",
+        );
       }
       let res: GcalResponse;
       try {
@@ -1599,7 +1621,7 @@ function buildUpdateEventTool(
           });
         }
       }
-      return JSON.stringify(projectEvent(data));
+      return acted(JSON.stringify(projectEvent(data)));
     },
     {
       name: "calendar_update_event",
@@ -1621,11 +1643,11 @@ function buildCancelEventTool(
   return failableTool(
     async (input: { eventId: string; calendarId?: string }) => {
       const stamp = contactStamp(ctx);
-      if (!stamp) return NO_CONTACT;
+      if (!stamp) return didNothing(NO_CONTACT);
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
-      if ("error" in pick) return pick.error;
+      if ("error" in pick) return didNothing(pick.error);
       const calendarId = pick.id;
       // Ownership gate (same as update): re-fetch and refuse unless the event carries THIS customer's
       // stamp, so the agent can never cancel another customer's (or a staff-created) appointment.
@@ -1642,12 +1664,12 @@ function buildCancelEventTool(
           "Failed to reach Google Calendar. Try again shortly.",
         );
       }
-      if (owner.status === 404) return FOREIGN_EVENT;
+      if (owner.status === 404) return didNothing(FOREIGN_EVENT);
       if (owner.status < 200 || owner.status >= 300) {
         return toolFailure(`Google Calendar returned HTTP ${owner.status}.`);
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
-      if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
+      if (eventStamp(ownerEv) !== stamp) return didNothing(FOREIGN_EVENT);
       let res: GcalResponse;
       try {
         res = await gcalFetch(
@@ -1679,9 +1701,11 @@ function buildCancelEventTool(
         );
       }
       await ctx.cancelAppointment?.(input.eventId);
-      return res.status === 410
-        ? "The appointment was already cancelled."
-        : "The appointment was cancelled.";
+      return acted(
+        res.status === 410
+          ? "The appointment was already cancelled."
+          : "The appointment was cancelled.",
+      );
     },
     {
       name: "calendar_cancel_event",
@@ -1703,11 +1727,11 @@ function buildConfirmAppointmentTool(
   return failableTool(
     async (input: { eventId: string; calendarId?: string }) => {
       const stamp = contactStamp(ctx);
-      if (!stamp) return NO_CONTACT;
+      if (!stamp) return didNothing(NO_CONTACT);
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
-      if ("error" in pick) return pick.error;
+      if ("error" in pick) return didNothing(pick.error);
       const calendarId = pick.id;
       // Ownership gate + read the current title so [CONFIRMADO] is prefixed idempotently.
       let owner: GcalResponse;
@@ -1723,12 +1747,12 @@ function buildConfirmAppointmentTool(
           "Failed to reach Google Calendar. Try again shortly.",
         );
       }
-      if (owner.status === 404) return FOREIGN_EVENT;
+      if (owner.status === 404) return didNothing(FOREIGN_EVENT);
       if (owner.status < 200 || owner.status >= 300) {
         return toolFailure(`Google Calendar returned HTTP ${owner.status}.`);
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
-      if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
+      if (eventStamp(ownerEv) !== stamp) return didNothing(FOREIGN_EVENT);
       const currentSummary =
         typeof ownerEv.summary === "string" ? ownerEv.summary : "";
       const newSummary = currentSummary.startsWith(CONFIRMED_PREFIX)
@@ -1764,7 +1788,7 @@ function buildConfirmAppointmentTool(
           `Google Calendar rejected the confirmation (HTTP ${res.status}).`,
         );
       }
-      return "The appointment was marked as confirmed.";
+      return acted("The appointment was marked as confirmed.");
     },
     {
       name: "calendar_confirm_appointment",

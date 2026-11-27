@@ -5,6 +5,7 @@ import type {
 import { z } from "zod";
 import config, { type InternalTarget } from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
+import { acted } from "@/graph/tools/call-scope";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
 import {
@@ -1081,7 +1082,11 @@ export function buildHttpTool(
     async (rawInput: Record<string, unknown>, callConfig) => {
       const sent = { request: false, reported: false };
       try {
-        return await handle(rawInput, callConfig, sent);
+        // Somebody else's system: a request that left is a call that acted, whatever the body
+        // says. What sent nothing, or was declined, is said on the call's config (`sentNothing`,
+        // `declined`), which the tools node hears.
+        const out = await handle(rawInput, callConfig, sent);
+        return typeof out === "string" ? acted(out) : out;
       } catch (err) {
         // A throw before the request left (the credential, the SSRF lookup) sent nothing: said to
         // the rule that asked and to the turn's count, so an observation with nothing sent retries.

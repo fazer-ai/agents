@@ -4,6 +4,7 @@
 // requests for as long as it runs, and no deadline can interrupt a synchronous `test`. One thread per
 // review tests the rules in order under one time budget. Past it the thread is terminated and the
 // answer names the rule that was running.
+import { SandboxQueue } from "@/graph/tools/code-sandbox";
 import { TURN_RULE_FLAGS } from "./settings";
 
 export interface TurnRulesRequest {
@@ -34,13 +35,33 @@ export const TURN_RULES_TIMEOUT_MS = 1_000;
 
 const WORKER_URL = new URL("./turn-rules.worker.ts", import.meta.url).href;
 
+// How many reviews match at once in this process. Each one is a thread, and many conversations
+// finishing together would otherwise start as many: the ones past this wait, with no thread and no
+// timer running, so the budget counts the matching and not the wait for a turn.
+export const TURN_RULES_MAX_CONCURRENCY = 4;
+const defaultQueue = new SandboxQueue(TURN_RULES_MAX_CONCURRENCY);
+
 // The first pattern, in order, that matches `text`.
-export function firstTurnRuleMatch(
+export async function firstTurnRuleMatch(
   patterns: readonly string[],
   text: string,
-  opts: { timeoutMs?: number; workerUrl?: string } = {},
+  opts: { timeoutMs?: number; workerUrl?: string; queue?: SandboxQueue } = {},
 ): Promise<TurnRulesVerdict> {
-  if (patterns.length === 0) return Promise.resolve({ kind: "none" });
+  if (patterns.length === 0) return { kind: "none" };
+  const queue = opts.queue ?? defaultQueue;
+  await queue.acquire();
+  try {
+    return await matchInThread(patterns, text, opts);
+  } finally {
+    queue.release();
+  }
+}
+
+function matchInThread(
+  patterns: readonly string[],
+  text: string,
+  opts: { timeoutMs?: number; workerUrl?: string },
+): Promise<TurnRulesVerdict> {
   return new Promise((resolve) => {
     let worker: Worker;
     try {

@@ -12,6 +12,7 @@ import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { buildAgentGraph } from "@/graph/graph";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
+import { acted } from "@/graph/tools/call-scope";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAlertChannel } from "@/modules/flowlog/channels";
@@ -579,7 +580,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       args: Record<string, unknown>,
       opts: { logValues?: boolean } = {},
     ) {
-      const probe = failableTool(async () => "ok", {
+      const probe = failableTool(async () => acted("ok"), {
         name: "probe_image",
         description: "probe",
         schema: z.object({

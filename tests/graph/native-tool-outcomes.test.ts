@@ -2,13 +2,19 @@ import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { inCallScope } from "@/graph/tools/call-scope";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { buildDocumentTools } from "@/graph/tools/documents";
+import { declaresOutcome } from "@/graph/tools/failure";
 import {
   buildNativeTools,
   buildSimulatedNativeTools,
-  declaresOutcome,
 } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
+import {
+  buildToolpackTools,
+  getToolpackToolNames,
+  type ToolpackCtx,
+} from "@/modules/integrations/toolpacks";
 
 // What a turn review rule's `unlessTool` reads: whether a native tool's call acted or did nothing
 // (call-scope.ts, `Outcome`). The handlers say it in their return type, and these tests hold the
@@ -218,5 +224,89 @@ describe("native tools say whether the call acted", () => {
       ),
     ];
     expect(acted.filter((r) => r.didNothing).map((r) => r.text)).toEqual([]);
+  });
+});
+
+// The same contract outside the natives: the packs, the document tools and the other tools the
+// product writes are built by `failableTool` or `outcomeTool`, so their answers pick a side too.
+describe("the other tools the product writes say it too", () => {
+  const PACKS = [
+    "ASAAS",
+    "GOOGLE_CALENDAR",
+    "GOOGLE_DRIVE",
+    "GOOGLE_SHEETS",
+    "RESEND",
+  ] as const;
+  const packCtx = (over: Partial<ToolpackCtx> = {}): ToolpackCtx =>
+    ({
+      tenantId: 1n,
+      base: {} as never,
+      threadId: "1:1:1",
+      resolveCredential: async () => "tok_live",
+      assertSafe: async () => undefined,
+      fetchImpl: (async () => new Response("{}")) as unknown as typeof fetch,
+      ...over,
+    }) as ToolpackCtx;
+  const pack = (type: (typeof PACKS)[number], ctx = packCtx()) =>
+    buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: type,
+          config: { calendarIds: ["primary"] },
+          credentialRef: "cred",
+          enabledTools: getToolpackToolNames(type),
+        },
+      ],
+      ctx,
+    );
+
+  // The bug it catches: a pack tool built with `tool()` directly, whose answers nothing types.
+  test("every tool of every pack is built by the wrappers that type its answers", () => {
+    for (const type of PACKS) {
+      const tools = pack(type);
+      expect(tools.map((t) => t.name).sort()).toEqual(
+        [...getToolpackToolNames(type)].sort(),
+      );
+      expect(
+        tools.filter((t) => !declaresOutcome(t)).map((t) => t.name),
+      ).toEqual([]);
+    }
+  });
+
+  // The bug it catches: these refused in ordinary text with no mark, so a rule against "you are
+  // booked" or "I attached the document" was excused by the call that did neither.
+  test("a pack or a document tool that refuses in ordinary text did nothing", async () => {
+    const calendar = pack("GOOGLE_CALENDAR").find(
+      (t) => t.name === "calendar_create_event",
+    );
+    const drive = pack("GOOGLE_DRIVE").find(
+      (t) => t.name === "drive_send_file",
+    );
+    const [document] = buildDocumentTools(
+      [
+        {
+          templateId: 1n,
+          name: "Orçamento",
+          slug: "orcamento",
+          description: null,
+          fields: [],
+        },
+      ],
+      { tenantId: 1n, threadId: "1:1:1" } as never,
+    );
+    const refused = [
+      // No contact in scope: nothing is booked.
+      await run(calendar, {
+        summary: "Consulta",
+        start: "2026-12-01T10:00:00-03:00",
+        end: "2026-12-01T11:00:00-03:00",
+      }),
+      // No conversation to send the file into.
+      await run(drive, { fileId: "abc" }),
+      // No turn to attach the document to.
+      await run(document, {}),
+    ];
+    expect(refused.map((r) => r.didNothing)).toEqual([true, true, true]);
   });
 });

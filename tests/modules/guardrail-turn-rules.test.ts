@@ -19,6 +19,7 @@ import {
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { scopedNoEffect } from "@/graph/tools/call-scope";
+import { SandboxQueue } from "@/graph/tools/code-sandbox";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -371,6 +372,22 @@ describe("the matcher", () => {
     ).toEqual({ kind: "error", index: 1 });
   });
 
+  // The bug it catches: one thread per review with no ceiling, so a burst of replies started as
+  // many threads, and the ones that started late ran out of budget before testing anything.
+  test("reviews past the ceiling wait their turn without spending their budget", async () => {
+    const queue = new SandboxQueue(1);
+    const both = Promise.all([
+      firstTurnRuleMatch(["vou"], DRAFT, { queue }),
+      firstTurnRuleMatch(["vou"], DRAFT, { queue }),
+    ]);
+    expect([queue.active, queue.queued]).toEqual([1, 1]);
+    expect(await both).toEqual([
+      { kind: "match", index: 0 },
+      { kind: "match", index: 0 },
+    ]);
+    expect([queue.active, queue.queued]).toEqual([0, 0]);
+  });
+
   // The bug it catches: a backtracking pattern matched on the server's own thread stalls every
   // tenant for as long as it runs. Here the caller gets its answer at the budget, naming the pattern.
   test("a pattern that backtracks is stopped at the budget, and the answer names it", async () => {
@@ -435,7 +452,7 @@ describe("the rules in the gate", () => {
     async () => {
       const r = reviewer([VIOLATED]);
       const reports: GuardrailReport[] = [];
-      const { f, g } = gate(cfg({}), { reports });
+      const { f, g } = gate(cfg({}), { reports, make: r.make });
       const note = await g?.reviewReply(asked(), DRAFT);
       expect(r.calls).toHaveLength(0);
       expect(note?.instruction).toContain(TURN_REVIEW_NOTE_MARK);

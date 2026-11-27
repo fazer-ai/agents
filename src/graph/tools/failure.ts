@@ -5,7 +5,7 @@ import {
   tool,
 } from "@langchain/core/tools";
 import type { z } from "zod";
-import { noteCallFailed } from "./call-scope";
+import { noteCallFailed, type Outcome } from "./call-scope";
 
 // Marks a friendly tool reply as an INTEGRATION FAILURE: the model still sees the exact same string
 // (graceful degradation), but the flow log records the call as warn/error so alert channels can fire
@@ -24,7 +24,40 @@ type FailableFn = (
   // contravariance); each call site keeps its own inline input type, exactly as with tool().
   input: never,
   config: ToolRunnableConfig,
-) => Promise<string | ToolFailure>;
+) => Promise<Outcome | ToolFailure>;
+
+// How a tool the product writes is built. Its answers are an `Outcome` (call-scope.ts): each one
+// says whether the call acted or did nothing, and a bare string does not compile. A failure is
+// `toolFailure(...)`, see `failable` below.
+export function failableTool(
+  fn: FailableFn,
+  fields: { name: string; description: string; schema: z.ZodTypeAny },
+): StructuredToolInterface {
+  return declaring(failable(fn, fields));
+}
+
+// The same contract for a handler that has no failure to declare, or answers a whole `ToolMessage`.
+export function outcomeTool(
+  fn: (
+    input: never,
+    config: ToolRunnableConfig,
+  ) => Promise<Outcome | ToolMessage>,
+  fields: { name: string; description: string; schema: z.ZodTypeAny },
+): StructuredToolInterface {
+  return declaring(
+    tool(fn as never, fields) as unknown as StructuredToolInterface,
+  );
+}
+
+// The mark the registry test reads: a tool built by one of the two wrappers above.
+const DECLARES_OUTCOME = Symbol.for("fazerai.tool.declaresOutcome");
+export function declaresOutcome(t: StructuredToolInterface): boolean {
+  return (t as unknown as Record<symbol, unknown>)[DECLARES_OUTCOME] === true;
+}
+function declaring(t: StructuredToolInterface): StructuredToolInterface {
+  (t as unknown as Record<symbol, boolean>)[DECLARES_OUTCOME] = true;
+  return t;
+}
 
 // tool() wrapper whose fn may return toolFailure(...): the failure reaches the model as a ToolMessage
 // with status "error" and the SAME string as content. LangChain's direct-tool-output passthrough
@@ -33,7 +66,7 @@ type FailableFn = (
 // since a ToolMessage requires a real tool_call_id. Anthropic and OpenAI-family adapters ignore
 // ToolMessage.status and google-genai wraps it as an error detail with the string preserved; if an
 // adapter starts emitting is_error, re-check this model-facing contract.
-export function failableTool(
+function failable(
   fn: FailableFn,
   fields: { name: string; description: string; schema: z.ZodTypeAny },
 ): StructuredToolInterface {

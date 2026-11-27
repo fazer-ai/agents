@@ -49,6 +49,7 @@ import {
   groundingHasSources,
 } from "./settings";
 import { replyAnchor } from "./turn-review";
+import { analysisFailed } from "./verdict";
 
 // The factual-grounding check as the reactive turn and the playground run it. `review` is the graph's
 // `reviewReply` hook: it decides whether the turn is reviewed at all, runs the reviewer, writes the
@@ -308,7 +309,7 @@ export function buildGroundingGate(
       cachedInputTokens: tokens.cached,
       outputTokens: tokens.output,
     };
-    if (verdict.error) {
+    if (analysisFailed(verdict)) {
       await couldNotReview("analysis_failed", timed, verdict.error);
       return null;
     }

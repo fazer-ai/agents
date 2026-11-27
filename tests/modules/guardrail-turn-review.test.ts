@@ -50,6 +50,10 @@ import {
 } from "@/modules/guardrails/turn-review";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import {
+  EMPTY_FAILURES,
+  passRawModelFailures,
+} from "../utils/raw-model-failures";
 import { guardrailModel } from "../utils/scripted-models";
 
 // The turn review as the turn runs it: what the reviewer reads, what each verdict hands back to the
@@ -1462,6 +1466,35 @@ describe("the gate", () => {
       expect(hg?.halted()).toBe(true);
       await hg?.reviewReply(turn(), "Oi de novo");
       expect(held.calls).toHaveLength(1);
+    },
+  );
+
+  test.skipIf(!dbUp)(
+    "a reviewer failure with an empty message holds the step like any other, never reads as clean",
+    async () => {
+      const raw = passRawModelFailures();
+      try {
+        for (const thrown of EMPTY_FAILURES) {
+          const make = (() =>
+            guardrailModel(async () => {
+              throw thrown;
+            })) as never;
+          const reports: GuardrailReport[] = [];
+          const { f, g } = gate(cfg({}, { onFailure: "hold" }), make, reports);
+          expect(await g?.reviewCall(turn(), HANDOFF_CALL)).toBeNull();
+          expect(g?.pending()).toEqual({ kind: "handed-off", reply: HANDOFF });
+          expect(g?.halted()).toBe(true);
+          expect(reports.map((r) => r.outcome)).not.toContain("clean");
+          const [line] = await lines(f.turnId as string);
+          expect(line).toMatchObject({
+            outcome: "analysis_failed",
+            held: true,
+          });
+          expect(line).not.toHaveProperty("verdict");
+        }
+      } finally {
+        raw.mockRestore();
+      }
     },
   );
 

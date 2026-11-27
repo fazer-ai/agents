@@ -58,6 +58,7 @@ import type {
   TurnReviewFallback,
 } from "./settings";
 import {
+  analysisFailed,
   readVerdict,
   VERDICT_SCHEMA,
   VERDICT_SCHEMA_OPENAPI,
@@ -369,7 +370,7 @@ export async function reviewTurnStep(
       { deadlineMs: REVIEW_TIMEOUT_MS, signal: turnSignal },
     );
     const v = readVerdict(parsed, raw);
-    return v.error
+    return analysisFailed(v)
       ? { violated: false, rationale: "", error: v.error }
       : { violated: v.violated, rationale: v.rationale ?? "" };
   } catch (err) {
@@ -791,7 +792,7 @@ export function buildTurnReviewGate(
       inputTokens: tokens.input,
       outputTokens: tokens.output,
     };
-    if (verdict.error)
+    if (analysisFailed(verdict))
       return couldNotReview(step, "analysis_failed", timed, verdict.error);
     if (!verdict.violated) {
       emitFlowEvent(p.flow, {

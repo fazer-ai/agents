@@ -16,6 +16,7 @@ import {
   judgesAnything,
 } from "./prompts";
 import {
+  analysisFailed,
   type GuardrailVerdict,
   readVerdict,
   unanalyzed,
@@ -108,7 +109,7 @@ function mergeVerdicts(
   a: GuardrailVerdict,
   b: GuardrailVerdict,
 ): GuardrailVerdict {
-  const errors = [a.error, b.error].filter((e): e is string => Boolean(e));
+  const errors = [a, b].filter(analysisFailed).map((v) => v.error);
   const rationale = [a, b]
     .filter((v) => v.violated && v.rationale)
     .map((v) => v.rationale)

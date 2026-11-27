@@ -27,6 +27,10 @@ import {
 } from "@/modules/guardrails/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import {
+  EMPTY_FAILURES,
+  passRawModelFailures,
+} from "../utils/raw-model-failures";
 import { guardrailModel } from "../utils/scripted-models";
 
 // The factual-grounding check as the turn runs it: when it reviews, what each action leaves for the
@@ -852,6 +856,33 @@ describe.skipIf(!dbUp)("a reviewed turn", () => {
     });
     await held?.review(turn());
     expect(held?.pending()).toEqual({ kind: "handed-off", reply: HANDOFF });
+  });
+
+  test("a review that fails with an empty message is a failure too, never a clean verdict", async () => {
+    const raw = passRawModelFailures();
+    try {
+      for (const thrown of EMPTY_FAILURES) {
+        const make = (() =>
+          guardrailModel(async () => {
+            throw thrown;
+          })) as never;
+        const f = flow();
+        const held = buildGroundingGate({
+          langfuseCfg: null,
+          clock: CLOCK,
+          cfg: cfg("revise", { onFailure: "hold" }),
+          reviewer: RUNS,
+          flow: f,
+          makeModel: make,
+        });
+        await held?.review(turn());
+        expect(held?.pending()).toEqual({ kind: "handed-off", reply: HANDOFF });
+        const [line] = await lines(f.turnId);
+        expect(line).toMatchObject({ outcome: "analysis_failed", held: true });
+      }
+    } finally {
+      raw.mockRestore();
+    }
   });
 
   test("results past the ceiling are not reviewed, and the line says why", async () => {

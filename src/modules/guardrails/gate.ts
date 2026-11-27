@@ -31,6 +31,7 @@ import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
 import type { TURN_REVIEW_KEY } from "./turn-review";
+import { analysisFailed } from "./verdict";
 
 // The moderation gate both runtimes call, one unit so the reactive and proactive (follow-up) paths
 // cannot drift. `GuardrailDecision` is what one screening DID, as a single union: separate flags for
@@ -566,7 +567,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       categories: verdict.categories,
       scores: verdict.scores,
     };
-    if (verdict.error) {
+    if (analysisFailed(verdict)) {
       emitFlowEvent(p.flow, {
         stage: "guardrail",
         status: "error",
@@ -585,7 +586,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     if (verdict.scores.length === 0) return { d: { kind: "not-run" }, r: null };
     if (!verdict.violated) {
       // A provider was asked, however it came back, so the caller's reads are a round trip old.
-      const d: GuardrailDecision = verdict.error
+      const d: GuardrailDecision = analysisFailed(verdict)
         ? { kind: "unavailable", modelRan: true }
         : { kind: "clean" };
       return {
@@ -594,7 +595,9 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
           direction,
           outcome: d.kind,
           scores: verdict.scores,
-          ...(verdict.error ? { cause: "analysis_failed" as const } : {}),
+          ...(analysisFailed(verdict)
+            ? { cause: "analysis_failed" as const }
+            : {}),
         },
       };
     }
@@ -686,7 +689,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     // A guardrail that could not run reads exactly like one that ran and approved, so without this
     // line an expired credential is silent moderation for as long as nobody notices. The turn is
     // NOT blocked (fail-open stays), only recorded.
-    if (verdict.error) {
+    if (analysisFailed(verdict)) {
       emitFlowEvent(p.flow, {
         stage: "guardrail",
         status: "error",
@@ -702,7 +705,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     if (!verdict.violated) {
       // The call went out and came back, however it came back, so both answers here are downstream
       // of a round trip the caller's earlier reads did not survive.
-      const d: GuardrailDecision = verdict.error
+      const d: GuardrailDecision = analysisFailed(verdict)
         ? { kind: "unavailable", modelRan: true }
         : { kind: "clean" };
       return {
@@ -710,7 +713,9 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         r: {
           direction,
           outcome: d.kind,
-          ...(verdict.error ? { cause: "analysis_failed" as const } : {}),
+          ...(analysisFailed(verdict)
+            ? { cause: "analysis_failed" as const }
+            : {}),
         },
       };
     }

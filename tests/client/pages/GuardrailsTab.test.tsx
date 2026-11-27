@@ -15,8 +15,9 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { GuardrailsTab } from "@/client/pages/agents/GuardrailsTab";
+import type { LastWholeTurnRules } from "@/client/pages/agents/guardrailsFormState";
 import type { GuardrailsRefusals } from "@/client/pages/agents/types";
 import {
   CUSTOM_POLICY_MAX,
@@ -885,20 +886,36 @@ describe("GuardrailsTab turn review rules", () => {
   afterEach(() => cleanup());
 
   let form: GuardrailsConfig | null = null;
+  // `away`: the editor's other tabs. The draft and the rules' whole versions stay with the owner,
+  // and the tab itself unmounts, as in AgentEditorPage.
   function Dirty({ initial }: { initial: GuardrailsConfig }) {
     const [g, setG] = useState(initial);
+    const [away, setAway] = useState(false);
+    const whole = useRef<LastWholeTurnRules>([]);
     form = g;
+    if (away)
+      return (
+        <button type="button" onClick={() => setAway(false)}>
+          back
+        </button>
+      );
     return (
-      <GuardrailsTab
-        agentId=""
-        guardrails={g}
-        setGuardrails={setG as never}
-        refusals={NO_REFUSALS}
-        dirty
-        saving={false}
-        onSave={() => {}}
-        onDiscard={() => {}}
-      />
+      <>
+        <button type="button" onClick={() => setAway(true)}>
+          away
+        </button>
+        <GuardrailsTab
+          wholeRules={whole}
+          agentId=""
+          guardrails={g}
+          setGuardrails={setG as never}
+          refusals={NO_REFUSALS}
+          dirty
+          saving={false}
+          onSave={() => {}}
+          onDiscard={() => {}}
+        />
+      </>
     );
   }
   const reviewing = (): GuardrailsConfig => {
@@ -1027,6 +1044,21 @@ describe("GuardrailsTab turn review rules", () => {
       [second],
       false,
     ]);
+  });
+
+  // The bug it catches: the whole versions kept in the tab, which unmounts on a tab switch, so an
+  // edit left invalid, a visit to another tab and the switch turned off deleted the saved rule.
+  test("a saved rule mid-edit survives a visit to another tab before the section is switched off", () => {
+    const saved = { name: "a", pattern: "a", unlessTool: null, note: "n" };
+    const c = reviewing();
+    c.turnReview.rules = [saved];
+    render(<Dirty initial={c} />);
+    fireEvent.change(at("gr-turn-rule-0-pattern"), { target: { value: "(" } });
+    fireEvent.click(screen.getByRole("button", { name: "away" }));
+    fireEvent.click(screen.getByRole("button", { name: "back" }));
+    const section = document.getElementById("gr-turn-review") as HTMLElement;
+    fireEvent.click(within(section).getAllByRole("switch")[0] as HTMLElement);
+    expect(form?.turnReview.rules).toEqual([saved]);
   });
 
   test("a tool field left with only spaces is no tool", () => {

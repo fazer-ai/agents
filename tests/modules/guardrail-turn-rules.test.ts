@@ -746,7 +746,10 @@ describe("the rules in the gate", () => {
 type Step = {
   text: string;
   // A name, or a call with its argument and its id (null: none).
-  calls?: (string | { name: string; n: number; id: string | null })[];
+  calls?: (
+    | string
+    | { name: string; n?: number; args?: object; id?: string | null }
+  )[];
 };
 class ScriptedModel {
   seen: BaseMessage[][] = [];
@@ -760,7 +763,15 @@ class ScriptedModel {
       tool_calls: (step.calls ?? []).map((c, i) =>
         typeof c === "string"
           ? { name: c, args: {}, id: `call_${this.seen.length}_${i}` }
-          : { name: c.name, args: { n: c.n }, ...(c.id ? { id: c.id } : {}) },
+          : {
+              name: c.name,
+              args: c.args ?? { n: c.n },
+              ...(c.id === undefined
+                ? { id: `call_${this.seen.length}_${i}` }
+                : c.id
+                  ? { id: c.id }
+                  : {}),
+            },
       ),
     });
   }
@@ -963,6 +974,68 @@ describe("the rules in the graph", () => {
       expect([toggled, done.idleResults, done.outcomes]).toEqual([
         ["toggleStatus"],
         [false],
+        [],
+      ]);
+    },
+  );
+
+  // The bug it catches: `set_labels` calls of one step are written together by the call that
+  // opened the write, so every report of the batch fired in that call's context: two refused calls
+  // marked one result, and a refused call beside one that wrote marked the wrong one.
+  test.skipIf(!dbUp)(
+    "set_labels calls written together are each marked by their own outcome",
+    async () => {
+      let conversation = 9000;
+      const run = async (first: string, second: string) => {
+        const written: string[][] = [];
+        const client = {
+          getConversationLabels: async () => [],
+          setConversationLabels: async (_id: number, labels: string[]) => {
+            written.push(labels);
+            return {};
+          },
+        } as unknown as ChatwootClient;
+        const t = await runTurn(
+          [
+            {
+              text: "",
+              calls: [
+                { name: "set_labels", args: { add: [first] } },
+                { name: "set_labels", args: { add: [second] } },
+              ],
+            },
+            { text: "Certo, vou marcar o seu atendimento." },
+            { text: "Posso ajudar em algo mais?" },
+          ],
+          cfg({
+            rules: [
+              {
+                name: "marca-sem-etiqueta",
+                pattern: "vou marcar",
+                unlessTool: "set_labels",
+                note: NOTE,
+              },
+            ],
+          }),
+          {},
+          buildNativeTools({
+            client,
+            conversationId: ++conversation,
+            protectedLabels: ["vip"],
+            onNoEffect: scopedNoEffect(),
+          }).filter((x) => x.name === "set_labels"),
+        );
+        return [written, t.idleResults, t.outcomes];
+      };
+      expect(await run("vip", "vip")).toEqual([[], [true, true], ["revised"]]);
+      expect(await run("urgente", "vip")).toEqual([
+        [["urgente"]],
+        [false, true],
+        [],
+      ]);
+      expect(await run("vip", "urgente")).toEqual([
+        [["urgente"]],
+        [true, false],
         [],
       ]);
     },

@@ -206,6 +206,7 @@ import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import {
   guardrailsChatModelShown,
+  type LastWholeTurnRules,
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
 } from "./guardrailsFormState";
@@ -1232,6 +1233,8 @@ function AgentEditor() {
     );
   // Guardrails (input/output moderation). Own editor section (own Save + dirty tracking); the form
   // state is the config shape (agent.settings.guardrails).
+  // The last whole version of each turn review rule (GuardrailsTab), beside the draft it belongs to.
+  const guardrailsWholeRules = useRef<LastWholeTurnRules>([]);
   const [guardrails, setGuardrails] = useState<GuardrailsConfig>(() =>
     structuredClone(GUARDRAILS_DEFAULTS),
   );
@@ -5589,6 +5592,7 @@ function AgentEditor() {
                 agentId={id}
                 guardrails={guardrails}
                 setGuardrails={setGuardrails}
+                wholeRules={guardrailsWholeRules}
                 guardrailsCredBaseUrl={vaultBaseUrl(
                   guardrails.credentialRef ?? "",
                 )}

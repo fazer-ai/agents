@@ -80,7 +80,7 @@ import {
   saysNothing,
   skipReplyRan,
 } from "./silence";
-import { inCallScope, noteCallDidNothing } from "./tools/call-scope";
+import { inCallScope } from "./tools/call-scope";
 import {
   type CallReport,
   fenceReporterOf,
@@ -1621,11 +1621,11 @@ export function buildAgentGraph({
         // on the call's config (fence-report.ts), passed on to a listener already there, or a
         // handler's `onNoEffect`.
         const outer = fenceReporterOf(config);
-        const { value, didNothing } = await inCallScope(() =>
+        const { value, didNothing } = await inCallScope((mark) =>
           t.invoke(
             input as never,
             withFenceReporter(config ?? {}, (r: CallReport, callId) => {
-              if (reportsNoEffect(r)) noteCallDidNothing();
+              if (reportsNoEffect(r)) mark();
               outer?.(r, callId);
             }),
           ),

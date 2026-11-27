@@ -119,6 +119,7 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
 // (fail-closed: a tool not in the allowlist is never exposed to the model).
 
+import { type AsCall, asThisCall } from "./call-scope";
 import {
   HANDOFF_DONE_PREFIX,
   HANDOFF_TOOL_NAME,
@@ -1494,6 +1495,8 @@ interface PendingLabelDelta {
   // The call's own fence reporter (fence-report.ts): the batch is written by whichever call opened
   // it, so each delta carries its caller's.
   fenced?: FenceReporter;
+  // The same for `onNoEffect`, which names no call: run as the caller (call-scope.ts).
+  asCall: AsCall;
 }
 
 // Which fence of `applyLabelDelta` held part or all of one call, told to the caller that asked. A
@@ -1623,6 +1626,10 @@ function setLabelsTool(ctx: ToolCtx) {
   // delta after the other in the order the calls were made, and the set they add up to goes out in
   // one POST; each call still answers for its own delta, with the set as it stood after it. Never
   // rejects: each call is answered through its own promise.
+  // A call of the batch that wrote nothing, said as that call: the batch runs in the context of
+  // the call that opened it.
+  const idle = (d: PendingLabelDelta) =>
+    d.asCall(() => ctx.onNoEffect?.("set_labels"));
   const writeLabelBatch = async (
     batch: LabelBatch,
     later: PendingLabelDelta[],
@@ -1672,7 +1679,7 @@ function setLabelsTool(ctx: ToolCtx) {
         // NOTE: Nothing moved: see the sibling scopes.
         recordShown(ctx, "conversation", state);
         for (const o of outcomes) {
-          ctx.onNoEffect?.("set_labels");
+          idle(o.delta);
           reportLabelFence(o.delta.fenced, o);
           logRefusedOnly("conversation", o);
           o.delta.resolve(report(o));
@@ -1687,7 +1694,7 @@ function setLabelsTool(ctx: ToolCtx) {
       // a withdrawal.
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
         for (const o of outcomes) {
-          ctx.onNoEffect?.("set_labels");
+          idle(o.delta);
           o.delta.fenced?.({ noEffect: true });
           o.delta.resolve(
             "Could not set the labels (the run was called off while this write waited its turn).",
@@ -1703,7 +1710,8 @@ function setLabelsTool(ctx: ToolCtx) {
         const first = outcomes[0];
         if (first) state = first.next;
         if (!first || !moved(first)) {
-          ctx.onNoEffect?.("set_labels");
+          if (first) idle(first.delta);
+          else ctx.onNoEffect?.("set_labels");
           if (first) {
             reportLabelFence(first.delta.fenced, first);
             logRefusedOnly("conversation", first);
@@ -1736,7 +1744,7 @@ function setLabelsTool(ctx: ToolCtx) {
           );
           reportLabelFence(o.delta.fenced, o);
         } else {
-          ctx.onNoEffect?.("set_labels");
+          idle(o.delta);
           logRefusedOnly("conversation", o);
         }
         o.delta.resolve(report(o));
@@ -1984,6 +1992,7 @@ function setLabelsTool(ctx: ToolCtx) {
           resolve,
           reject,
           ...(fenced ? { fenced } : {}),
+          asCall: asThisCall(),
         };
         const alone = ctx.writesAlone?.() === true;
         const tail = alone

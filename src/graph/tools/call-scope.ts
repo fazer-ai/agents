@@ -8,17 +8,33 @@ import type { NoEffectReporter } from "./effect-free";
 // can keep the fact on that call's own result, whatever ids the batch carries.
 const scope = new AsyncLocalStorage<{ didNothing: boolean }>();
 
-// Runs one invocation and says whether, inside it, the call was reported as having done nothing.
+// Runs one invocation and says whether the call was reported as having done nothing. `run` gets
+// the invocation's own marker, for a report that names its call (the reporter on the call's config):
+// that one is true wherever it fires, also from another call's context.
 export async function inCallScope<T>(
-  run: () => Promise<T>,
+  run: (didNothing: () => void) => Promise<T>,
 ): Promise<{ value: T; didNothing: boolean }> {
   const store = { didNothing: false };
-  const value = await scope.run(store, run);
+  const value = await scope.run(store, () =>
+    run(() => {
+      store.didNothing = true;
+    }),
+  );
   return { value, didNothing: store.didNothing };
 }
 
+// Runs something as the invocation that asked for it. Taken inside a call and used later by
+// whoever settles that call from elsewhere: calls written together are settled by the one that
+// opened the write, in its context, and a report made there would land on the wrong result. Taken
+// outside any invocation, what runs in it is heard by nobody.
+export type AsCall = <T>(fn: () => T) => T;
+export function asThisCall(): AsCall {
+  const store = scope.getStore() ?? { didNothing: false };
+  return (fn) => scope.run(store, fn);
+}
+
 // Called where a handler reports that the call did nothing. Outside an invocation it is a no-op.
-export function noteCallDidNothing(): void {
+function noteCallDidNothing(): void {
   const store = scope.getStore();
   if (store) store.didNothing = true;
 }

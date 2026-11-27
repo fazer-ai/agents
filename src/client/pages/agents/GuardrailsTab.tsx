@@ -117,6 +117,9 @@ interface GuardrailsTabProps {
   // The agent's tool calls per turn as the form holds them (Behavior tab, `limits.maxToolCalls`):
   // the ceiling of the factual-grounding rewrite's cap, which spends calls from the same budget.
   maxToolCalls?: number;
+  // The last whole version of each turn review rule, kept by the owner of the draft so it lives as
+  // long as the draft does. Without it the tab keeps its own, which a tab switch loses.
+  wholeRules?: React.MutableRefObject<LastWholeTurnRules>;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -226,6 +229,7 @@ export function GuardrailsTab({
   knowledgeBases,
   onCatalogChange = () => {},
   maxToolCalls = DEFAULT_MAX_TOOL_CALLS,
+  wholeRules,
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
   // The rewrite's cap stops at the agent's turn limit, as the write boundary does
@@ -294,8 +298,10 @@ export function GuardrailsTab({
     });
   // The last whole version of each rule, by place: what an edit left incomplete goes back to when
   // its fields leave the screen. Followed on every render, so a form replaced from outside (a
-  // discard, a reload) is followed too. Removing a rule takes its place out first.
-  const lastWholeRules = useRef<LastWholeTurnRules>([]);
+  // discard, a reload) is followed too. Removing a rule takes its place out first. The editor
+  // holds it beside the draft, since this tab unmounts on a tab switch and the draft does not.
+  const ownWholeRules = useRef<LastWholeTurnRules>([]);
+  const lastWholeRules = wholeRules ?? ownWholeRules;
   lastWholeRules.current = rememberTurnRules(lastWholeRules.current, tr.rules);
   const rulesFull = tr.rules.length >= MAX_TURN_REVIEW_RULES;
   const rulesShown = g.enabled && tr.enabled;

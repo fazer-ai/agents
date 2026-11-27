@@ -75,17 +75,12 @@ export async function resolveArmConfig(params: {
         },
         select: { payload: true },
       });
-      // NOTE: Only a job that is waiting for a file: an ordinary burst queued while debounce was on
-      // is not one this message joins.
-      if (
-        !live ||
-        !(
-          readMediaOnly(live.payload) ||
-          readLateMedia(live.payload) ||
-          readMediaWaitSince(live.payload) !== null
-        )
-      )
-        return null;
+      if (!live) return null;
+      // NOTE: An ordinary burst queued while debounce was on: the message joins it as one more
+      // message of that burst, in the agent's own window and never as a media wait. Answered apart,
+      // it would supersede a flush in flight and leave the burst's other messages with no flush.
+      if (!(readMediaOnly(live.payload) || readLateMedia(live.payload)))
+        return { ...cfg, enabled: true };
     }
     return {
       ...cfg,
@@ -332,8 +327,8 @@ export async function clearDeferral(params: {
         string,
         unknown
       >;
-      await db.schedulerJob.update({
-        where: { id: row.id },
+      await db.schedulerJob.updateMany({
+        where: { id: row.id, claimSeq: row.claimSeq },
         data: { payload: rest as Prisma.InputJsonObject },
       });
     }),

@@ -527,12 +527,15 @@ export async function selectAnswerableBurst(
   // retried is closed by now, and only the stash has its words.
   if (unheard.length > 0)
     overlayMediaAnnotations(tenantId, instanceId, messages);
-  // NOTE: Rendered now, a note still being transcribed says so instead of reading as inaudible.
+  // NOTE: Rendered now, a note still being transcribed says so instead of reading as inaudible, and
+  // so does one this process holds nothing about after a restart: nobody heard it.
   for (const m of pending)
     if (
       unheard.includes(m.id) &&
       !m.transcribedText &&
-      transcriptionPending(tenantId, instanceId, m.id)
+      (transcriptionPending(tenantId, instanceId, m.id) ||
+        (ctx.mediaMarksLost === true &&
+          !audioTried(mediaAnnotationFor(tenantId, instanceId, m.id))))
     )
       m.transcriptionLate = true;
 

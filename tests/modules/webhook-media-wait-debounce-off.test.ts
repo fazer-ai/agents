@@ -97,6 +97,17 @@ class CountingModel extends BaseChatModel {
   }
 }
 
+// The smallest header an image reader accepts: signature plus an 800x600 IHDR.
+const PNG = (() => {
+  const b = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write("IHDR", 12, "ascii");
+  b.writeUInt32BE(800, 16);
+  b.writeUInt32BE(600, 20);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+})();
+
 const client = (async () =>
   ({
     getMessages: async () => ({ payload: [] }),
@@ -104,6 +115,10 @@ const client = (async () =>
     sendPrivateNote: async () => ({}),
     toggleTyping: async () => ({}),
     updateAttachmentMeta: async () => ({}),
+    downloadAttachment: async () => ({
+      bytes: PNG,
+      contentType: "image/png",
+    }),
   }) as unknown as ChatwootClient) as never;
 
 // What `transcribeInboundAudio` does: on a 404 past the window it marks the note and throws; with
@@ -148,6 +163,8 @@ async function deliver(
     storage?: "uploading" | "stored";
     // Stands in for the transcription call, to hold it open.
     transcribe?: () => Promise<string | null>;
+    // An image instead of a voice note, read through this provider call.
+    visionFetch?: typeof fetch;
   },
 ) {
   const messageId = 7000 + nextId++;
@@ -157,15 +174,23 @@ async function deliver(
     content: opts.audio ? "" : "e tem horário amanhã?",
     message_type: "incoming",
     private: false,
-    attachments: opts.audio
+    attachments: opts.visionFetch
       ? [
           {
             id: 90_000 + messageId,
-            file_type: "audio",
-            data_url: `https://chat.wait.example/rails/active_storage/blobs/${messageId}.ogg`,
+            file_type: "image",
+            data_url: `https://chat.wait.example/rails/active_storage/blobs/${messageId}.png`,
           },
         ]
-      : [],
+      : opts.audio
+        ? [
+            {
+              id: 90_000 + messageId,
+              file_type: "audio",
+              data_url: `https://chat.wait.example/rails/active_storage/blobs/${messageId}.ogg`,
+            },
+          ]
+        : [],
     conversation: {
       id: convId,
       inbox_id: CHATWOOT_INBOX_ID,
@@ -202,6 +227,7 @@ async function deliver(
     deps: {
       makeClient: client,
       makeModel: () => model,
+      visionFetch: opts.visionFetch,
       transcribe: (opts.transcribe ??
         transcriber(opts.storage ?? "stored")) as never,
     },
@@ -369,6 +395,95 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     expect(text.model.calls).toBe(0);
     expect(voice.model.calls).toBe(0);
     expect(await flushRows(9829)).toBe(1);
+  });
+
+  test("a text sent while an image is being read waits with it", async () => {
+    await seedConversation(9832);
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { settings: true },
+    });
+    const stt = (before.settings as { stt: { credentialRef: string } }).stt;
+    await suDb.agent.updateMany({
+      where: { tenantId },
+      data: {
+        settings: {
+          ...(before.settings as object),
+          vision: {
+            enabled: true,
+            provider: "openai",
+            credentialRef: stt.credentialRef,
+          },
+        },
+      },
+    });
+    try {
+      let finish: () => void = () => {};
+      const reading = new Promise<void>((r) => {
+        finish = r;
+      });
+      let started: () => void = () => {};
+      const reached = new Promise<void>((r) => {
+        started = r;
+      });
+      const image = deliver(9832, {
+        audio: false,
+        visionFetch: (async () => {
+          started();
+          await reading;
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "um comprovante" } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await reached;
+
+      const text = await deliver(9832, { audio: false });
+      finish();
+      await image;
+
+      expect(text.model.calls).toBe(0);
+      expect(await flushRows(9832)).toBe(1);
+    } finally {
+      await suDb.agent.updateMany({
+        where: { tenantId },
+        data: { settings: before.settings ?? {} },
+      });
+    }
+  });
+
+  // The flush of an ordinary burst is running when debounce is turned off and a text arrives: the
+  // flush will stand down for it, so the text has to leave a flush behind.
+  test("a text that arrives during the flush of an ordinary burst leaves a flush for it", async () => {
+    await seedConversation(9833);
+    const threadId = `${tenantId}:${instanceId}:9833`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+        },
+      },
+    });
+
+    const { model } = await deliver(9833, { audio: false });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true, runAt: true },
+    });
+    expect(model.calls).toBe(0);
+    expect(row.runAt.getTime()).toBeGreaterThan(Date.now());
+    expect(row.payload).not.toHaveProperty("mediaOnly");
   });
 
   // An ordinary burst armed for a late file is on its first retry when debounce is turned off and a
@@ -695,7 +810,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
   });
 
   // Queued while debounce was on, with no file on its way: not a wait this text joins.
-  test("a text does not join an ordinary burst queued before debounce was turned off", async () => {
+  test("a text joins an ordinary burst queued before debounce was turned off as an ordinary message", async () => {
     await seedConversation(9812);
     const threadId = `${tenantId}:${instanceId}:9812`;
     await suDb.schedulerJob.create({
@@ -715,12 +830,14 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
 
     const { model } = await deliver(9812, { audio: false });
 
-    expect(model.calls).toBeGreaterThan(0);
+    // Answered apart, it would supersede the burst's flush and leave its other messages unanswered.
+    expect(model.calls).toBe(0);
     const row = await suDb.schedulerJob.findFirstOrThrow({
       where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
       select: { payload: true },
     });
     expect(row.payload).not.toHaveProperty("mediaOnly");
+    expect(row.payload).not.toHaveProperty("lateMedia");
   });
 
   test("a text joins a burst that debounce armed and that is now waiting for a file", async () => {
@@ -1069,7 +1186,10 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     await job({ mediaOnly: true });
     const withMediaOnly = await resolve();
 
-    expect(withOrdinary).toBeNull();
+    // Joined as an ordinary message of that burst, never as a media wait.
+    expect(withOrdinary?.enabled).toBe(true);
+    expect(withOrdinary?.mediaOnly).toBeUndefined();
+    expect(withOrdinary?.lateMedia).toBeUndefined();
     expect(withMediaOnly).toMatchObject({ mediaOnly: true, windowSeconds: 5 });
   });
 
@@ -1124,9 +1244,10 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
       select: { payload: true },
     });
-    expect(before).toBeNull();
+    // Before the late file, the row is an ordinary burst and is joined as one.
+    expect(before?.mediaOnly).toBeUndefined();
     expect(row.payload).not.toHaveProperty("mediaOnly");
-    expect(await resolve()).not.toBeNull();
+    expect((await resolve())?.mediaOnly).toBe(true);
 
     // The text that joined re-arms the row with its own config, and the one after it still joins.
     await armDebounce({
@@ -1141,7 +1262,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       },
       base: appDb,
     });
-    expect(await resolve()).not.toBeNull();
+    expect((await resolve())?.mediaOnly).toBe(true);
   });
 
   // The last round before the ceiling is milliseconds ahead and can be due by the time a message

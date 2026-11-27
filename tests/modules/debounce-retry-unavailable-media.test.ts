@@ -1477,6 +1477,25 @@ describe.skipIf(!dbUp)(
       expect(seen).toContain(WORDS);
     });
 
+    // The process restarted while the note was awaited and came back past the ceiling: no retry is
+    // left, and nothing says the note was heard.
+    test("a restart that outlasts the media ceiling still calls the voice note late, not inaudible", async () => {
+      await seedConversation(9776);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9776, 1, s.client(page), p.sttFetch);
+      const since = Date.now() - 61_000;
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      const { out, seen } = await flush(9776, s.client(page), p, since);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+      expect(seen).not.toContain(UNHEARD);
+    });
+
     // A duplicate delivery opens a transcription for a note whose empty result is already stashed.
     test("a voice note already answered with nothing is not waited for when it is opened again", async () => {
       await seedConversation(9774);

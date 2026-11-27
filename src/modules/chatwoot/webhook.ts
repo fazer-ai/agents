@@ -2095,10 +2095,6 @@ export async function runEagerMedia(
     // failed pays the whole provider bill again at the second call site.
     !n.message.attachmentsUnread &&
     !n.message.bodyRead;
-  // NOTE: Held while this delivery reads its file, a download backing off and a provider call alike:
-  // a message of the conversation that arrives meanwhile joins the wait instead of answering first.
-  if ((audio && !n.message.transcribedText) || visionPending)
-    owner.arriving?.mark();
   // Asked at most once, and only once a provider config resolved.
   // NOTE: The verdict is asked once; the refusal mark is re-read before each later extraction, since
   // a newer message may be refused while the first one runs.
@@ -2143,6 +2139,9 @@ export async function runEagerMedia(
         );
         if (sttCfg && (await admitted())) {
           const transcribe = owner.deps?.transcribe ?? transcribeInboundAudio;
+          // NOTE: Held while this delivery reads its file, a download backing off and a provider call
+          // alike: a message of the conversation that arrives meanwhile joins the wait.
+          owner.arriving?.mark();
           const text = await transcribe({
             tenantId,
             instanceId,
@@ -2215,6 +2214,7 @@ export async function runEagerMedia(
         // below, because a mutable property can change before a deferred callback reads it.
         const conversationId = n.conversationId;
         const messageId = n.message.id;
+        owner.arriving?.mark();
         const r = await extractMessageVisuals({
           tenantId,
           instanceId,

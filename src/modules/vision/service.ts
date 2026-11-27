@@ -8,15 +8,12 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   fileReadFor,
-  markConversationMediaArriving,
   rememberFileRead,
-  settleConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
   ChatwootApiError,
   type ChatwootClient,
-  isTransientAttachmentFailure,
 } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -288,6 +285,8 @@ export interface ExtractInboundParams {
   signal?: AbortSignal;
   // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
   downloadRetryUntil?: number;
+  // Called on the first 404 the download will ask again: the caller's file is on its way.
+  onMediaMissing?: () => void;
   // The ledger step the call is billed under: an agent's reading by default, the occurrence
   // monitor's when it reads again what upstream Chatwoot no longer holds.
   usageNode?: Extract<UsageNode, "vision" | "occurrence_vision">;
@@ -506,29 +505,15 @@ function extractInbound(
   return shareAbortableInFlight(
     key,
     async (signal) => {
-      // The mark a 404 left on the conversation goes once the file was read or refused for good, and
-      // otherwise stays for the delivery that decides what to do with the message.
-      const arriving = { over: false };
-      try {
-        const value = await extractInboundOnce({
-          ...params,
-          signal,
-          arriving,
-          // Kept before the write-back: a caller that stops waiting during that write still finds the
-          // read it paid for.
-          remember: (r) => rememberFileRead(key, r),
-        });
-        if (!isUnread(value)) rememberFileRead(key, value);
-        return value;
-      } finally {
-        if (arriving.over)
-          settleConversationMediaArriving({
-            tenantId: params.tenantId,
-            instanceId: params.instanceId,
-            conversationId: params.conversationId,
-            messageId: params.messageId,
-          });
-      }
+      const value = await extractInboundOnce({
+        ...params,
+        signal,
+        // Kept before the write-back: a caller that stops waiting during that write still finds the
+        // read it paid for.
+        remember: (r) => rememberFileRead(key, r),
+      });
+      if (!isUnread(value)) rememberFileRead(key, value);
+      return value;
     },
     params.signal,
   );
@@ -539,7 +524,6 @@ async function extractInboundOnce(
     bodyImage?: boolean;
     classifyOnly?: boolean;
     remember?: (r: ExtractResult) => void;
-    arriving?: { over: boolean };
   },
 ): Promise<
   | ExtractResult
@@ -613,22 +597,10 @@ async function extractInboundOnce(
       retryUntil: params.downloadRetryUntil,
       onMissing: () => {
         missing = true;
-        markConversationMediaArriving({
-          tenantId: params.tenantId,
-          instanceId: params.instanceId,
-          conversationId: params.conversationId,
-          messageId: params.messageId,
-        });
+        params.onMediaMissing?.();
       },
     }));
-    if (params.arriving) params.arriving.over = true;
   } catch (caught) {
-    if (
-      params.arriving &&
-      caught instanceof ChatwootApiError &&
-      !isTransientAttachmentFailure(caught)
-    )
-      params.arriving.over = true;
     // A retry cut short with no answer (a timeout, an abort) leaves the storage's last answer standing:
     // the file is still on its way, not unreadable.
     const err =

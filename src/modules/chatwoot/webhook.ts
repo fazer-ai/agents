@@ -83,10 +83,11 @@ import {
 } from "@/modules/channel-redirect/service";
 import {
   conversationMediaArriving,
+  type MediaArrivingHold,
   mediaAnnotationFor,
+  mediaArrivingHold,
   mediaStillArriving,
   openTranscription,
-  settleConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -1849,6 +1850,9 @@ export interface EagerMediaOwner {
     agentId: bigint,
     settings: unknown,
   ) => Promise<{ askedAt: number } | null>;
+  // The delivery's claim on the conversation while a file of its message is on its way: marked by
+  // the first 404 of either pass, released by the delivery itself.
+  arriving?: MediaArrivingHold;
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -2146,6 +2150,7 @@ export async function runEagerMedia(
             cfg: sttCfg,
             base,
             flow: flow(),
+            onMediaMissing: () => owner.arriving?.mark(),
             deps: {
               makeClient: owner.deps?.makeClient,
               fetchImpl: owner.deps?.sttFetch,
@@ -2172,11 +2177,10 @@ export async function runEagerMedia(
       } finally {
         closeTranscription();
         // NOTE: On the event too, for the direct turn, which renders it and never re-reads the stash.
-        if (
+        // Both values: a later pass of this delivery that read the file takes the mark back.
+        n.message.transcriptionUnavailable =
           mediaAnnotationFor(tenantId, instanceId, n.message.id)
-            ?.transcriptionUnavailable
-        )
-          n.message.transcriptionUnavailable = true;
+            ?.transcriptionUnavailable === true;
       }
     }
   }
@@ -2220,6 +2224,7 @@ export async function runEagerMedia(
           base,
           flow: flow(),
           convLabel,
+          onMediaMissing: () => owner.arriving?.mark(),
           deps: {
             makeClient: owner.deps?.makeClient,
             fetchImpl: owner.deps?.visionFetch,
@@ -4651,6 +4656,23 @@ export async function runResolutionHooks(p: {
 export async function processChatwootDelivery(
   params: ProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
+  const arriving = mediaArrivingHold({
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    conversationId: params.normalized.conversationId,
+  });
+  try {
+    return await processDelivery(params, arriving);
+  } finally {
+    // NOTE: Every exit lets go: a delivery that armed nothing and answered nothing holds nothing.
+    arriving.release();
+  }
+}
+
+async function processDelivery(
+  params: ProcessChatwootParams,
+  arriving: MediaArrivingHold,
+): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
 
   // Resolved BEFORE the claim, so the route's ROLE is written by the claim itself. A separate
@@ -5699,6 +5721,7 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
+        arriving,
         // NOTE: On the responder's route the watcher IS the inbox's agent, and its gate just
         // answered: the pass's own ask would put the same question again (to the endpoint too), and
         // leave a second line.
@@ -5845,6 +5868,7 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
+        arriving,
         admission: admissionFromGate(),
         watcherPermit: (agentId, settings) =>
           observerMayObserve({ agentId }, settings),
@@ -5863,6 +5887,7 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
+        arriving,
         admission: admissionFromGate(),
         watcherPermit: (agentId, settings) =>
           observerMayObserve({ agentId }, settings),
@@ -5962,14 +5987,6 @@ export async function processChatwootDelivery(
             err instanceof Error ? err.message : String(err),
           );
         }
-        // NOTE: This delivery has decided: a flush now holds the message, or a direct turn takes it.
-        if (n.message?.id != null)
-          settleConversationMediaArriving({
-            tenantId: params.tenantId,
-            instanceId: params.instanceId,
-            conversationId,
-            messageId: n.message.id,
-          });
       }
       // Direct path (debounce off / not an incoming message / arm failed). Best-effort: a failed agent
       // turn must not strand the delivery. runAgentTurn no-ops for non-incoming-message events and
@@ -6318,6 +6335,7 @@ export async function processChatwootDelivery(
       deliveryRowId: params.deliveryRowId,
       sleep: params.deps?.sleep,
       deps: params.deps,
+      arriving,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
       watcherPermit: (agentId, settings) =>

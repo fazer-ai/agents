@@ -77,6 +77,7 @@ export async function resolveArmConfig(params: {
         !live ||
         !(
           readMediaOnly(live.payload) ||
+          readLateMedia(live.payload) ||
           readMediaWaitSince(live.payload) !== null
         )
       )
@@ -145,11 +146,22 @@ export function readMediaOnly(payload: unknown): boolean {
   return (payload as Record<string, unknown>).mediaOnly === true;
 }
 
-// The retry a deferring flush asked for while its row was still CLAIMED (`stampDeferral`).
-function readRetryAt(payload: unknown): number | null {
+// The retry a deferring flush asked for while its row was still CLAIMED (`stampDeferral`), for the
+// claim that noted it: a note left by an earlier claim of the row is not this run's retry.
+function readRetryAt(payload: unknown, claimSeq: number): number | null {
   if (!payload || typeof payload !== "object") return null;
-  const v = (payload as Record<string, unknown>).retryAt;
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
+  const p = payload as Record<string, unknown>;
+  if (p.retryClaim !== claimSeq) return null;
+  return typeof p.retryAt === "number" && Number.isFinite(p.retryAt)
+    ? p.retryAt
+    : null;
+}
+
+// Whether the job holds a file on its way since it was armed: a message of the conversation joins it
+// instead of taking a direct turn. Apart from `mediaOnly`, which only says whether the burst is capped.
+export function readLateMedia(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as Record<string, unknown>).lateMedia === true;
 }
 
 export function readBurstStart(payload: unknown): number | null {
@@ -264,7 +276,9 @@ export async function stampDeferral(params: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
             [field]: read(row.payload) ?? params.since,
-            ...(noted ? { retryAt: params.retryAt?.getTime() } : {}),
+            ...(noted
+              ? { retryAt: params.retryAt?.getTime(), retryClaim: row.claimSeq }
+              : {}),
           },
           ...(forward ? { runAt: params.retryAt } : {}),
         },
@@ -336,7 +350,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
     withEntityLock(db, `debounce-arm:${threadId}`, async () => {
       const existing = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { status: true, payload: true, runAt: true },
+        select: { status: true, payload: true, runAt: true, claimSeq: true },
       });
       // The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
       // `burstStartedAt`, which a claim in flight resets: it measures how long the burst has waited
@@ -392,10 +406,14 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const mediaOnly =
         (stillLive && readMediaOnly(existing.payload)) ||
         (!sameBurst && cfg.mediaOnly === true);
-      // The retry a deferring flush noted on a row it still holds, when it is still ahead.
+      const lateMedia =
+        cfg.mediaOnly === true ||
+        (stillLive && readLateMedia(existing.payload));
+      // The retry the flush in flight noted on the row it still holds. Already due is honoured too:
+      // the last round before the ceiling can be milliseconds ahead.
       const notedRetry =
         existing?.status === "CLAIMED" && mediaWaitSince !== null
-          ? readRetryAt(existing.payload)
+          ? readRetryAt(existing.payload, existing.claimSeq)
           : null;
       // A burst waiting for a file keeps its next retry: a message pushing it out by the window could
       // carry it past the media deadline. Only a PENDING row's time is a retry: a CLAIMED row's is
@@ -406,9 +424,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         mediaWaitSince !== null && existing?.status === "PENDING"
           ? existing.runAt.getTime()
           : Number.POSITIVE_INFINITY,
-        notedRetry !== null && notedRetry > nowMs
-          ? notedRetry
-          : Number.POSITIVE_INFINITY,
+        notedRetry ?? Number.POSITIVE_INFINITY,
       );
       const payload = {
         threadId,
@@ -420,6 +436,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         ...(deferringSince !== null ? { deferringSince } : {}),
         ...(mediaWaitSince !== null ? { mediaWaitSince } : {}),
         ...(mediaOnly ? { mediaOnly: true } : {}),
+        ...(lateMedia ? { lateMedia: true } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {
         tenantId,

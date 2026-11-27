@@ -134,6 +134,7 @@ export async function extractMessageVisuals(params: {
   // The caller's deadline: past it, no later batch and no further provider attempt starts.
   signal?: AbortSignal;
   downloadRetryUntil?: ExtractInboundParams["downloadRetryUntil"];
+  onMediaMissing?: ExtractInboundParams["onMediaMissing"];
   usageNode?: ExtractInboundParams["usageNode"];
 }): Promise<MessageVisuals | null> {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
@@ -170,6 +171,7 @@ export async function extractMessageVisuals(params: {
       stashAnnotation: false,
       signal: params.signal,
       downloadRetryUntil: params.downloadRetryUntil,
+      onMediaMissing: params.onMediaMissing,
       usageNode: params.usageNode,
     };
     return visual.id === null

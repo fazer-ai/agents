@@ -33,7 +33,6 @@ import {
   mediaAnnotationsBornAt,
   mediaStillArriving,
   overlayMediaAnnotations,
-  settleConversationMediaArriving,
   stashMediaAnnotation,
   transcriptionOpen,
 } from "@/modules/chatwoot/annotations";
@@ -742,13 +741,6 @@ export async function fillMissingVisuals(args: {
         },
         convLabel: String(args.conversationId),
       });
-      // NOTE: The flush is this file's wait now: the mark its 404 left on the conversation can lapse.
-      settleConversationMediaArriving({
-        tenantId: args.tenantId,
-        instanceId: args.instanceId,
-        conversationId: args.conversationId,
-        messageId: m.id,
-      });
       // NA LINHA, NA HORA, sem esperar o fim do laço. O stash tem TTL de 15 minutos e este laço é
       // sequencial: uma rajada com vinte mensagens de documento (60s de orçamento cada) leva a
       // extração da primeira a expirar antes de o overlay final rodar, e no Chatwoot upstream, onde
@@ -868,13 +860,6 @@ export async function fillMissingAudio(args: {
         err instanceof Error ? err.message : String(err),
       );
     }
-    // NOTE: The flush is this note's wait now: the mark its 404 left on the conversation can lapse.
-    settleConversationMediaArriving({
-      tenantId: args.tenantId,
-      instanceId: args.instanceId,
-      conversationId: args.conversationId,
-      messageId: m.id,
-    });
     // The row carries what this attempt's download left, so `mediaPending` reads it. Stashed
     // even when nothing was left, so a note tried for lost marks is not tried again every round.
     const left = mediaAnnotationFor(args.tenantId, args.instanceId, m.id);

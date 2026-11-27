@@ -6,8 +6,9 @@ import { shareAbortableInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
+  markConversationMediaArriving,
   mediaAnnotationFor,
-  openConversationMediaArriving,
+  settleConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -142,8 +143,29 @@ async function sttRunnable(params: TranscribeInboundParams): Promise<boolean> {
   return !provider.requiresBaseURL || Boolean(entry.baseUrl ?? cfg.baseURL);
 }
 
+// The mark a 404 left on the conversation outlives the download: it goes once the file is here and
+// the provider has answered (or storage refused the file), and otherwise stays for the delivery that
+// decides what to do with the message.
 async function transcribeOnce(
   params: TranscribeInboundParams,
+): Promise<string | null> {
+  const arriving = { over: false };
+  try {
+    return await transcribeDownloading(params, arriving);
+  } finally {
+    if (arriving.over)
+      settleConversationMediaArriving({
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: params.conversationId,
+        messageId: params.messageId,
+      });
+  }
+}
+
+async function transcribeDownloading(
+  params: TranscribeInboundParams,
+  arriving: { over: boolean },
 ): Promise<string | null> {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
@@ -220,7 +242,6 @@ async function transcribeOnce(
   // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
   let bytes: ArrayBuffer;
   let contentType: string | null;
-  let closeArriving: (() => void) | undefined;
   try {
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
@@ -230,16 +251,18 @@ async function transcribeOnce(
       // does a message that arrives in the conversation meanwhile.
       onMissing: () => {
         stashMediaAnnotation(target, { transcriptionUnavailable: true });
-        closeArriving ??= openConversationMediaArriving({
+        markConversationMediaArriving({
           tenantId: params.tenantId,
           instanceId: params.instanceId,
           conversationId: params.conversationId,
+          messageId: params.messageId,
         });
       },
     }));
-    closeArriving?.();
+    arriving.over = true;
   } catch (err) {
-    closeArriving?.();
+    if (err instanceof ChatwootApiError && !isTransientAttachmentFailure(err))
+      arriving.over = true;
     if (params.flow) {
       emitFlowEvent(params.flow, {
         stage: "stt",

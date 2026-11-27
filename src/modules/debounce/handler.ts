@@ -28,10 +28,12 @@ import { retireRedirectFollowUp } from "@/modules/channel-redirect/followup";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
   awaitOpenTranscriptions,
+  type MediaAnnotation,
   mediaAnnotationFor,
   mediaAnnotationsBornAt,
   mediaStillArriving,
   overlayMediaAnnotations,
+  settleConversationMediaArriving,
   stashMediaAnnotation,
   transcriptionOpen,
 } from "@/modules/chatwoot/annotations";
@@ -480,10 +482,18 @@ export async function selectAnswerableBurst(
   const unheard = pending
     .filter((m) => m.attachmentTypes.includes("audio") && !m.transcribedText)
     .map((m) => m.id);
+  // Never past the media ceiling: a note still open there is rendered as late, not waited for again.
+  const transcriptionWaitMs = Math.min(
+    deps?.transcriptionWaitMs ?? FLUSH_TRANSCRIPTION_WAIT_MS,
+    ctx.mediaWaitUntil === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, ctx.mediaWaitUntil - Date.now()),
+  );
   if (
     unheard.length > 0 &&
+    transcriptionWaitMs > 0 &&
     (await awaitOpenTranscriptions(tenantId, instanceId, unheard, {
-      timeoutMs: deps?.transcriptionWaitMs ?? FLUSH_TRANSCRIPTION_WAIT_MS,
+      timeoutMs: transcriptionWaitMs,
       signal: ctx.signal,
     }))
   )
@@ -512,6 +522,10 @@ export async function selectAnswerableBurst(
     }))
   )
     waitedOnMedia = true;
+  // NOTE: Once more after the last fill: a transcription that settled while another note was being
+  // retried is closed by now, and only the stash has its words.
+  if (unheard.length > 0)
+    overlayMediaAnnotations(tenantId, instanceId, messages);
   // NOTE: Rendered now, a note still being transcribed says so instead of reading as inaudible.
   for (const m of pending)
     if (
@@ -728,6 +742,13 @@ export async function fillMissingVisuals(args: {
         },
         convLabel: String(args.conversationId),
       });
+      // NOTE: The flush is this file's wait now: the mark its 404 left on the conversation can lapse.
+      settleConversationMediaArriving({
+        tenantId: args.tenantId,
+        instanceId: args.instanceId,
+        conversationId: args.conversationId,
+        messageId: m.id,
+      });
       // NA LINHA, NA HORA, sem esperar o fim do laço. O stash tem TTL de 15 minutos e este laço é
       // sequencial: uma rajada com vinte mensagens de documento (60s de orçamento cada) leva a
       // extração da primeira a expirar antes de o overlay final rodar, e no Chatwoot upstream, onde
@@ -792,8 +813,9 @@ export async function fillMissingAudio(args: {
       (!args.onlyUnavailable ||
         ((m.transcriptionUnavailable ||
           (args.marksLost === true &&
-            mediaAnnotationFor(args.tenantId, args.instanceId, m.id) ===
-              null)) &&
+            !audioTried(
+              mediaAnnotationFor(args.tenantId, args.instanceId, m.id),
+            ))) &&
           // NOTE: The arrival pass is still retrying it: a second download would pay the provider
           // twice, and the note stays on its way for the next round.
           !transcriptionOpen(args.tenantId, args.instanceId, m.id))),
@@ -846,11 +868,18 @@ export async function fillMissingAudio(args: {
         err instanceof Error ? err.message : String(err),
       );
     }
+    // NOTE: The flush is this note's wait now: the mark its 404 left on the conversation can lapse.
+    settleConversationMediaArriving({
+      tenantId: args.tenantId,
+      instanceId: args.instanceId,
+      conversationId: args.conversationId,
+      messageId: m.id,
+    });
     // The row carries what this attempt's download left, so `mediaPending` reads it. Stashed
     // even when nothing was left, so a note tried for lost marks is not tried again every round.
     const left = mediaAnnotationFor(args.tenantId, args.instanceId, m.id);
     m.transcriptionUnavailable = left?.transcriptionUnavailable === true;
-    if (left === null)
+    if (!audioTried(left))
       stashMediaAnnotation(
         {
           tenantId: args.tenantId,
@@ -861,6 +890,16 @@ export async function fillMissingAudio(args: {
       );
   }
   return attempted;
+}
+
+// Whether this process holds anything about the voice note's own attempt. Another pass's fields on
+// the same message (an image read beside the note) say nothing about it.
+function audioTried(note: MediaAnnotation | null): boolean {
+  return (
+    note?.transcribedText !== undefined ||
+    note?.transcriptionEmpty !== undefined ||
+    note?.transcriptionUnavailable !== undefined
+  );
 }
 
 // The conversation's media refusal mark, or null without one. Unreadable closes everything.
@@ -2634,7 +2673,10 @@ export async function flushDebounceJob(
         fillMissingMedia: "untried",
         mediaWaitUntil: mediaSince + MEDIA_DEFER_CEILING_MS,
         mediaOnlyBurst: readMediaOnly(job.payload),
-        mediaMarksLost: mediaSince < mediaAnnotationsBornAt(),
+        // NOTE: The arm time too: a job armed for a file and not yet flushed has no wait stamp.
+        mediaMarksLost:
+          Math.min(mediaSince, readBurstStart(job.payload) ?? mediaSince) <
+          mediaAnnotationsBornAt(),
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {

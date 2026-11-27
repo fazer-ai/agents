@@ -86,6 +86,7 @@ import {
   mediaAnnotationFor,
   mediaStillArriving,
   openTranscription,
+  settleConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -2170,6 +2171,12 @@ export async function runEagerMedia(
         logger.warn("stt failed (conv=%s): %s", convLabel, errMsg(err));
       } finally {
         closeTranscription();
+        // NOTE: On the event too, for the direct turn, which renders it and never re-reads the stash.
+        if (
+          mediaAnnotationFor(tenantId, instanceId, n.message.id)
+            ?.transcriptionUnavailable
+        )
+          n.message.transcriptionUnavailable = true;
       }
     }
   }
@@ -5955,6 +5962,14 @@ export async function processChatwootDelivery(
             err instanceof Error ? err.message : String(err),
           );
         }
+        // NOTE: This delivery has decided: a flush now holds the message, or a direct turn takes it.
+        if (n.message?.id != null)
+          settleConversationMediaArriving({
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId,
+            messageId: n.message.id,
+          });
       }
       // Direct path (debounce off / not an incoming message / arm failed). Best-effort: a failed agent
       // turn must not strand the delivery. runAgentTurn no-ops for non-incoming-message events and

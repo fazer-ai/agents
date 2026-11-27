@@ -18,9 +18,11 @@ import { encryptJson } from "@/api/lib/crypto";
 import {
   clearMediaAnnotations,
   conversationMediaArriving,
+  markConversationMediaArriving,
   mediaAnnotationFor,
   openTranscription,
   overlayMediaAnnotations,
+  settleConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -290,6 +292,9 @@ async function flush(
     model?: TurnCapturingModel;
     // The claim this flush holds was retired while it ran: the row's sequence has moved on.
     retired?: boolean;
+    // When the job was armed; absent, now.
+    burstStartedAt?: number;
+    transcriptionWaitMs?: number;
   } = {},
 ) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
@@ -316,7 +321,7 @@ async function flush(
       payload: {
         threadId: thread,
         agentBotId: 9,
-        burstStartedAt: 1,
+        burstStartedAt: opts.burstStartedAt ?? Date.now(),
         ...(mediaWaitSince !== undefined ? { mediaWaitSince } : {}),
         ...(deferringSince !== undefined ? { deferringSince } : {}),
         ...(opts.mediaOnly ? { mediaOnly: true } : {}),
@@ -341,7 +346,7 @@ async function flush(
       checkpointer: new MemorySaver(),
       sttFetch: p.sttFetch,
       visionFetch: p.visionFetch,
-      transcriptionWaitMs: 50,
+      transcriptionWaitMs: opts.transcriptionWaitMs ?? 50,
     },
   });
   return { out, seen: model.humanTexts.join("\n"), model };
@@ -1419,15 +1424,15 @@ describe.skipIf(!dbUp)(
       expect(seen).toContain("consegue?");
     });
 
-    test("a conversation whose voice note is still being asked for says so until the download ends", async () => {
+    test("a conversation whose voice note storage answered 404 for says so until the note is transcribed", async () => {
       await seedConversation(9759);
       let release: () => void = () => {};
-      const landed = new Promise<void>((r) => {
+      const answered = new Promise<void>((r) => {
         release = r;
       });
-      let missed: () => void = () => {};
-      const firstMissing = new Promise<void>((r) => {
-        missed = r;
+      let asked: () => void = () => {};
+      const providerAsked = new Promise<void>((r) => {
+        asked = r;
       });
       const s = storage();
       const retrying = s.client([voice(1)]);
@@ -1436,30 +1441,105 @@ describe.skipIf(!dbUp)(
         opts?: { onMissing?: () => void },
       ) => {
         opts?.onMissing?.();
-        missed();
-        await landed;
         return {
           bytes: new Uint8Array([0x4f, 0x67, 0x67, 0x53]).buffer,
           contentType: "audio/ogg",
         };
       }) as typeof retrying.downloadAttachment;
-      const p = provider();
+      const slow = (async () => {
+        asked();
+        await answered;
+        return new Response(JSON.stringify({ text: WORDS }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch;
       const before = conversationMediaArriving(tenantId, instanceId, 9759);
-      const arrival = arriveVoice(9759, 1, retrying, p.sttFetch);
-      await firstMissing;
-      const during = conversationMediaArriving(tenantId, instanceId, 9759);
+      const arrival = arriveVoice(9759, 1, retrying, slow);
+      await providerAsked;
+      // The file is here and the provider is still transcribing: not yet in the short grace.
+      const during = conversationMediaArriving(
+        tenantId,
+        instanceId,
+        9759,
+        Date.now() + 10_000,
+      );
       release();
       await arrival;
 
       expect(before).toBe(false);
       expect(during).toBe(true);
-      // The delivery arms its flush right after the download: a message landing in between still joins.
+      // The delivery arms its flush right after: a message landing in between still joins.
       expect(conversationMediaArriving(tenantId, instanceId, 9759)).toBe(true);
       expect(
         conversationMediaArriving(
           tenantId,
           instanceId,
           9759,
+          Date.now() + 10_000,
+        ),
+      ).toBe(false);
+    });
+
+    test("a voice note whose download gave up leaves the mark for its delivery to settle", async () => {
+      await seedConversation(9764);
+      const s = storage();
+      const giving = s.client([voice(1)]);
+      giving.downloadAttachment = (async (
+        _url: string,
+        opts?: { onMissing?: () => void },
+      ) => {
+        opts?.onMissing?.();
+        throw new ChatwootApiError(404, "GET attachment");
+      }) as typeof giving.downloadAttachment;
+      const p = provider();
+
+      await arriveVoice(9764, 1, giving, p.sttFetch);
+      const afterDownload = conversationMediaArriving(
+        tenantId,
+        instanceId,
+        9764,
+        Date.now() + 10_000,
+      );
+      settleConversationMediaArriving({
+        tenantId,
+        instanceId,
+        conversationId: 9764,
+        messageId: 1,
+      });
+
+      expect(afterDownload).toBe(true);
+      expect(conversationMediaArriving(tenantId, instanceId, 9764)).toBe(true);
+      expect(
+        conversationMediaArriving(
+          tenantId,
+          instanceId,
+          9764,
+          Date.now() + 10_000,
+        ),
+      ).toBe(false);
+    });
+
+    test("the flush that retries a late voice note settles the mark its 404 left", async () => {
+      await seedConversation(9765);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      markConversationMediaArriving({
+        tenantId,
+        instanceId,
+        conversationId: 9765,
+        messageId: 1,
+      });
+      await arriveVoice(9765, 1, s.client(page), p.sttFetch);
+
+      await flush(9765, s.client(page), p);
+
+      expect(
+        conversationMediaArriving(
+          tenantId,
+          instanceId,
+          9765,
           Date.now() + 10_000,
         ),
       ).toBe(false);
@@ -1588,6 +1668,139 @@ describe.skipIf(!dbUp)(
       await arrival;
 
       expect(during).toBe(true);
+    });
+
+    test("the flush that retries a late image settles the mark its 404 left", async () => {
+      await seedConversation(9770);
+      const s = storage();
+      const p = provider();
+      const page = [image(1)];
+      markConversationMediaArriving({
+        tenantId,
+        instanceId,
+        conversationId: 9770,
+        messageId: 1,
+      });
+      await arriveImage(9770, 1, s.client(page), p.visionFetch);
+
+      await flush(9770, s.client(page), p);
+
+      expect(
+        conversationMediaArriving(
+          tenantId,
+          instanceId,
+          9770,
+          Date.now() + 10_000,
+        ),
+      ).toBe(false);
+    });
+
+    // Note 1 is still being transcribed when the bounded wait ends, and its words land while the
+    // flush is busy retrying note 2.
+    test("a transcription that lands while another note is retried reaches the model", async () => {
+      await seedConversation(9766);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [voice(1), voice(2)];
+      const first = { tenantId, instanceId, messageId: 1 };
+      const close = openTranscription(first);
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 2 },
+        { transcriptionUnavailable: true },
+      );
+      const c = s.client(page);
+      const inner = c.downloadAttachment.bind(c);
+      c.downloadAttachment = (async (url: string, opts?: never) => {
+        stashMediaAnnotation(first, { transcribedText: "primeira nota" });
+        close();
+        return inner(url, opts);
+      }) as typeof c.downloadAttachment;
+
+      const { out, seen } = await flush(9766, c, p).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain("primeira nota");
+      expect(seen).toContain(WORDS);
+      expect(seen).not.toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
+    });
+
+    // The job was armed, the process restarted, and no flush has deferred yet: there is no wait stamp.
+    test("a restart before the first flush of an armed job still retries the voice note", async () => {
+      await seedConversation(9767);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9767, 1, s.client(page), p.sttFetch);
+      const armedAt = Date.now();
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      s.state.stored = true;
+      const { out, seen } = await flush(
+        9767,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        { burstStartedAt: armedAt },
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(WORDS);
+    });
+
+    // The visual pass runs first and leaves an annotation of its own on the same message.
+    test("after a restart a voice note sent with an image is still tried", async () => {
+      await seedConversation(9768);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [
+        {
+          id: 1,
+          content: "",
+          message_type: 0,
+          private: false,
+          attachments: [
+            { id: 301, file_type: "audio", data_url: AUDIO_URL },
+            { id: 302, file_type: "image", data_url: IMAGE_URL },
+          ],
+        },
+      ];
+
+      const { out, seen } = await flush(
+        9768,
+        s.client(page),
+        p,
+        Date.now() - 1_000,
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(p.calls.stt).toBe(1);
+      expect(seen).toContain(WORDS);
+    });
+
+    test("past the media ceiling the flush does not wait again for an open transcription", async () => {
+      await seedConversation(9769);
+      const s = storage();
+      const p = provider();
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+      const started = Date.now();
+
+      const { out, seen } = await flush(
+        9769,
+        s.client([voice(1)]),
+        p,
+        Date.now() - 61_000,
+        undefined,
+        { transcriptionWaitMs: 4_000 },
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+      expect(Date.now() - started).toBeLessThan(2_000);
     });
 
     test("a voice note transcribed by the reply drops the mark", async () => {

@@ -882,6 +882,7 @@ export function incomingRenderable(
   return {
     text: n.message?.content ?? "",
     transcribedText: n.message?.transcribedText,
+    transcriptionUnavailable: n.message?.transcriptionUnavailable,
     imageDescription: n.message?.imageDescription,
     extractedText: n.message?.extractedText,
     attachmentsUnread: n.message?.attachmentsUnread,

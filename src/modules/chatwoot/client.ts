@@ -1653,6 +1653,9 @@ export class ChatwootClient {
         opts.retryUntil === undefined
           ? Number.POSITIVE_INFINITY
           : opts.retryUntil - now();
+      // NOTE: A backoff that woke late is past the deadline: the previous 404 stands.
+      if (attempt > 0 && left <= 0)
+        throw new ChatwootApiError(404, "GET attachment");
       const timeout = AbortSignal.timeout(
         left > 0 ? Math.min(REQUEST_TIMEOUT_MS, left) : REQUEST_TIMEOUT_MS,
       );

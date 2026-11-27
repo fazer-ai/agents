@@ -145,6 +145,13 @@ export function readMediaOnly(payload: unknown): boolean {
   return (payload as Record<string, unknown>).mediaOnly === true;
 }
 
+// The retry a deferring flush asked for while its row was still CLAIMED (`stampDeferral`).
+function readRetryAt(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).retryAt;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export function readBurstStart(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).burstStartedAt;
@@ -247,13 +254,17 @@ export async function stampDeferral(params: {
         params.retryAt !== undefined &&
         row.status === "PENDING" &&
         row.runAt.getTime() > params.retryAt.getTime();
-      if (read(row.payload) !== null && !forward) return;
+      // A row still CLAIMED keeps the retry in its payload: a message that re-arms it before
+      // the flush's own reschedule lands reads it there (`armDebounce`).
+      const noted = params.retryAt !== undefined && row.status === "CLAIMED";
+      if (read(row.payload) !== null && !forward && !noted) return;
       await db.schedulerJob.update({
         where: { id: row.id },
         data: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
             [field]: read(row.payload) ?? params.since,
+            ...(noted ? { retryAt: params.retryAt?.getTime() } : {}),
           },
           ...(forward ? { runAt: params.retryAt } : {}),
         },
@@ -373,9 +384,19 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
           : ownReactionFrom === null
             ? prevReactionFrom
             : Math.min(prevReactionFrom, ownReactionFrom);
+      // A burst this message joins keeps the mode it was armed with (a PENDING row, or a claimed one
+      // already waiting for a file): the joining delivery's config does not turn an ordinary burst
+      // into a media-only one.
+      const sameBurst =
+        continuingBurst || (stillLive && mediaWaitSince !== null);
       const mediaOnly =
-        cfg.mediaOnly === true ||
-        (stillLive && readMediaOnly(existing.payload));
+        (stillLive && readMediaOnly(existing.payload)) ||
+        (!sameBurst && cfg.mediaOnly === true);
+      // The retry a deferring flush noted on a row it still holds, when it is still ahead.
+      const notedRetry =
+        existing?.status === "CLAIMED" && mediaWaitSince !== null
+          ? readRetryAt(existing.payload)
+          : null;
       // A burst waiting for a file keeps its next retry: a message pushing it out by the window could
       // carry it past the media deadline. Only a PENDING row's time is a retry: a CLAIMED row's is
       // when the run in flight came due, and the flush brings the re-armed row forward itself.
@@ -384,6 +405,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         burstStartedAt + cfg.maxWindowSeconds * 1000,
         mediaWaitSince !== null && existing?.status === "PENDING"
           ? existing.runAt.getTime()
+          : Number.POSITIVE_INFINITY,
+        notedRetry !== null && notedRetry > nowMs
+          ? notedRetry
           : Number.POSITIVE_INFINITY,
       );
       const payload = {

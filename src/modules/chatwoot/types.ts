@@ -118,6 +118,8 @@ export interface NormalizedChatwootMessage {
   attachmentsUnread?: number | null;
   // Which of those files the pass tried, with the name and why each was not read.
   unreadFiles?: UnreadFile[] | null;
+  // Filled by the eager STT pass: the voice note's download failed on something that may pass.
+  transcriptionUnavailable?: boolean;
   // Filled by the eager vision pass: it went through the email body's images, so the second call
   // site of this delivery does not download them again.
   bodyRead?: boolean;

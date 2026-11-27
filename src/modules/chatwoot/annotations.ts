@@ -276,26 +276,32 @@ export async function awaitOpenTranscriptions(
   return true;
 }
 
-// How long a conversation still counts as having a file on its way after the download that said so
-// ended: the delivery arms its flush right after, and a message landing in between has to see it.
+// How long a conversation still counts as having a file on its way after the wait for that file was
+// settled: the delivery arms its flush right after, and a message landing in between has to see it.
 const ARRIVING_GRACE_MS = 2000;
+// A mark nobody settled (a delivery that threw) lapses by itself, past the media wait's own ceiling.
+const ARRIVING_TTL_MS = 90_000;
 
-// Conversations with a download that storage answered 404 to and that is still being asked again, so a
-// message arriving meanwhile can join the wait before any flush exists for it.
-const arrivingConversations = new Map<
-  string,
-  { count: number; until: number }
->();
+// Conversations with a file storage answered 404 for, per message, each with the instant its mark
+// lapses: a message arriving meanwhile joins the wait before any flush exists for it.
+const arrivingConversations = new Map<string, Map<number, number>>();
 
-// Announces a file on its way in a conversation. The returned function ends it, once.
-export function openConversationMediaArriving(target: {
+interface ArrivingTarget {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
-}): () => void {
+  messageId: number;
+}
+
+// Announces that a file of this message is on its way. Whoever decides what the message's delivery
+// does next settles it (`settleConversationMediaArriving`), not the download that announced it.
+export function markConversationMediaArriving(
+  target: ArrivingTarget,
+  nowMs: number = Date.now(),
+): void {
   const k = keyOf(target.tenantId, target.instanceId, target.conversationId);
-  const entry = arrivingConversations.get(k) ?? { count: 0, until: 0 };
-  entry.count += 1;
+  const entry = arrivingConversations.get(k) ?? new Map<number, number>();
+  entry.set(target.messageId, nowMs + ARRIVING_TTL_MS);
   arrivingConversations.delete(k);
   arrivingConversations.set(k, entry);
   while (arrivingConversations.size > MAX_ENTRIES) {
@@ -303,13 +309,20 @@ export function openConversationMediaArriving(target: {
     if (oldest === undefined) break;
     arrivingConversations.delete(oldest);
   }
-  let closed = false;
-  return () => {
-    if (closed) return;
-    closed = true;
-    entry.count -= 1;
-    if (entry.count === 0) entry.until = Date.now() + ARRIVING_GRACE_MS;
-  };
+}
+
+// The wait for this message's file is over, or a flush now exists for it: the mark stays for the grace
+// only. A message that was never marked is left alone.
+export function settleConversationMediaArriving(
+  target: ArrivingTarget,
+  nowMs: number = Date.now(),
+): void {
+  const entry = arrivingConversations.get(
+    keyOf(target.tenantId, target.instanceId, target.conversationId),
+  );
+  const until = entry?.get(target.messageId);
+  if (entry === undefined || until === undefined) return;
+  entry.set(target.messageId, Math.min(until, nowMs + ARRIVING_GRACE_MS));
 }
 
 export function conversationMediaArriving(
@@ -321,7 +334,9 @@ export function conversationMediaArriving(
   const k = keyOf(tenantId, instanceId, conversationId);
   const entry = arrivingConversations.get(k);
   if (!entry) return false;
-  if (entry.count > 0 || nowMs < entry.until) return true;
+  for (const [messageId, until] of entry)
+    if (until <= nowMs) entry.delete(messageId);
+  if (entry.size > 0) return true;
   arrivingConversations.delete(k);
   return false;
 }

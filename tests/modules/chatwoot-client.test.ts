@@ -735,6 +735,25 @@ describe("ChatwootClient", () => {
       expect(s.slept).toEqual([250]);
     });
 
+    test("a backoff that wakes past the caller's deadline does not ask again", async () => {
+      const s = downloadStub([404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      let clock = 0;
+      const err = await client
+        .downloadAttachment(URL_, {
+          retryOnMissing: true,
+          retryUntil: 900,
+          now: () => clock,
+          sleep: async (ms) => {
+            clock += ms + 2_000;
+            await s.sleep(ms);
+          },
+        })
+        .catch((e) => e);
+      expect((err as ChatwootApiError).status).toBe(404);
+      expect(s.count()).toBe(1);
+    });
+
     test("past the caller's deadline the file is asked for once and not again", async () => {
       const s = downloadStub([404, 200]);
       const client = await clientFor(s.fetchImpl);

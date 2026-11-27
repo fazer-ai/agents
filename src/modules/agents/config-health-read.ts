@@ -34,6 +34,7 @@ import {
 import {
   guardrailCredentialRef,
   readGuardrailsConfig,
+  turnReviewJudges,
 } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
@@ -278,7 +279,7 @@ export async function readAgentConfigHealth(
     contactAuthDenyMessage: contactAuth.denyMessage ?? "",
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
-    ...(guardrails.classifier === "decisions" && guardrails.turnReview.enabled
+    ...(guardrails.classifier === "decisions" && turnReviewJudges(guardrails)
       ? { turnReviewCredentialRef: guardrails.credentialRef ?? "" }
       : {}),
     guardrailsFailures: guardrailHealth?.failures,

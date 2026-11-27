@@ -880,3 +880,121 @@ describe("GuardrailsTab factual grounding", () => {
     ).toBe(true);
   });
 });
+
+describe("GuardrailsTab turn review rules", () => {
+  afterEach(() => cleanup());
+
+  let form: GuardrailsConfig | null = null;
+  function Dirty({ initial }: { initial: GuardrailsConfig }) {
+    const [g, setG] = useState(initial);
+    form = g;
+    return (
+      <GuardrailsTab
+        agentId=""
+        guardrails={g}
+        setGuardrails={setG as never}
+        refusals={NO_REFUSALS}
+        dirty
+        saving={false}
+        onSave={() => {}}
+        onDiscard={() => {}}
+      />
+    );
+  }
+  const reviewing = (): GuardrailsConfig => {
+    const c = structuredClone(GUARDRAILS_DEFAULTS);
+    return {
+      ...c,
+      enabled: true,
+      turnReview: { ...c.turnReview, enabled: true },
+    };
+  };
+  const at = (testId: string) =>
+    document.querySelector(`[data-testid="${testId}"]`) as HTMLInputElement;
+  const saveHeld = () =>
+    (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
+      .disabled;
+
+  // The bug it catches: a rule saved half-written, which the server refuses with a path the operator
+  // has to decode, or a pattern that does not compile reaching the save at all.
+  test("a new rule holds Save until its fields are filled and its pattern compiles", () => {
+    render(<Dirty initial={reviewing()} />);
+    const before = saveHeld();
+    fireEvent.click(at("gr-turn-rule-add"));
+    const blank = saveHeld();
+    fireEvent.change(at("gr-turn-rule-0-name"), {
+      target: { value: "promessa" },
+    });
+    fireEvent.change(at("gr-turn-rule-0-note"), {
+      target: { value: "Chame a ferramenta." },
+    });
+    fireEvent.change(at("gr-turn-rule-0-pattern"), { target: { value: "[" } });
+    const invalid = saveHeld();
+    const said = screen.queryAllByText(
+      "This is not a valid regular expression.",
+    ).length;
+    fireEvent.change(at("gr-turn-rule-0-pattern"), {
+      target: { value: "vou (encaminhar|passar)" },
+    });
+    fireEvent.change(at("gr-turn-rule-0-tool"), {
+      target: { value: "handoff_to_human" },
+    });
+    expect([before, blank, invalid, said, saveHeld()]).toEqual([
+      false,
+      true,
+      true,
+      1,
+      false,
+    ]);
+    expect(form?.turnReview.rules).toEqual([
+      {
+        name: "promessa",
+        pattern: "vou (encaminhar|passar)",
+        unlessTool: "handoff_to_human",
+        note: "Chame a ferramenta.",
+      },
+    ]);
+  });
+
+  test("a rule is taken out by its own button, and an emptied tool is stored as none", () => {
+    const c = reviewing();
+    c.turnReview.rules = [
+      { name: "a", pattern: "a", unlessTool: "t", note: "n" },
+      { name: "b", pattern: "b", unlessTool: null, note: "n" },
+    ];
+    render(<Dirty initial={c} />);
+    fireEvent.change(at("gr-turn-rule-0-tool"), { target: { value: "" } });
+    const cleared = form?.turnReview.rules[0]?.unlessTool;
+    fireEvent.click(at("gr-turn-rule-0-remove"));
+    expect([cleared, form?.turnReview.rules.map((r) => r.name)]).toEqual([
+      null,
+      ["b"],
+    ]);
+  });
+
+  test("the model reviewer has its own switch, on by default, and the rules do not depend on it", () => {
+    render(<Dirty initial={reviewing()} />);
+    const judge = document.getElementById("gr-turn-review-judge");
+    const on = judge?.getAttribute("aria-checked");
+    fireEvent.click(judge as HTMLElement);
+    expect([
+      on,
+      form?.turnReview.judge,
+      at("gr-turn-rule-add") !== null,
+    ]).toEqual(["true", false, true]);
+  });
+
+  test("with turn review off, no rule is drawn and a half-written one does not hold Save", () => {
+    const c = reviewing();
+    c.turnReview = {
+      ...c.turnReview,
+      enabled: false,
+      rules: [{ name: "", pattern: "[", unlessTool: null, note: "" }],
+    };
+    render(<Dirty initial={c} />);
+    expect([at("gr-turn-rule-add") === null, saveHeld()]).toEqual([
+      true,
+      false,
+    ]);
+  });
+});

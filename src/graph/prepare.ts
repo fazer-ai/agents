@@ -122,6 +122,7 @@ import {
   guardrailCredentialRef,
   readGuardrailsConfig,
   resolveGroundingReviewer,
+  turnReviewJudges,
 } from "@/modules/guardrails/settings";
 import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
 import {
@@ -684,7 +685,7 @@ export async function loadAgentConfig(
   }
   // The turn reviewer runs on the guardrails chat model and its key, whichever classifier screens.
   let turnReviewer: GroundingReviewerModel | null = null;
-  if (guardrails.enabled && guardrails.turnReview.enabled) {
+  if (turnReviewJudges(guardrails)) {
     const parent = await resolveReviewerKey(guardrails.credentialRef);
     turnReviewer = parent.key
       ? {

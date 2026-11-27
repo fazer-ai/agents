@@ -436,6 +436,34 @@ describe("the turn review in the graph", () => {
     ).toBe(false);
   });
 
+  // The bug it catches: a stalled turn with nothing to recover ended unseen, so a rule's redo could
+  // end in silence by repeating an answered call.
+  test("on a stalled turn with nothing to recover the review is asked about the silence, with no redo", async () => {
+    const model = new BoundRecordingModel([
+      { text: "", calls: [{ name: "buscar_pedido" }] },
+    ]);
+    const { replies, canRedo } = await run(
+      model,
+      { reply: () => null },
+      {
+        recoversReply: () => true,
+        history: [
+          new HumanMessage("Cadê meu pedido?"),
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "buscar_pedido", args: {}, id: "call_1_0" }],
+          }),
+          new ToolMessage({
+            content: '{"pedido":"123"}',
+            tool_call_id: "call_1_0",
+            name: "buscar_pedido",
+          }),
+        ],
+      },
+    );
+    expect([replies, canRedo]).toEqual([[""], [false]]);
+  });
+
   test("each write of a step is reviewed with the writes already admitted beside it", async () => {
     const model = new BoundRecordingModel([
       {
@@ -474,7 +502,9 @@ describe("the turn review in the graph", () => {
       { reply: () => (notes-- > 0 ? REPLY_NOTE : null) },
       { recoversReply: () => true },
     );
-    expect(replies).toEqual(["Rascunho novo.", "Rascunho antigo."]);
+    // The last ask is the silence itself: with both drafts out nothing is left to send, and the
+    // review is told, since a rule that sent the reply back does not let the turn end that way.
+    expect(replies).toEqual(["Rascunho novo.", "Rascunho antigo.", ""]);
     // Neither flagged draft is left for the runtime to recover.
     expect(replyWrittenThisTurn(messages)).toBe("");
   });
@@ -555,6 +585,34 @@ describe("the turn review in the graph", () => {
     );
     expect(replies).toEqual(["Até logo!"]);
     expect(replyWrittenThisTurn(messages)).toBe("Até logo!");
+  });
+
+  // The bug it catches: a redo that answers nothing ended the turn unseen, so a rule's correction
+  // could be escaped by saying nothing. The review is asked about the silence, and its note is a redo.
+  test("a redo that stays blank is put to the review as silence, and a note asks again", async () => {
+    const model = new BoundRecordingModel([
+      { text: "Vou te passar para a equipe." },
+      { text: "" },
+      { text: "" },
+      { text: "Qual é o número do seu pedido?" },
+    ]);
+    let silences = 0;
+    const { replies, messages } = await run(
+      model,
+      {
+        reply: (r) =>
+          r === "Vou te passar para a equipe." || (r === "" && silences++ === 0)
+            ? REPLY_NOTE
+            : null,
+      },
+      { retrySilence: () => true },
+    );
+    expect(replies).toEqual([
+      "Vou te passar para a equipe.",
+      "",
+      "Qual é o número do seu pedido?",
+    ]);
+    expect(text(messages.at(-1))).toBe("Qual é o número do seu pedido?");
   });
 
   test("the reviewer judges against the instructions the graph gives the model, standing notices included", async () => {

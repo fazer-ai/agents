@@ -3,6 +3,7 @@ import {
   guardrailsChatModelShown,
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
+  turnRulesIncomplete,
 } from "@/client/pages/agents/guardrailsFormState";
 import {
   CUSTOM_POLICY_MAX,
@@ -121,6 +122,57 @@ describe("guardrailsChatModelShown", () => {
       }),
       guardrailsChatModelShown({ ...on, enabled: false }),
     ]).toEqual([true, false, true, false]);
+  });
+});
+
+describe("turn review rules in the form", () => {
+  const RULE = {
+    name: "promessa",
+    pattern: "vou encaminhar",
+    unlessTool: "handoff_to_human",
+    note: "Chame a ferramenta.",
+  };
+
+  test("a rule is incomplete without its name or note, or with a pattern that cannot be stored", () => {
+    expect([
+      turnRulesIncomplete([]),
+      turnRulesIncomplete([RULE, { ...RULE, unlessTool: null }]),
+      turnRulesIncomplete([RULE, { ...RULE, name: " " }]),
+      turnRulesIncomplete([{ ...RULE, note: "" }]),
+      turnRulesIncomplete([{ ...RULE, pattern: "" }]),
+      turnRulesIncomplete([{ ...RULE, pattern: "(" }]),
+    ]).toEqual([false, false, true, true, true, true]);
+  });
+
+  // The bug it catches: rules alone under the Decisions classifier asking for a chat model key that
+  // nothing would use, and their turn running in the playground with no way to switch it off.
+  test("rules alone need no chat model, and still make the playground's toggle usable", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const rulesOnly = {
+      ...on,
+      classifier: "decisions" as const,
+      decisions: { ...on.decisions, credentialRef: null },
+      credentialRef: null,
+      turnReview: {
+        ...on.turnReview,
+        enabled: true,
+        judge: false,
+        rules: [RULE],
+      },
+    };
+    const noRules = {
+      ...rulesOnly,
+      turnReview: { ...rulesOnly.turnReview, rules: [] },
+    };
+    expect([
+      guardrailsChatModelShown(rulesOnly),
+      guardrailsChatModelShown({
+        ...rulesOnly,
+        turnReview: { ...rulesOnly.turnReview, judge: true },
+      }),
+      playgroundGuardrailsUsable(rulesOnly),
+      playgroundGuardrailsUsable(noRules),
+    ]).toEqual([false, true, true, false]);
   });
 });
 

@@ -72,8 +72,14 @@ import {
   isExternalCheckUrl,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
+  MAX_TOOL_NAME_LEN,
+  MAX_TURN_REVIEW_RULES,
   TURN_REVIEW_ACTIONS,
   TURN_REVIEW_FALLBACKS,
+  TURN_RULE_NAME_MAX,
+  TURN_RULE_NOTE_MAX,
+  TURN_RULE_PATTERN_MAX,
+  turnRulePatternProblem,
 } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import {
@@ -1087,6 +1093,65 @@ const guardrailDecisions = z.looseObject({
     ),
 });
 
+// One rule of the turn review (docs/turn-review.md). The pattern is refused here, on the write, when
+// it does not compile or passes its cap: the reader drops such a rule, so a stored one would be a
+// rule that silently never fires.
+const turnReviewRule = z
+  .looseObject({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(TURN_RULE_NAME_MAX)
+      .optional()
+      .describe("required; named in the log line"),
+    pattern: z
+      .string()
+      .min(1)
+      .max(TURN_RULE_PATTERN_MAX)
+      .superRefine((v, ctx) => {
+        if (turnRulePatternProblem(v) === "invalid")
+          ctx.addIssue({
+            code: "custom",
+            message: "a regular expression that compiles",
+            params: { expected: "regex" },
+          });
+      })
+      .optional()
+      .describe(
+        "required; regex on the reply about to be sent, case-insensitive, refused when it does not compile",
+      ),
+    unlessTool: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_TOOL_NAME_LEN)
+      .nullable()
+      .optional()
+      .describe("fires only when this tool did not run in the turn"),
+    note: z
+      .string()
+      .trim()
+      .min(1)
+      .max(TURN_RULE_NOTE_MAX)
+      .optional()
+      .describe("required; told to the agent with the refused draft"),
+  })
+  // The three required fields, refused by absence here and not by type: the write boundary judges a
+  // value by whether the write changed it, and an absent field never differs from an absent stored
+  // one. `wholeBlock` asks instead whether the rule changed.
+  .superRefine((v, ctx) => {
+    for (const key of ["name", "pattern", "note"] as const) {
+      if (v[key] !== undefined) continue;
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `a rule needs its ${key}`,
+        params: { wholeBlock: 1, expected: "required" },
+      });
+    }
+  });
+
 const guardrails = z
   .looseObject({
     enabled: z.boolean().optional(),
@@ -1205,6 +1270,17 @@ const guardrails = z
         fallback: oneOf(TURN_REVIEW_FALLBACKS)
           .optional()
           .describe("ends the turn once maxAttempts is spent"),
+        judge: z
+          .boolean()
+          .optional()
+          .describe("the model reviewer (default true); false = rules only"),
+        rules: z
+          .array(turnReviewRule)
+          .max(MAX_TURN_REVIEW_RULES)
+          .optional()
+          .describe(
+            "no-model checks of the final reply, before the reviewer, on the same action, maxAttempts and fallback",
+          ),
       })
       .optional()
       .describe(

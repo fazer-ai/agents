@@ -225,6 +225,8 @@ describe("settings", () => {
       action: "observe",
       maxAttempts: 1,
       fallback: "handoff",
+      judge: true,
+      rules: [],
     });
   });
 
@@ -244,6 +246,8 @@ describe("settings", () => {
       action: "observe",
       maxAttempts: 3,
       fallback: "handoff",
+      judge: true,
+      rules: [],
     });
     expect(
       readGuardrailsConfig({

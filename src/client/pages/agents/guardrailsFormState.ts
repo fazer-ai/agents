@@ -9,20 +9,34 @@ import {
   groundingHasSources,
   guardrailCredentialRef,
   readGuardrailsConfig,
+  turnReviewJudges,
+  turnRulePatternProblem,
 } from "@/modules/guardrails/settings";
 import { overrideResolution } from "./modelOverrideForm";
 
 // Whether the tab draws the guardrails chat model's fields (provider, key, model): the chat
-// classifier screens on them, and turn review runs on them whichever classifier screens. The one
-// predicate the tab renders by and the editor routes a refusal of that key by.
+// classifier screens on them, and turn review's model reviewer runs on them whichever classifier
+// screens (its rules need no model). The one predicate the tab renders by and the editor routes a
+// refusal of that key by.
 export function guardrailsChatModelShown(g: GuardrailsConfig): boolean {
-  return g.enabled && (g.classifier !== "decisions" || g.turnReview.enabled);
+  return g.enabled && (g.classifier !== "decisions" || turnReviewJudges(g));
+}
+
+// Whether a rule in the form is one the server would refuse or the reader would drop: a missing
+// name or note, or a pattern that is empty, too long or does not compile.
+export function turnRulesIncomplete(
+  rules: GuardrailsConfig["turnReview"]["rules"],
+): boolean {
+  return rules.some(
+    (r) =>
+      !r.name.trim() || !r.note.trim() || !!turnRulePatternProblem(r.pattern),
+  );
 }
 
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime
 // has (modules/guardrails/gate), the feature switched on and its OWN credential. Under `hold` a
 // missing credential still screens (every turn is held), so the operator has to be able to turn it
-// off. A configured external check calls out on every turn, and so does a factual-grounding reviewer
+// off. Turn-review rules need no credential and still act on the turn. A configured external check calls out on every turn, and so does a factual-grounding reviewer
 // with its own key on a turn a source answered, so both need the switch. A direction
 // being off is not checked here: the gate returns "not-run" for it at no cost.
 // `credBaseUrls` are the endpoints the vault holds on the guardrails credential and on the reviewer's
@@ -36,7 +50,8 @@ export function playgroundGuardrailsUsable(
     (!!guardrailCredentialRef(g) ||
       g.onFailure === "hold" ||
       !!g.external.url ||
-      (g.turnReview.enabled && !!g.credentialRef) ||
+      (turnReviewJudges(g) && !!g.credentialRef) ||
+      (g.turnReview.enabled && g.turnReview.rules.length > 0) ||
       (g.factualGrounding.enabled &&
         groundingHasSources(g.factualGrounding) &&
         groundingReviewerCalls(g, credBaseUrls)))

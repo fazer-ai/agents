@@ -417,10 +417,16 @@ export function guardrailObservedLabel(
               "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
             tool: typeof detail.tool === "string" ? detail.tool : "",
           })
-        : t(
-            "logs.guardrailObserved.turnReviewReply",
-            "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
-          )
+        : typeof detail.rule === "string"
+          ? t("logs.guardrailObserved.turnRule", {
+              defaultValue:
+                "The turn review rule “{{rule}}” fired on the reply. Only recorded, the turn review did not block it",
+              rule: detail.rule,
+            })
+          : t(
+              "logs.guardrailObserved.turnReviewReply",
+              "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
+            )
       : detail.direction === "input"
         ? t(
             "logs.guardrailObserved.input",

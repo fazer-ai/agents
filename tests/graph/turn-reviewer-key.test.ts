@@ -128,4 +128,22 @@ describe.skipIf(!dbUp)("the turn reviewer's key at turn prep", () => {
       apiKey: "sk-test",
     });
   });
+
+  // The bug it catches: rules alone, with the model reviewer off, still resolving its key on every
+  // turn and reporting a missing credential for a model nothing calls.
+  test("with the model reviewer off there is no reviewer, key or not", async () => {
+    const rulesOnly = await agentWith("Só regras", {
+      provider: "openai",
+      model: "gpt-4o-mini",
+      credentialRef: `vault:${keyId}`,
+      turnReview: {
+        enabled: true,
+        judge: false,
+        rules: [{ name: "r", pattern: "x", note: "n" }],
+      },
+    });
+    const loaded = await load(rulesOnly);
+    expect(loaded?.turnReviewer ?? null).toBeNull();
+    expect(loaded?.guardrails.turnReview.rules).toHaveLength(1);
+  });
 });

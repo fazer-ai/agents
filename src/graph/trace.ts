@@ -134,6 +134,8 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.rationale
       ? { rationale: scrubbedClip(r.rationale, OUTPUT_MAX) }
       : {}),
+    // A turn-review rule's name: the operator's text, bounded like a category.
+    ...(r.rule ? { rule: scrubbedClip(r.rule, CATEGORY_MAX) } : {}),
     // Numbers and the screening's own question keys (./guardrails/classify), not model text: copied
     // as they are, bounded in count like the categories.
     ...(r.scores?.length

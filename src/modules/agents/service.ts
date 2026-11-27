@@ -992,6 +992,30 @@ function describeExpected(issue: z.core.$ZodIssue): Expected {
           params: { max },
         };
   }
+  // A text refused for its length says the bound: "a valid value" would leave the caller guessing.
+  if (issue.code === "too_big" && issue.origin === "string") {
+    const max = String(issue.maximum);
+    return {
+      message: `a text of at most ${max} characters`,
+      key: "errors.settingsExpectedMaxChars",
+      params: { max },
+    };
+  }
+  if (
+    (issue.code === "too_small" && issue.origin === "string") ||
+    (issue.code === "custom" && issue.params?.expected === "required")
+  ) {
+    return {
+      message: "a text that is not empty",
+      key: "errors.settingsExpectedNotEmpty",
+    };
+  }
+  if (issue.code === "custom" && issue.params?.expected === "regex") {
+    return {
+      message: "a regular expression that compiles",
+      key: "errors.settingsExpectedRegex",
+    };
+  }
   if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern) {
     const pattern = String(issue.pattern);
     return {

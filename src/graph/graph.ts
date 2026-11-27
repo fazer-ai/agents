@@ -1012,8 +1012,11 @@ export function buildAgentGraph({
       text: string,
       canRedo: boolean,
       thisRound = false,
+      // Where the turn would end with no reply at all, the review is asked with the empty text too:
+      // a rule that sent the reply back does not let its redo end in silence.
+      orSilence = false,
     ): Promise<TurnReviewFeedback | null> =>
-      reviewTurnReply && !noReplyChannel && !silentTurn && text
+      reviewTurnReply && !noReplyChannel && !silentTurn && (text || orSilence)
         ? reviewTurnReply(reviewed(view), text, {
             canRedo,
             ...(thisRound && reviewCallable
@@ -1048,6 +1051,8 @@ export function buildAgentGraph({
           ? customerFacingReply(replyWrittenThisTurn(history)).text
           : "",
         false,
+        false,
+        true,
       ));
       // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
       // no model call left to rewrite it, a revise reads as an empty rewrite.
@@ -1459,7 +1464,7 @@ export function buildAgentGraph({
       const recovered =
         !own && recoversReply?.() ? replyWrittenThisTurn(view) : "";
       const draft = customerFacingReply(own || recovered).text;
-      const note = await reviewHeadedOut(view, draft, true, !!own);
+      const note = await reviewHeadedOut(view, draft, true, !!own, true);
       if (!note) break;
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];

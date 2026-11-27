@@ -17,7 +17,9 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
   clearMediaAnnotations,
+  conversationMediaArriving,
   mediaAnnotationFor,
+  mediaArrivingHold,
   openTranscription,
   overlayMediaAnnotations,
   stashMediaAnnotation,
@@ -73,6 +75,7 @@ const REPLY = "Anotado.";
 const WORDS = "quero remarcar a consulta de amanhã";
 const DESCRIPTION = "um comprovante de pagamento";
 const UNHEARD = "não audível";
+const LATE = "a transcrição não ficou pronta a tempo";
 const BACK = "o verso do mesmo documento";
 
 class TurnCapturingModel extends BaseChatModel {
@@ -119,6 +122,10 @@ function voice(id: number) {
     private: false,
     attachments: [{ id: 301, file_type: "audio", data_url: AUDIO_URL }],
   };
+}
+
+function text(id: number, content: string) {
+  return { id, content, message_type: 0, private: false, attachments: [] };
 }
 
 function album(id: number) {
@@ -276,9 +283,32 @@ async function flush(
   mediaWaitSince?: number,
   // When the burst first deferred for a busy thread.
   deferringSince?: number,
+  // `mediaOnly`: the job was armed by an agent with debounce off, for a file on its way. `carry`: the
+  // stamp the previous round left on the row is kept, as the worker's reclaim keeps it.
+  opts: {
+    mediaOnly?: boolean;
+    carry?: boolean;
+    model?: TurnCapturingModel;
+    // The claim this flush holds was retired while it ran: the row's sequence has moved on.
+    retired?: boolean;
+    // When the job was armed; absent, now.
+    burstStartedAt?: number;
+    // When the live row was first armed, kept by a re-arm that restarts the burst.
+    liveSince?: number;
+    transcriptionWaitMs?: number;
+  } = {},
 ) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
   // A rescheduled flush leaves its row behind; the next round stands in for the worker's reclaim.
+  const left = opts.carry
+    ? await suDb.schedulerJob.findFirst({
+        where: { tenantId, dedupeKey: debounceDedupeKey(thread) },
+        select: { payload: true },
+      })
+    : null;
+  const carried = (left?.payload as { mediaWaitSince?: number } | null)
+    ?.mediaWaitSince;
+  mediaWaitSince ??= carried;
   await suDb.schedulerJob.deleteMany({
     where: { tenantId, dedupeKey: debounceDedupeKey(thread) },
   });
@@ -292,14 +322,16 @@ async function flush(
       payload: {
         threadId: thread,
         agentBotId: 9,
-        burstStartedAt: 1,
+        burstStartedAt: opts.burstStartedAt ?? Date.now(),
+        ...(opts.liveSince !== undefined ? { liveSince: opts.liveSince } : {}),
         ...(mediaWaitSince !== undefined ? { mediaWaitSince } : {}),
         ...(deferringSince !== undefined ? { deferringSince } : {}),
+        ...(opts.mediaOnly ? { mediaOnly: true } : {}),
       },
     },
     select: { id: true, claimSeq: true, payload: true },
   });
-  const model = new TurnCapturingModel();
+  const model = opts.model ?? new TurnCapturingModel();
   const out = await flushDebounceJob({
     job: {
       id: row.id,
@@ -307,7 +339,7 @@ async function flush(
       kind: "DEBOUNCE",
       payload: row.payload as Record<string, unknown>,
       attempts: 0,
-      claimSeq: row.claimSeq,
+      claimSeq: opts.retired ? row.claimSeq - 1 : row.claimSeq,
     },
     base: appDb,
     deps: {
@@ -316,7 +348,7 @@ async function flush(
       checkpointer: new MemorySaver(),
       sttFetch: p.sttFetch,
       visionFetch: p.visionFetch,
-      transcriptionWaitMs: 50,
+      transcriptionWaitMs: opts.transcriptionWaitMs ?? 50,
     },
   });
   return { out, seen: model.humanTexts.join("\n"), model };
@@ -431,7 +463,7 @@ describe.skipIf(!dbUp)(
       const page = [image(1)];
       const arrival = await arriveImage(9703, 1, s.client(page), p.visionFetch);
       expect(arrival?.unreadFiles).toEqual([
-        { name: "comprovante.png", cause: "failed", retryable: true },
+        { name: "comprovante.png", cause: "failed", retryable: true, id: 302 },
       ]);
       expect(p.calls.vision).toBe(0);
 
@@ -468,7 +500,7 @@ describe.skipIf(!dbUp)(
       const page = [voice(1)];
       await arriveVoice(9707, 1, s.client(page), p.sttFetch);
 
-      const first = await flush(9707, s.client(page), p, Date.now());
+      const first = await flush(9707, s.client(page), p);
 
       expect(first.out.outcome).toBe("reschedule");
       expect(s.state.sent).toBe(0);
@@ -481,11 +513,36 @@ describe.skipIf(!dbUp)(
         },
         select: { payload: true },
       });
-      expect(row.payload).toHaveProperty("mediaWaitSince");
+      const stamped = (row.payload as { mediaWaitSince?: number })
+        .mediaWaitSince;
+      expect(stamped).toBeNumber();
       expect(row.payload).not.toHaveProperty("deferringSince");
 
+      // A round that still finds no file keeps the first round's stamp: the ceiling does not restart.
+      const again = await flush(9707, s.client(page), p, undefined, undefined, {
+        carry: true,
+      });
+      expect(again.out.outcome).toBe("reschedule");
+      const kept = await suDb.schedulerJob.findFirstOrThrow({
+        where: {
+          tenantId,
+          dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9707`),
+        },
+        select: { payload: true },
+      });
+      expect(kept.payload).toHaveProperty("mediaWaitSince", stamped);
+
       s.state.stored = true;
-      const second = await flush(9707, s.client(page), p, Date.now());
+      const second = await flush(
+        9707,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        {
+          carry: true,
+        },
+      );
 
       expect(second.out).toEqual({ outcome: "done" });
       expect(s.state.sent).toBe(1);
@@ -522,7 +579,8 @@ describe.skipIf(!dbUp)(
 
       expect(out).toEqual({ outcome: "done" });
       expect(s.state.sent).toBe(1);
-      expect(seen).toContain(UNHEARD);
+      expect(seen).toContain(LATE);
+      expect(seen).not.toContain(UNHEARD);
     });
 
     test("a refused download does not defer the reply", async () => {
@@ -572,7 +630,7 @@ describe.skipIf(!dbUp)(
         },
       });
       expect(arrival?.unreadFiles).toEqual([
-        { name: "verso.png", cause: "failed", retryable: true },
+        { name: "verso.png", cause: "failed", retryable: true, id: 303 },
       ]);
       expect(p.calls.vision).toBe(1);
 
@@ -722,7 +780,7 @@ describe.skipIf(!dbUp)(
       const again = await arriveImage(9723, 1, cut, p.visionFetch);
 
       expect(again?.unreadFiles).toEqual([
-        { name: "comprovante.png", cause: "failed", retryable: true },
+        { name: "comprovante.png", cause: "failed", retryable: true, id: 302 },
       ]);
       const { out } = await flush(9723, s.client(page), p, Date.now());
       expect(out.outcome).toBe("reschedule");
@@ -864,7 +922,7 @@ describe.skipIf(!dbUp)(
       const arrival = await arriveImage(9728, 1, cut, p.visionFetch);
 
       expect(arrival?.unreadFiles).toEqual([
-        { name: "comprovante.png", cause: "failed", retryable: true },
+        { name: "comprovante.png", cause: "failed", retryable: true, id: 302 },
       ]);
     });
 
@@ -923,6 +981,8 @@ describe.skipIf(!dbUp)(
         s.client(page),
         p,
         Date.now(),
+        undefined,
+        { mediaOnly: true },
       ).finally(() =>
         suDb.agent.update({
           where: { id: agentId },
@@ -1125,7 +1185,12 @@ describe.skipIf(!dbUp)(
         {
           attachmentsUnread: 2,
           unreadFiles: [
-            { name: "comprovante.png", cause: "failed", retryable: true },
+            {
+              name: "comprovante.png",
+              cause: "failed",
+              retryable: true,
+              id: 302,
+            },
           ],
         },
       );
@@ -1135,6 +1200,720 @@ describe.skipIf(!dbUp)(
       expect(out).toEqual({ outcome: "done" });
       expect(s.state.downloads).toBe(0);
       expect(p.calls.vision).toBe(0);
+    });
+
+    test("a voice note still being transcribed when the flush runs holds the reply until its words land", async () => {
+      await seedConversation(9750);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      const target = { tenantId, instanceId, messageId: 1 };
+      const close = openTranscription(target);
+
+      const first = await flush(9750, s.client(page), p);
+
+      expect(first.out.outcome).toBe("reschedule");
+      expect(s.state.sent).toBe(0);
+      expect(s.state.downloads).toBe(0);
+      expect(first.model.humanTexts).toEqual([]);
+
+      stashMediaAnnotation(target, { transcribedText: WORDS });
+      close();
+      const second = await flush(
+        9750,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        {
+          carry: true,
+        },
+      );
+
+      expect(second.out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+      expect(second.seen).toContain(WORDS);
+      expect(p.calls.stt).toBe(0);
+    });
+
+    test("past the media ceiling a voice note still being transcribed is not called inaudible", async () => {
+      await seedConversation(9751);
+      const s = storage();
+      const p = provider();
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+
+      const { out, seen } = await flush(
+        9751,
+        s.client([voice(1)]),
+        p,
+        Date.now() - 61_000,
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(1);
+      expect(seen).toContain(LATE);
+      expect(seen).not.toContain(UNHEARD);
+    });
+
+    test("a voice note the provider returned nothing for keeps the inaudible marker", async () => {
+      await seedConversation(9752);
+      const s = storage();
+      const p = provider();
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionEmpty: true },
+      );
+
+      const { out, seen } = await flush(9752, s.client([voice(1)]), p);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
+    });
+
+    test("the flush hands the media ceiling to the download it retries", async () => {
+      await seedConversation(9753);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1), image(2)];
+      const c = s.client(page);
+      await arriveVoice(9753, 1, c, p.sttFetch);
+      await arriveImage(9753, 2, c, p.visionFetch);
+      const untils: (number | undefined)[] = [];
+      const inner = c.downloadAttachment.bind(c);
+      c.downloadAttachment = (async (
+        url: string,
+        opts?: { retryUntil?: number },
+      ) => {
+        untils.push(opts?.retryUntil);
+        return inner(url, opts as never);
+      }) as typeof c.downloadAttachment;
+      const since = Date.now() - 10_000;
+
+      await flush(9753, c, p, since);
+
+      expect(untils).toEqual([since + 60_000, since + 60_000]);
+    });
+
+    test("a restart during the media wait still retries the voice note", async () => {
+      await seedConversation(9754);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9754, 1, s.client(page), p.sttFetch);
+      const first = await flush(9754, s.client(page), p);
+      expect(first.out.outcome).toBe("reschedule");
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      s.state.stored = true;
+      const second = await flush(
+        9754,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        {
+          carry: true,
+        },
+      );
+
+      expect(second.out).toEqual({ outcome: "done" });
+      expect(second.seen).toContain(WORDS);
+    });
+
+    test("with no restart, a voice note this process holds nothing about is not tried by the flush", async () => {
+      await seedConversation(9755);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+
+      const { out } = await flush(9755, s.client([voice(1)]), p, Date.now());
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.downloads).toBe(0);
+      expect(p.calls.stt).toBe(0);
+    });
+
+    // A late image keeps the burst waiting, so the second round still holds the voice note.
+    test("after a restart a voice note the provider fails on is tried once, not every round", async () => {
+      await seedConversation(9756);
+      const s = storage({ late: [IMAGE_URL] });
+      const p = provider();
+      const page = [voice(1), image(2)];
+      const c = s.client(page);
+      await arriveImage(9756, 2, c, p.visionFetch);
+      let audioDownloads = 0;
+      const inner = c.downloadAttachment.bind(c);
+      c.downloadAttachment = (async (url: string, opts?: never) => {
+        if (url === AUDIO_URL) audioDownloads++;
+        return inner(url, opts);
+      }) as typeof c.downloadAttachment;
+      const failing = (async () =>
+        new Response("boom", { status: 500 })) as unknown as typeof fetch;
+      const since = Date.now() - 1_000;
+
+      const first = await flush(9756, c, { ...p, sttFetch: failing }, since);
+      const afterFirst = audioDownloads;
+      const second = await flush(9756, c, { ...p, sttFetch: failing }, since);
+
+      expect(first.out.outcome).toBe("reschedule");
+      expect(second.out.outcome).toBe("reschedule");
+      expect(afterFirst).toBe(1);
+      expect(audioDownloads).toBe(1);
+    });
+
+    test("an ordinary burst keeps its cap when debounce is turned off before it runs", async () => {
+      await seedConversation(9757);
+      const s = storage();
+      const p = provider();
+      const page = [text(1, "primeira pergunta"), text(2, "segunda pergunta")];
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            ...settings(),
+            debounce: { enabled: false, maxMessagesPerBurst: 1 },
+          },
+        },
+      });
+
+      const { out, seen } = await flush(9757, s.client(page), p).finally(() =>
+        suDb.agent.update({
+          where: { id: agentId },
+          data: { settings: settings() },
+        }),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain("segunda pergunta");
+      expect(seen).not.toContain("primeira pergunta");
+    });
+
+    test("a media wait keeps its file when debounce is turned on before it runs", async () => {
+      await seedConversation(9758);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1), text(2, "consegue?")];
+      await arriveVoice(9758, 1, s.client(page), p.sttFetch);
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            ...settings(),
+            debounce: { enabled: true, maxMessagesPerBurst: 1 },
+          },
+        },
+      });
+      s.state.stored = true;
+
+      const { out, seen } = await flush(
+        9758,
+        s.client(page),
+        p,
+        Date.now(),
+        undefined,
+        { mediaOnly: true },
+      ).finally(() =>
+        suDb.agent.update({
+          where: { id: agentId },
+          data: { settings: settings() },
+        }),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(WORDS);
+      expect(seen).toContain("consegue?");
+    });
+
+    // The job was armed, the process restarted, and no flush has deferred yet: there is no wait stamp.
+    test("a restart before the first flush of an armed job still retries the voice note", async () => {
+      await seedConversation(9767);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9767, 1, s.client(page), p.sttFetch);
+      const armedAt = Date.now();
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      s.state.stored = true;
+      const { out, seen } = await flush(
+        9767,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        { burstStartedAt: armedAt },
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(WORDS);
+    });
+
+    // The first flush was claimed, the process restarted, and a follow-up re-armed the claimed row:
+    // the burst start is the follow-up's, and only the row's first arm predates the process.
+    test("a restart followed by a re-arm before the first retry still retries the voice note", async () => {
+      await seedConversation(9773);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9773, 1, s.client(page), p.sttFetch);
+      const armedAt = Date.now();
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      s.state.stored = true;
+      const { out, seen } = await flush(
+        9773,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        { liveSince: armedAt },
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(WORDS);
+    });
+
+    // The process restarted while the note was awaited and came back past the ceiling: no retry is
+    // left, and nothing says the note was heard.
+    test("a restart that outlasts the media ceiling still calls the voice note late, not inaudible", async () => {
+      await seedConversation(9776);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9776, 1, s.client(page), p.sttFetch);
+      const since = Date.now() - 61_000;
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      const { out, seen } = await flush(9776, s.client(page), p, since);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+      expect(seen).not.toContain(UNHEARD);
+    });
+
+    // The provider never answers and its own time limit cuts the call.
+    test("a provider call cut by its time limit is called late, not inaudible, and is not sent again", async () => {
+      await seedConversation(9777);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [voice(1)];
+      let asked = 0;
+      const hung = (async () => {
+        asked++;
+        throw new DOMException("signal timed out", "TimeoutError");
+      }) as unknown as typeof fetch;
+      await arriveVoice(9777, 1, s.client(page), hung);
+      // A second pass of the delivery, or the message's update, does not send it again.
+      await arriveVoice(9777, 1, s.client(page), hung);
+
+      const { out, seen } = await flush(9777, s.client(page), p);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+      expect(seen).not.toContain(UNHEARD);
+      expect(p.calls.stt).toBe(0);
+      expect(asked).toBe(1);
+    });
+
+    // The reminder shares one budget across its reads: the caller ran out, not the provider.
+    test("a provider call cut by the caller's own deadline settles nothing", async () => {
+      await seedConversation(9780);
+      const s = storage();
+      s.state.stored = true;
+      const budget = new AbortController();
+      let asked = 0;
+      await transcribeInboundAudio({
+        tenantId,
+        instanceId,
+        conversationId: 9780,
+        messageId: 1,
+        attachmentId: 301,
+        dataUrl: AUDIO_URL,
+        cfg: readSttConfig(settings()),
+        base: appDb,
+        signal: budget.signal,
+        deps: {
+          makeClient: async () => s.client([voice(1)]),
+          fetchImpl: (async () => {
+            asked++;
+            const spent = new DOMException("signal timed out", "TimeoutError");
+            budget.abort(spent);
+            throw spent;
+          }) as unknown as typeof fetch,
+        },
+      }).catch(() => null);
+
+      // The caller is answered at its abort: the cut call settles on its own a moment later.
+      await Bun.sleep(25);
+
+      expect(asked).toBe(1);
+      expect(
+        mediaAnnotationFor(tenantId, instanceId, 1)?.transcriptionTimedOut,
+      ).toBeUndefined();
+    });
+
+    // A duplicate delivery opens the transcription again for a note the provider timed out on.
+    test("a note the provider timed out on is not waited for when it is opened again", async () => {
+      await seedConversation(9781);
+      const s = storage();
+      const p = provider();
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionTimedOut: true },
+      );
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+
+      const { out, seen } = await flush(
+        9781,
+        s.client([voice(1)]),
+        p,
+        undefined,
+        undefined,
+        { transcriptionWaitMs: 5 },
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+    });
+
+    // A provider that answers with an error is a failure, not a late answer.
+    test("a provider that answers with an error keeps the inaudible marker", async () => {
+      await seedConversation(9778);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(
+        9778,
+        1,
+        s.client(page),
+        (async () =>
+          new Response("{}", { status: 500 })) as unknown as typeof fetch,
+      );
+
+      const { out, seen } = await flush(9778, s.client(page), p);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
+    });
+
+    // A duplicate delivery opens a transcription for a note whose empty result is already stashed.
+    test("a voice note already answered with nothing is not waited for when it is opened again", async () => {
+      await seedConversation(9774);
+      const s = storage();
+      const p = provider();
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionEmpty: true },
+      );
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+
+      const { out, seen } = await flush(
+        9774,
+        s.client([voice(1)]),
+        p,
+        undefined,
+        undefined,
+        {
+          transcriptionWaitMs: 5,
+        },
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
+    });
+
+    // Note 1 is still being transcribed when the bounded wait ends, and its words land while the
+    // flush is busy retrying note 2.
+    test("a transcription that lands while another note is retried reaches the model", async () => {
+      await seedConversation(9766);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [voice(1), voice(2)];
+      const first = { tenantId, instanceId, messageId: 1 };
+      const close = openTranscription(first);
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 2 },
+        { transcriptionUnavailable: true },
+      );
+      const c = s.client(page);
+      const inner = c.downloadAttachment.bind(c);
+      c.downloadAttachment = (async (url: string, opts?: never) => {
+        stashMediaAnnotation(first, { transcribedText: "primeira nota" });
+        close();
+        return inner(url, opts);
+      }) as typeof c.downloadAttachment;
+
+      const { out, seen } = await flush(9766, c, p).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain("primeira nota");
+      expect(seen).toContain(WORDS);
+      expect(seen).not.toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
+    });
+
+    // The visual pass runs first and leaves an annotation of its own on the same message.
+    test("after a restart a voice note sent with an image is still tried", async () => {
+      await seedConversation(9768);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [
+        {
+          id: 1,
+          content: "",
+          message_type: 0,
+          private: false,
+          attachments: [
+            { id: 301, file_type: "audio", data_url: AUDIO_URL },
+            { id: 302, file_type: "image", data_url: IMAGE_URL },
+          ],
+        },
+      ];
+
+      const { out, seen } = await flush(
+        9768,
+        s.client(page),
+        p,
+        Date.now() - 1_000,
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(p.calls.stt).toBe(1);
+      expect(seen).toContain(WORDS);
+    });
+
+    test("past the media ceiling the flush does not wait again for an open transcription", async () => {
+      await seedConversation(9769);
+      const s = storage();
+      const p = provider();
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+      const started = Date.now();
+
+      const { out, seen } = await flush(
+        9769,
+        s.client([voice(1)]),
+        p,
+        Date.now() - 61_000,
+        undefined,
+        { transcriptionWaitMs: 4_000 },
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+    test("a delivery's hold says the conversation has a file on its way until the delivery lets go", () => {
+      const target = { tenantId, instanceId, conversationId: 9764 };
+      const arriving = () =>
+        conversationMediaArriving(tenantId, instanceId, 9764);
+      const hold = mediaArrivingHold(target);
+      const other = mediaArrivingHold(target);
+
+      const before = arriving();
+      other.release();
+      const releasedUnmarked = arriving();
+      hold.mark();
+      hold.mark();
+      const marked = arriving();
+      other.mark();
+      hold.release();
+      const otherStillHolds = arriving();
+      other.release();
+      other.release();
+
+      expect(before).toBe(false);
+      expect(releasedUnmarked).toBe(false);
+      expect(marked).toBe(true);
+      // A delivery released before it marked took part in nothing: its later mark counts for nothing.
+      // Nothing lingers after the exit: the delivery's flush row is committed by then.
+      expect(otherStillHolds).toBe(false);
+    });
+
+    test("a delivery that finds another's file on its way holds the conversation too", () => {
+      const target = { tenantId, instanceId, conversationId: 9775 };
+      const note = mediaArrivingHold(target);
+      const text = mediaArrivingHold(target);
+      const alone = text.others();
+      note.mark();
+      const ownOnly = note.others();
+
+      const joined = text.others();
+      // The note's download recovers while the text is still arming its flush.
+      const noteSeesText = note.others();
+      note.release();
+      const afterNote = conversationMediaArriving(tenantId, instanceId, 9775);
+      text.release();
+
+      expect(alone).toBe(false);
+      expect(ownOnly).toBe(false);
+      expect(joined).toBe(true);
+      expect(noteSeesText).toBe(true);
+      expect(afterNote).toBe(true);
+      expect(conversationMediaArriving(tenantId, instanceId, 9775)).toBe(false);
+    });
+
+    // Chatwoot sends a create and an update for one voice note, and the two deliveries overlap.
+    test("a second delivery of the same message is not another message on its way", () => {
+      const conv = { tenantId, instanceId, conversationId: 9779 };
+      const created = mediaArrivingHold({ ...conv, messageId: 41 });
+      const updated = mediaArrivingHold({ ...conv, messageId: 41 });
+      const text = mediaArrivingHold({ ...conv, messageId: 42 });
+      created.mark();
+      updated.mark();
+
+      const sameMessage = created.others();
+      const otherMessage = text.others();
+      created.release();
+      const afterOne = conversationMediaArriving(tenantId, instanceId, 9779);
+      updated.release();
+      text.release();
+
+      expect(sameMessage).toBe(false);
+      expect(otherMessage).toBe(true);
+      expect(afterOne).toBe(true);
+      expect(conversationMediaArriving(tenantId, instanceId, 9779)).toBe(false);
+    });
+
+    test("a delivery marking one conversation leaves another conversation's hold alone", () => {
+      const held = mediaArrivingHold({
+        tenantId,
+        instanceId,
+        conversationId: 9766,
+      });
+      const other = mediaArrivingHold({
+        tenantId,
+        instanceId,
+        conversationId: 9767,
+      });
+      held.mark();
+      other.mark();
+
+      const stillHeld = conversationMediaArriving(tenantId, instanceId, 9766);
+      held.release();
+      other.release();
+
+      expect(stillHeld).toBe(true);
+    });
+
+    test("two deliveries each hold the conversation until their own release", () => {
+      const target = { tenantId, instanceId, conversationId: 9765 };
+      const far = () => conversationMediaArriving(tenantId, instanceId, 9765);
+      const a = mediaArrivingHold(target);
+      const b = mediaArrivingHold(target);
+      a.mark();
+      b.mark();
+      a.release();
+      const afterFirst = far();
+      b.release();
+
+      expect(afterFirst).toBe(true);
+      expect(far()).toBe(false);
+    });
+
+    test("a burst handed over after the agent was switched off leaves no media deadline behind", async () => {
+      await seedConversation(9760);
+      const s = storage();
+      const p = provider();
+      class SwitchingOff extends TurnCapturingModel {
+        override async _generate(messages: BaseMessage[]) {
+          await suDb.agent.update({
+            where: { id: agentId },
+            data: { enabled: false },
+          });
+          return super._generate(messages);
+        }
+      }
+
+      const { out } = await flush(
+        9760,
+        s.client([text(1, "oi")]),
+        p,
+        Date.now() - 1_000,
+        undefined,
+        { model: new SwitchingOff() },
+      ).finally(() =>
+        suDb.agent.update({ where: { id: agentId }, data: { enabled: true } }),
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(s.state.sent).toBe(0);
+      const row = await suDb.schedulerJob.findFirstOrThrow({
+        where: {
+          tenantId,
+          dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9760`),
+        },
+        select: { payload: true },
+      });
+      expect(row.payload).not.toHaveProperty("mediaWaitSince");
+    });
+
+    test("a file replaced by another of the same name does not inherit the wait of the one removed", async () => {
+      await seedConversation(9761);
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        {
+          attachmentsUnread: 1,
+          unreadFiles: [
+            {
+              name: "comprovante.png",
+              cause: "failed",
+              retryable: true,
+              id: 999,
+            },
+          ],
+        },
+      );
+      const s = storage();
+      const cut = s.client([image(1)]);
+      cut.downloadAttachment = (async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof cut.downloadAttachment;
+      const p = provider();
+
+      const read = await arriveImage(9761, 1, cut, p.visionFetch);
+
+      expect(read?.unreadFiles).toEqual([
+        { name: "comprovante.png", cause: "failed" },
+      ]);
+    });
+
+    test("a flush retired while it waited for a file stamps nothing on the row", async () => {
+      await seedConversation(9762);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9762, 1, s.client(page), p.sttFetch);
+
+      const { out } = await flush(
+        9762,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        { retired: true },
+      );
+
+      expect(out.outcome).toBe("reschedule");
+      const row = await suDb.schedulerJob.findFirstOrThrow({
+        where: {
+          tenantId,
+          dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9762`),
+        },
+        select: { payload: true },
+      });
+      expect(row.payload).not.toHaveProperty("mediaWaitSince");
     });
 
     test("a voice note transcribed by the reply drops the mark", async () => {

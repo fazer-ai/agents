@@ -269,16 +269,17 @@ describe.skipIf(!dbUp)(
       expect(seen[0]).not.toContain(MARKER);
     });
 
-    test("a transcription past the bound leaves the marker, and the reply still goes out", async () => {
+    // Past the bound the note is a file on its way: the flush gives its slot back and comes again.
+    test("a transcription past the bound defers the reply instead of rendering the marker", async () => {
       clearMediaAnnotations();
       await seedConversation(902);
       first();
       const close = openTranscription({ tenantId, instanceId, messageId: 3 });
       try {
         const { out, sent, seen, elapsedMs } = await flush(902, 200);
-        expect(out).toEqual({ outcome: "done" });
-        expect(sent).toEqual([[902, REPLY]]);
-        expect(seen[0]).toContain(MARKER);
+        expect(out.outcome).toBe("reschedule");
+        expect(sent).toEqual([]);
+        expect(seen).toEqual([]);
         expect(elapsedMs).toBeLessThan(3000);
       } finally {
         close();

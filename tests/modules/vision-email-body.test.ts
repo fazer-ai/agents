@@ -680,7 +680,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       },
     });
     expect(out?.unreadFiles).toEqual([
-      { name: "late.png", cause: "failed", retryable: true },
+      { name: "late.png", cause: "failed", retryable: true, id: 149 },
       { name: "gone.png", cause: "failed" },
     ]);
   });

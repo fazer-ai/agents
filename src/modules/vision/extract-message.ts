@@ -133,6 +133,7 @@ export async function extractMessageVisuals(params: {
   stillAllowed?: () => Promise<boolean>;
   // The caller's deadline: past it, no later batch and no further provider attempt starts.
   signal?: AbortSignal;
+  downloadRetryUntil?: ExtractInboundParams["downloadRetryUntil"];
   usageNode?: ExtractInboundParams["usageNode"];
 }): Promise<MessageVisuals | null> {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
@@ -168,6 +169,7 @@ export async function extractMessageVisuals(params: {
       // O agregado é stashado uma vez depois do laço; ver a nota lá embaixo.
       stashAnnotation: false,
       signal: params.signal,
+      downloadRetryUntil: params.downloadRetryUntil,
       usageNode: params.usageNode,
     };
     return visual.id === null
@@ -181,6 +183,7 @@ export async function extractMessageVisuals(params: {
     !hasUnextractedVisual([visual])
       ? Promise.resolve({
           nome: visual.name,
+          id: visual.id,
           r: visual.imageDescription
             ? ({ kind: "image", text: visual.imageDescription } as const)
             : ({
@@ -219,13 +222,13 @@ export async function extractMessageVisuals(params: {
                     instanceId,
                     messageId,
                   )?.unreadFiles?.some(
-                    (f) => f.name === visual.name && f.retryable,
+                    (f) => f.id === visual.id && f.retryable,
                   ) === true));
             return stillOnItsWay
               ? ({ unread: "failed", retryable: true } as const)
               : ({ unread: "failed" } as const);
           })
-          .then((r) => ({ nome: visual.name, r }));
+          .then((r) => ({ nome: visual.name, id: visual.id, r }));
 
   // EM PARALELO, porque o orçamento por arquivo é de 20s para imagem e 60s para documento: cinco
   // deles em série é um turno que ninguém espera, cinco de uma vez custam um.
@@ -291,17 +294,19 @@ export async function extractMessageVisuals(params: {
   const unreadFiles: UnreadFile[] = [];
   // Ornamento do corpo do e-mail, ou imagem que não é deste Chatwoot: não foi enviada pelo
   // cliente, então não é lida, não rotula as outras e não entra na contagem de não lidos.
-  const doCliente = extraidos.flatMap(({ nome, r }) =>
-    r === BODY_IMAGE_IGNORED ? [] : [{ nome, r }],
+  const doCliente = extraidos.flatMap(({ nome, id, r }) =>
+    r === BODY_IMAGE_IGNORED ? [] : [{ nome, id, r }],
   );
-  for (const { nome, r } of doCliente) {
+  for (const { nome, id, r } of doCliente) {
     // Arquivo que não deu para ler NÃO é arquivo que não foi enviado. Contado junto com os que
     // passaram do teto porque o movimento do modelo é o mesmo: nomear o que falta e pedir de novo.
     if (isUnread(r)) {
       unreadFiles.push({
         name: nome,
         cause: r.unread,
-        ...(r.retryable ? { retryable: true as const } : {}),
+        ...(r.retryable
+          ? { retryable: true as const, ...(id != null ? { id } : {}) }
+          : {}),
       });
       continue;
     }

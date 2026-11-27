@@ -713,6 +713,81 @@ describe("ChatwootClient", () => {
       expect(out.bytes.byteLength).toBe(3);
       expect(s.slept).toEqual([250, 750, 1500, 3000]);
     });
+
+    // The reply's media wait has a ceiling: a retry admitted just before it stops there.
+    test("stops asking again once the next backoff would pass the caller's deadline", async () => {
+      const s = downloadStub([404, 404, 404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      let clock = 0;
+      const err = await client
+        .downloadAttachment(URL_, {
+          retryOnMissing: true,
+          retryUntil: 900,
+          now: () => clock,
+          sleep: async (ms) => {
+            clock += ms;
+            await s.sleep(ms);
+          },
+        })
+        .catch((e) => e);
+      expect((err as ChatwootApiError).status).toBe(404);
+      expect(s.count()).toBe(2);
+      expect(s.slept).toEqual([250]);
+    });
+
+    test("a backoff that wakes past the caller's deadline does not ask again", async () => {
+      const s = downloadStub([404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      let clock = 0;
+      const err = await client
+        .downloadAttachment(URL_, {
+          retryOnMissing: true,
+          retryUntil: 900,
+          now: () => clock,
+          sleep: async (ms) => {
+            clock += ms + 2_000;
+            await s.sleep(ms);
+          },
+        })
+        .catch((e) => e);
+      expect((err as ChatwootApiError).status).toBe(404);
+      expect(s.count()).toBe(1);
+    });
+
+    test("past the caller's deadline the file is asked for once and not again", async () => {
+      const s = downloadStub([404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      const err = await client
+        .downloadAttachment(URL_, {
+          retryOnMissing: true,
+          retryUntil: 100,
+          now: () => 500,
+          sleep: s.sleep,
+        })
+        .catch((e) => e);
+      expect((err as ChatwootApiError).status).toBe(404);
+      expect(s.count()).toBe(1);
+      expect(s.slept).toEqual([]);
+    });
+
+    test("a request in flight is cut at the caller's deadline", async () => {
+      const hanging = ((_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason),
+          );
+        })) as unknown as typeof fetch;
+      const client = await clientFor(hanging);
+      const started = Date.now();
+      const err = await client
+        .downloadAttachment(URL_, {
+          retryOnMissing: true,
+          retryUntil: started + 60,
+        })
+        .catch((e) => e);
+      expect(err).not.toBeInstanceOf(ChatwootApiError);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
   });
 
   describe("isTransientAttachmentFailure", () => {

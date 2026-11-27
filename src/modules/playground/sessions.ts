@@ -27,6 +27,7 @@ import {
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { AUDIO_SEM_TRANSCRICAO_A_TEMPO } from "@/modules/chatwoot/render";
 import { documentToolName } from "@/modules/documents/templates";
 import { listThreadMedia } from "./media";
 import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
@@ -117,7 +118,10 @@ function contentToText(content: unknown): string {
 function unwrapAudio(raw: string): { text: string; audio: boolean } {
   const m = raw.match(/^<mensagem-de-audio>([\s\S]*)<\/mensagem-de-audio>$/);
   if (m) return { text: (m[1] ?? "").trim(), audio: true };
-  if (raw.startsWith("<mensagem de áudio não audível"))
+  if (
+    raw.startsWith("<mensagem de áudio não audível") ||
+    raw.startsWith(`<${AUDIO_SEM_TRANSCRICAO_A_TEMPO}`)
+  )
     return { text: "", audio: true };
   return { text: raw, audio: false };
 }

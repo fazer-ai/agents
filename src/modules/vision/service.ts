@@ -283,6 +283,8 @@ export interface ExtractInboundParams {
   stashAnnotation?: boolean;
   // The caller's deadline, handed to the provider attempts.
   signal?: AbortSignal;
+  // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
+  downloadRetryUntil?: number;
   // The ledger step the call is billed under: an agent's reading by default, the occurrence
   // monitor's when it reads again what upstream Chatwoot no longer holds.
   usageNode?: Extract<UsageNode, "vision" | "occurrence_vision">;
@@ -590,6 +592,7 @@ async function extractInboundOnce(
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: !params.bodyImage,
       signal: params.signal,
+      retryUntil: params.downloadRetryUntil,
       onMissing: () => {
         missing = true;
       },

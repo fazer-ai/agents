@@ -19,6 +19,12 @@ export function debounceDedupeKey(threadId: string): string {
   return `debounce:${threadId}`;
 }
 
+// What a delivery arms with: the agent's debounce, or the media wait of an agent whose debounce is off.
+export type ArmConfig = DebounceConfig & {
+  mediaOnly?: true;
+  lateMedia?: true;
+};
+
 // The window of the flush an agent with debounce OFF still takes for a file on its way: the flush
 // then defers until the file can be read (`MEDIA_DEFER_*` in ./handler.ts).
 const MEDIA_WAIT_WINDOW_SECONDS = 5;
@@ -37,7 +43,7 @@ export async function resolveArmConfig(params: {
   threadId: string;
   mediaArriving: boolean;
   base?: PrismaClient;
-}): Promise<DebounceConfig | null> {
+}): Promise<ArmConfig | null> {
   const base = params.base ?? basePrisma;
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
     const inbox = await db.inbox.findUnique({
@@ -57,7 +63,8 @@ export async function resolveArmConfig(params: {
     });
     if (!agent?.enabled) return null;
     const cfg = readDebounceConfig(agent.settings);
-    if (cfg.enabled) return cfg;
+    if (cfg.enabled)
+      return params.mediaArriving ? { ...cfg, lateMedia: true } : cfg;
     if (!config.debounceWorker.enabled) return null;
     if (!params.mediaArriving) {
       const live = await db.schedulerJob.findFirst({
@@ -66,14 +73,21 @@ export async function resolveArmConfig(params: {
           dedupeKey: debounceDedupeKey(params.threadId),
           status: { in: ["PENDING", "CLAIMED"] },
         },
-        select: { id: true },
+        select: { payload: true },
       });
       if (!live) return null;
+      // NOTE: An ordinary burst queued while debounce was on: the message joins it as one more
+      // message of that burst, in the agent's own window and never as a media wait. Answered apart,
+      // it would supersede a flush in flight and leave the burst's other messages with no flush.
+      if (!(readMediaOnly(live.payload) || readLateMedia(live.payload)))
+        return { ...cfg, enabled: true };
     }
     return {
       ...cfg,
       enabled: true,
       windowSeconds: MEDIA_WAIT_WINDOW_SECONDS,
+      mediaOnly: true,
+      lateMedia: true,
     };
   });
 }
@@ -122,6 +136,37 @@ export function readDeferringSince(payload: unknown): number | null {
 export function readMediaWaitSince(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).mediaWaitSince;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+// Whether the job was armed only to wait for a file, by an agent whose debounce was off at the time.
+// Read from the job, never from the agent's setting of the moment the flush runs.
+export function readMediaOnly(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as Record<string, unknown>).mediaOnly === true;
+}
+
+// The retry a deferring flush asked for while its row was still CLAIMED (`stampDeferral`), for the
+// claim that noted it: a note left by an earlier claim of the row is not this run's retry.
+function readRetryAt(payload: unknown, claimSeq: number): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  if (p.retryClaim !== claimSeq) return null;
+  return typeof p.retryAt === "number" && Number.isFinite(p.retryAt)
+    ? p.retryAt
+    : null;
+}
+
+// Whether the job holds a file on its way since it was armed: a message of the conversation joins it
+// instead of taking a direct turn. Apart from `mediaOnly`, which only says whether the burst is capped.
+export function readLateMedia(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as Record<string, unknown>).lateMedia === true;
+}
+
+export function readLiveSince(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).liveSince;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
@@ -189,6 +234,9 @@ export async function stampDeferral(params: {
   threadId: string;
   since: number;
   field?: "deferringSince" | "mediaWaitSince";
+  // The claim that is deferring. A flush retired while it ran (its row's claim moved on, or the row
+  // is another one) stamps nothing: the row it would find belongs to a newer burst.
+  job?: { id: bigint; claimSeq: number };
   // The retry the deferring flush asks for. A message that re-armed the row during the flush already
   // set its own runAt, which the flush's reschedule can no longer touch (it needs the row CLAIMED), so
   // a later one is brought forward to this here.
@@ -204,22 +252,40 @@ export async function stampDeferral(params: {
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
       const row = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { id: true, payload: true, status: true, runAt: true },
+        select: {
+          id: true,
+          payload: true,
+          status: true,
+          runAt: true,
+          claimSeq: true,
+        },
       });
       // No row means the flush that is deferring has already been completed or retired by somebody
       // else; there is nothing whose deadline this would be.
       if (!row) return;
+      if (
+        params.job &&
+        (row.id !== params.job.id || row.claimSeq !== params.job.claimSeq)
+      )
+        return;
       const forward =
         params.retryAt !== undefined &&
         row.status === "PENDING" &&
         row.runAt.getTime() > params.retryAt.getTime();
-      if (read(row.payload) !== null && !forward) return;
-      await db.schedulerJob.update({
-        where: { id: row.id },
+      // A row still CLAIMED keeps the retry in its payload: a message that re-arms it before
+      // the flush's own reschedule lands reads it there (`armDebounce`).
+      const noted = params.retryAt !== undefined && row.status === "CLAIMED";
+      if (read(row.payload) !== null && !forward && !noted) return;
+      // NOTE: Retiring the row does not take the arm lock: the write names the claim it read.
+      await db.schedulerJob.updateMany({
+        where: { id: row.id, claimSeq: row.claimSeq },
         data: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
             [field]: read(row.payload) ?? params.since,
+            ...(noted
+              ? { retryAt: params.retryAt?.getTime(), retryClaim: row.claimSeq }
+              : {}),
           },
           ...(forward ? { runAt: params.retryAt } : {}),
         },
@@ -236,6 +302,8 @@ export async function clearDeferral(params: {
   tenantId: bigint;
   threadId: string;
   field?: "deferringSince" | "mediaWaitSince";
+  // The claim that settled the burst: a row that has moved on to another claim keeps its stamp.
+  job?: { id: bigint; claimSeq: number };
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
@@ -247,15 +315,20 @@ export async function clearDeferral(params: {
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
       const row = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { id: true, payload: true },
+        select: { id: true, payload: true, claimSeq: true },
       });
       if (!row || read(row.payload) === null) return;
+      if (
+        params.job &&
+        (row.id !== params.job.id || row.claimSeq !== params.job.claimSeq)
+      )
+        return;
       const { [field]: _dropped, ...rest } = row.payload as Record<
         string,
         unknown
       >;
-      await db.schedulerJob.update({
-        where: { id: row.id },
+      await db.schedulerJob.updateMany({
+        where: { id: row.id, claimSeq: row.claimSeq },
         data: { payload: rest as Prisma.InputJsonObject },
       });
     }),
@@ -266,7 +339,7 @@ export interface ArmDebounceParams {
   tenantId: bigint;
   threadId: string;
   agentBotId: number | null;
-  cfg: DebounceConfig;
+  cfg: ArmConfig;
   // Chatwoot id of the inbound message arming this flush (see readLastMessageId). Optional: an arm
   // without it keeps the burst's previous high-water mark.
   lastMessageId?: number;
@@ -291,7 +364,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
     withEntityLock(db, `debounce-arm:${threadId}`, async () => {
       const existing = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { status: true, payload: true, runAt: true },
+        select: { status: true, payload: true, runAt: true, claimSeq: true },
       });
       // The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
       // `burstStartedAt`, which a claim in flight resets: it measures how long the burst has waited
@@ -310,6 +383,13 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       // opens a new burst. Every question below reads that one fact, so they cannot answer it
       // differently.
       const continuingBurst = existing?.status === "PENDING";
+      // When the live row was first armed. Unlike `burstStartedAt`, a re-arm of a claimed row keeps
+      // it: the flush reads it to tell a job armed before this process started.
+      const liveSince =
+        (stillLive
+          ? (readLiveSince(existing.payload) ??
+            readBurstStart(existing.payload))
+          : null) ?? nowMs;
       const prevBurst = continuingBurst
         ? readBurstStart(existing.payload)
         : null;
@@ -339,24 +419,48 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
           : ownReactionFrom === null
             ? prevReactionFrom
             : Math.min(prevReactionFrom, ownReactionFrom);
+      // A burst this message joins keeps the mode it was armed with (a PENDING row, or a claimed one
+      // already waiting for a file): the joining delivery's config does not turn an ordinary burst
+      // into a media-only one.
+      const sameBurst =
+        continuingBurst ||
+        (stillLive &&
+          (mediaWaitSince !== null || readLateMedia(existing.payload)));
+      const mediaOnly =
+        (stillLive && readMediaOnly(existing.payload)) ||
+        (!sameBurst && cfg.mediaOnly === true);
+      const lateMedia =
+        cfg.lateMedia === true ||
+        (stillLive && readLateMedia(existing.payload));
+      // The retry the flush in flight noted on the row it still holds. Already due is honoured too:
+      // the last round before the ceiling can be milliseconds ahead.
+      const notedRetry =
+        existing?.status === "CLAIMED" && mediaWaitSince !== null
+          ? readRetryAt(existing.payload, existing.claimSeq)
+          : null;
       // A burst waiting for a file keeps its next retry: a message pushing it out by the window could
-      // carry it past the media deadline.
+      // carry it past the media deadline. Only a PENDING row's time is a retry: a CLAIMED row's is
+      // when the run in flight came due, and the flush brings the re-armed row forward itself.
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
-        mediaWaitSince !== null && existing?.runAt
+        mediaWaitSince !== null && existing?.status === "PENDING"
           ? existing.runAt.getTime()
           : Number.POSITIVE_INFINITY,
+        notedRetry ?? Number.POSITIVE_INFINITY,
       );
       const payload = {
         threadId,
         agentBotId,
         burstStartedAt,
+        liveSince,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
         ...(reactionArmed ? { reactionArmed: true } : {}),
         ...(reactionFrom !== null ? { reactionFrom } : {}),
         ...(deferringSince !== null ? { deferringSince } : {}),
         ...(mediaWaitSince !== null ? { mediaWaitSince } : {}),
+        ...(mediaOnly ? { mediaOnly: true } : {}),
+        ...(lateMedia ? { lateMedia: true } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {
         tenantId,

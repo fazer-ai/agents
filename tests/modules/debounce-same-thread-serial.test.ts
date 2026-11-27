@@ -518,7 +518,8 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     await suDb.$executeRawUnsafe(
       `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND dedupe_key = '${key}'`,
     );
-    await suDb.schedulerJob.create({
+    // A re-arm rewrites the row in place: same id, same claim sequence as the run in flight.
+    const rearmed = await suDb.schedulerJob.create({
       data: {
         tenantId,
         kind: "DEBOUNCE",
@@ -531,6 +532,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
           burstStartedAt: Date.now(),
         },
       },
+      select: { id: true, claimSeq: true },
     });
 
     // The claimed burst began earlier than the re-armed row's, and the deadline is the claimed one.
@@ -539,7 +541,10 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     let out: Awaited<ReturnType<typeof flushDebounceJob>>;
     try {
       out = await flushDebounceJob({
-        job: jobFor(jobIdA, CONV_CARIMBO, claimedBurst),
+        job: {
+          ...jobFor(rearmed.id, CONV_CARIMBO, claimedBurst),
+          claimSeq: rearmed.claimSeq,
+        },
         base: appDb,
         deps: {
           makeModel: () => overlapModel(10, { active: 0, max: 0 }, []),

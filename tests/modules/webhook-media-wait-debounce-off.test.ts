@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -9,6 +9,8 @@ import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import {
   clearMediaAnnotations,
+  conversationMediaArriving,
+  mediaArrivingHold,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -16,9 +18,13 @@ import {
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  processChatwootDelivery,
+  runEagerMedia,
+} from "@/modules/chatwoot/webhook";
 import {
   armDebounce,
+  clearDeferral,
   debounceDedupeKey,
   resolveArmConfig,
   stampDeferral,
@@ -64,8 +70,12 @@ let instanceId = 0n;
 let inboxDbId = 0n;
 let nextId = 1;
 
+// Called when the model is invoked: what a test reads while the turn is still running.
+let duringTurn: (() => void) | null = null;
+
 class CountingModel extends BaseChatModel {
   calls = 0;
+  seen: string[] = [];
   constructor() {
     super({});
   }
@@ -75,13 +85,28 @@ class CountingModel extends BaseChatModel {
   override bindTools(_tools: BindToolsInput[]) {
     return this;
   }
-  async _generate(): Promise<ChatResult> {
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
     this.calls++;
+    duringTurn?.();
+    for (const m of messages)
+      if (m.type === "human" && typeof m.content === "string")
+        this.seen.push(m.content);
     return {
       generations: [{ text: "ok", message: new AIMessage("ok") }],
     };
   }
 }
+
+// The smallest header an image reader accepts: signature plus an 800x600 IHDR.
+const PNG = (() => {
+  const b = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write("IHDR", 12, "ascii");
+  b.writeUInt32BE(800, 16);
+  b.writeUInt32BE(600, 20);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+})();
 
 const client = (async () =>
   ({
@@ -90,6 +115,10 @@ const client = (async () =>
     sendPrivateNote: async () => ({}),
     toggleTyping: async () => ({}),
     updateAttachmentMeta: async () => ({}),
+    downloadAttachment: async () => ({
+      bytes: PNG,
+      contentType: "image/png",
+    }),
   }) as unknown as ChatwootClient) as never;
 
 // What `transcribeInboundAudio` does: on a 404 past the window it marks the note and throws; with
@@ -129,24 +158,45 @@ async function seedConversation(convId: number) {
 
 async function deliver(
   convId: number,
-  opts: { audio: boolean; storage?: "uploading" | "stored" },
+  opts: {
+    audio: boolean;
+    storage?: "uploading" | "stored";
+    // Stands in for the transcription call, to hold it open.
+    transcribe?: (p: {
+      tenantId: bigint;
+      instanceId: bigint;
+      messageId: number;
+    }) => Promise<string | null>;
+    // The Chatwoot message id, to deliver the same message twice.
+    messageId?: number;
+    // An image instead of a voice note, read through this provider call.
+    visionFetch?: typeof fetch;
+  },
 ) {
-  const messageId = 7000 + nextId++;
+  const messageId = opts.messageId ?? 7000 + nextId++;
   const n = normalizeChatwootEvent({
     event: "message_created",
     id: messageId,
     content: opts.audio ? "" : "e tem horário amanhã?",
     message_type: "incoming",
     private: false,
-    attachments: opts.audio
+    attachments: opts.visionFetch
       ? [
           {
             id: 90_000 + messageId,
-            file_type: "audio",
-            data_url: `https://chat.wait.example/rails/active_storage/blobs/${messageId}.ogg`,
+            file_type: "image",
+            data_url: `https://chat.wait.example/rails/active_storage/blobs/${messageId}.png`,
           },
         ]
-      : [],
+      : opts.audio
+        ? [
+            {
+              id: 90_000 + messageId,
+              file_type: "audio",
+              data_url: `https://chat.wait.example/rails/active_storage/blobs/${messageId}.ogg`,
+            },
+          ]
+        : [],
     conversation: {
       id: convId,
       inbox_id: CHATWOOT_INBOX_ID,
@@ -183,7 +233,9 @@ async function deliver(
     deps: {
       makeClient: client,
       makeModel: () => model,
-      transcribe: transcriber(opts.storage ?? "stored") as never,
+      visionFetch: opts.visionFetch,
+      transcribe: (opts.transcribe ??
+        transcriber(opts.storage ?? "stored")) as never,
     },
   });
   return { model };
@@ -322,6 +374,288 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     expect(model.calls).toBeGreaterThan(0);
   });
 
+  // The note is downloaded and the provider is still transcribing it when the text arrives.
+  test("a text sent while a voice note is being transcribed waits with it", async () => {
+    await seedConversation(9829);
+    let finish: (words: string) => void = () => {};
+    const transcribing = new Promise<string>((r) => {
+      finish = r;
+    });
+    let started: () => void = () => {};
+    const reached = new Promise<void>((r) => {
+      started = r;
+    });
+    const note = deliver(9829, {
+      audio: true,
+      transcribe: () => {
+        started();
+        return transcribing;
+      },
+    });
+    await reached;
+
+    const text = await deliver(9829, { audio: false });
+    finish(WORDS);
+    const voice = await note;
+
+    expect(text.model.calls).toBe(0);
+    expect(voice.model.calls).toBe(0);
+    expect(await flushRows(9829)).toBe(1);
+  });
+
+  test("a text sent while an image is being read waits with it", async () => {
+    await seedConversation(9832);
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { settings: true },
+    });
+    const stt = (before.settings as { stt: { credentialRef: string } }).stt;
+    await suDb.agent.updateMany({
+      where: { tenantId },
+      data: {
+        settings: {
+          ...(before.settings as object),
+          vision: {
+            enabled: true,
+            provider: "openai",
+            credentialRef: stt.credentialRef,
+          },
+        },
+      },
+    });
+    try {
+      let finish: () => void = () => {};
+      const reading = new Promise<void>((r) => {
+        finish = r;
+      });
+      let started: () => void = () => {};
+      const reached = new Promise<void>((r) => {
+        started = r;
+      });
+      const image = deliver(9832, {
+        audio: false,
+        visionFetch: (async () => {
+          started();
+          await reading;
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "um comprovante" } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await reached;
+
+      const text = await deliver(9832, { audio: false });
+      finish();
+      await image;
+
+      expect(text.model.calls).toBe(0);
+      expect(await flushRows(9832)).toBe(1);
+    } finally {
+      await suDb.agent.updateMany({
+        where: { tenantId },
+        data: { settings: before.settings ?? {} },
+      });
+    }
+  });
+
+  // The flush of an ordinary burst is running when debounce is turned off and a text arrives: the
+  // flush will stand down for it, so the text has to leave a flush behind.
+  test("a text that arrives during the flush of an ordinary burst leaves a flush for it", async () => {
+    await seedConversation(9833);
+    const threadId = `${tenantId}:${instanceId}:9833`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+        },
+      },
+    });
+
+    const { model } = await deliver(9833, { audio: false });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true, runAt: true },
+    });
+    expect(model.calls).toBe(0);
+    expect(row.runAt.getTime()).toBeGreaterThan(Date.now());
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+  });
+
+  // An ordinary burst armed for a late file is on its first retry when debounce is turned off and a
+  // text joins it: the burst keeps its cap.
+  test("an ordinary burst on its first retry for a late file stays ordinary when a text joins", async () => {
+    const threadId = `${tenantId}:${instanceId}:9830`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+          lateMedia: true,
+        },
+      },
+    });
+    const joining = await resolveArmConfig({
+      tenantId,
+      instanceId,
+      chatwootInboxId: CHATWOOT_INBOX_ID,
+      threadId,
+      mediaArriving: false,
+      base: appDb,
+    });
+    if (!joining) throw new Error("unreachable: the live row holds a file");
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: joining,
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(joining.mediaOnly).toBe(true);
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+    expect(row.payload).toHaveProperty("lateMedia", true);
+  });
+
+  // The flush that settled a burst clears its own wait stamp, never one a newer claim left.
+  test("a flush that settles after its claim moved on leaves the newer wait stamp alone", async () => {
+    const threadId = `${tenantId}:${instanceId}:9831`;
+    const since = Date.now() - 3_000;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: since,
+          mediaWaitSince: since,
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const stamp = async () =>
+      (
+        (
+          await suDb.schedulerJob.findFirstOrThrow({
+            where: { id: row.id },
+            select: { payload: true },
+          })
+        ).payload as { mediaWaitSince?: number }
+      ).mediaWaitSince;
+
+    await clearDeferral({
+      tenantId,
+      threadId,
+      field: "mediaWaitSince",
+      job: { id: row.id, claimSeq: row.claimSeq - 1 },
+      base: appDb,
+    });
+    const afterStale = await stamp();
+    await clearDeferral({
+      tenantId,
+      threadId,
+      field: "mediaWaitSince",
+      job: row,
+      base: appDb,
+    });
+
+    expect(afterStale).toBe(since);
+    expect(await stamp()).toBeUndefined();
+  });
+
+  // The file was read: the delivery's own mark is not a reason to queue a reply that is ready.
+  test("a voice note read at arrival lets go of the conversation when it takes the direct turn", async () => {
+    await seedConversation(9827);
+    let heldDuringTurn: boolean | null = null;
+    duringTurn = () => {
+      heldDuringTurn = conversationMediaArriving(tenantId, instanceId, 9827);
+    };
+    const { model } = await deliver(9827, {
+      audio: true,
+      storage: "stored",
+    }).finally(() => {
+      duringTurn = null;
+    });
+    // A text right after that reply is not queued behind a file that was read.
+    const next = await deliver(9827, { audio: false });
+
+    expect(await flushRows(9827)).toBe(0);
+    expect(model.calls).toBeGreaterThan(0);
+    expect(next.model.calls).toBeGreaterThan(0);
+    // The delivery let go when it chose the direct turn, not when the turn ended.
+    expect(heldDuringTurn as boolean | null).toBe(false);
+  });
+
+  // The claimed row is re-armed as a new burst, and still says when the row was first armed.
+  test("a re-arm of a claimed row keeps when the row was first armed", async () => {
+    const threadId = `${tenantId}:${instanceId}:9828`;
+    const first = Date.now() - 30_000;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: { threadId, agentBotId: AGENT_BOT_ID, burstStartedAt: first },
+      },
+    });
+    const arm = () =>
+      armDebounce({
+        tenantId,
+        threadId,
+        agentBotId: AGENT_BOT_ID,
+        cfg: {
+          enabled: true,
+          windowSeconds: 5,
+          maxMessagesPerBurst: 20,
+          maxWindowSeconds: 60,
+        },
+        base: appDb,
+      });
+    const read = async () =>
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+          select: { payload: true },
+        })
+      ).payload as { liveSince: number; burstStartedAt: number };
+
+    await arm();
+    const once = await read();
+    await arm();
+    const twice = await read();
+
+    expect(once.liveSince).toBe(first);
+    expect(once.burstStartedAt).toBeGreaterThan(first);
+    expect(twice.liveSince).toBe(first);
+  });
+
   // An agent with debounce on arms with its own window: the media wait never stands in for it.
   test("debounce on arms with the agent's own window", async () => {
     const before = await suDb.agent.findFirstOrThrow({
@@ -344,6 +678,18 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         base: appDb,
       });
       expect(cfg?.windowSeconds).toBe(30);
+      // The arm still says a file is on its way: debounce can be turned off before the flush.
+      expect(cfg?.lateMedia).toBe(true);
+      expect(cfg?.mediaOnly).toBeUndefined();
+      const plain = await resolveArmConfig({
+        tenantId,
+        instanceId,
+        chatwootInboxId: CHATWOOT_INBOX_ID,
+        threadId: `${tenantId}:${instanceId}:9805`,
+        mediaArriving: false,
+        base: appDb,
+      });
+      expect(plain?.lateMedia).toBeUndefined();
     } finally {
       await suDb.agent.updateMany({
         where: { tenantId },
@@ -365,6 +711,13 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       });
       expect(await flushRows(9806)).toBe(0);
       expect(model.calls).toBeGreaterThan(0);
+      // The direct turn renders the note as late too, never as inaudible.
+      expect(model.seen.join("\n")).toContain(
+        "a transcrição não ficou pronta a tempo",
+      );
+      expect(model.seen.join("\n")).not.toContain("não audível");
+      // The delivery armed nothing, and let go of the conversation all the same.
+      expect(conversationMediaArriving(tenantId, instanceId, 9806)).toBe(false);
     } finally {
       config.debounceWorker.enabled = saved;
     }
@@ -446,6 +799,664 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     });
     expect(row.runAt.getTime()).toBe(retryAt.getTime());
     expect(row.payload).toHaveProperty("mediaWaitSince", since);
+  });
+
+  test("the flush a debounce-off agent arms for a late file is marked as armed for media only", async () => {
+    await seedConversation(9811);
+    await deliver(9811, { audio: true, storage: "uploading" });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9811`),
+      },
+      select: { payload: true },
+    });
+    expect(row.payload).toHaveProperty("mediaOnly", true);
+  });
+
+  // Queued while debounce was on, with no file on its way: not a wait this text joins.
+  test("a text joins an ordinary burst queued before debounce was turned off as an ordinary message", async () => {
+    await seedConversation(9812);
+    const threadId = `${tenantId}:${instanceId}:9812`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 90_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+        },
+      },
+    });
+
+    const { model } = await deliver(9812, { audio: false });
+
+    // Answered apart, it would supersede the burst's flush and leave its other messages unanswered.
+    expect(model.calls).toBe(0);
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+    expect(row.payload).not.toHaveProperty("lateMedia");
+  });
+
+  test("a text joins a burst that debounce armed and that is now waiting for a file", async () => {
+    await seedConversation(9813);
+    const threadId = `${tenantId}:${instanceId}:9813`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 5_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+          mediaWaitSince: Date.now(),
+        },
+      },
+    });
+
+    const { model } = await deliver(9813, { audio: false });
+
+    expect(model.calls).toBe(0);
+    expect(await flushRows(9813)).toBe(1);
+  });
+
+  // The voice note's own delivery is still asking storage for the file and has armed nothing yet.
+  test("a text that arrives while a voice note of the conversation is still being asked for joins its wait", async () => {
+    await seedConversation(9814);
+    const earlier = mediaArrivingHold({
+      tenantId,
+      instanceId,
+      conversationId: 9814,
+    });
+    earlier.mark();
+
+    const { model } = await deliver(9814, { audio: false }).finally(
+      earlier.release,
+    );
+
+    expect(model.calls).toBe(0);
+    expect(await flushRows(9814)).toBe(1);
+  });
+
+  // The row's time is when the run in flight came due, already in the past: kept, the worker would
+  // run the next retry on its next tick.
+  test("a message that joins while a media retry runs does not bring the next retry to now", async () => {
+    const threadId = `${tenantId}:${instanceId}:9815`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 8_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 20_000,
+          mediaWaitSince: Date.now() - 10_000,
+        },
+      },
+    });
+    const before = Date.now();
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 90,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 600,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true, payload: true },
+    });
+    expect(row.runAt.getTime()).toBeGreaterThan(before);
+    expect(row.payload).toHaveProperty("mediaWaitSince");
+  });
+
+  test("a flush whose claim was retired stamps nothing on the row a newer burst armed", async () => {
+    const threadId = `${tenantId}:${instanceId}:9816`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 90_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const stamp = (claimSeq: number) =>
+      stampDeferral({
+        tenantId,
+        threadId,
+        since: Date.now() - 1_000,
+        field: "mediaWaitSince",
+        retryAt: new Date(Date.now() + 5_000),
+        job: { id: row.id, claimSeq },
+        base: appDb,
+      });
+    const read = () =>
+      suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+        select: { runAt: true, payload: true },
+      });
+
+    await stamp(row.claimSeq - 1);
+    const untouched = await read();
+    await stamp(row.claimSeq);
+    const stamped = await read();
+
+    expect(untouched.payload).not.toHaveProperty("mediaWaitSince");
+    expect(untouched.runAt.getTime()).toBeGreaterThan(Date.now() + 60_000);
+    expect(stamped.payload).toHaveProperty("mediaWaitSince");
+  });
+
+  test("a media wait stays one when a message arms it with the agent's own debounce", async () => {
+    const threadId = `${tenantId}:${instanceId}:9817`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 5_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+          mediaOnly: true,
+        },
+      },
+    });
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 15,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 60,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(row.payload).toHaveProperty("mediaOnly", true);
+  });
+
+  // Debounce was on when the burst was armed and it is already waiting for a file: a text that joins
+  // through the debounce-off path does not lift its cap.
+  test("an ordinary burst waiting for a file stays ordinary when a media-only arm joins it", async () => {
+    const threadId = `${tenantId}:${instanceId}:9818`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 5_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+          mediaWaitSince: Date.now(),
+        },
+      },
+    });
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 5,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 60,
+        mediaOnly: true,
+        lateMedia: true,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+    expect(row.payload).toHaveProperty("mediaWaitSince");
+  });
+
+  // The flush stamped its deferral and has not rescheduled yet: the row is still CLAIMED, and the
+  // message's window must not replace the retry the flush asked for.
+  test("a message that joins between the deferral stamp and the reschedule keeps the retry", async () => {
+    const threadId = `${tenantId}:${instanceId}:9819`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const retryAt = new Date(Date.now() + 5_000);
+    await stampDeferral({
+      tenantId,
+      threadId,
+      since: Date.now() - 1_000,
+      field: "mediaWaitSince",
+      retryAt,
+      job: row,
+      base: appDb,
+    });
+    const before = Date.now();
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 90,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 600,
+      },
+      base: appDb,
+    });
+
+    const after = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true },
+    });
+    expect(after.runAt.getTime()).toBe(retryAt.getTime());
+    expect(after.runAt.getTime()).toBeGreaterThan(before);
+  });
+
+  test("once the voice note's delivery has armed its flush, the conversation mark lapses", async () => {
+    await seedConversation(9820);
+    await deliver(9820, { audio: true, storage: "uploading" });
+
+    expect(await flushRows(9820)).toBe(1);
+    expect(conversationMediaArriving(tenantId, instanceId, 9820)).toBe(false);
+  });
+
+  // The claimed flush is the same burst, deferring for its file: the joining arm keeps its mode too.
+  test("an ordinary burst deferring for a file stays ordinary when a media-only arm joins mid-flush", async () => {
+    const threadId = `${tenantId}:${instanceId}:9821`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 10_000,
+          mediaWaitSince: Date.now() - 5_000,
+        },
+      },
+    });
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 5,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 60,
+        mediaOnly: true,
+        lateMedia: true,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+  });
+
+  // Asked with nothing on its way in the conversation any more: the job alone answers.
+  test("a media-only job not yet deferred is one a later text joins", async () => {
+    const threadId = `${tenantId}:${instanceId}:9822`;
+    const job = (payload: Record<string, unknown>) =>
+      suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(threadId),
+          status: "PENDING",
+          runAt: new Date(Date.now() + 5_000),
+          payload: {
+            threadId,
+            agentBotId: AGENT_BOT_ID,
+            burstStartedAt: Date.now(),
+            ...payload,
+          },
+        },
+        select: { id: true },
+      });
+    const resolve = () =>
+      resolveArmConfig({
+        tenantId,
+        instanceId,
+        chatwootInboxId: CHATWOOT_INBOX_ID,
+        threadId,
+        mediaArriving: false,
+        base: appDb,
+      });
+
+    const ordinary = await job({});
+    const withOrdinary = await resolve();
+    await suDb.schedulerJob.delete({ where: { id: ordinary.id } });
+    await job({ mediaOnly: true });
+    const withMediaOnly = await resolve();
+
+    // Joined as an ordinary message of that burst, never as a media wait.
+    expect(withOrdinary?.enabled).toBe(true);
+    expect(withOrdinary?.mediaOnly).toBeUndefined();
+    expect(withOrdinary?.lateMedia).toBeUndefined();
+    expect(withMediaOnly).toMatchObject({ mediaOnly: true, windowSeconds: 5 });
+  });
+
+  // Debounce was turned off with an ordinary burst queued, and a late voice note joined it: the row
+  // keeps its cap, and still says a file is on its way so the next text joins it.
+  test("an ordinary pending burst joined by a late file is one a later text joins", async () => {
+    const threadId = `${tenantId}:${instanceId}:9823`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 5_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+        },
+      },
+    });
+    const resolve = () =>
+      resolveArmConfig({
+        tenantId,
+        instanceId,
+        chatwootInboxId: CHATWOOT_INBOX_ID,
+        threadId,
+        mediaArriving: false,
+        base: appDb,
+      });
+    const before = await resolve();
+    // What the late file's own delivery arms with.
+    const late = await resolveArmConfig({
+      tenantId,
+      instanceId,
+      chatwootInboxId: CHATWOOT_INBOX_ID,
+      threadId,
+      mediaArriving: true,
+      base: appDb,
+    });
+    if (!late) throw new Error("unreachable: a late file always arms");
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: late,
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    // Before the late file, the row is an ordinary burst and is joined as one.
+    expect(before?.mediaOnly).toBeUndefined();
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+    expect((await resolve())?.mediaOnly).toBe(true);
+
+    // The text that joined re-arms the row with its own config, and the one after it still joins.
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 5,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 60,
+      },
+      base: appDb,
+    });
+    expect((await resolve())?.mediaOnly).toBe(true);
+  });
+
+  // The last round before the ceiling is milliseconds ahead and can be due by the time a message
+  // re-arms the claimed row.
+  test("a retry already due when a message joins is run at once, not after the window", async () => {
+    const threadId = `${tenantId}:${instanceId}:9824`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const retryAt = new Date(Date.now() + 1);
+    await stampDeferral({
+      tenantId,
+      threadId,
+      since: Date.now() - 59_000,
+      field: "mediaWaitSince",
+      retryAt,
+      job: row,
+      base: appDb,
+    });
+    await Bun.sleep(10);
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 90,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 600,
+      },
+      base: appDb,
+    });
+
+    const after = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true },
+    });
+    expect(after.runAt.getTime()).toBe(retryAt.getTime());
+  });
+
+  test("a retry noted by an earlier claim of the row is not this run's retry", async () => {
+    const threadId = `${tenantId}:${instanceId}:9825`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 5_000,
+          mediaWaitSince: Date.now() - 5_000,
+          retryAt: Date.now() - 4_000,
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET payload = payload || '{"retryClaim": ${row.claimSeq - 1}}'::jsonb WHERE id = ${row.id}`,
+    );
+    const before = Date.now();
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 90,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 600,
+      },
+      base: appDb,
+    });
+
+    const after = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true },
+    });
+    expect(after.runAt.getTime()).toBeGreaterThan(before + 60_000);
+  });
+
+  // The delivery runs the pass twice: the second reads the file and the provider hears no speech.
+  test("a second pass that reads the voice note takes the late flag back off the event", async () => {
+    await seedConversation(9826);
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: 79_826,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      attachments: [
+        {
+          id: 99_826,
+          file_type: "audio",
+          data_url:
+            "https://chat.wait.example/rails/active_storage/blobs/79826.ogg",
+        },
+      ],
+      conversation: {
+        id: 9826,
+        inbox_id: CHATWOOT_INBOX_ID,
+        status: "pending",
+        contact_inbox: { id: 89_826 },
+        meta: { assignee_type: null, assignee: null, sender: { id: 41 } },
+        channel: "Channel::Api",
+      },
+    });
+    if (!n?.message)
+      throw new Error("unreachable: the fixture is a valid event");
+    const pass = (transcribe: unknown) =>
+      runEagerMedia(tenantId, instanceId, n, appDb, {
+        conversationId: null,
+        agentId: null,
+        inboxId: inboxDbId,
+        chatwootInboxId: CHATWOOT_INBOX_ID,
+        deliveryRowId: null,
+        admission: "allowed",
+        deps: { makeClient: client, transcribe: transcribe as never },
+      });
+
+    await pass(transcriber("uploading"));
+    const afterFirst = n.message.transcriptionUnavailable;
+    await pass(
+      async (p: {
+        tenantId: bigint;
+        instanceId: bigint;
+        messageId: number;
+      }) => {
+        stashMediaAnnotation(p, { transcriptionUnavailable: false });
+        return null;
+      },
+    );
+
+    expect(afterFirst).toBe(true);
+    expect(n.message.transcriptionUnavailable).toBe(false);
+  });
+
+  test("a direct turn is told a transcription cut by the provider's time limit is late", async () => {
+    await seedConversation(9834);
+    const { model } = await deliver(9834, {
+      audio: true,
+      transcribe: async (p) => {
+        stashMediaAnnotation(p, { transcriptionTimedOut: true });
+        throw new DOMException("signal timed out", "TimeoutError");
+      },
+    });
+
+    expect(model.calls).toBeGreaterThan(0);
+    expect(model.seen.join("\n")).toContain(
+      "a transcrição não ficou pronta a tempo",
+    );
+    expect(model.seen.join("\n")).not.toContain("não audível");
+  });
+
+  // The note's update is still being read when its create finishes: one message, not two.
+  test("a voice note whose other delivery is still in flight takes the direct turn", async () => {
+    await seedConversation(9835);
+    const update = mediaArrivingHold({
+      tenantId,
+      instanceId,
+      conversationId: 9835,
+      messageId: 79_835,
+    });
+    update.mark();
+
+    const { model } = await deliver(9835, {
+      audio: true,
+      messageId: 79_835,
+    }).finally(update.release);
+
+    expect(model.calls).toBeGreaterThan(0);
+    expect(await flushRows(9835)).toBe(0);
   });
 
   test("a text message with no flush live takes the direct turn as before", async () => {

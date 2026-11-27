@@ -82,7 +82,9 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
+  type MediaArrivingHold,
   mediaAnnotationFor,
+  mediaArrivingHold,
   mediaStillArriving,
   openTranscription,
   stashMediaAnnotation,
@@ -1847,6 +1849,9 @@ export interface EagerMediaOwner {
     agentId: bigint,
     settings: unknown,
   ) => Promise<{ askedAt: number } | null>;
+  // The delivery's claim on the conversation while a file of its message is on its way: marked by
+  // the first 404 of either pass, released by the delivery itself.
+  arriving?: MediaArrivingHold;
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -2134,6 +2139,9 @@ export async function runEagerMedia(
         );
         if (sttCfg && (await admitted())) {
           const transcribe = owner.deps?.transcribe ?? transcribeInboundAudio;
+          // NOTE: Held while this delivery reads its file, a download backing off and a provider call
+          // alike: a message of the conversation that arrives meanwhile joins the wait.
+          owner.arriving?.mark();
           const text = await transcribe({
             tenantId,
             instanceId,
@@ -2169,6 +2177,12 @@ export async function runEagerMedia(
         logger.warn("stt failed (conv=%s): %s", convLabel, errMsg(err));
       } finally {
         closeTranscription();
+        const heard = mediaAnnotationFor(tenantId, instanceId, n.message.id);
+        // NOTE: On the event too, for the direct turn, which renders it and never re-reads the stash.
+        // Both values: a later pass of this delivery that read the file takes the mark back.
+        n.message.transcriptionUnavailable =
+          heard?.transcriptionUnavailable === true ||
+          heard?.transcriptionTimedOut === true;
       }
     }
   }
@@ -2201,6 +2215,7 @@ export async function runEagerMedia(
         // below, because a mutable property can change before a deferred callback reads it.
         const conversationId = n.conversationId;
         const messageId = n.message.id;
+        owner.arriving?.mark();
         const r = await extractMessageVisuals({
           tenantId,
           instanceId,
@@ -4643,6 +4658,24 @@ export async function runResolutionHooks(p: {
 export async function processChatwootDelivery(
   params: ProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
+  const arriving = mediaArrivingHold({
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    conversationId: params.normalized.conversationId,
+    messageId: params.normalized.message?.id,
+  });
+  try {
+    return await processDelivery(params, arriving);
+  } finally {
+    // NOTE: Every exit lets go: a delivery that armed nothing and answered nothing holds nothing.
+    arriving.release();
+  }
+}
+
+async function processDelivery(
+  params: ProcessChatwootParams,
+  arriving: MediaArrivingHold,
+): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
 
   // Resolved BEFORE the claim, so the route's ROLE is written by the claim itself. A separate
@@ -5691,6 +5724,7 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
+        arriving,
         // NOTE: On the responder's route the watcher IS the inbox's agent, and its gate just
         // answered: the pass's own ask would put the same question again (to the endpoint too), and
         // leave a second line.
@@ -5837,6 +5871,7 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
+        arriving,
         admission: admissionFromGate(),
         watcherPermit: (agentId, settings) =>
           observerMayObserve({ agentId }, settings),
@@ -5855,6 +5890,7 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
+        arriving,
         admission: admissionFromGate(),
         watcherPermit: (agentId, settings) =>
           observerMayObserve({ agentId }, settings),
@@ -5883,13 +5919,10 @@ export async function processChatwootDelivery(
               // Debounce off still answers through the flush while a file is on its way, since only the
               // flush can come back for it.
               const message = n.message;
-              const cfg = await resolveArmConfig({
-                tenantId: params.tenantId,
-                instanceId: params.instanceId,
-                chatwootInboxId: inboxId,
-                threadId,
-                mediaArriving:
-                  message?.id != null &&
+              // Its own file, or one an earlier message of the conversation is still asking storage for:
+              // that delivery has armed nothing yet, and this one must not overtake it.
+              const mediaArriving =
+                (message?.id != null &&
                   mediaStillArriving({
                     ...message,
                     transcriptionUnavailable: mediaAnnotationFor(
@@ -5897,7 +5930,17 @@ export async function processChatwootDelivery(
                       params.instanceId,
                       message.id,
                     )?.transcriptionUnavailable,
-                  }),
+                  })) ||
+                arriving.others();
+              // NOTE: Let go before the first await: a message that checks next must not start a wait
+              // behind a delivery that has already chosen the direct turn.
+              if (!mediaArriving) arriving.release();
+              const cfg = await resolveArmConfig({
+                tenantId: params.tenantId,
+                instanceId: params.instanceId,
+                chatwootInboxId: inboxId,
+                threadId,
+                mediaArriving,
                 base,
               });
               if (!cfg) return null;
@@ -6295,6 +6338,7 @@ export async function processChatwootDelivery(
       deliveryRowId: params.deliveryRowId,
       sleep: params.deps?.sleep,
       deps: params.deps,
+      arriving,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
       watcherPermit: (agentId, settings) =>

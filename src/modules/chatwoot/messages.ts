@@ -53,6 +53,9 @@ export interface ChatwootMessageRow {
   // Only from the stash: the arrival pass could not download the voice note, on a failure that may
   // pass, and the reply's turn tries it again.
   transcriptionUnavailable?: boolean;
+  // Set by the turn that renders it: the voice note's transcription was still running when the reply
+  // stopped waiting for it.
+  transcriptionLate?: boolean;
   // Vision extraction, read back from attachment meta (set by the eager vision pass). Null when
   // absent (vision off/failed/unsupported, or not an image/document).
   imageDescription: string | null;
@@ -432,6 +435,8 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
   return {
     text: row.content,
     transcribedText: row.transcribedText,
+    transcriptionUnavailable: row.transcriptionUnavailable,
+    transcriptionLate: row.transcriptionLate,
     imageDescription: row.imageDescription,
     extractedText: row.extractedText,
     attachmentsUnread: row.attachmentsUnread,

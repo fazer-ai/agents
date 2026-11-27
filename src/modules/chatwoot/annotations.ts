@@ -18,6 +18,9 @@ export interface MediaAnnotation {
   // The voice note's download failed on something that may pass (`isTransientAttachmentFailure`),
   // so it was never sent to the provider: the reply's turn tries it again.
   transcriptionUnavailable?: boolean;
+  // The provider call was cut by its own time limit: the note was sent and no answer came. Not a
+  // refusal and not silence, so it reads as late, and it is not sent again.
+  transcriptionTimedOut?: boolean;
   imageDescription?: string;
   extractedText?: string;
   // How many attachments the eager pass did NOT read (over the cap, or failed): the model's move is
@@ -40,6 +43,12 @@ const store = new Map<string, { at: number; note: MediaAnnotation }>();
 // message reuses it instead of paying the provider again.
 const fileReads = new Map<string, { at: number; value: unknown }>();
 let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+// When this store came to exist. A wait that began before it has marks this process never held.
+let bornAt = Date.now();
+
+export function mediaAnnotationsBornAt(): number {
+  return bornAt;
+}
 
 function keyOf(tenantId: bigint, instanceId: bigint, messageId: number) {
   return `${tenantId}:${instanceId}:${messageId}`;
@@ -149,6 +158,8 @@ export function overlayMediaAnnotations(
     // marked.
     if (hit.note.transcriptionUnavailable !== undefined && !row.transcribedText)
       row.transcriptionUnavailable = hit.note.transcriptionUnavailable;
+    if (hit.note.transcriptionTimedOut && !row.transcribedText)
+      row.transcriptionLate = true;
     // NOTE: the vision fields are aggregates, so "meta wins" inverts. The write-back is per
     // attachment, so a page with one of two meta writes landed carries a partial description that
     // `??=` would keep. The stash is written once by the pass that produced all of them (idempotent
@@ -205,6 +216,28 @@ export function transcriptionOpen(
   return openTranscriptions.has(keyOf(tenantId, instanceId, messageId));
 }
 
+// The provider's answer is in for this note: words, nothing usable, or no answer inside its time
+// limit. None of the three is asked for again by an automatic read.
+export function audioSettled(note: MediaAnnotation | null): boolean {
+  return Boolean(
+    note?.transcribedText ||
+      note?.transcriptionEmpty ||
+      note?.transcriptionTimedOut,
+  );
+}
+
+// A transcription in flight that has no result yet. A duplicate delivery opens one again for a note
+// whose result is already stashed: that note is settled, heard or not.
+export function transcriptionPending(
+  tenantId: bigint,
+  instanceId: bigint,
+  messageId: number,
+): boolean {
+  if (!transcriptionOpen(tenantId, instanceId, messageId)) return false;
+  const note = mediaAnnotationFor(tenantId, instanceId, messageId);
+  return !audioSettled(note);
+}
+
 // Announces a transcription in flight for a message. The returned function closes it, once.
 export function openTranscription(target: {
   tenantId: bigint;
@@ -239,7 +272,7 @@ export async function awaitOpenTranscriptions(
   const open = messageIds
     .filter((id) => {
       const note = mediaAnnotationFor(tenantId, instanceId, id);
-      return !note?.transcribedText && !note?.transcriptionEmpty;
+      return !audioSettled(note);
     })
     .map((id) => openTranscriptions.get(keyOf(tenantId, instanceId, id)))
     .filter((e): e is { count: number; waiters: Set<() => void> } => !!e);
@@ -270,11 +303,87 @@ export async function awaitOpenTranscriptions(
   return true;
 }
 
+// How long a conversation still counts as having a file on its way after the delivery that said so
+// let go: its flush is armed by then, and a message landing in between has to see it.
+// The message each delivery in flight is reading, per conversation it holds (null: no message id).
+const arrivingConversations = new Map<string, Array<number | null>>();
+
+// A delivery's claim that a file of its message is on its way. The delivery owns it from the first
+// 404 to its own exit: no reader of a single file can end it, and another delivery's is its own.
+// There is no grace after the exit: by then the delivery's flush row is committed and says the same.
+export interface MediaArrivingHold {
+  // Whether a delivery of ANOTHER message of the conversation holds it. The owner's own mark is left
+  // out, and so is a second delivery of the same message (a create and its update overlap): the
+  // message's file is judged by what its own pass found. A delivery that finds others joins their
+  // wait and holds the conversation too, so the one it waits behind cannot overtake it before its
+  // row lands.
+  others(): boolean;
+  // This delivery is reading its message's file. Counted once.
+  mark(): void;
+  // The delivery armed its flush, chose its turn, or ended. Counted once, and nothing before `mark`.
+  release(): void;
+}
+
+export function mediaArrivingHold(target: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number | null;
+  messageId?: number | null;
+}): MediaArrivingHold {
+  const { conversationId } = target;
+  if (conversationId === null)
+    return { mark() {}, release() {}, others: () => false };
+  const k = keyOf(target.tenantId, target.instanceId, conversationId);
+  const messageId = target.messageId ?? null;
+  let holding = false;
+  let released = false;
+  const mark = () => {
+    if (holding || released) return;
+    holding = true;
+    arrivingConversations.set(k, [
+      ...(arrivingConversations.get(k) ?? []),
+      messageId,
+    ]);
+  };
+  return {
+    others() {
+      const held = arrivingConversations.get(k) ?? [];
+      const same = held.filter((id) => id === messageId).length;
+      // Without a message id nothing says two holds are the same message: only its own is left out.
+      const mine = messageId === null ? (holding ? 1 : 0) : same;
+      if (held.length - mine > 0) mark();
+      return held.length - mine > 0;
+    },
+    mark,
+    release() {
+      if (released) return;
+      released = true;
+      if (!holding) return;
+      holding = false;
+      const held = [...(arrivingConversations.get(k) ?? [])];
+      const at = held.indexOf(messageId);
+      if (at >= 0) held.splice(at, 1);
+      if (held.length > 0) arrivingConversations.set(k, held);
+      else arrivingConversations.delete(k);
+    },
+  };
+}
+
+export function conversationMediaArriving(
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+): boolean {
+  return arrivingConversations.has(keyOf(tenantId, instanceId, conversationId));
+}
+
 // Test isolation only — production never clears the store wholesale (the TTL sweep does).
 export function clearMediaAnnotations(): void {
   store.clear();
   fileReads.clear();
   openTranscriptions.clear();
+  arrivingConversations.clear();
+  bornAt = Date.now();
   if (sweepTimer) {
     clearTimeout(sweepTimer);
     sweepTimer = undefined;

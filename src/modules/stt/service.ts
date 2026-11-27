@@ -6,6 +6,7 @@ import { shareAbortableInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
+  audioSettled,
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -94,6 +95,8 @@ export interface TranscribeInboundParams {
   flow?: FlowContext;
   // The caller's deadline: it aborts the download and the provider call in flight.
   signal?: AbortSignal;
+  // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
+  downloadRetryUntil?: number;
 }
 
 // Downloads, transcribes, and writes the transcription back to Chatwoot. Returns the transcription
@@ -115,8 +118,7 @@ export async function transcribeInboundAudio(
     params.instanceId,
     params.messageId,
   );
-  if (stashed?.transcribedText) return stashed.transcribedText;
-  if (stashed?.transcriptionEmpty) return null;
+  if (audioSettled(stashed)) return stashed?.transcribedText ?? null;
   return shareAbortableInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
     (signal) => transcribeOnce({ ...params, signal }),
@@ -221,7 +223,9 @@ async function transcribeOnce(
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
       signal: params.signal,
-      // A flush that stops waiting while this backoff runs still sees the note as on its way.
+      retryUntil: params.downloadRetryUntil,
+      // A flush that stops waiting while this backoff runs still sees the note as on its way, and so
+      // does a message that arrives in the conversation meanwhile.
       onMissing: () =>
         stashMediaAnnotation(target, { transcriptionUnavailable: true }),
     }));
@@ -270,7 +274,19 @@ async function transcribeOnce(
         fetchImpl: params.deps?.fetchImpl ?? fetch,
         signal: params.signal,
       }),
-  );
+  ).catch((err: unknown) => {
+    // NOTE: The provider's own time limit cut the call: the note was sent and nobody answered in
+    // time, which the reply reports as late and never as inaudible. A caller that ran out of its own
+    // budget settles nothing: the next read, with a fresh budget, sends the note.
+    if (
+      err instanceof Error &&
+      err.name === "TimeoutError" &&
+      !params.signal?.aborted
+    )
+      stashMediaAnnotation(target, { transcriptionTimedOut: true });
+    throw err;
+  });
+
   const text = cleanTranscription(result.text);
   if (!text) {
     stashMediaAnnotation(

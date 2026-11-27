@@ -1902,7 +1902,7 @@ export async function buildToolset(
       // NOTE: The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,
-      onNoEffect: scopedNoEffect(ctx.onNoEffect),
+      onNoEffect: ctx.onNoEffect,
       // NOTE: A caller with its own record of the turn (the observation tick) keeps it. Every other
       // turn gets the write as its own `tool` line, so `outsideAllowed` under `accept` is counted on
       // a responder and a follow-up turn too, as the setting promises. Counts and operator titles
@@ -2571,6 +2571,7 @@ export interface GraphBuildDeps {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
+  reviewsCall?: (name: string) => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2731,6 +2732,7 @@ export async function buildModelAndGraph(
     onReplyRevised: deps.onReplyRevised,
     recoversReply: deps.recoversReply,
     reviewCall: deps.reviewCall,
+    reviewsCall: deps.reviewsCall,
     reviewTurnReply: deps.reviewTurnReply,
     turnReviewHalted: deps.turnReviewHalted,
     clientToolNames: deps.clientToolNames,

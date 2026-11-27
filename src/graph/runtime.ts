@@ -1269,6 +1269,7 @@ async function runTurnBody(
     // fence admits a call once this very turn handed the conversation over. Only the reply, which
     // nobody reads after a transfer, skips the review.
     reviewCall: turnReview?.reviewCall,
+    reviewsCall: turnReview?.reviewsCall,
     reviewTurnReply: turnReview
       ? (turn, reply, opts) =>
           handoffState.completed

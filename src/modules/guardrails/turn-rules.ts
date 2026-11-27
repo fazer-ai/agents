@@ -12,14 +12,19 @@ export interface TurnRulesRequest {
   text: string;
 }
 
-export type TurnRulesProgress = { testing: number } | { match: number };
+export type TurnRulesProgress =
+  | { testing: number }
+  | { match: number }
+  | { failed: number };
 
-// `match` and `timeout` carry the index of the pattern in the list given. A timeout with index -1
-// means the thread never started or failed before testing anything.
+// `match`, `timeout` and `error` carry the index of the pattern in the list given. A timeout with
+// index -1 means the thread never started or failed before testing anything. `error` is the engine
+// refusing to run a pattern that compiles: like a timeout, the reply was not checked.
 export type TurnRulesVerdict =
   | { kind: "match"; index: number }
   | { kind: "none" }
-  | { kind: "timeout"; index: number };
+  | { kind: "timeout"; index: number }
+  | { kind: "error"; index: number };
 
 // The budget of one review, all rules together. A pattern a person can reasonably write answers in
 // well under a millisecond. The rest is the thread starting. The reply is matched whole, however
@@ -61,6 +66,10 @@ export function firstTurnRuleMatch(
     worker.onmessage = (ev: MessageEvent<TurnRulesProgress>) => {
       if ("testing" in ev.data) {
         testing = ev.data.testing;
+        return;
+      }
+      if ("failed" in ev.data) {
+        finish({ kind: "error", index: ev.data.failed });
         return;
       }
       finish(

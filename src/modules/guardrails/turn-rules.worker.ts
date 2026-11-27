@@ -11,13 +11,23 @@ self.onmessage = (ev: MessageEvent<TurnRulesRequest>) => {
   let match = -1;
   for (const [index, source] of patterns.entries()) {
     self.postMessage({ testing: index } satisfies TurnRulesProgress);
+    let pattern: RegExp;
     try {
-      if (new RegExp(source, flags).test(text)) {
+      pattern = new RegExp(source, flags);
+    } catch {
+      // A pattern that does not compile matches nothing: the reader already dropped those.
+      continue;
+    }
+    try {
+      if (pattern.test(text)) {
         match = index;
         break;
       }
     } catch {
-      // A pattern that does not compile matches nothing: the reader already dropped those.
+      // The engine gave up on a pattern that compiles: the reply was not checked against this
+      // rule, which is not the same as not matching it.
+      self.postMessage({ failed: index } satisfies TurnRulesProgress);
+      return;
     }
   }
   self.postMessage({ match } satisfies TurnRulesProgress);

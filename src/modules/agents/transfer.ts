@@ -3152,7 +3152,61 @@ function renameNativeToolKeys(
     }
     if (touched) out = { ...out, [key]: entries };
   }
-  return renameDecisionActionTools(out, stored);
+  return renameTurnRuleTools(
+    renameDecisionActionTools(out, stored),
+    stored,
+    customToolNames,
+  );
+}
+
+// A turn review rule names the tool that excuses the reply (`unlessTool`) by the name the model
+// calls it. It follows a tool the import stored under another name, and a native's retired name,
+// or the rule fires on a turn whose tool ran.
+export function renameTurnRuleTools(
+  bag: Record<string, unknown>,
+  stored: ReadonlyMap<string, string>,
+  customToolNames: ReadonlySet<string>,
+): Record<string, unknown> {
+  const guardrails = bag.guardrails;
+  if (
+    !guardrails ||
+    typeof guardrails !== "object" ||
+    Array.isArray(guardrails)
+  )
+    return bag;
+  const review = (guardrails as Record<string, unknown>).turnReview;
+  if (!review || typeof review !== "object" || Array.isArray(review))
+    return bag;
+  const rules = (review as Record<string, unknown>).rules;
+  if (!Array.isArray(rules)) return bag;
+  const byModelName = new Map(
+    [...stored].map(([from, to]) => [
+      normalizeToolName(from),
+      normalizeToolName(to),
+    ]),
+  );
+  let touched = false;
+  const next = rules.map((rule) => {
+    const tool =
+      rule && typeof rule === "object"
+        ? (rule as Record<string, unknown>).unlessTool
+        : undefined;
+    if (typeof tool !== "string") return rule;
+    const to =
+      byModelName.get(tool) ??
+      (customToolNames.has(tool) ? tool : currentNativeToolName(tool));
+    if (to === tool) return rule;
+    touched = true;
+    return { ...(rule as Record<string, unknown>), unlessTool: to };
+  });
+  if (!touched) return bag;
+  return {
+    ...bag,
+    guardrails: {
+      ...(guardrails as Record<string, unknown>),
+      turnReview: { ...(review as Record<string, unknown>), rules: next },
+    },
+  };
 }
 
 // A decisions rule names a custom tool by the name the model calls it (normalizeToolName): a tool

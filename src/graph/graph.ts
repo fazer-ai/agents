@@ -255,6 +255,9 @@ export interface BuildAgentGraphParams {
       readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
+  // Which write calls `reviewCall` wants to see, by name. Absent means every one. A call it does
+  // not want runs as a call of a turn with no review.
+  reviewsCall?: (name: string) => boolean;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
   // fallback at once, and the note only says it was flagged.
   reviewTurnReply?: (
@@ -859,6 +862,7 @@ export function buildAgentGraph({
   onReplyRevised,
   recoversReply,
   reviewCall,
+  reviewsCall,
   reviewTurnReply,
   turnReviewHalted,
   clientToolNames,
@@ -1621,7 +1625,7 @@ export function buildAgentGraph({
         // on the call's config (fence-report.ts), passed on to a listener already there, or a
         // handler's `onNoEffect`.
         const outer = fenceReporterOf(config);
-        const { value, didNothing } = await inCallScope((mark) =>
+        const { value, didNothing, failed } = await inCallScope((mark) =>
           t.invoke(
             input as never,
             withFenceReporter(config ?? {}, (r: CallReport, callId) => {
@@ -1630,6 +1634,15 @@ export function buildAgentGraph({
             }),
           ),
         );
+        // A failure with no call id to answer comes back as bare text (failure.ts), which
+        // `ToolNode` would wrap as an ordinary result: wrapped here as the error it is.
+        if (failed && typeof value === "string")
+          return new ToolMessage({
+            status: "error",
+            content: value,
+            name: t.name,
+            tool_call_id: "",
+          });
         if (!didNothing) return value;
         if (ToolMessage.isInstance(value)) return markedNoEffect(value);
         // A call with no id comes back as bare text, which `ToolNode` would wrap after this point:
@@ -1834,7 +1847,7 @@ export function buildAgentGraph({
             reviewCall && !revision
               ? await setAsideReviewedCalls(
                   judged,
-                  isWriteName,
+                  (name) => isWriteName(name) && (reviewsCall?.(name) ?? true),
                   (turn, call, o) => {
                     reviewsRan = true;
                     const index = written.indexOf(

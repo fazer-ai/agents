@@ -555,6 +555,10 @@ export interface TurnReviewGate {
   // The fallback the caller's output gate applies in the reply's place, once a step was still flagged
   // past the attempts or a review held.
   pending: () => GuardrailDecision | null;
+  // The graph's `reviewsCall`: whether a write call of this name goes through `reviewCall` at all.
+  // With the reviewer off only `skip_reply` does, the one call a rule's redo may not end in. Every
+  // other write then runs as it would with no review: no review, no ownership read around it.
+  reviewsCall: (name: string) => boolean;
   // The graph's `turnReviewHalted`: a call still flagged past the attempts, or a review held under
   // `onFailure: "hold"`. No call of the batch runs and the round ends, for the caller's output gate
   // to apply `pending()`.
@@ -1008,12 +1012,14 @@ export function buildTurnReviewGate(
       "analysis_failed",
       {
         ...(rule ? { rule: rule.name } : {}),
-        cause: "pattern_timeout",
+        cause: verdict.kind === "error" ? "pattern_error" : "pattern_timeout",
         latencyMs: Date.now() - started,
       },
-      rule
-        ? "a turn review rule did not finish matching within its time budget"
-        : "the turn review rules could not be matched",
+      !rule
+        ? "the turn review rules could not be matched"
+        : verdict.kind === "error"
+          ? "a turn review rule could not be matched against the reply"
+          : "a turn review rule did not finish matching within its time budget",
     );
     return "failed";
   };
@@ -1097,6 +1103,7 @@ export function buildTurnReviewGate(
       return flagged ? turnReviewFeedback(reply, flagged.rationale) : null;
     },
     pending: () => decision,
+    reviewsCall: (name) => tr.judge || name === SKIP_REPLY_TOOL,
     halted: () => held || refused,
   };
 }

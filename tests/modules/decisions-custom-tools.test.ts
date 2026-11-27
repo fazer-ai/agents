@@ -13,7 +13,10 @@ import {
   assertDecisionActionArgs,
   DecisionToolUnknownError,
 } from "@/modules/agents/service";
-import { renameDecisionActionTools } from "@/modules/agents/transfer";
+import {
+  renameDecisionActionTools,
+  renameTurnRuleTools,
+} from "@/modules/agents/transfer";
 import {
   type DecisionQuestion,
   decisionsIssues,
@@ -946,6 +949,54 @@ describe("an imported rule on a renamed tool", () => {
       }
     ).rules;
     expect(rules.map((r) => r.action.tool)).toEqual(["lookup_2", "set_labels"]);
+  });
+
+  // The bug it catches: a turn review rule kept naming the tool by the name the bundle had, so on
+  // the imported agent the rule fired on turns whose tool ran.
+  test("a turn review rule's unlessTool follows a tool the import renamed, and a native's retired name", () => {
+    const rule = (unlessTool: string | null) => ({
+      name: "r",
+      pattern: "p",
+      unlessTool,
+      note: "n",
+    });
+    const bag = {
+      guardrails: {
+        turnReview: {
+          rules: [
+            rule("lookup"),
+            rule("assign_label"),
+            rule("handoff_to_human"),
+            rule(null),
+          ],
+        },
+      },
+    };
+    const out = renameTurnRuleTools(
+      bag,
+      new Map([["Lookup", "lookup_2"]]),
+      new Set(["Lookup"]),
+    );
+    const rules = (
+      (out.guardrails as Record<string, unknown>).turnReview as {
+        rules: { unlessTool: string | null }[];
+      }
+    ).rules;
+    expect(rules.map((r) => r.unlessTool)).toEqual([
+      "lookup_2",
+      "set_labels",
+      "handoff_to_human",
+      null,
+    ]);
+    // A bundle's own tool under a native's retired name keeps its rule.
+    const own = renameTurnRuleTools(
+      { guardrails: { turnReview: { rules: [rule("assign_label")] } } },
+      new Map(),
+      new Set(["assign_label"]),
+    );
+    expect(own.guardrails).toEqual({
+      turnReview: { rules: [rule("assign_label")] },
+    });
   });
 });
 

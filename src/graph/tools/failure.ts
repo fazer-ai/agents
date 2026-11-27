@@ -5,6 +5,7 @@ import {
   tool,
 } from "@langchain/core/tools";
 import type { z } from "zod";
+import { noteCallFailed } from "./call-scope";
 
 // Marks a friendly tool reply as an INTEGRATION FAILURE: the model still sees the exact same string
 // (graceful degradation), but the flow log records the call as warn/error so alert channels can fire
@@ -40,7 +41,11 @@ export function failableTool(
     const out = await fn(input as never, config);
     if (!(out instanceof ToolFailure)) return out;
     const id = config?.toolCall?.id;
-    if (!id) return out.message;
+    if (!id) {
+      // No id to hang an error result on: said to the invocation, when the graph runs one.
+      noteCallFailed();
+      return out.message;
+    }
     return new ToolMessage({
       status: "error",
       content: out.message,

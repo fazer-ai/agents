@@ -19,6 +19,7 @@ import {
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { scopedNoEffect } from "@/graph/tools/call-scope";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
 import { buildNativeTools } from "@/graph/tools/native";
 import type { AppError } from "@/lib/errors";
@@ -355,6 +356,19 @@ describe("the matcher", () => {
     ).toEqual({ kind: "match", index: 1 });
     expect(await firstTurnRuleMatch(["xyz"], DRAFT)).toEqual({ kind: "none" });
     expect(await firstTurnRuleMatch([], DRAFT)).toEqual({ kind: "none" });
+  });
+
+  // The bug it catches: the engine giving up on a pattern that compiles was swallowed with the
+  // patterns that do not compile, and the reply came back as matching nothing.
+  test("a pattern the engine gives up on is an answer of its own, naming it", async () => {
+    expect(
+      await firstTurnRuleMatch(["a", "b"], DRAFT, {
+        workerUrl: new URL(
+          "../fixtures/turn-rules/worker-engine-gives-up.ts",
+          import.meta.url,
+        ).href,
+      }),
+    ).toEqual({ kind: "error", index: 1 });
   });
 
   // The bug it catches: a backtracking pattern matched on the server's own thread stalls every
@@ -720,6 +734,45 @@ describe("the rules in the gate", () => {
     },
   );
 
+  // The bug it catches: a rule the engine could not run read as a clean reply, which let the reply
+  // through even under `hold`.
+  test.skipIf(!dbUp)(
+    "a pattern the engine could not run is a review that could not run",
+    async () => {
+      const gaveUp = async (): Promise<TurnRulesVerdict> => ({
+        kind: "error",
+        index: 0,
+      });
+      const holds = gate(cfg({}, { onFailure: "hold" }), {
+        matchRules: gaveUp,
+      });
+      expect(await holds.g?.reviewReply(asked(), DRAFT)).toBeNull();
+      expect(holds.g?.pending()).toEqual({
+        kind: "handed-off",
+        reply: HANDOFF,
+      });
+      expect(await lines(holds.f.turnId as string)).toMatchObject([
+        {
+          rule: PROMISE.name,
+          outcome: "analysis_failed",
+          cause: "pattern_error",
+          held: true,
+        },
+      ]);
+    },
+  );
+
+  // The bug it catches: with the reviewer off the gate still took every write through the call
+  // review, which costs an ownership read per write and one more after the batch, for a review that
+  // can refuse nothing.
+  test("with the reviewer off only skip_reply goes through the call review", () => {
+    const rulesOnly = gate(cfg({})).g;
+    expect([
+      rulesOnly?.reviewsCall("transferir"),
+      rulesOnly?.reviewsCall("skip_reply"),
+    ]).toEqual([false, true]);
+  });
+
   test.skipIf(!dbUp)(
     "a note that tries to close its fence stays inside it",
     async () => {
@@ -795,6 +848,7 @@ async function runTurn(
   extra: StructuredToolInterface[] = [],
 ) {
   const ran: string[] = [];
+  const callsReviewed: string[] = [];
   const onNoEffect = scopedNoEffect();
   const named = (name: string) =>
     tool(
@@ -821,7 +875,13 @@ async function runTurn(
     checkpointer: new MemorySaver(),
     tools: [named("transferir"), named("skip_reply"), ...extra],
     retrySilence: () => true,
-    reviewCall: g?.reviewCall,
+    reviewCall: g
+      ? (turn, call, o) => {
+          callsReviewed.push(call.name);
+          return g.reviewCall(turn, call, o);
+        }
+      : undefined,
+    reviewsCall: g?.reviewsCall,
     reviewTurnReply: g?.reviewReply,
     turnReviewHalted: g?.halted,
   });
@@ -833,6 +893,10 @@ async function runTurn(
   return {
     model,
     ran,
+    callsReviewed,
+    statuses: messages
+      .filter((m) => m.getType() === "tool")
+      .map((m) => (m as ToolMessage).status),
     // Per tool result of the turn, in order: whether it carries the no-effect fact.
     idleResults: messages
       .filter((m) => m.getType() === "tool")
@@ -929,8 +993,7 @@ describe("the rules in the graph", () => {
     },
   );
 
-  // The same through a handler of the product: `resolve_conversation` called off before its
-  // write, built as prepare.ts builds it, with no listener behind the callback.
+  // The same through a handler of the product: `resolve_conversation` called off before its write.
   test.skipIf(!dbUp)(
     "a native tool that refuses on its own does not excuse the promise",
     async () => {
@@ -961,7 +1024,6 @@ describe("the rules in the graph", () => {
             client,
             conversationId: 7,
             stillWanted: async () => wanted,
-            onNoEffect: scopedNoEffect(),
           }).filter((t) => t.name === "resolve_conversation"),
         );
       const calledOff = await run(false);
@@ -1022,7 +1084,6 @@ describe("the rules in the graph", () => {
             client,
             conversationId: ++conversation,
             protectedLabels: ["vip"],
-            onNoEffect: scopedNoEffect(),
           }).filter((x) => x.name === "set_labels"),
         );
         return [written, t.idleResults, t.outcomes];
@@ -1037,6 +1098,49 @@ describe("the rules in the graph", () => {
         [["urgente"]],
         [true, false],
         [],
+      ]);
+    },
+  );
+
+  // The bug it catches: a tool's failure with no call id to answer came back as bare text, which
+  // the tools node wrapped as an ordinary result, so the failed call excused the reply.
+  test.skipIf(!dbUp)(
+    "a failed call with no id is an error result, and does not excuse the promise",
+    async () => {
+      const failing = failableTool(
+        async () => toolFailure("Could not transfer right now."),
+        {
+          name: "transferir_2",
+          description: "transferir",
+          schema: z.object({ n: z.number().optional() }),
+        },
+      );
+      const t = await runTurn(
+        [
+          { text: "", calls: [{ name: "transferir_2", n: 1, id: null }] },
+          { text: "Certo, vou passar o seu caso." },
+          { text: "Qual é o seu telefone?" },
+        ],
+        cfg({ rules: [{ ...PROMISE, unlessTool: "transferir_2" }] }),
+        {},
+        [failing],
+      );
+      expect([t.statuses, t.outcomes]).toEqual([["error"], ["revised"]]);
+    },
+  );
+
+  // The bug it catches: every write of a rules-only turn went through the call review.
+  test.skipIf(!dbUp)(
+    "a rules-only turn runs its writes without asking the call review",
+    async () => {
+      const t = await runTurn(
+        [{ text: "", calls: ["transferir"] }, { text: DRAFT }],
+        cfg({}),
+      );
+      expect([t.ran, t.callsReviewed, t.last]).toEqual([
+        ["transferir"],
+        [],
+        DRAFT,
       ]);
     },
   );

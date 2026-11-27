@@ -1019,6 +1019,9 @@ export function buildTurnReviewGate(
       step.text,
       { signal: p.signal },
     );
+    // A turn that ended while the thread ran reports nothing: a timeout of a cancelled turn is not
+    // a check that failed, and under `hold` it would leave a hand-over nobody asked for.
+    if (p.signal?.aborted) return null;
     if (verdict.kind === "none" || verdict.kind === "aborted") return null;
     const rule = candidates[verdict.index];
     if (verdict.kind === "match" && rule) return rule;

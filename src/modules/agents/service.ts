@@ -84,6 +84,7 @@ import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
 import {
+  MAX_TURN_REVIEW_RULES,
   readGuardrailsConfig,
   turnRuleUsable,
 } from "@/modules/guardrails/settings";
@@ -1487,12 +1488,16 @@ export function dropUnusableImportedSettingsInPlace(
   // is dropped whole and named, for the same reason: taking out the one bad field would leave a
   // rule the settings list and the runtime never runs.
   const turnRules = plainObject(plainObject(bag.guardrails)?.turnReview)?.rules;
+  // The same for a usable rule past the count the reader runs: stored, it would be a guard that
+  // is listed and inactive. Named by its place in the bundle.
   if (Array.isArray(turnRules)) {
-    for (let i = turnRules.length - 1; i >= 0; i--) {
-      if (turnRuleUsable(turnRules[i])) continue;
-      turnRules.splice(i, 1);
-      takePath(dropped, `guardrails.turnReview.rules.${i}`);
+    const kept: unknown[] = [];
+    for (const [i, rule] of turnRules.entries()) {
+      if (turnRuleUsable(rule) && kept.length < MAX_TURN_REVIEW_RULES)
+        kept.push(rule);
+      else takePath(dropped, `guardrails.turnReview.rules.${i}`);
     }
+    turnRules.splice(0, turnRules.length, ...kept);
   }
   // The contact gate's local rule, on the same terms: the reader drops one that does not parse,
   // so it is taken out and named rather than stored as a list the runtime never reads.

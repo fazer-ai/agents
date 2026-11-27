@@ -4,6 +4,10 @@ import {
   computeConfigIssues,
   issueHasAction,
 } from "@/modules/agents/config-health";
+import {
+  guardrailsUseModel,
+  readGuardrailsConfig,
+} from "@/modules/guardrails/settings";
 
 // Phase E: detect features turned on without the credential they need (the import that strips
 // secrets is the common trigger), each carrying a deep-link target (tab + section anchor).
@@ -1188,6 +1192,37 @@ describe("computeConfigIssues — the guardrails credential", () => {
         knownRefs: new Set(["vault:1"]),
       }),
     ).toEqual([]);
+  });
+
+  // The bug it catches: guardrails that run only the turn review's rules use no model, and the
+  // panel still reported a missing key as a blocking issue of a configuration that works.
+  test("asks for no key while no configured check runs on a model", () => {
+    expect(
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "",
+        guardrailsKeyUnused: true,
+      }),
+    ).toEqual([]);
+    const idle = readGuardrailsConfig({
+      guardrails: {
+        enabled: true,
+        input: { enabled: false },
+        output: { enabled: false },
+        turnReview: { enabled: true, judge: false },
+      },
+    });
+    expect([
+      guardrailsUseModel(idle),
+      guardrailsUseModel({
+        ...idle,
+        output: { ...idle.output, enabled: true },
+      }),
+      guardrailsUseModel({
+        ...idle,
+        turnReview: { ...idle.turnReview, judge: true },
+      }),
+    ]).toEqual([false, true, true]);
   });
 
   test("flags guardrails enabled with no credential", () => {

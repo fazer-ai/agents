@@ -198,6 +198,7 @@ function gate(
     make?: never;
     matchRules?: typeof firstTurnRuleMatch;
     reports?: GuardrailReport[];
+    signal?: AbortSignal;
   } = {},
 ) {
   const f = flow();
@@ -222,6 +223,7 @@ function gate(
       clock: CLOCK,
       makeModel: o.make,
       matchRules: o.matchRules,
+      signal: o.signal,
       langfuseCfg: null,
     }),
   };
@@ -377,6 +379,25 @@ describe("an imported bundle", () => {
     expect([...taken.paths].sort()).toEqual([
       "guardrails.turnReview.rules.1",
       "guardrails.turnReview.rules.2",
+    ]);
+  });
+
+  // The bug it catches: 21 good rules were all stored while the reader runs 20, so the last one
+  // was a guard the settings listed and nothing ran, with no warning.
+  test("a rule past the count the reader runs is dropped and named by its place in the bundle", () => {
+    const rules = Array.from({ length: MAX_TURN_REVIEW_RULES + 2 }, (_, i) =>
+      i === 1
+        ? { name: "sem-nota", pattern: "x" }
+        : { ...BANNED, name: `r${i}` },
+    );
+    const settings = { guardrails: { turnReview: { rules } } };
+    const taken = dropUnusableImportedSettingsInPlace(settings);
+    expect(settings.guardrails.turnReview.rules).toHaveLength(
+      MAX_TURN_REVIEW_RULES,
+    );
+    expect([...taken.paths].sort()).toEqual([
+      "guardrails.turnReview.rules.1",
+      `guardrails.turnReview.rules.${MAX_TURN_REVIEW_RULES + 1}`,
     ]);
   });
 });
@@ -817,6 +838,27 @@ describe("the rules in the gate", () => {
       )(reports[0] as GuardrailReport);
       expect(notes.join()).toContain(`regra "${PROMISE.name}"`);
       expect(notes.join()).not.toContain("modelo");
+    },
+  );
+
+  // The bug it catches: a turn cancelled while its rules were being matched still reported the
+  // timeout, and under `hold` left a hand-over pending for a turn nobody was running.
+  test.skipIf(!dbUp)(
+    "a matcher failure of a turn that was cancelled meanwhile reports nothing",
+    async () => {
+      const turn = new AbortController();
+      const reports: GuardrailReport[] = [];
+      const cancelled = gate(cfg({}, { onFailure: "hold" }), {
+        signal: turn.signal,
+        reports,
+        matchRules: async (): Promise<TurnRulesVerdict> => {
+          turn.abort();
+          return { kind: "timeout", index: 0 };
+        },
+      });
+      expect(await cancelled.g?.reviewReply(asked(), DRAFT)).toBeNull();
+      expect([cancelled.g?.pending(), reports]).toEqual([null, []]);
+      expect(await lines(cancelled.f.turnId as string)).toEqual([]);
     },
   );
 

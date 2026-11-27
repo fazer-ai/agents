@@ -254,6 +254,16 @@ export interface GuardrailTurnReviewConfig {
   rules: TurnReviewRule[];
 }
 
+// Whether any configured check runs on a guardrails model: a screening direction, the turn
+// review's model reviewer or the factual-grounding check. With none of them (the turn review's
+// rules alone) the guardrails work with no key, and none is asked for.
+export const guardrailsUseModel = (g: GuardrailsConfig): boolean =>
+  g.enabled &&
+  (g.input.enabled ||
+    g.output.enabled ||
+    g.factualGrounding.enabled ||
+    turnReviewJudges(g));
+
 // Whether the model reviewer runs: what decides if its key is resolved, checked and asked for.
 export const turnReviewJudges = (g: {
   enabled: boolean;

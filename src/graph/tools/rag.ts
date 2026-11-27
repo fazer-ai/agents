@@ -204,7 +204,9 @@ function searchTool(ctx: RagToolCtx) {
       // How many times the query embedding had to be asked again, for the tool line: a
       // slow search is then attributed to the provider on the line itself, not guessed at.
       if (ctx.knowledgeBaseIds.length === 0) {
-        return [NO_BASE_FOR_SEARCH, { sources: [] }] as const;
+        // Nothing was searched: said as a call that did nothing, unlike a search that ran and
+        // found no passage.
+        return [didNothing(NO_BASE_FOR_SEARCH), { sources: [] }] as const;
       }
       let retries = 0;
       const hits = await searchKnowledge({
@@ -317,6 +319,12 @@ function suggestTool(ctx: RagToolCtx) {
         if (status === "REJECTED" || status === "DISCARDED") {
           return didNothing(
             "This entry was already suggested for this knowledge base and was not accepted. Nothing was queued; do not suggest it again.",
+          );
+        }
+        // Decided already: the entry is in the base, and nobody is reviewing anything.
+        if (status === "APPROVED") {
+          return didNothing(
+            "This entry was already suggested for this knowledge base and approved. Nothing was queued; do not suggest it again.",
           );
         }
         // Already with a human, which is what the call asked for.

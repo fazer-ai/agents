@@ -279,12 +279,33 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
       data: { status: "REJECTED" },
     });
     const refused = await again();
-    expect([first.didNothing, waiting.didNothing, refused.didNothing]).toEqual([
-      false,
-      false,
-      true,
-    ]);
+    await suDb.approvalQueueItem.updateMany({
+      where: { tenantId, knowledgeBaseId: kb },
+      data: { status: "APPROVED" },
+    });
+    const approved = await again();
+    expect([
+      first.didNothing,
+      waiting.didNothing,
+      refused.didNothing,
+      approved.didNothing,
+    ]).toEqual([false, false, true, true]);
     expect(String(refused.value)).toContain("was not accepted");
+    expect(String(approved.value)).toContain("approved");
+    // A search with no base to search read nothing.
+    const [search] = buildRagTools(
+      {
+        tenantId,
+        base: appDb,
+        knowledgeBaseIds: [],
+        threadId: `${tenantId}:7:${++seq}`,
+      },
+      ["search_knowledge"],
+    );
+    const unsearched = await inCallScope(async () =>
+      (search as NonNullable<typeof search>).invoke({ query: "troca" }),
+    );
+    expect(unsearched.didNothing).toBe(true);
   });
 
   test("a different word, number or base is a new entry", async () => {

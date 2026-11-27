@@ -267,6 +267,8 @@ export interface ConfigHealthInput {
   // message is delivered as if it had been screened and approved.
   guardrailsEnabled?: boolean;
   guardrailsCredentialRef?: string;
+  // No configured check runs on a model (`guardrailsUseModel`), so no key is asked for.
+  guardrailsKeyUnused?: boolean;
   // The turn reviewer's own credential, set only when it is not the screening one: turn review on
   // while Decisions screens, since the reviewer always runs on the chat model's key.
   turnReviewCredentialRef?: string;
@@ -923,7 +925,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     });
   }
   const guardrailsCred = credIssue(
-    Boolean(input.guardrailsEnabled),
+    Boolean(input.guardrailsEnabled) && !input.guardrailsKeyUnused,
     input.guardrailsCredentialRef ?? "",
     "apiKey",
     vault,

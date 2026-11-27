@@ -125,6 +125,7 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
   guardrailCredentialRef,
+  guardrailsUseModel,
   turnReviewJudges,
 } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -3037,6 +3038,7 @@ function AgentEditor() {
     contactAuthDenyMessage: contactAuth.denyMessage,
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
+    guardrailsKeyUnused: !guardrailsUseModel(guardrails),
     ...(guardrails.classifier === "decisions" && turnReviewJudges(guardrails)
       ? { turnReviewCredentialRef: guardrails.credentialRef ?? "" }
       : {}),

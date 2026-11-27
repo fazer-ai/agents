@@ -954,11 +954,28 @@ describe("an imported rule on a renamed tool", () => {
   // The bug it catches: a turn review rule kept naming the tool by the name the bundle had, so on
   // the imported agent the rule fired on turns whose tool ran.
   test("a turn review rule's unlessTool follows a tool the import renamed, and a native's retired name", () => {
-    const rule = (unlessTool: string | null) => ({
+    const rule = (unlessTool: string | null, note = "n") => ({
       name: "r",
       pattern: "p",
       unlessTool,
-      note: "n",
+      note,
+    });
+    // The note is what the redo reads: the tool it names follows the rename, as a whole word.
+    const noted = renameTurnRuleTools(
+      {
+        guardrails: {
+          turnReview: {
+            rules: [rule("lookup", "Chame lookup antes. Não é lookup_old.")],
+          },
+        },
+      },
+      new Map([["lookup", "lookup_2"]]),
+      new Set(["lookup"]),
+    );
+    expect(noted.guardrails).toEqual({
+      turnReview: {
+        rules: [rule("lookup_2", "Chame lookup_2 antes. Não é lookup_old.")],
+      },
     });
     const bag = {
       guardrails: {

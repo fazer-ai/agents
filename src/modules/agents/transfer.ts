@@ -3159,6 +3159,12 @@ function renameNativeToolKeys(
   );
 }
 
+// A tool's name where a text mentions it as a whole word, moved to the name it has now.
+function renameToolInText(text: string, from: string, to: string): string {
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "g"), to);
+}
+
 // A turn review rule names the tool that excuses the reply (`unlessTool`) by the name the model
 // calls it. It follows a tool the import stored under another name, and a native's retired name,
 // or the rule fires on a turn whose tool ran.
@@ -3202,7 +3208,16 @@ export function renameTurnRuleTools(
       : currentNativeToolName(name);
     if (to === name) return rule;
     touched = true;
-    return { ...(rule as Record<string, unknown>), unlessTool: to };
+    // The note is what the redo reads, and it usually names the tool to call: the old name there
+    // would send the model after a tool that no longer answers to it.
+    const note = (rule as Record<string, unknown>).note;
+    return {
+      ...(rule as Record<string, unknown>),
+      unlessTool: to,
+      ...(typeof note === "string"
+        ? { note: renameToolInText(note, name, to) }
+        : {}),
+    };
   });
   if (!touched) return bag;
   return {

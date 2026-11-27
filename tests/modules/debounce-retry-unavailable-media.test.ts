@@ -1676,8 +1676,8 @@ describe.skipIf(!dbUp)(
 
     test("a delivery's hold says the conversation has a file on its way until the delivery lets go", () => {
       const target = { tenantId, instanceId, conversationId: 9764 };
-      const arriving = (at = Date.now()) =>
-        conversationMediaArriving(tenantId, instanceId, 9764, at);
+      const arriving = () =>
+        conversationMediaArriving(tenantId, instanceId, 9764);
       const hold = mediaArrivingHold(target);
       const other = mediaArrivingHold(target);
 
@@ -1686,10 +1686,10 @@ describe.skipIf(!dbUp)(
       const releasedUnmarked = arriving();
       hold.mark();
       hold.mark();
-      const marked = arriving(Date.now() + 10 * 60_000);
+      const marked = arriving();
       other.mark();
       hold.release();
-      const otherStillHolds = arriving(Date.now() + 10 * 60_000);
+      const otherStillHolds = arriving();
       other.release();
       other.release();
 
@@ -1697,10 +1697,31 @@ describe.skipIf(!dbUp)(
       expect(releasedUnmarked).toBe(false);
       expect(marked).toBe(true);
       // A delivery released before it marked took part in nothing: its later mark counts for nothing.
+      // Nothing lingers after the exit: the delivery's flush row is committed by then.
       expect(otherStillHolds).toBe(false);
-      // The flush is armed right after the delivery lets go: a message landing in between still joins.
-      expect(arriving()).toBe(true);
-      expect(arriving(Date.now() + 10_000)).toBe(false);
+    });
+
+    test("a delivery that finds another's file on its way holds the conversation too", () => {
+      const target = { tenantId, instanceId, conversationId: 9775 };
+      const note = mediaArrivingHold(target);
+      const text = mediaArrivingHold(target);
+      const alone = text.others();
+      note.mark();
+      const ownOnly = note.others();
+
+      const joined = text.others();
+      // The note's download recovers while the text is still arming its flush.
+      const noteSeesText = note.others();
+      note.release();
+      const afterNote = conversationMediaArriving(tenantId, instanceId, 9775);
+      text.release();
+
+      expect(alone).toBe(false);
+      expect(ownOnly).toBe(false);
+      expect(joined).toBe(true);
+      expect(noteSeesText).toBe(true);
+      expect(afterNote).toBe(true);
+      expect(conversationMediaArriving(tenantId, instanceId, 9775)).toBe(false);
     });
 
     test("a delivery marking one conversation leaves another conversation's hold alone", () => {
@@ -1717,12 +1738,7 @@ describe.skipIf(!dbUp)(
       held.mark();
       other.mark();
 
-      const stillHeld = conversationMediaArriving(
-        tenantId,
-        instanceId,
-        9766,
-        Date.now() + 10 * 60_000,
-      );
+      const stillHeld = conversationMediaArriving(tenantId, instanceId, 9766);
       held.release();
       other.release();
 
@@ -1731,13 +1747,7 @@ describe.skipIf(!dbUp)(
 
     test("two deliveries each hold the conversation until their own release", () => {
       const target = { tenantId, instanceId, conversationId: 9765 };
-      const far = () =>
-        conversationMediaArriving(
-          tenantId,
-          instanceId,
-          9765,
-          Date.now() + 10 * 60_000,
-        );
+      const far = () => conversationMediaArriving(tenantId, instanceId, 9765);
       const a = mediaArrivingHold(target);
       const b = mediaArrivingHold(target);
       a.mark();

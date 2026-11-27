@@ -342,9 +342,12 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       audio: true,
       storage: "recovered",
     });
+    // A text right after that reply is not queued behind a file that was read.
+    const next = await deliver(9827, { audio: false });
 
     expect(await flushRows(9827)).toBe(0);
     expect(model.calls).toBeGreaterThan(0);
+    expect(next.model.calls).toBeGreaterThan(0);
   });
 
   // The claimed row is re-armed as a new burst, and still says when the row was first armed.
@@ -453,14 +456,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       );
       expect(model.seen.join("\n")).not.toContain("não audível");
       // The delivery armed nothing, and let go of the conversation all the same.
-      expect(
-        conversationMediaArriving(
-          tenantId,
-          instanceId,
-          9806,
-          Date.now() + 10_000,
-        ),
-      ).toBe(false);
+      expect(conversationMediaArriving(tenantId, instanceId, 9806)).toBe(false);
     } finally {
       config.debounceWorker.enabled = saved;
     }
@@ -853,15 +849,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     await deliver(9820, { audio: true, storage: "uploading" });
 
     expect(await flushRows(9820)).toBe(1);
-    expect(conversationMediaArriving(tenantId, instanceId, 9820)).toBe(true);
-    expect(
-      conversationMediaArriving(
-        tenantId,
-        instanceId,
-        9820,
-        Date.now() + 10_000,
-      ),
-    ).toBe(false);
+    expect(conversationMediaArriving(tenantId, instanceId, 9820)).toBe(false);
   });
 
   // The claimed flush is the same burst, deferring for its file: the joining arm keeps its mode too.

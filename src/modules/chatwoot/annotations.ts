@@ -290,21 +290,17 @@ export async function awaitOpenTranscriptions(
 
 // How long a conversation still counts as having a file on its way after the delivery that said so
 // let go: its flush is armed by then, and a message landing in between has to see it.
-const ARRIVING_GRACE_MS = 2000;
-
-// Conversations where a delivery in flight got a 404 for a file it is still working on, so a message
-// arriving meanwhile joins the wait before any flush exists for it.
-const arrivingConversations = new Map<
-  string,
-  { count: number; until: number }
->();
+// Deliveries in flight that hold each conversation, by conversation key.
+const arrivingConversations = new Map<string, number>();
 
 // A delivery's claim that a file of its message is on its way. The delivery owns it from the first
 // 404 to its own exit: no reader of a single file can end it, and another delivery's is its own.
+// There is no grace after the exit: by then the delivery's flush row is committed and says the same.
 export interface MediaArrivingHold {
-  // Whether another delivery of the conversation holds it, or let go of it a moment ago. The
-  // owner's own mark is left out: its file is judged by what its own pass found.
-  others(nowMs?: number): boolean;
+  // Whether another delivery of the conversation holds it. The owner's own mark is left out: its
+  // file is judged by what its own pass found. A delivery that finds others joins their wait and
+  // holds the conversation too, so the one it waits behind cannot overtake it before its row lands.
+  others(): boolean;
   // A download of this delivery answered 404 and is being asked again. Counted once.
   mark(): void;
   // The delivery armed its flush, chose its turn, or ended. Counted once, and nothing before `mark`.
@@ -320,30 +316,28 @@ export function mediaArrivingHold(target: {
   if (conversationId === null)
     return { mark() {}, release() {}, others: () => false };
   const k = keyOf(target.tenantId, target.instanceId, conversationId);
-  let entry: { count: number; until: number } | undefined;
+  let holding = false;
   let released = false;
+  const mark = () => {
+    if (holding || released) return;
+    holding = true;
+    arrivingConversations.set(k, (arrivingConversations.get(k) ?? 0) + 1);
+  };
   return {
-    others(nowMs = Date.now()) {
-      const e = arrivingConversations.get(k);
-      if (!e) return false;
-      const own = entry === e && !released ? 1 : 0;
-      return e.count - own > 0 || nowMs < e.until;
+    others() {
+      const held = (arrivingConversations.get(k) ?? 0) - (holding ? 1 : 0);
+      if (held > 0) mark();
+      return held > 0;
     },
-    mark() {
-      if (entry || released) return;
-      const now = Date.now();
-      for (const [key, e] of arrivingConversations)
-        if (e.count === 0 && e.until <= now) arrivingConversations.delete(key);
-      entry = arrivingConversations.get(k) ?? { count: 0, until: 0 };
-      entry.count += 1;
-      arrivingConversations.set(k, entry);
-    },
+    mark,
     release() {
       if (released) return;
       released = true;
-      if (!entry) return;
-      entry.count -= 1;
-      if (entry.count === 0) entry.until = Date.now() + ARRIVING_GRACE_MS;
+      if (!holding) return;
+      holding = false;
+      const left = (arrivingConversations.get(k) ?? 1) - 1;
+      if (left > 0) arrivingConversations.set(k, left);
+      else arrivingConversations.delete(k);
     },
   };
 }
@@ -352,11 +346,8 @@ export function conversationMediaArriving(
   tenantId: bigint,
   instanceId: bigint,
   conversationId: number,
-  nowMs: number = Date.now(),
 ): boolean {
-  const k = keyOf(tenantId, instanceId, conversationId);
-  const entry = arrivingConversations.get(k);
-  return entry !== undefined && (entry.count > 0 || nowMs < entry.until);
+  return arrivingConversations.has(keyOf(tenantId, instanceId, conversationId));
 }
 
 // Test isolation only — production never clears the store wholesale (the TTL sweep does).

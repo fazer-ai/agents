@@ -15,6 +15,7 @@ import {
   DEFAULT_DECISION_MODEL,
   type DecisionProvider,
 } from "@/modules/decisions/config";
+import { judgesAnything } from "./prompts";
 
 // Per-agent guardrails (input/output moderation) config, read from `agent.settings.guardrails`. A
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
@@ -257,12 +258,20 @@ export interface GuardrailTurnReviewConfig {
 // Whether any configured check runs on a guardrails model: a screening direction, the turn
 // review's model reviewer or the factual-grounding check. With none of them (the turn review's
 // rules alone) the guardrails work with no key, and none is asked for.
+// A screening direction counts only when it has something to judge, as the gate reads it
+// (`judgesAnything`): one switched on with every check off and no custom policy asks nothing.
 export const guardrailsUseModel = (g: GuardrailsConfig): boolean =>
   g.enabled &&
-  (g.input.enabled ||
-    g.output.enabled ||
+  ((g.input.enabled && screens(g, "input")) ||
+    (g.output.enabled && screens(g, "output")) ||
     g.factualGrounding.enabled ||
     turnReviewJudges(g));
+const screens = (g: GuardrailsConfig, direction: "input" | "output") =>
+  judgesAnything({
+    direction,
+    checks: g[direction].checks,
+    customPolicy: g.customPolicy,
+  });
 
 // Whether the model reviewer runs: what decides if its key is resolved, checked and asked for.
 export const turnReviewJudges = (g: {
@@ -570,13 +579,24 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
   };
 }
 
-// A stored rule the matcher can run, or null: a rule missing its name or note, or whose pattern would
-// be refused on a write, is dropped, since the bag is free-form and a bad row must not stop a turn.
+// The tools a rule may name in `unlessTool`, a closed list (docs/turn-review.md, "What excuses a
+// rule"). A rule is excused only by a call that acted, and whether a call acted is a contract
+// checked tool by tool: every refusal, failure and no-op of the tool has to be said as such, with
+// a test that walks them. A tool enters this list with that test, never before.
+export const TURN_RULE_EXCUSING_TOOLS = ["handoff_to_human"] as const;
+export type TurnRuleExcusingTool = (typeof TURN_RULE_EXCUSING_TOOLS)[number];
+export const isTurnRuleExcusingTool = (
+  name: unknown,
+): name is TurnRuleExcusingTool =>
+  (TURN_RULE_EXCUSING_TOOLS as readonly unknown[]).includes(name);
+
 // Whether the reader takes this stored rule. The import asks, to drop whole the ones it does not.
 export function turnRuleUsable(v: unknown): boolean {
   return readTurnRule(v) !== null;
 }
 
+// A stored rule the matcher can run, or null: a rule missing its name or note, or whose pattern would
+// be refused on a write, is dropped, since the bag is free-form and a bad row must not stop a turn.
 function readTurnRule(v: unknown): TurnReviewRule | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const b = v as Record<string, unknown>;
@@ -586,11 +606,13 @@ function readTurnRule(v: unknown): TurnReviewRule | null {
   if (!name || name.length > TURN_RULE_NAME_MAX) return null;
   if (!note || note.length > TURN_RULE_NOTE_MAX) return null;
   if (turnRulePatternProblem(pattern)) return null;
+  // A stored name outside the list is no exception: the rule stays and fires on every match,
+  // which is the closed way to fail.
   const tool = str(b.unlessTool);
   return {
     name,
     pattern,
-    unlessTool: tool && tool.length <= MAX_TOOL_NAME_LEN ? tool : null,
+    unlessTool: isTurnRuleExcusingTool(tool) ? tool : null,
     note,
   };
 }

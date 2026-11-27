@@ -1212,6 +1212,9 @@ describe("computeConfigIssues — the guardrails credential", () => {
         turnReview: { enabled: true, judge: false },
       },
     });
+    const nothing = Object.fromEntries(
+      Object.keys(idle.output.checks).map((k) => [k, false]),
+    ) as unknown as typeof idle.output.checks;
     expect([
       guardrailsUseModel(idle),
       guardrailsUseModel({
@@ -1222,7 +1225,18 @@ describe("computeConfigIssues — the guardrails credential", () => {
         ...idle,
         turnReview: { ...idle.turnReview, judge: true },
       }),
-    ]).toEqual([false, true, true]);
+      // A direction switched on with nothing to judge runs no model, as the gate reads it.
+      guardrailsUseModel({
+        ...idle,
+        output: { ...idle.output, enabled: true, checks: nothing },
+        input: { ...idle.input, enabled: true, checks: nothing },
+      }),
+      guardrailsUseModel({
+        ...idle,
+        output: { ...idle.output, enabled: true, checks: nothing },
+        customPolicy: "Nunca fale de preço.",
+      }),
+    ]).toEqual([false, true, true, false, true]);
   });
 
   test("flags guardrails enabled with no credential", () => {

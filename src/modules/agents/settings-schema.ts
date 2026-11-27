@@ -72,10 +72,10 @@ import {
   isExternalCheckUrl,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
-  MAX_TOOL_NAME_LEN,
   MAX_TURN_REVIEW_RULES,
   TURN_REVIEW_ACTIONS,
   TURN_REVIEW_FALLBACKS,
+  TURN_RULE_EXCUSING_TOOLS,
   TURN_RULE_NAME_MAX,
   TURN_RULE_NOTE_MAX,
   TURN_RULE_PATTERN_MAX,
@@ -1121,14 +1121,10 @@ const turnReviewRule = z
       .describe(
         "required; regex on the reply about to be sent, case-insensitive, refused when it does not compile",
       ),
-    unlessTool: z
-      .string()
-      .trim()
-      .min(1)
-      .max(MAX_TOOL_NAME_LEN)
+    unlessTool: oneOf(TURN_RULE_EXCUSING_TOOLS)
       .nullable()
       .optional()
-      .describe("fires only when this tool did not run in the turn"),
+      .describe("fires only when this tool did not act in the turn"),
     note: z
       .string()
       .trim()

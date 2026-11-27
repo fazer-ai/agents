@@ -29,6 +29,7 @@ import {
   type GuardrailAction,
   type GuardrailsConfig,
   MAX_SOURCE_TOOLS,
+  TURN_RULE_EXCUSING_TOOLS,
 } from "@/modules/guardrails/settings";
 
 // The template message is what the customer reads, and the `generated` action falls back to it
@@ -976,7 +977,7 @@ describe("GuardrailsTab turn review rules", () => {
   test("a rule is taken out by its own button, and an emptied tool is stored as none", () => {
     const c = reviewing();
     c.turnReview.rules = [
-      { name: "a", pattern: "a", unlessTool: "t", note: "n" },
+      { name: "a", pattern: "a", unlessTool: "handoff_to_human", note: "n" },
       { name: "b", pattern: "b", unlessTool: null, note: "n" },
     ];
     render(<Dirty initial={c} />);
@@ -1061,13 +1062,20 @@ describe("GuardrailsTab turn review rules", () => {
     expect(form?.turnReview.rules).toEqual([saved]);
   });
 
-  test("a tool field left with only spaces is no tool", () => {
+  // Only a tool whose outcomes are tested can excuse a rule, so the field is a choice, not a text.
+  test("the tool field offers the closed list and none, and nothing else", () => {
     const c = reviewing();
     c.turnReview.rules = [
-      { name: "a", pattern: "a", unlessTool: "t", note: "n" },
+      { name: "a", pattern: "a", unlessTool: null, note: "n" },
     ];
     render(<Dirty initial={c} />);
-    fireEvent.change(at("gr-turn-rule-0-tool"), { target: { value: "  " } });
-    expect(form?.turnReview.rules[0]?.unlessTool).toBe(null);
+    const field = at("gr-turn-rule-0-tool") as unknown as HTMLSelectElement;
+    expect([
+      field.tagName,
+      [...field.options].map((o) => o.value),
+      field.options[0]?.textContent,
+    ]).toEqual(["SELECT", ["", ...TURN_RULE_EXCUSING_TOOLS], "None"]);
+    fireEvent.change(field, { target: { value: "handoff_to_human" } });
+    expect(form?.turnReview.rules[0]?.unlessTool).toBe("handoff_to_human");
   });
 });

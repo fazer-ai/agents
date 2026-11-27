@@ -13,10 +13,7 @@ import {
   assertDecisionActionArgs,
   DecisionToolUnknownError,
 } from "@/modules/agents/service";
-import {
-  renameDecisionActionTools,
-  renameTurnRuleTools,
-} from "@/modules/agents/transfer";
+import { renameDecisionActionTools } from "@/modules/agents/transfer";
 import {
   type DecisionQuestion,
   decisionsIssues,
@@ -949,81 +946,6 @@ describe("an imported rule on a renamed tool", () => {
       }
     ).rules;
     expect(rules.map((r) => r.action.tool)).toEqual(["lookup_2", "set_labels"]);
-  });
-
-  // The bug it catches: a turn review rule kept naming the tool by the name the bundle had, so on
-  // the imported agent the rule fired on turns whose tool ran.
-  test("a turn review rule's unlessTool follows a tool the import renamed, and a native's retired name", () => {
-    const rule = (unlessTool: string | null, note = "n") => ({
-      name: "r",
-      pattern: "p",
-      unlessTool,
-      note,
-    });
-    // The note is what the redo reads: the tool it names follows the rename, as a whole word.
-    const noted = renameTurnRuleTools(
-      {
-        guardrails: {
-          turnReview: {
-            rules: [rule("lookup", "Chame lookup antes. Não é lookup_old.")],
-          },
-        },
-      },
-      new Map([["lookup", "lookup_2"]]),
-      new Set(["lookup"]),
-    );
-    expect(noted.guardrails).toEqual({
-      turnReview: {
-        rules: [rule("lookup_2", "Chame lookup_2 antes. Não é lookup_old.")],
-      },
-    });
-    const bag = {
-      guardrails: {
-        turnReview: {
-          rules: [
-            rule(" lookup "),
-            rule("assign_label"),
-            rule("handoff_to_human"),
-            rule(null),
-          ],
-        },
-      },
-    };
-    const out = renameTurnRuleTools(
-      bag,
-      new Map([["Lookup", "lookup_2"]]),
-      new Set(["Lookup"]),
-    );
-    const rules = (
-      (out.guardrails as Record<string, unknown>).turnReview as {
-        rules: { unlessTool: string | null }[];
-      }
-    ).rules;
-    expect(rules.map((r) => r.unlessTool)).toEqual([
-      "lookup_2",
-      "set_labels",
-      "handoff_to_human",
-      null,
-    ]);
-    // A component the bundle carries without granting it, renamed because a native owns its
-    // name, does not take the native's rule.
-    const carried = renameTurnRuleTools(
-      { guardrails: { turnReview: { rules: [rule("set_labels")] } } },
-      new Map([["set_labels", "set_labels_2"]]),
-      new Set(),
-    );
-    expect(carried.guardrails).toEqual({
-      turnReview: { rules: [rule("set_labels")] },
-    });
-    // A bundle's own tool under a native's retired name keeps its rule.
-    const own = renameTurnRuleTools(
-      { guardrails: { turnReview: { rules: [rule("assign_label")] } } },
-      new Map(),
-      new Set(["assign_label"]),
-    );
-    expect(own.guardrails).toEqual({
-      turnReview: { rules: [rule("assign_label")] },
-    });
   });
 });
 

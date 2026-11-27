@@ -2518,7 +2518,8 @@
       "turnRules": "Rules",
       "turnRulesHint": "Checked on the reply about to be sent, before the model and at no model cost. A rule that fires follows the action, redos and ending above, and the turn cannot then end in silence.",
       "turnRuleTool": "Unless this tool ran in the turn",
-      "turnRuleToolHint": "The tool's name, such as handoff_to_human. Empty, the rule fires whenever the pattern matches."
+      "turnRuleToolHint": "With None, the rule fires whenever the pattern matches. Only the tools listed can excuse a reply.",
+      "turnRuleToolNone": "None"
     },
     "handoffAgentChoice": "Let the AI choose",
     "handoffAgentChoiceDecisions": "This handoff is set to let the AI choose, and questions and rules have no model to choose: pick Chatwoot routing or a specific agent or team.",

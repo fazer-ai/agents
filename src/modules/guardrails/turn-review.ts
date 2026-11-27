@@ -28,6 +28,7 @@ import {
   type LangfuseConfig,
 } from "@/graph/observability";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import { HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
 import {
   extractTokenUsage,
   UsageCapture,
@@ -60,6 +61,7 @@ import type {
   TurnReviewFallback,
   TurnReviewRule,
 } from "./settings";
+import { isTurnRuleExcusingTool } from "./settings";
 import { firstTurnRuleMatch } from "./turn-rules";
 import {
   analysisFailed,
@@ -483,9 +485,11 @@ export function turnRuleSilenceFeedback(
 // What a `skip_reply` is answered with after a rule sent the reply back: the silence is refused.
 export function turnRuleSilenceNote(
   rule: Pick<TurnReviewRule, "note">,
+  // The call refused: `skip_reply`, or a transfer that carried no message for the customer.
+  tool: string = SKIP_REPLY_TOOL,
 ): string {
   return [
-    `${TURN_REVIEW_NOTE_MARK}: a chamada a ${SKIP_REPLY_TOOL} NÃO foi executada. Uma regra configurada pelo operador recusou a sua resposta anterior neste turno, e o cliente ainda não recebeu nada. O que o operador pede nesta situação está entre <${RULE_NOTE_TAG}>.`,
+    `${TURN_REVIEW_NOTE_MARK}: a chamada a ${tool} NÃO foi executada. Uma regra configurada pelo operador recusou a sua resposta anterior neste turno, e o cliente ainda não recebeu nada. O que o operador pede nesta situação está entre <${RULE_NOTE_TAG}>.`,
     fencedRuleNote(rule.note),
     RULE_REDO_CLOSING,
   ].join("\n");
@@ -557,9 +561,9 @@ export interface TurnReviewGate {
   // past the attempts or a review held.
   pending: () => GuardrailDecision | null;
   // The graph's `reviewsCall`: whether a write call of this name goes through `reviewCall` at all.
-  // With the reviewer off only a `skip_reply` does, and only while a rule's reply is owed in this
-  // turn (a rule whose tool ran since is owed nothing): it is
-  // the one call a rule's redo may not end in. Every other write then runs as it would with no
+  // With the reviewer off only a `skip_reply` or a transfer does, and only while a rule's reply is
+  // owed in this turn (a rule whose tool ran since is owed nothing): a silence is the one end a
+  // rule's redo may not have. Every other write then runs as it would with no
   // review: no review, no ownership read around it.
   reviewsCall: (name: string, turn: BaseMessage[]) => boolean;
   // The graph's `turnReviewHalted`: a call still flagged past the attempts, or a review held under
@@ -663,6 +667,11 @@ export function buildTurnReviewGate(
   if (!gr.enabled || !tr.enabled) return null;
   // Two checkers, each optional: the model reviewer and the operator's rules.
   if (!tr.judge && tr.rules.length === 0) return null;
+  // Only a tool of the closed list excuses a rule, here as in the reader: a config that reached
+  // this gate another way keeps its rule and loses the exception.
+  const rules = tr.rules.map((r) =>
+    isTurnRuleExcusingTool(r.unlessTool) ? r : { ...r, unlessTool: null },
+  );
   const reviewer: GroundingReviewerModel = p.reviewer ?? {
     runnable: false,
     reason: "not_resolved",
@@ -983,13 +992,29 @@ export function buildTurnReviewGate(
     return outcome === "exhausted" && !canRedo ? { rationale } : null;
   };
 
-  // The tool a rule excuses the reply for acted in the turn: called, not refused by the review or
-  // the graph, not failed, and not answered with a refusal of its own (a precondition, a fence, a
-  // write that changed nothing), which reads as an ordinary result.
-  const ranInTurn = (turn: BaseMessage[], tool: string) =>
-    groundingToolCalls(turn, []).some(
-      (c) => c.name === tool && !c.notRun && !c.isError && !c.noEffect,
+  // The tools that acted in the turn: called, not refused by the review or the graph, not failed,
+  // and not answered with a refusal of their own (a precondition, a fence, a write that changed
+  // nothing), which reads as an ordinary result. Read once per review, however many rules ask:
+  // pairing the calls with their results is work on the server's own thread.
+  const actedIn = (turn: BaseMessage[]): Set<string> =>
+    new Set(
+      groundingToolCalls(turn, [])
+        .filter((c) => !c.notRun && !c.isError && !c.noEffect)
+        .map((c) => c.name),
     );
+  const ranInTurn = (turn: BaseMessage[], tool: string) =>
+    actedIn(turn).has(tool);
+  // A call that ends the turn with nothing said to the customer: `skip_reply`, or a transfer whose
+  // message for the customer is written blank, the declared silence. One with no such argument is
+  // not: where the turn answers the customer the tool's schema refuses it, and where it does not
+  // (a muted turn) that is the transfer's only shape.
+  const leavesSilent = (call: { name: string; args: unknown }): boolean => {
+    if (call.name === SKIP_REPLY_TOOL) return true;
+    if (call.name !== HANDOFF_TOOL_NAME) return false;
+    const said = (call.args as { customerMessage?: unknown } | null)
+      ?.customerMessage;
+    return typeof said === "string" && said.trim() === "";
+  };
   // Whether the reply a rule refused is still owed: not once the rule's tool ran.
   const stillOwed = (turn: BaseMessage[]): TurnReviewRule | null =>
     owed && !(owed.unlessTool && ranInTurn(turn, owed.unlessTool))
@@ -1009,8 +1034,9 @@ export function buildTurnReviewGate(
     turn: BaseMessage[],
     step: Extract<TurnStep, { kind: "reply" }>,
   ): Promise<TurnReviewRule | "failed" | null> => {
-    const candidates = tr.rules.filter(
-      (r) => !(r.unlessTool && ranInTurn(turn, r.unlessTool)),
+    const acted = actedIn(turn);
+    const candidates = rules.filter(
+      (r) => !(r.unlessTool && acted.has(r.unlessTool)),
     );
     if (candidates.length === 0) return null;
     const started = Date.now();
@@ -1052,15 +1078,23 @@ export function buildTurnReviewGate(
         alongside: opts?.alongside ?? [],
       };
       // A `skip_reply` after a rule sent the reply back is the silence the rule's redo may not end
-      // in. It is refused unless the rule's tool ran, or is called in this same step.
-      const rule = call.name === SKIP_REPLY_TOOL ? stillOwed(turn) : null;
+      // in, and so is a transfer with no message for the customer, after which nobody reviews the
+      // reply. Refused unless the rule's tool ran, or is called in this same step.
+      const rule = leavesSilent(call) ? stillOwed(turn) : null;
       if (rule && !stopped && !p.signal?.aborted) {
+        // The rule's tool called beside it settles the debt, unless that call is itself the
+        // silence: a transfer with no message for the customer leaves the reply owed.
         const siblings =
-          (turn.at(-1) as { tool_calls?: { name: string }[] } | undefined)
-            ?.tool_calls ?? [];
-        if (!siblings.some((c) => c.name === rule.unlessTool))
+          (
+            turn.at(-1) as
+              | { tool_calls?: { name: string; args: unknown }[] }
+              | undefined
+          )?.tool_calls ?? [];
+        if (
+          !siblings.some((c) => c.name === rule.unlessTool && !leavesSilent(c))
+        )
           return (await ruleFlag(rule, step, true)) === "revised"
-            ? turnRuleSilenceNote(rule)
+            ? turnRuleSilenceNote(rule, call.name)
             : null;
       }
       if (!tr.judge) return null;
@@ -1092,7 +1126,7 @@ export function buildTurnReviewGate(
           ? turnRuleSilenceFeedback(rule)
           : null;
       }
-      if (tr.rules.length > 0) {
+      if (rules.length > 0) {
         const fired = await reviewRules(turn, step);
         if (p.signal?.aborted) return null;
         if (fired === "failed") {
@@ -1122,7 +1156,9 @@ export function buildTurnReviewGate(
     },
     pending: () => decision,
     reviewsCall: (name, turn) =>
-      tr.judge || (name === SKIP_REPLY_TOOL && stillOwed(turn) !== null),
+      tr.judge ||
+      ((name === SKIP_REPLY_TOOL || name === HANDOFF_TOOL_NAME) &&
+        stillOwed(turn) !== null),
     halted: () => held || refused,
   };
 }

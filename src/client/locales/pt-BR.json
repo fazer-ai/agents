@@ -2610,7 +2610,8 @@
       "turnRules": "Regras",
       "turnRulesHint": "Conferidas na resposta que está para sair, antes do modelo e sem custo de modelo. A regra que dispara segue a ação, as tentativas e o encerramento acima, e o turno não pode então terminar em silêncio.",
       "turnRuleTool": "A menos que esta ferramenta tenha rodado no turno",
-      "turnRuleToolHint": "O nome da ferramenta, como handoff_to_human. Vazio, a regra dispara sempre que o padrão aparecer."
+      "turnRuleToolHint": "Com Nenhuma, a regra dispara sempre que o padrão aparecer. Só as ferramentas da lista desculpam uma resposta.",
+      "turnRuleToolNone": "Nenhuma"
     },
     "handoffAgentChoice": "A IA escolhe",
     "handoffAgentChoiceDecisions": "Esta transferência está em “A IA escolhe”, e perguntas e regras não têm modelo para escolher: troque para o roteamento do Chatwoot ou para um agente ou time específico.",

@@ -40,6 +40,7 @@ import {
   type GuardrailTurnReviewConfig,
   MAX_TURN_REVIEW_RULES,
   readGuardrailsConfig,
+  TURN_RULE_EXCUSING_TOOLS,
   TURN_RULE_PATTERN_MAX,
   type TurnReviewRule,
   turnReviewJudges,
@@ -96,7 +97,7 @@ const NOTE =
 const PROMISE: TurnReviewRule = {
   name: "promessa-sem-transferir",
   pattern: "vou (encaminhar|passar|transferir)",
-  unlessTool: "transferir",
+  unlessTool: "handoff_to_human",
   note: NOTE,
 };
 const BANNED: TurnReviewRule = {
@@ -269,12 +270,13 @@ describe("settings", () => {
         turnReview: {
           judge: false,
           rules: [
-            { ...PROMISE, unlessTool: "  transferir  " },
+            { ...PROMISE, unlessTool: "  handoff_to_human  " },
             { ...PROMISE, pattern: "[" },
             { ...PROMISE, pattern: "a".repeat(TURN_RULE_PATTERN_MAX + 1) },
             { ...PROMISE, note: "  " },
             { ...PROMISE, name: "" },
             { name: "n", pattern: " x ", note: "o", unlessTool: 7 },
+            { ...BANNED, unlessTool: "set_labels" },
             "regra",
           ],
         },
@@ -282,9 +284,11 @@ describe("settings", () => {
     }).turnReview;
     expect(judge).toBe(false);
     // The pattern is kept as typed (a space can be part of it), the tool name trimmed.
+    // A tool outside the closed list is no exception: the rule stays and always fires.
     expect(rules).toEqual([
       PROMISE,
       { name: "n", pattern: " x ", note: "o", unlessTool: null },
+      BANNED,
     ]);
   });
 
@@ -344,6 +348,25 @@ describe("settings", () => {
     ).toBe("guardrails.turnReview.rules");
   });
 
+  // Only a tool whose "acted" contract is tested may excuse a rule (docs/turn-review.md).
+  test("a write is refused for a tool outside the closed list, at the tool's own path", () => {
+    const e = refusalOf({
+      guardrails: {
+        turnReview: {
+          rules: [BANNED, { ...PROMISE, unlessTool: "set_labels" }],
+        },
+      },
+    });
+    expect(e.field).toBe("guardrails.turnReview.rules.1.unlessTool");
+    for (const tool of TURN_RULE_EXCUSING_TOOLS)
+      expect(() =>
+        assertSettingsClosedValues(
+          withRule({ ...PROMISE, unlessTool: tool }),
+          {},
+        ),
+      ).not.toThrow();
+  });
+
   test("a whole rule, and one with no tool, are stored", () => {
     expect(() =>
       assertSettingsClosedValues(
@@ -379,6 +402,25 @@ describe("an imported bundle", () => {
     expect([...taken.paths].sort()).toEqual([
       "guardrails.turnReview.rules.1",
       "guardrails.turnReview.rules.2",
+    ]);
+  });
+
+  // The same answer the reader gives: the rule is kept and its exception is not.
+  test("a tool outside the closed list is taken out of the rule, which stays, and is named", () => {
+    const settings = {
+      guardrails: {
+        turnReview: {
+          rules: [{ ...PROMISE, unlessTool: "set_labels" }, PROMISE],
+        },
+      },
+    };
+    const taken = dropUnusableImportedSettingsInPlace(settings);
+    expect(readGuardrailsConfig(settings).turnReview.rules).toEqual([
+      { ...PROMISE, unlessTool: null },
+      PROMISE,
+    ]);
+    expect([...taken.paths]).toEqual([
+      "guardrails.turnReview.rules.0.unlessTool",
     ]);
   });
 
@@ -561,20 +603,20 @@ describe("the rules in the gate", () => {
     async () => {
       const ran = gate(cfg({})).g;
       expect(
-        await ran?.reviewReply(after("transferir", "ran"), DRAFT),
+        await ran?.reviewReply(after("handoff_to_human", "ran"), DRAFT),
       ).toBeNull();
       const vetoed = gate(cfg({})).g;
       expect(
-        await vetoed?.reviewReply(after("transferir", "vetoed"), DRAFT),
+        await vetoed?.reviewReply(after("handoff_to_human", "vetoed"), DRAFT),
       ).toBeTruthy();
       const failed = gate(cfg({})).g;
       expect(
-        await failed?.reviewReply(after("transferir", "failed"), DRAFT),
+        await failed?.reviewReply(after("handoff_to_human", "failed"), DRAFT),
       ).toBeTruthy();
       // A precondition or a fence refused it inside the tool: the result reads "ok", nothing happened.
       const idle = gate(cfg({})).g;
       expect(
-        await idle?.reviewReply(after("transferir", "idle"), DRAFT),
+        await idle?.reviewReply(after("handoff_to_human", "idle"), DRAFT),
       ).toBeTruthy();
       // Another tool's call excuses nothing.
       const other = gate(cfg({})).g;
@@ -590,7 +632,7 @@ describe("the rules in the gate", () => {
       const { g } = gate(cfg({ rules: [PROMISE, BANNED] }));
       expect(await g?.reviewReply(asked(), "O prazo é de 10 dias.")).toBeNull();
       const note = await g?.reviewReply(
-        after("transferir", "ran"),
+        after("handoff_to_human", "ran"),
         "Seu REEMBOLSO sai amanhã.",
       );
       expect(note?.instruction).toContain(BANNED.note);
@@ -666,7 +708,9 @@ describe("the rules in the gate", () => {
       const { g } = gate(cfg({ maxAttempts: 1 }));
       expect(await g?.reviewReply(asked(), DRAFT)).toBeTruthy();
       // The redo called the tool: the turn may end with no further text.
-      expect(await g?.reviewReply(after("transferir", "ran"), "")).toBeNull();
+      expect(
+        await g?.reviewReply(after("handoff_to_human", "ran"), ""),
+      ).toBeNull();
       expect(g?.pending()).toBeNull();
     },
   );
@@ -694,7 +738,10 @@ describe("the rules in the gate", () => {
           content: "",
           tool_calls: ["skip_reply", ...siblings].map((name, i) => ({
             name,
-            args: {},
+            args:
+              name === "handoff_to_human"
+                ? { customerMessage: "Já volto." }
+                : {},
             id: `s${i}`,
           })),
         }),
@@ -705,7 +752,7 @@ describe("the rules in the gate", () => {
       expect(await g?.reviewCall(skip(), SKIP)).toBeNull();
       expect(await g?.reviewReply(asked(), DRAFT)).toBeTruthy();
       // Beside the rule's tool in the same step, the silence is what follows a transfer.
-      expect(await g?.reviewCall(skip(["transferir"]), SKIP)).toBeNull();
+      expect(await g?.reviewCall(skip(["handoff_to_human"]), SKIP)).toBeNull();
       const note = await g?.reviewCall(skip(), SKIP);
       expect(note).toContain(TURN_REVIEW_NOTE_MARK);
       expect(note).toContain(NOTE);
@@ -728,6 +775,58 @@ describe("the rules in the gate", () => {
         "call skip_reply revised",
         "reply - revised",
       ]);
+    },
+  );
+
+  // The bug it catches: the redo called `handoff_to_human` with an empty `customerMessage`, the
+  // declared silence, which ran unreviewed and ended the turn with no reply and no fallback.
+  test.skipIf(!dbUp)(
+    "a transfer with no message after a rule's redo is the same silence, with the reviewer off or on",
+    async () => {
+      const transfer = (customerMessage?: string) => ({
+        name: "handoff_to_human",
+        args: customerMessage === undefined ? {} : { customerMessage },
+        id: "h0",
+      });
+      const turn = (call: ReturnType<typeof transfer>) => [
+        ...asked(),
+        new AIMessage({ content: "", tool_calls: [call] }),
+      ];
+      for (const judge of [false, true]) {
+        const r = reviewer([CLEAN]);
+        const { f, g } = gate(
+          cfg({ judge, maxAttempts: 2, fallback: "template" }),
+          judge ? { make: r.make } : {},
+        );
+        expect(await g?.reviewReply(asked(), DRAFT)).toBeTruthy();
+        // The rule's own tool, called with nothing to say: refused, and one attempt spent.
+        const silent = transfer("  ");
+        const note = await g?.reviewCall(turn(silent), silent);
+        expect(note).toContain(TURN_REVIEW_NOTE_MARK);
+        expect(note).toContain("handoff_to_human NÃO foi executada");
+        expect(note).toContain(NOTE);
+        expect(g?.halted()).toBe(false);
+        // One that speaks to the customer is the transfer the rule asked for.
+        const spoken = transfer("Um atendente vai continuar.");
+        expect(await g?.reviewCall(turn(spoken), spoken)).toBeNull();
+        // With no such argument it is not a declared silence: the tool's schema answers that
+        // where the turn speaks, and a muted turn's transfer has no other shape.
+        const bare = transfer();
+        expect(await g?.reviewCall(turn(bare), bare)).toBeNull();
+        expect(g?.halted()).toBe(false);
+        // Past the attempts the batch is held.
+        expect(await g?.reviewCall(turn(silent), silent)).toBeNull();
+        expect([g?.halted(), g?.pending()]).toEqual([
+          true,
+          { kind: "replaced", reply: TEMPLATE },
+        ]);
+        expect(
+          (await lines(f.turnId as string))
+            .filter((l) => l.step === "call" && l.outcome)
+            .map((l) => `${l.tool} ${l.outcome}`)
+            .sort(),
+        ).toEqual(["handoff_to_human exhausted", "handoff_to_human revised"]);
+      }
     },
   );
 
@@ -897,19 +996,21 @@ describe("the rules in the gate", () => {
     "with the reviewer off only a skip_reply goes through the call review, and only while a reply is owed",
     async () => {
       const rulesOnly = gate(cfg({})).g;
-      const before = [
-        rulesOnly?.reviewsCall("transferir", asked()),
+      const asks = () => [
+        rulesOnly?.reviewsCall("set_labels", asked()),
+        rulesOnly?.reviewsCall("handoff_to_human", asked()),
         rulesOnly?.reviewsCall("skip_reply", asked()),
       ];
+      const before = asks();
       await rulesOnly?.reviewReply(asked(), DRAFT);
-      expect([
-        before,
-        rulesOnly?.reviewsCall("transferir", asked()),
-        rulesOnly?.reviewsCall("skip_reply", asked()),
-      ]).toEqual([[false, false], false, true]);
+      // A transfer is looked at too while a reply is owed: one with no message is a silence.
+      expect([before, asks()]).toEqual([
+        [false, false, false],
+        [false, true, true],
+      ]);
       // The rule's tool ran since: nothing is owed in that turn.
       expect(
-        rulesOnly?.reviewsCall("skip_reply", after("transferir", "ran")),
+        rulesOnly?.reviewsCall("skip_reply", after("handoff_to_human", "ran")),
       ).toBe(false);
       // Under observe nothing is ever owed.
       const watching = gate(cfg({ action: "observe" })).g;
@@ -949,6 +1050,8 @@ type Step = {
     | { name: string; n?: number; args?: object; id?: string | null }
   )[];
 };
+// What a transfer written as a bare name tells the customer: one with nothing to say is silence.
+const SAID = "Um atendente vai continuar o seu atendimento.";
 class ScriptedModel {
   seen: BaseMessage[][] = [];
   constructor(private steps: Step[]) {}
@@ -960,7 +1063,11 @@ class ScriptedModel {
       content: step.text,
       tool_calls: (step.calls ?? []).map((c, i) =>
         typeof c === "string"
-          ? { name: c, args: {}, id: `call_${this.seen.length}_${i}` }
+          ? {
+              name: c,
+              args: c === "handoff_to_human" ? { customerMessage: SAID } : {},
+              id: `call_${this.seen.length}_${i}`,
+            }
           : {
               name: c.name,
               args: c.args ?? { n: c.n },
@@ -987,6 +1094,7 @@ class ScriptedModel {
 // decides per call from its argument.
 type Idle =
   | "report"
+  | "precondition"
   | "callback"
   | "declined"
   | ((args: { n?: number }) => boolean);
@@ -1007,6 +1115,8 @@ async function runTurn(
         if (how === "callback") onNoEffect(name);
         else if (how === "declined")
           fenceReporterOf(config)?.({ declined: true });
+        else if (how === "precondition")
+          fenceReporterOf(config)?.({ fence: "precondition", partial: false });
         else if (how === "report" || (typeof how === "function" && how(input)))
           fenceReporterOf(config)?.({ noEffect: true });
         return "ok";
@@ -1024,7 +1134,13 @@ async function runTurn(
     model: model as unknown as BaseChatModel,
     systemPrompt: "PROMPT",
     checkpointer: new MemorySaver(),
-    tools: [named("transferir"), named("skip_reply"), ...extra],
+    // A tool given by the test stands in for the stub of the same name.
+    tools: [
+      ...[named("handoff_to_human"), named("skip_reply")].filter(
+        (t) => !extra.some((e) => e.name === t.name),
+      ),
+      ...extra,
+    ],
     retrySilence: () => true,
     reviewCall: g
       ? (turn, call, o) => {
@@ -1085,12 +1201,12 @@ describe("the rules in the graph", () => {
       const t = await runTurn(
         [
           { text: DRAFT },
-          { text: "", calls: ["transferir"] },
+          { text: "", calls: ["handoff_to_human"] },
           { text: "Pronto, o time já foi avisado." },
         ],
         cfg({}),
       );
-      expect(t.ran).toEqual(["transferir"]);
+      expect(t.ran).toEqual(["handoff_to_human"]);
       expect(t.last).toBe("Pronto, o time já foi avisado.");
       expect(t.thread).not.toContain(DRAFT);
       expect(t.thread).not.toContain(NOTE);
@@ -1109,12 +1225,14 @@ describe("the rules in the graph", () => {
     "a call of the rule's tool that reported doing nothing does not excuse the promise, and one that acted does",
     async () => {
       const steps = [
-        { text: "", calls: ["transferir"] },
+        { text: "", calls: ["handoff_to_human"] },
         { text: DRAFT },
         { text: "Não consegui transferir agora. Qual é o seu telefone?" },
       ];
-      const refused = await runTurn(steps, cfg({}), { transferir: "report" });
-      expect(refused.ran).toEqual(["transferir"]);
+      const refused = await runTurn(steps, cfg({}), {
+        handoff_to_human: "report",
+      });
+      expect(refused.ran).toEqual(["handoff_to_human"]);
       expect(refused.outcomes).toEqual(["revised"]);
       expect(refused.last).toBe(
         "Não consegui transferir agora. Qual é o seu telefone?",
@@ -1132,9 +1250,9 @@ describe("the rules in the graph", () => {
     "a call the other side declined still ran, and excuses the reply",
     async () => {
       const t = await runTurn(
-        [{ text: "", calls: ["transferir"] }, { text: DRAFT }],
+        [{ text: "", calls: ["handoff_to_human"] }, { text: DRAFT }],
         cfg({}),
-        { transferir: "declined" },
+        { handoff_to_human: "declined" },
       );
       expect([t.idleResults, t.outcomes, t.last]).toEqual([[false], [], DRAFT]);
     },
@@ -1147,12 +1265,12 @@ describe("the rules in the graph", () => {
     async () => {
       const t = await runTurn(
         [
-          { text: "", calls: ["transferir"] },
+          { text: "", calls: ["handoff_to_human"] },
           { text: DRAFT },
           { text: "Qual é o seu telefone?" },
         ],
         cfg({}),
-        { transferir: "callback" },
+        { handoff_to_human: "callback" },
       );
       expect(t.idleResults).toEqual([true]);
       expect(t.outcomes).toEqual(["revised"]);
@@ -1161,7 +1279,7 @@ describe("the rules in the graph", () => {
 
   // The same through a handler of the product: `resolve_conversation` called off before its write.
   test.skipIf(!dbUp)(
-    "a native tool that refuses on its own does not excuse the promise",
+    "a native tool that refuses on its own marks its result as nothing done",
     async () => {
       const toggled: string[] = [];
       const client = {
@@ -1175,16 +1293,7 @@ describe("the rules in the graph", () => {
             { text: "Certo, vou encerrar o atendimento." },
             { text: "Posso ajudar em algo mais?" },
           ],
-          cfg({
-            rules: [
-              {
-                name: "encerra-sem-resolver",
-                pattern: "vou encerrar",
-                unlessTool: "resolve_conversation",
-                note: NOTE,
-              },
-            ],
-          }),
+          cfg({ rules: [] }),
           {},
           buildNativeTools({
             client,
@@ -1193,17 +1302,9 @@ describe("the rules in the graph", () => {
           }).filter((t) => t.name === "resolve_conversation"),
         );
       const calledOff = await run(false);
-      expect([toggled, calledOff.idleResults, calledOff.outcomes]).toEqual([
-        [],
-        [true],
-        ["revised"],
-      ]);
+      expect([toggled, calledOff.idleResults]).toEqual([[], [true]]);
       const done = await run(true);
-      expect([toggled, done.idleResults, done.outcomes]).toEqual([
-        ["toggleStatus"],
-        [false],
-        [],
-      ]);
+      expect([toggled, done.idleResults]).toEqual([["toggleStatus"], [false]]);
     },
   );
 
@@ -1235,16 +1336,7 @@ describe("the rules in the graph", () => {
             { text: "Certo, vou marcar o seu atendimento." },
             { text: "Posso ajudar em algo mais?" },
           ],
-          cfg({
-            rules: [
-              {
-                name: "marca-sem-etiqueta",
-                pattern: "vou marcar",
-                unlessTool: "set_labels",
-                note: NOTE,
-              },
-            ],
-          }),
+          cfg({ rules: [] }),
           {},
           buildNativeTools({
             client,
@@ -1252,18 +1344,16 @@ describe("the rules in the graph", () => {
             protectedLabels: ["vip"],
           }).filter((x) => x.name === "set_labels"),
         );
-        return [written, t.idleResults, t.outcomes];
+        return [written, t.idleResults];
       };
-      expect(await run("vip", "vip")).toEqual([[], [true, true], ["revised"]]);
+      expect(await run("vip", "vip")).toEqual([[], [true, true]]);
       expect(await run("urgente", "vip")).toEqual([
         [["urgente"]],
         [false, true],
-        [],
       ]);
       expect(await run("vip", "urgente")).toEqual([
         [["urgente"]],
         [true, false],
-        [],
       ]);
     },
   );
@@ -1276,22 +1366,163 @@ describe("the rules in the graph", () => {
       const failing = failableTool(
         async () => toolFailure("Could not transfer right now."),
         {
-          name: "transferir_2",
-          description: "transferir",
+          name: "handoff_to_human",
+          description: "handoff_to_human",
           schema: z.object({ n: z.number().optional() }),
         },
       );
       const t = await runTurn(
         [
-          { text: "", calls: [{ name: "transferir_2", n: 1, id: null }] },
+          { text: "", calls: [{ name: "handoff_to_human", n: 1, id: null }] },
           { text: "Certo, vou passar o seu caso." },
           { text: "Qual é o seu telefone?" },
         ],
-        cfg({ rules: [{ ...PROMISE, unlessTool: "transferir_2" }] }),
+        cfg({}),
         {},
         [failing],
       );
       expect([t.statuses, t.outcomes]).toEqual([["error"], ["revised"]]);
+    },
+  );
+
+  // Every way `handoff_to_human` can be called and not act, each leaving the promise owed. A
+  // tool is in the closed list of `unlessTool` because this table walks its refusals.
+  test.skipIf(!dbUp)(
+    "handoff_to_human excuses a promise only when it acted, whatever way it did not",
+    async () => {
+      const failing = (
+        run: () => Promise<never> | ReturnType<typeof toolFailure>,
+      ) =>
+        failableTool(async () => run(), {
+          name: "handoff_to_human",
+          description: "handoff_to_human",
+          schema: z.object({ n: z.number().optional() }),
+        });
+      const sent: string[] = [];
+      const client = {
+        sendPrivateNote: async () => sent.push("note"),
+        toggleStatus: async () => sent.push("open"),
+      } as unknown as ChatwootClient;
+      const native = (stillWanted: () => Promise<boolean>) =>
+        buildNativeTools({ client, conversationId: 11, stillWanted }).filter(
+          (t) => t.name === "handoff_to_human",
+        );
+      const call = {
+        name: "handoff_to_human",
+        args: { reason: "pedido", customerMessage: SAID },
+      };
+      const ways: [
+        string,
+        Parameters<typeof runTurn>[2],
+        StructuredToolInterface[],
+        Step["calls"],
+      ][] = [
+        [
+          "a fence refused it whole",
+          { handoff_to_human: "report" },
+          [],
+          ["handoff_to_human"],
+        ],
+        [
+          "a precondition did not hold",
+          { handoff_to_human: "precondition" },
+          [],
+          ["handoff_to_human"],
+        ],
+        [
+          "the handler said so by name",
+          { handoff_to_human: "callback" },
+          [],
+          ["handoff_to_human"],
+        ],
+        [
+          "it answered a failure",
+          {},
+          [failing(() => toolFailure("Could not transfer."))],
+          ["handoff_to_human"],
+        ],
+        [
+          "it threw",
+          {},
+          [
+            failing(async () => {
+              throw new Error("chatwoot 502");
+            }),
+          ],
+          ["handoff_to_human"],
+        ],
+        [
+          "it failed with no call id",
+          {},
+          [failing(() => toolFailure("Could not transfer."))],
+          [{ name: "handoff_to_human", n: 1, id: null }],
+        ],
+        [
+          "the turn was withdrawn after the note",
+          {},
+          native(async () => false),
+          [call],
+        ],
+      ];
+      for (const [way, idle, extra, calls] of ways) {
+        const t = await runTurn(
+          [
+            { text: "", calls },
+            { text: DRAFT },
+            { text: "Não consegui transferir agora. Qual é o seu telefone?" },
+          ],
+          cfg({}),
+          idle,
+          extra,
+        );
+        expect([way, t.outcomes]).toEqual([way, ["revised"]]);
+      }
+      expect(sent).toEqual(["note"]);
+      // The real handler, wanted to the end: the transfer happened and the promise stands.
+      const done = await runTurn(
+        [{ text: "", calls: [call] }, { text: DRAFT }],
+        cfg({}),
+        {},
+        native(async () => true),
+      );
+      expect([sent, done.outcomes, done.last]).toEqual([
+        ["note", "note", "open"],
+        [],
+        DRAFT,
+      ]);
+    },
+  );
+
+  // The review's veto is the eighth way: the call never ran.
+  test.skipIf(!dbUp)(
+    "a redo that transfers with no message does not run, and the fallback is pending",
+    async () => {
+      const silent = {
+        name: "handoff_to_human",
+        args: { customerMessage: "" },
+      };
+      const t = await runTurn(
+        [{ text: DRAFT }, { text: "", calls: [silent] }],
+        cfg({ maxAttempts: 1, fallback: "template" }),
+      );
+      expect(t.ran).toEqual([]);
+      expect(t.pending).toEqual({ kind: "replaced", reply: TEMPLATE });
+      expect(t.outcomes).toEqual(["exhausted", "revised"]);
+      // With an attempt left the agent is sent on, and the transfer that speaks runs.
+      const again = await runTurn(
+        [
+          { text: DRAFT },
+          { text: "", calls: [silent] },
+          { text: "", calls: ["handoff_to_human"] },
+          { text: "Pronto, o time já foi avisado." },
+        ],
+        cfg({ maxAttempts: 2 }),
+      );
+      expect([again.ran, again.pending, again.last]).toEqual([
+        ["handoff_to_human"],
+        null,
+        "Pronto, o time já foi avisado.",
+      ]);
     },
   );
 
@@ -1300,11 +1531,11 @@ describe("the rules in the graph", () => {
     "a rules-only turn runs its writes without asking the call review",
     async () => {
       const t = await runTurn(
-        [{ text: "", calls: ["transferir"] }, { text: DRAFT }],
+        [{ text: "", calls: ["handoff_to_human"] }, { text: DRAFT }],
         cfg({}),
       );
       expect([t.ran, t.callsReviewed, t.last]).toEqual([
-        ["transferir"],
+        ["handoff_to_human"],
         [],
         DRAFT,
       ]);
@@ -1323,14 +1554,14 @@ describe("the rules in the graph", () => {
             {
               text: "",
               calls: [
-                { name: "transferir", n: 1, id },
-                { name: "transferir", n: 2, id },
+                { name: "handoff_to_human", n: 1, id },
+                { name: "handoff_to_human", n: 2, id },
               ],
             },
             { text: DRAFT },
           ],
           cfg({}),
-          { transferir: odd },
+          { handoff_to_human: odd },
         );
         expect(t.idleResults).toEqual([true, false]);
         // The second transfer acted, so the promise stands.
@@ -1388,13 +1619,13 @@ describe("the rules in the graph", () => {
       const t = await runTurn(
         [
           { text: DRAFT },
-          { text: "", calls: ["transferir"] },
+          { text: "", calls: ["handoff_to_human"] },
           { text: "" },
           { text: "" },
         ],
         cfg({ maxAttempts: 1, fallback: "template" }),
       );
-      expect(t.ran).toEqual(["transferir"]);
+      expect(t.ran).toEqual(["handoff_to_human"]);
       expect(t.pending).toBeNull();
       expect(t.outcomes).toEqual(["revised"]);
     },

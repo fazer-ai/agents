@@ -53,11 +53,11 @@ import {
   type GroundingAction,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
-  MAX_TOOL_NAME_LEN,
   MAX_TURN_REVIEW_RULES,
   readCompetitors,
   TURN_REVIEW_ACTIONS,
   TURN_REVIEW_FALLBACKS,
+  TURN_RULE_EXCUSING_TOOLS,
   TURN_RULE_NAME_MAX,
   TURN_RULE_NOTE_MAX,
   TURN_RULE_PATTERN_MAX,
@@ -1783,24 +1783,30 @@ export function GuardrailsTab({
                                 )}
                                 description={t(
                                   "editor.guardrails.turnRuleToolHint",
-                                  "The tool's name, such as handoff_to_human. Empty, the rule fires whenever the pattern matches.",
+                                  "With None, the rule fires whenever the pattern matches. Only the tools listed can excuse a reply.",
                                 )}
                               >
-                                <Input
+                                <Select
                                   value={rule.unlessTool ?? ""}
                                   onChange={(e) =>
                                     setRule(i, {
-                                      // Only spaces is an empty field: the server trims the name.
-                                      unlessTool: e.target.value.trim()
-                                        ? e.target.value
-                                        : null,
+                                      unlessTool: e.target.value || null,
                                     })
                                   }
-                                  list="gr-turn-rule-tools"
-                                  maxLength={MAX_TOOL_NAME_LEN}
-                                  spellCheck={false}
                                   data-testid={`gr-turn-rule-${i}-tool`}
-                                />
+                                >
+                                  <option value="">
+                                    {t(
+                                      "editor.guardrails.turnRuleToolNone",
+                                      "None",
+                                    )}
+                                  </option>
+                                  {TURN_RULE_EXCUSING_TOOLS.map((name) => (
+                                    <option key={name} value={name}>
+                                      {name}
+                                    </option>
+                                  ))}
+                                </Select>
                               </FormField>
                               <FormField
                                 label={t(
@@ -1833,11 +1839,6 @@ export function GuardrailsTab({
                             </div>
                           );
                         })}
-                        <datalist id="gr-turn-rule-tools">
-                          {agentTools.map((tl) => (
-                            <option key={tl.name} value={tl.name} />
-                          ))}
-                        </datalist>
                         <div>
                           <Button
                             variant="secondary"

@@ -70,4 +70,28 @@ describe("loggedUrl", () => {
       ),
     ).toBe("http://localhost/api/v1/chatwoot/webhook/[redacted]");
   });
+
+  // An unparsable target used to throw out of the `onAfterResponse` log hook, and an uncaught throw
+  // there ends the process rather than the request: HTTP/1.1 with an empty `Host` restarted the app.
+  test.each([
+    ["an empty target", ""],
+    ["a bare path with no authority", "/api/health"],
+    ["an empty-host absolute form", "http:///api/health"],
+  ])("never throws on %s", (_name, url) => {
+    expect(() => loggedUrl(url, "/api/health")).not.toThrow();
+  });
+
+  test("names the matched route instead of echoing an unparsable target", () => {
+    // The credential can sit anywhere in a target that does not parse, so nothing of it is printed.
+    expect(
+      loggedUrl(
+        "/api/v1/chatwoot/webhook/tok3n",
+        "/api/v1/chatwoot/webhook/:routeToken",
+      ),
+    ).toBe("[unparsable-url] /api/v1/chatwoot/webhook/:routeToken");
+  });
+
+  test("prints only the marker when nothing matched", () => {
+    expect(loggedUrl("", null)).toBe("[unparsable-url]");
+  });
 });

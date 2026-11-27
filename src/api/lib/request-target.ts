@@ -35,8 +35,21 @@ export function loggedPath(pathname: string, route: string | null): string {
     .join("/");
 }
 
+// A request can reach the log middleware without a target `new URL` accepts: HTTP/1.1 with an empty
+// `Host` header, a malformed absolute-form target a proxy rewrote, or a bare path on a connection
+// with no authority. The throw used to escape `onAfterResponse`, and an uncaught throw there ends
+// the process instead of the request, so one such request restarted every replica. The target is not
+// echoed when it cannot be parsed — a credential can sit in any position — but the matched route is
+// a template, so naming it keeps the line worth reading.
+export const UNPARSABLE_URL = "[unparsable-url]";
+
 export function loggedUrl(url: string, route: string | null): string {
-  const parsed = new URL(url);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return route ? `${UNPARSABLE_URL} ${route}` : UNPARSABLE_URL;
+  }
   const keys = [...parsed.searchParams.keys()];
   const query = keys.length
     ? `?${keys.map((k) => `${encodeURIComponent(k)}=${REDACTED}`).join("&")}`

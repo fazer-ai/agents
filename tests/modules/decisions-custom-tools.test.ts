@@ -964,7 +964,7 @@ describe("an imported rule on a renamed tool", () => {
       guardrails: {
         turnReview: {
           rules: [
-            rule("lookup"),
+            rule(" lookup "),
             rule("assign_label"),
             rule("handoff_to_human"),
             rule(null),

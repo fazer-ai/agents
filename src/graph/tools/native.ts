@@ -1883,7 +1883,9 @@ function setLabelsTool(ctx: ToolCtx) {
           "Could not set the labels: this tool no longer takes a complete `labels` list. Name only what changes, with `add` and `remove` — a label you do not name is left as it is.",
         );
       }
-      if (add.length === 0 && remove.length === 0) {
+      // A blank entry names nothing: `applyLabelDelta` trims it away, and a delta of blanks would
+      // otherwise read as labels that already were what the call asked.
+      if (![...add, ...remove].some((l) => l.trim() !== "")) {
         noEffect();
         return didNothing(
           "Could not set the labels (neither `add` nor `remove` named anything).",
@@ -2392,12 +2394,28 @@ function kanbanMoveTool(ctx: ToolCtx) {
             .join(", ")}.`,
         );
       }
-      if (step.id === ctx.kanban.currentStepId) {
-        ctx.onNoEffect?.("kanban_move_card");
-        // Already where the call asked: nothing to write, and the answer the model wanted.
-        return acted(`The card is already in "${step.name}".`);
-      }
       const taskId = ctx.kanban.taskId;
+      if (step.id === ctx.kanban.currentStepId) {
+        // The step in hand was read before the model wrote, and an operator or an automation may
+        // have moved the card since: read again before saying the card is where the call asked.
+        let live: number;
+        try {
+          const fresh = (await ctx.client.getKanbanTask(taskId)) as {
+            board_step_id?: unknown;
+          } | null;
+          live = Number(fresh?.board_step_id);
+        } catch {
+          ctx.onNoEffect?.("kanban_move_card");
+          return didNothing(
+            "Could not move the card (it could not be read just now). Try again.",
+          );
+        }
+        if (live === step.id) {
+          ctx.onNoEffect?.("kanban_move_card");
+          // Already where the call asked: nothing to write, and the answer the model wanted.
+          return acted(`The card is already in "${step.name}".`);
+        }
+      }
       await ctx.client.moveKanbanTask(taskId, step.id);
       // NOTE: Best-effort fleet event (ids only, no PII).
       if (ctx.base && ctx.tenantId != null) {

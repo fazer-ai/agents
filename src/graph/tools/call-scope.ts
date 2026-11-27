@@ -60,8 +60,10 @@ export function noteCallFailed(): void {
 
 // What a native tool's handler answers: its text, said as one of the two things it can be. `acted`
 // is a call that did what it was asked, or was accepted to do it (a deferred close, an image
-// queued for the reply). `didNothing` is every other answer: a refusal, a missing scope, a run
-// called off, a state that already was what the call asked. The type is the contract: a handler
+// queued for the reply), and also one that found things already as it asked (the label already
+// set, the card already in that step): the reply that says so is true, and sending it back would
+// end in the fallback. `didNothing` is every other answer: a refusal, a missing scope, a run
+// called off, a call that named nothing to do. The type is the contract: a handler
 // cannot return a bare string (native.ts, `nativeTool`), so a new answer has to pick one. Only
 // `acted` lets the call excuse a turn review rule (`unlessTool`, docs/turn-review.md).
 declare const OUTCOME: unique symbol;

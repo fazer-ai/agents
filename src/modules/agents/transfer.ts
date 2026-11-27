@@ -3192,10 +3192,12 @@ export function renameTurnRuleTools(
         ? (rule as Record<string, unknown>).unlessTool
         : undefined;
     if (typeof tool !== "string") return rule;
+    // Looked up as the reader stores it (`readTurnRule` trims the name).
+    const name = tool.trim();
     const to =
-      byModelName.get(tool) ??
-      (customToolNames.has(tool) ? tool : currentNativeToolName(tool));
-    if (to === tool) return rule;
+      byModelName.get(name) ??
+      (customToolNames.has(name) ? name : currentNativeToolName(name));
+    if (to === name) return rule;
     touched = true;
     return { ...(rule as Record<string, unknown>), unlessTool: to };
   });

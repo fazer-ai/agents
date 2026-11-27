@@ -23,6 +23,7 @@ const client = (over: Record<string, unknown> = {}) =>
     getLatestIncomingMessage: async () => ({ id: 1, isReaction: true }),
     addMessageReaction: async () => ({}),
     moveKanbanTask: async () => ({}),
+    getKanbanTask: async () => ({ board_step_id: 1 }),
     updateKanbanTask: async () => ({}),
     sendPrivateNote: async () => ({}),
     ...over,
@@ -60,6 +61,37 @@ const named = (ctx: Ctx, name: string) =>
   buildNativeTools(ctx).find((t) => t.name === name);
 
 describe("native tools say whether the call acted", () => {
+  // The bug it catches: the step in hand is read before the model writes. A card somebody moved
+  // meanwhile was answered "already there" for the step it had left, with no move.
+  test("a card that left the step in hand is moved, and one still there is not", async () => {
+    const moved: number[] = [];
+    const at = (liveStep: number) =>
+      run(
+        named(
+          {
+            ...everything(),
+            client: client({
+              getKanbanTask: async () => ({ board_step_id: liveStep }),
+              moveKanbanTask: async (_task: number, step: number) => {
+                moved.push(step);
+                return {};
+              },
+            }),
+          },
+          "kanban_move_card",
+        ),
+        { targetStep: "Novo" },
+      );
+    const stale = await at(2);
+    const there = await at(1);
+    expect([moved, stale.didNothing, there.didNothing]).toEqual([
+      [1],
+      false,
+      false,
+    ]);
+    expect(there.text).toContain("already in");
+  });
+
   // The bug it catches: a native added with `tool()` or `failableTool()` directly, whose answers
   // nothing obliges to pick a side, so its refusals read as a call that acted.
   test("every native of the catalog is built by the wrappers that type its answers", () => {
@@ -117,6 +149,23 @@ describe("native tools say whether the call acted", () => {
         {},
       ),
       await run(named(ctx, "calculator"), { expression: "2 +" }),
+      // Blank entries name no label.
+      await run(named(ctx, "set_labels"), { add: ["   "], remove: [""] }),
+      // The step in hand says the card is there, and the card cannot be read to confirm it.
+      await run(
+        named(
+          {
+            ...ctx,
+            client: client({
+              getKanbanTask: async () => {
+                throw new Error("timeout");
+              },
+            }),
+          },
+          "kanban_move_card",
+        ),
+        { targetStep: "Novo" },
+      ),
     ];
     expect(refused.filter((r) => !r.didNothing).map((r) => r.text)).toEqual([]);
   });

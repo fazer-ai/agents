@@ -765,13 +765,26 @@ describe("the rules in the gate", () => {
   // The bug it catches: with the reviewer off the gate still took every write through the call
   // review, which costs an ownership read per write and one more after the batch, for a review that
   // can refuse nothing.
-  test("with the reviewer off only skip_reply goes through the call review", () => {
-    const rulesOnly = gate(cfg({})).g;
-    expect([
-      rulesOnly?.reviewsCall("transferir"),
-      rulesOnly?.reviewsCall("skip_reply"),
-    ]).toEqual([false, true]);
-  });
+  test.skipIf(!dbUp)(
+    "with the reviewer off only a skip_reply goes through the call review, and only while a reply is owed",
+    async () => {
+      const rulesOnly = gate(cfg({})).g;
+      const before = [
+        rulesOnly?.reviewsCall("transferir"),
+        rulesOnly?.reviewsCall("skip_reply"),
+      ];
+      await rulesOnly?.reviewReply(asked(), DRAFT);
+      expect([
+        before,
+        rulesOnly?.reviewsCall("transferir"),
+        rulesOnly?.reviewsCall("skip_reply"),
+      ]).toEqual([[false, false], false, true]);
+      // Under observe nothing is ever owed.
+      const watching = gate(cfg({ action: "observe" })).g;
+      await watching?.reviewReply(asked(), DRAFT);
+      expect(watching?.reviewsCall("skip_reply")).toBe(false);
+    },
+  );
 
   test.skipIf(!dbUp)(
     "a note that tries to close its fence stays inside it",

@@ -84,7 +84,7 @@ import { inCallScope } from "./tools/call-scope";
 import {
   type CallReport,
   fenceReporterOf,
-  reportsNoEffect,
+  reportsNothingDone,
   withFenceReporter,
 } from "./tools/fence-report";
 import { isMcpArgumentRefusal } from "./tools/mcp";
@@ -1629,7 +1629,7 @@ export function buildAgentGraph({
           t.invoke(
             input as never,
             withFenceReporter(config ?? {}, (r: CallReport, callId) => {
-              if (reportsNoEffect(r)) mark();
+              if (reportsNothingDone(r)) mark();
               outer?.(r, callId);
             }),
           ),

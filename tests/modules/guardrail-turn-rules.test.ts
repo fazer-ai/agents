@@ -24,7 +24,10 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
 import { buildNativeTools } from "@/graph/tools/native";
 import type { AppError } from "@/lib/errors";
-import { assertSettingsClosedValues } from "@/modules/agents/service";
+import {
+  assertSettingsClosedValues,
+  dropUnusableImportedSettingsInPlace,
+} from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
@@ -350,6 +353,31 @@ describe("settings", () => {
         {},
       ),
     ).not.toThrow();
+  });
+});
+
+describe("an imported bundle", () => {
+  // The bug it catches: the import took out the one bad field of a rule (or nothing, for a field
+  // that is missing), leaving in the settings a rule the runtime never runs.
+  test("a rule the reader does not take is dropped whole and named", () => {
+    const settings = {
+      guardrails: {
+        turnReview: {
+          rules: [
+            PROMISE,
+            { name: "sem-nota", pattern: "x", unlessTool: null },
+            { ...BANNED, pattern: "(" },
+            BANNED,
+          ],
+        },
+      },
+    };
+    const taken = dropUnusableImportedSettingsInPlace(settings);
+    expect(settings.guardrails.turnReview.rules).toEqual([PROMISE, BANNED]);
+    expect([...taken.paths].sort()).toEqual([
+      "guardrails.turnReview.rules.1",
+      "guardrails.turnReview.rules.2",
+    ]);
   });
 });
 
@@ -915,7 +943,11 @@ class ScriptedModel {
 // (fence-report.ts), `callback` the `onNoEffect` the tool sources are handed (`scopedNoEffect`, as
 // prepare.ts wraps it, with no listener behind it, which is the reactive turn), and a function
 // decides per call from its argument.
-type Idle = "report" | "callback" | ((args: { n?: number }) => boolean);
+type Idle =
+  | "report"
+  | "callback"
+  | "declined"
+  | ((args: { n?: number }) => boolean);
 async function runTurn(
   steps: Step[],
   c: GuardrailsConfig,
@@ -931,6 +963,8 @@ async function runTurn(
         ran.push(name);
         const how = idle[name];
         if (how === "callback") onNoEffect(name);
+        else if (how === "declined")
+          fenceReporterOf(config)?.({ declined: true });
         else if (how === "report" || (typeof how === "function" && how(input)))
           fenceReporterOf(config)?.({ noEffect: true });
         return "ok";
@@ -1046,6 +1080,21 @@ describe("the rules in the graph", () => {
       const acted = await runTurn(steps, cfg({}));
       expect(acted.outcomes).toEqual([]);
       expect(acted.last).toBe(DRAFT);
+    },
+  );
+
+  // The bug it catches: an HTTP lookup that answers a status its operator declared a result (a 404
+  // meaning "no record") says `declined`, and that read as a call that did nothing, so the true
+  // "no record found" reply was sent back until the fallback.
+  test.skipIf(!dbUp)(
+    "a call the other side declined still ran, and excuses the reply",
+    async () => {
+      const t = await runTurn(
+        [{ text: "", calls: ["transferir"] }, { text: DRAFT }],
+        cfg({}),
+        { transferir: "declined" },
+      );
+      expect([t.idleResults, t.outcomes, t.last]).toEqual([[false], [], DRAFT]);
     },
   );
 

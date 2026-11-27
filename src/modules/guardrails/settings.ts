@@ -562,6 +562,11 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
 
 // A stored rule the matcher can run, or null: a rule missing its name or note, or whose pattern would
 // be refused on a write, is dropped, since the bag is free-form and a bad row must not stop a turn.
+// Whether the reader takes this stored rule. The import asks, to drop whole the ones it does not.
+export function turnRuleUsable(v: unknown): boolean {
+  return readTurnRule(v) !== null;
+}
+
 function readTurnRule(v: unknown): TurnReviewRule | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const b = v as Record<string, unknown>;

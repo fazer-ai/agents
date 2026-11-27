@@ -302,7 +302,7 @@ function suggestTool(ctx: RagToolCtx) {
       if (targetId == null) {
         return didNothing("No knowledge base is configured for suggestions.");
       }
-      const { created } = await createSuggestion({
+      const { created, status } = await createSuggestion({
         ctx: sysCtx(ctx.tenantId),
         knowledgeBaseId: targetId,
         proposedContent: args.content,
@@ -313,6 +313,12 @@ function suggestTool(ctx: RagToolCtx) {
         base: ctx.base,
       });
       if (!created) {
+        // Refused or discarded before: it is in nobody's queue, and this call put it in none.
+        if (status === "REJECTED" || status === "DISCARDED") {
+          return didNothing(
+            "This entry was already suggested for this knowledge base and was not accepted. Nothing was queued; do not suggest it again.",
+          );
+        }
         // Already with a human, which is what the call asked for.
         return acted(
           "This entry was already suggested for this knowledge base and a human has it. Nothing new was queued; do not suggest it again.",

@@ -83,7 +83,10 @@ import {
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
-import { readGuardrailsConfig } from "@/modules/guardrails/settings";
+import {
+  readGuardrailsConfig,
+  turnRuleUsable,
+} from "@/modules/guardrails/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -1479,6 +1482,17 @@ export function dropUnusableImportedSettingsInPlace(
     if (raw === null || parseToolPreconditionList(raw) !== null) continue;
     delete (guards as Record<string, unknown>)[name];
     takePath(dropped, `toolPreconditions.${name}`);
+  }
+  // A turn review rule the reader does not take (a field missing, a pattern that does not compile)
+  // is dropped whole and named, for the same reason: taking out the one bad field would leave a
+  // rule the settings list and the runtime never runs.
+  const turnRules = plainObject(plainObject(bag.guardrails)?.turnReview)?.rules;
+  if (Array.isArray(turnRules)) {
+    for (let i = turnRules.length - 1; i >= 0; i--) {
+      if (turnRuleUsable(turnRules[i])) continue;
+      turnRules.splice(i, 1);
+      takePath(dropped, `guardrails.turnReview.rules.${i}`);
+    }
   }
   // The contact gate's local rule, on the same terms: the reader drops one that does not parse,
   // so it is taken out and named rather than stored as a list the runtime never reads.

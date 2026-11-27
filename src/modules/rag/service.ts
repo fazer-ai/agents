@@ -291,7 +291,8 @@ export function normalizedSuggestionHash(content: string): string {
 // a model, which reads a tool failure and can write the fact again, so the answer is still a refusal.
 export async function createSuggestion(
   params: SuggestParams,
-): Promise<{ id: bigint; created: boolean }> {
+  // `status`: where an entry already suggested stands, when this call created none.
+): Promise<{ id: bigint; created: boolean; status?: string }> {
   const base = params.base ?? basePrisma;
   // NOTE: Labelled by the names the CALLER sends (`title` / `content` / `rationale` on both the REST
   // body and the suggestion tool), not by the columns they land in.
@@ -337,9 +338,9 @@ export async function createSuggestion(
             normalizedHash,
           },
         },
-        select: { id: true },
+        select: { id: true, status: true },
       });
-      return { id: existing.id, created: false };
+      return { id: existing.id, created: false, status: existing.status };
     }
     // NOTE: Armed in the same transaction as the row, so a SCREENING item always has the job that
     // takes it out of SCREENING.

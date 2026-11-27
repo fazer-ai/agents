@@ -4,6 +4,8 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { inCallScope } from "@/graph/tools/call-scope";
+import { buildRagTools } from "@/graph/tools/rag";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -247,8 +249,42 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
     const b = await propose(kb, "prazo de reembolso   7 dias");
     const c = await propose(kb, "PRAZO DE REEMBOLSO, 7 DIAS!");
     expect(a.created).toBe(true);
-    expect(b).toEqual({ id: a.id, created: false });
-    expect(c).toEqual({ id: a.id, created: false });
+    expect(b).toMatchObject({ id: a.id, created: false });
+    expect(c).toMatchObject({ id: a.id, created: false });
+  });
+
+  // The bug it catches: an entry a human had refused answered "a human has it" when suggested
+  // again, and the call counted as one that acted, though it queued nothing for anybody.
+  test("an entry suggested again says where the first one stands, and a refused one is a call that did nothing", async () => {
+    const kb = await newKb();
+    const [suggest] = buildRagTools(
+      {
+        tenantId,
+        base: appDb,
+        knowledgeBaseIds: [kb],
+        threadId: `${tenantId}:7:${++seq}`,
+      },
+      ["suggest_kb_entry"],
+    );
+    const again = () =>
+      inCallScope(async () =>
+        (suggest as NonNullable<typeof suggest>).invoke({
+          content: "Troca em até 30 dias.",
+        }),
+      );
+    const first = await again();
+    const waiting = await again();
+    await suDb.approvalQueueItem.updateMany({
+      where: { tenantId, knowledgeBaseId: kb },
+      data: { status: "REJECTED" },
+    });
+    const refused = await again();
+    expect([first.didNothing, waiting.didNothing, refused.didNothing]).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(String(refused.value)).toContain("was not accepted");
   });
 
   test("a different word, number or base is a new entry", async () => {

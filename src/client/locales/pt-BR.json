@@ -1938,7 +1938,7 @@
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
       "ttsFallback": "A voz reserva está num outro provedor e não tem chave de API própria, então não consegue assumir uma resposta que a voz principal perder.",
       "ttsNormalize": "A reescrita para fala está ligada mas a configuração de modelo dela não pode rodar, então o áudio sai sem ela. Confira provedor, modelo, chave e endpoint.",
-      "turnReview": "A revisão do turno está ligada, mas o modelo de chat dos guardrails, em que ela roda, não tem chave de API: nenhum passo é revisado, as chamadas rodam e as respostas saem sem revisão, a não ser que “Quando uma checagem não consegue rodar” esteja em segurar.",
+      "turnReview": "A revisão do turno está ligada, mas o modelo de chat dos guardrails, em que ela roda, não tem chave de API: o revisor não confere nenhum passo (as suas regras continuam valendo), as chamadas rodam e as respostas saem sem a revisão dele, a não ser que “Quando uma checagem não consegue rodar” esteja em segurar.",
       "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
     "configIssueGuardrailsFailing": "Os guardrails estão ligados, mas {{failures}} das Checagens não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}). Uma checagem que não rodou não julgou nada: a mensagem seguiu sem checagem, ou foi segurada se “Quando uma checagem não consegue rodar” estiver em segurar. Confira “Modelo do guardrails”, “Base URL” e “Chave de API”.",
@@ -1960,7 +1960,7 @@
       "tts": "A credencial de resposta em áudio está referenciada, mas ainda não foi preenchida.",
       "ttsFallback": "A credencial da voz reserva está referenciada, mas ainda não foi preenchida, então a voz reserva não consegue assumir uma resposta.",
       "ttsNormalize": "A credencial da reescrita para fala está referenciada, mas ainda não foi preenchida.",
-      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, foi referenciada mas ainda não foi preenchida, então nenhum passo é revisado.",
+      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, foi referenciada mas ainda não foi preenchida, então o revisor não confere nenhum passo (as suas regras continuam valendo).",
       "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
     },
     "configIssuesTitle": "Avisos de configuração",
@@ -1980,7 +1980,7 @@
       "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",
       "ttsFallback": "A credencial da voz reserva não existe mais, então a voz reserva não consegue assumir uma resposta.",
       "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
-      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, não existe mais, então nenhum passo é revisado.",
+      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, não existe mais, então o revisor não confere nenhum passo (as suas regras continuam valendo).",
       "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
     },
     "configIssueWatcherModel": "O modelo não tem chave de API definida, então este agente não consegue analisar as conversas que observa.",
@@ -2003,7 +2003,7 @@
       "tts": "A credencial da resposta em áudio é de um tipo que não pode ser usado como chave de API, então as respostas saem em texto. Escolha uma credencial que guarde uma única chave.",
       "ttsFallback": "A credencial da voz reserva é de um tipo que não pode ser usado como chave de API, então a voz reserva não consegue assumir uma resposta. Escolha uma credencial que guarde uma única chave.",
       "ttsNormalize": "A credencial da reescrita para fala é de um tipo que não pode ser usado como chave de API, então as respostas são faladas sem a reescrita. Escolha uma credencial que guarde uma única chave.",
-      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, é de um tipo que não serve como chave de API, então nenhum passo é revisado. Escolha uma credencial que guarde uma única chave.",
+      "turnReview": "A credencial do modelo de chat dos guardrails, em que a revisão do turno roda, é de um tipo que não serve como chave de API, então o revisor não confere nenhum passo (as suas regras continuam valendo). Escolha uma credencial que guarde uma única chave.",
       "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave."
     },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",

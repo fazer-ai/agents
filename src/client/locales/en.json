@@ -1854,7 +1854,7 @@
       "tts": "Audio replies are on but have no API key set.",
       "ttsFallback": "A fallback voice is set on another provider with no API key of its own, so it cannot take a reply the main voice drops.",
       "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.",
-      "turnReview": "Turn review is on but the guardrails chat model it runs on has no API key set, so no step is reviewed: calls run and replies go out unreviewed, unless “When a check cannot run” is set to hold them.",
+      "turnReview": "Turn review is on but the guardrails chat model it runs on has no API key set, so the reviewer checks no step (your rules still run): calls run and replies go out without its review, unless “When a check cannot run” is set to hold them.",
       "vision": "Image/document reading is on but has no API key set."
     },
     "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run judged nothing: the message went on unchecked, or was held if “When a check cannot run” is set to hold. Check “Guardrails model”, “Base URL” and “API key”.",
@@ -1876,7 +1876,7 @@
       "tts": "The audio-reply credential is referenced but not filled in yet.",
       "ttsFallback": "The fallback-voice credential is referenced but not filled in yet, so the fallback voice cannot take a reply.",
       "ttsNormalize": "The speech-rewrite credential is referenced but not filled in yet.",
-      "turnReview": "The guardrails chat model's credential, which turn review runs on, is referenced but not filled in yet, so no step is reviewed.",
+      "turnReview": "The guardrails chat model's credential, which turn review runs on, is referenced but not filled in yet, so the reviewer checks no step (your rules still run).",
       "vision": "The image-reading credential is referenced but not filled in yet."
     },
     "configIssuesTitle": "Configuration warnings",
@@ -1896,7 +1896,7 @@
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",
       "ttsFallback": "The fallback-voice credential no longer exists, so the fallback voice cannot take a reply.",
       "ttsNormalize": "The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.",
-      "turnReview": "The guardrails chat model's credential, which turn review runs on, no longer exists, so no step is reviewed.",
+      "turnReview": "The guardrails chat model's credential, which turn review runs on, no longer exists, so the reviewer checks no step (your rules still run).",
       "vision": "The image-reading credential no longer exists, so images and documents are not read."
     },
     "configIssueWatcherModel": "The model has no API key set, so this agent cannot analyze the conversations it observes.",
@@ -1919,7 +1919,7 @@
       "tts": "The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.",
       "ttsFallback": "The fallback-voice credential is a type that cannot be used as an API key, so the fallback voice cannot take a reply. Pick a credential that holds a single key.",
       "ttsNormalize": "The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.",
-      "turnReview": "The guardrails chat model's credential, which turn review runs on, is a type that cannot be used as an API key, so no step is reviewed. Pick a credential that holds a single key.",
+      "turnReview": "The guardrails chat model's credential, which turn review runs on, is a type that cannot be used as an API key, so the reviewer checks no step (your rules still run). Pick a credential that holds a single key.",
       "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key."
     },
     "conflictToast": "This agent was changed elsewhere. Reload, or save again to overwrite.",

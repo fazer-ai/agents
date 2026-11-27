@@ -48,6 +48,7 @@ import {
 import {
   buildTurnReviewGate,
   TURN_REVIEW_NOTE_MARK,
+  turnRuleSilenceWaitNote,
 } from "@/modules/guardrails/turn-review";
 import {
   firstTurnRuleMatch,
@@ -424,6 +425,31 @@ describe("an imported bundle", () => {
     ]);
   });
 
+  // The bug it catches: the exception taken out after the list was compacted, so the report
+  // named the place of a rule that had been dropped, not the one that lost its exception.
+  test("a field taken out of a rule is named by the rule's place in the bundle", () => {
+    const settings = {
+      guardrails: {
+        turnReview: {
+          rules: [
+            { name: "sem-nota", pattern: "x" },
+            { ...PROMISE, unlessTool: "set_labels" },
+            { ...PROMISE, unlessTool: " handoff_to_human " },
+          ],
+        },
+      },
+    };
+    const taken = dropUnusableImportedSettingsInPlace(settings);
+    expect(settings.guardrails.turnReview.rules).toEqual([
+      { ...PROMISE, unlessTool: null },
+      PROMISE,
+    ]);
+    expect([...taken.paths].sort()).toEqual([
+      "guardrails.turnReview.rules.0",
+      "guardrails.turnReview.rules.1.unlessTool",
+    ]);
+  });
+
   // The bug it catches: 21 good rules were all stored while the reader runs 20, so the last one
   // was a guard the settings listed and nothing ran, with no warning.
   test("a rule past the count the reader runs is dropped and named by its place in the bundle", () => {
@@ -751,8 +777,11 @@ describe("the rules in the gate", () => {
       // Before any rule fired, silence is the agent's to choose.
       expect(await g?.reviewCall(skip(), SKIP)).toBeNull();
       expect(await g?.reviewReply(asked(), DRAFT)).toBeTruthy();
-      // Beside the rule's tool in the same step, the silence is what follows a transfer.
-      expect(await g?.reviewCall(skip(["handoff_to_human"]), SKIP)).toBeNull();
+      // Beside the rule's transfer it still does not run, since that call has not either, but
+      // it spends no attempt: the transfer's result decides whether the turn may end silent.
+      const waiting = await g?.reviewCall(skip(["handoff_to_human"]), SKIP);
+      expect(waiting).toBe(turnRuleSilenceWaitNote("handoff_to_human"));
+      expect(waiting).not.toContain(NOTE);
       const note = await g?.reviewCall(skip(), SKIP);
       expect(note).toContain(TURN_REVIEW_NOTE_MARK);
       expect(note).toContain(NOTE);
@@ -814,6 +843,16 @@ describe("the rules in the gate", () => {
         const bare = transfer();
         expect(await g?.reviewCall(turn(bare), bare)).toBeNull();
         expect(g?.halted()).toBe(false);
+        // Another case that needs a person, with no line for the transfer it may fall back to.
+        const said = {
+          name: "open_case_in_inbox",
+          args: { reason: "r", handoff_message: "Um atendente vai continuar." },
+        };
+        expect([
+          g?.reviewsCall("open_case_in_inbox", asked()),
+          await g?.reviewCall(turn(said as never), said),
+        ]).toEqual([true, null]);
+        expect(g?.halted()).toBe(false);
         // Past the attempts the batch is held.
         expect(await g?.reviewCall(turn(silent), silent)).toBeNull();
         expect([g?.halted(), g?.pending()]).toEqual([
@@ -827,6 +866,66 @@ describe("the rules in the gate", () => {
             .sort(),
         ).toEqual(["handoff_to_human exhausted", "handoff_to_human revised"]);
       }
+    },
+  );
+
+  // The bug it catches: the silence read as "only spaces" while the handler reads a placeholder
+  // as nothing too, and a call of the same name beside the silent one let it through.
+  test.skipIf(!dbUp)(
+    "every silent transfer is refused on its own, whatever is written beside it",
+    async () => {
+      const transfer = (id: string, customerMessage?: string) => ({
+        name: "handoff_to_human",
+        args: customerMessage === undefined ? {} : { customerMessage },
+        id,
+      });
+      const refused = async (
+        call: { name: string; args: object; id: string },
+        beside: { name: string; args: object; id: string }[] = [],
+      ) => {
+        const { g } = gate(cfg({ maxAttempts: 3 }));
+        await g?.reviewReply(asked(), DRAFT);
+        const turn = [
+          ...asked(),
+          new AIMessage({ content: "", tool_calls: [...beside, call] }),
+        ];
+        return ((await g?.reviewCall(turn, call)) ?? "").includes(NOTE);
+      };
+      const spoken = transfer("ok", "Um atendente vai continuar.");
+      expect({
+        placeholders: await Promise.all(
+          ["EMPTY", " n/a ", "None", "-", ""].map((m) =>
+            refused(transfer("p", m)),
+          ),
+        ),
+        besideOneWithNoArgument: await refused(transfer("a", ""), [
+          transfer("b"),
+        ]),
+        besideOneThatSpeaks: await refused(transfer("a", "N/A"), [spoken]),
+        theOneThatSpeaks: await refused(spoken, [transfer("a", "")]),
+        caseWithNoLine: await refused({
+          name: "open_case_in_inbox",
+          args: { reason: "r" },
+          id: "c",
+        }),
+        caseWithAPlaceholder: await refused({
+          name: "open_case_in_inbox",
+          args: { reason: "r", handoff_message: "EMPTY" },
+          id: "c",
+        }),
+        skipBesideASilentTransfer: await refused(
+          { name: "skip_reply", args: {}, id: "s" },
+          [transfer("a", "")],
+        ),
+      }).toEqual({
+        placeholders: [true, true, true, true, true],
+        besideOneWithNoArgument: true,
+        besideOneThatSpeaks: true,
+        theOneThatSpeaks: false,
+        caseWithNoLine: true,
+        caseWithAPlaceholder: true,
+        skipBesideASilentTransfer: true,
+      });
     },
   );
 
@@ -1522,6 +1621,59 @@ describe("the rules in the graph", () => {
         ["handoff_to_human"],
         null,
         "Pronto, o time já foi avisado.",
+      ]);
+    },
+  );
+
+  // The bug it catches: a `skip_reply` let through because the rule's transfer was written
+  // beside it, when that transfer then failed: the turn ended with nothing sent and no fallback.
+  test.skipIf(!dbUp)(
+    "a skip_reply beside the rule's transfer waits for it: a failed transfer leaves the reply owed",
+    async () => {
+      const failing = failableTool(
+        async () => toolFailure("Could not transfer right now."),
+        {
+          name: "handoff_to_human",
+          description: "handoff_to_human",
+          schema: z.object({ n: z.number().optional() }),
+        },
+      );
+      const steps = (after: Step[]) => [
+        { text: DRAFT },
+        { text: "", calls: ["handoff_to_human", "skip_reply"] },
+        ...after,
+      ];
+      const failed = await runTurn(
+        steps([{ text: "Não consegui transferir. Qual é o seu telefone?" }]),
+        cfg({ maxAttempts: 1, fallback: "template" }),
+        {},
+        [failing],
+      );
+      expect([failed.ran, failed.last, failed.pending]).toEqual([
+        [],
+        "Não consegui transferir. Qual é o seu telefone?",
+        null,
+      ]);
+      // Still silent after the failure: the one attempt is spent and the fallback ends the turn.
+      const silent = await runTurn(
+        steps([{ text: "", calls: ["skip_reply"] }]),
+        cfg({ maxAttempts: 1, fallback: "template" }),
+        {},
+        [failing],
+      );
+      expect([silent.ran, silent.pending]).toEqual([
+        [],
+        { kind: "replaced", reply: TEMPLATE },
+      ]);
+      // The transfer happened: the silence that follows it is the agent's to choose.
+      const done = await runTurn(
+        steps([{ text: "", calls: ["skip_reply"] }]),
+        cfg({ maxAttempts: 1, fallback: "template" }),
+      );
+      expect([done.ran, done.pending, done.outcomes]).toEqual([
+        ["handoff_to_human", "skip_reply"],
+        null,
+        ["revised"],
       ]);
     },
   );

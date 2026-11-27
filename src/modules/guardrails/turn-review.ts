@@ -28,7 +28,8 @@ import {
   type LangfuseConfig,
 } from "@/graph/observability";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
-import { HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
+import { HANDOFF_TOOL_NAME, OPEN_CASE_TOOL_NAME } from "@/graph/tools/catalog";
+import { customerLine } from "@/graph/tools/customer-line";
 import {
   extractTokenUsage,
   UsageCapture,
@@ -480,6 +481,18 @@ export function turnRuleSilenceFeedback(
     ].join("\n"),
     feedback: "",
   };
+}
+
+// The argument that carries a transfer's line for the customer, per tool that can transfer.
+const TRANSFER_LINE_ARG: Record<string, string | undefined> = {
+  [HANDOFF_TOOL_NAME]: "customerMessage",
+  [OPEN_CASE_TOOL_NAME]: "handoff_message",
+};
+
+// What a `skip_reply` beside the rule's transfer is answered with while the reply is owed: it
+// did not run, and whether the turn may end in silence is decided by that transfer's result.
+export function turnRuleSilenceWaitNote(tool: string): string {
+  return `${TURN_REVIEW_NOTE_MARK}: a chamada a ${SKIP_REPLY_TOOL} NÃO foi executada, porque uma resposta ao cliente ainda é devida neste turno. Leia o resultado de ${tool}: se a transferência aconteceu, não há mais nada a enviar. Se ela não aconteceu, responda ao cliente.`;
 }
 
 // What a `skip_reply` is answered with after a rule sent the reply back: the silence is refused.
@@ -1004,16 +1017,25 @@ export function buildTurnReviewGate(
     );
   const ranInTurn = (turn: BaseMessage[], tool: string) =>
     actedIn(turn).has(tool);
-  // A call that ends the turn with nothing said to the customer: `skip_reply`, or a transfer whose
-  // message for the customer is written blank, the declared silence. One with no such argument is
-  // not: where the turn answers the customer the tool's schema refuses it, and where it does not
-  // (a muted turn) that is the transfer's only shape.
+  // What a transfer's call tells the customer, read as its handler reads it (`customerLine`, so a
+  // placeholder such as "EMPTY" is nothing), or undefined when the call carries no such argument.
+  const transferLine = (call: {
+    name: string;
+    args: unknown;
+  }): string | undefined => {
+    const field = TRANSFER_LINE_ARG[call.name];
+    const said =
+      field && (call.args as Record<string, unknown> | null)?.[field];
+    return typeof said === "string" ? customerLine(said) : undefined;
+  };
+  // A call the model can end the turn with while saying nothing to the customer: `skip_reply`, a
+  // `handoff_to_human` whose message is written empty, an `open_case_in_inbox` with no line for
+  // the transfer it falls back to. A handoff with no such argument is not one: where the turn
+  // answers the customer its schema refuses the call, and a muted turn has no other shape.
   const leavesSilent = (call: { name: string; args: unknown }): boolean => {
     if (call.name === SKIP_REPLY_TOOL) return true;
-    if (call.name !== HANDOFF_TOOL_NAME) return false;
-    const said = (call.args as { customerMessage?: unknown } | null)
-      ?.customerMessage;
-    return typeof said === "string" && said.trim() === "";
+    if (call.name === OPEN_CASE_TOOL_NAME) return !transferLine(call);
+    return call.name === HANDOFF_TOOL_NAME && transferLine(call) === "";
   };
   // Whether the reply a rule refused is still owed: not once the rule's tool ran.
   const stillOwed = (turn: BaseMessage[]): TurnReviewRule | null =>
@@ -1077,13 +1099,13 @@ export function buildTurnReviewGate(
         ...(call.id ? { id: call.id } : callOrdinal(turn, opts?.index)),
         alongside: opts?.alongside ?? [],
       };
-      // A `skip_reply` after a rule sent the reply back is the silence the rule's redo may not end
-      // in, and so is a transfer with no message for the customer, after which nobody reviews the
-      // reply. Refused unless the rule's tool ran, or is called in this same step.
+      // A silence after a rule sent the reply back is the one end the rule's redo may not have:
+      // refused while the reply is owed, each call on its own. No call beside it settles the debt
+      // ahead of time, since a call that has not run is no proof anything will be delivered.
       const rule = leavesSilent(call) ? stillOwed(turn) : null;
       if (rule && !stopped && !p.signal?.aborted) {
-        // The rule's tool called beside it settles the debt, unless that call is itself the
-        // silence: a transfer with no message for the customer leaves the reply owed.
+        // A `skip_reply` written beside the rule's transfer, one that speaks, is what a model
+        // does after transferring: it waits for that call's result and spends no attempt.
         const siblings =
           (
             turn.at(-1) as
@@ -1091,11 +1113,13 @@ export function buildTurnReviewGate(
               | undefined
           )?.tool_calls ?? [];
         if (
-          !siblings.some((c) => c.name === rule.unlessTool && !leavesSilent(c))
+          call.name === SKIP_REPLY_TOOL &&
+          siblings.some((c) => c.name === rule.unlessTool && transferLine(c))
         )
-          return (await ruleFlag(rule, step, true)) === "revised"
-            ? turnRuleSilenceNote(rule, call.name)
-            : null;
+          return turnRuleSilenceWaitNote(rule.unlessTool as string);
+        return (await ruleFlag(rule, step, true)) === "revised"
+          ? turnRuleSilenceNote(rule, call.name)
+          : null;
       }
       if (!tr.judge) return null;
       const flagged = await review(
@@ -1157,7 +1181,7 @@ export function buildTurnReviewGate(
     pending: () => decision,
     reviewsCall: (name, turn) =>
       tr.judge ||
-      ((name === SKIP_REPLY_TOOL || name === HANDOFF_TOOL_NAME) &&
+      ((name === SKIP_REPLY_TOOL || name in TRANSFER_LINE_ARG) &&
         stillOwed(turn) !== null),
     halted: () => held || refused,
   };

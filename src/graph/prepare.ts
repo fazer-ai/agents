@@ -121,6 +121,7 @@ import {
   type GroundingReviewerModel,
   type GuardrailsConfig,
   guardrailCredentialRef,
+  guardrailsUseModel,
   readGuardrailsConfig,
   resolveGroundingReviewer,
   turnReviewJudges,
@@ -638,7 +639,9 @@ export async function loadAgentConfig(
   let guardrailsCredentialBaseUrl: string | null = null;
   // The chat model's key, or the decisions provider's, whichever the screening uses.
   const guardrailsRef = guardrailCredentialRef(guardrails);
-  if (guardrails.enabled && guardrailsRef) {
+  // Read only when a configured check runs on a model: a turn with the rules alone resolves and
+  // decrypts no key, so a stale or unreadable one cannot warn about it or stop it.
+  if (guardrailsRef && guardrailsUseModel(guardrails)) {
     const gEntry = await tryResolveApiKeyEntry(db, guardrailsRef);
     if (gEntry.state === "ok") {
       guardrailsApiKey = gEntry.secret;

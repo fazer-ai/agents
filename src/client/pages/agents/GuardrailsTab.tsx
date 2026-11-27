@@ -169,13 +169,8 @@ function ThresholdInput({
 
 // The agent's tool names, as a playground turn would have them, for the source picker. Best-effort:
 // a failed load leaves the list empty and the names already saved still show.
-interface AgentToolName {
-  name: string;
-  native: boolean;
-}
-
-function useAgentToolNames(agentId: string, wanted: boolean): AgentToolName[] {
-  const [names, setNames] = useState<AgentToolName[]>([]);
+function useAgentToolNames(agentId: string, wanted: boolean): string[] {
+  const [names, setNames] = useState<string[]>([]);
   useEffect(() => {
     if (!wanted || !/^\d+$/.test(agentId)) return;
     let live = true;
@@ -183,12 +178,13 @@ function useAgentToolNames(agentId: string, wanted: boolean): AgentToolName[] {
       .agents({ id: agentId })
       .playground.tools.get()
       .then(({ data }) => {
+        // NOTE: the conversation natives (labels, notes, hand-over) act on the conversation and
+        // return no facts, so they are not offered as sources.
         if (live && data)
           setNames(
-            data.tools.map((tl) => ({
-              name: tl.name,
-              native: tl.category === "native",
-            })),
+            data.tools
+              .filter((tl) => tl.category !== "native")
+              .map((tl) => tl.name),
           );
       })
       .catch(() => {});
@@ -285,13 +281,8 @@ export function GuardrailsTab({
   const tr = g.turnReview;
   const setTurnReview = (patch: Partial<GuardrailsConfig["turnReview"]>) =>
     setG((s) => ({ ...s, turnReview: { ...s.turnReview, ...patch } }));
-  const agentTools = useAgentToolNames(
-    agentId,
-    g.enabled && (fg.enabled || tr.enabled),
-  );
-  // The conversation natives (labels, notes, hand-over) act on the conversation and return no
-  // facts, so they are not offered as sources. A turn-review rule names any tool, natives included.
-  const toolNames = agentTools.filter((tl) => !tl.native).map((tl) => tl.name);
+  // Only the source picker reads the catalog: a rule's tool is chosen from a fixed list.
+  const toolNames = useAgentToolNames(agentId, g.enabled && fg.enabled);
   const setRule = (index: number, patch: Partial<TurnReviewRule>) =>
     setTurnReview({
       rules: tr.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)),

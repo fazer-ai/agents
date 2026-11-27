@@ -1062,6 +1062,44 @@ describe("GuardrailsTab turn review rules", () => {
     expect(form?.turnReview.rules).toEqual([saved]);
   });
 
+  // The bug it catches: the tab asked for the agent's toolset (which builds it, MCP servers
+  // included) whenever turn review was on, for a picker that reads a fixed list.
+  test("turn review alone asks for no tool catalog", async () => {
+    const asked: string[] = [];
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return new Response(JSON.stringify({ tools: [], entries: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const c = reviewing();
+      c.turnReview.rules = [
+        { name: "a", pattern: "a", unlessTool: null, note: "n" },
+      ];
+      const noop = () => {};
+      // A saved agent's id: with none the tab asks for no catalog whatever is on.
+      const tab = (g: GuardrailsConfig) => (
+        <GuardrailsTab
+          agentId="7"
+          guardrails={g}
+          setGuardrails={noop as never}
+          refusals={NO_REFUSALS}
+          dirty={false}
+          saving={false}
+          onSave={noop}
+          onDiscard={noop}
+        />
+      );
+      render(tab(c));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(asked.filter((u) => u.includes("/playground/tools"))).toEqual([]);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
   // Only a tool whose outcomes are tested can excuse a rule, so the field is a choice, not a text.
   test("the tool field offers the closed list and none, and nothing else", () => {
     const c = reviewing();

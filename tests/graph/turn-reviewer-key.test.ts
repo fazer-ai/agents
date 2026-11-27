@@ -146,4 +146,33 @@ describe.skipIf(!dbUp)("the turn reviewer's key at turn prep", () => {
     expect(loaded?.turnReviewer ?? null).toBeNull();
     expect(loaded?.guardrails.turnReview.rules).toHaveLength(1);
   });
+
+  // The bug it catches: the screening's key read and decrypted on every turn of an agent whose
+  // only check is the rules, so a stale entry warned about a model nothing calls.
+  test("the screening key is resolved only when a check runs on a model", async () => {
+    const rules = {
+      enabled: true,
+      judge: false,
+      rules: [{ name: "r", pattern: "x", note: "n" }],
+    };
+    const keyed = { provider: "openai", model: "gpt-4o-mini" };
+    const rulesOnly = await agentWith("Regras, sem triagem", {
+      ...keyed,
+      credentialRef: `vault:${keyId}`,
+      input: { enabled: false },
+      output: { enabled: false },
+      turnReview: rules,
+    });
+    const screening = await agentWith("Regras e triagem", {
+      ...keyed,
+      credentialRef: `vault:${keyId}`,
+      input: { enabled: false },
+      output: { enabled: true },
+      turnReview: rules,
+    });
+    expect([
+      (await load(rulesOnly))?.guardrailsApiKey,
+      (await load(screening))?.guardrailsApiKey,
+    ]).toEqual(["", "sk-test"]);
+  });
 });

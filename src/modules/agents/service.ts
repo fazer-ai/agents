@@ -84,6 +84,7 @@ import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
 import {
+  isTurnRuleExcusingTool,
   MAX_TURN_REVIEW_RULES,
   readGuardrailsConfig,
   turnRuleUsable,
@@ -1493,9 +1494,21 @@ export function dropUnusableImportedSettingsInPlace(
   if (Array.isArray(turnRules)) {
     const kept: unknown[] = [];
     for (const [i, rule] of turnRules.entries()) {
-      if (turnRuleUsable(rule) && kept.length < MAX_TURN_REVIEW_RULES)
-        kept.push(rule);
-      else takePath(dropped, `guardrails.turnReview.rules.${i}`);
+      if (!turnRuleUsable(rule) || kept.length >= MAX_TURN_REVIEW_RULES) {
+        takePath(dropped, `guardrails.turnReview.rules.${i}`);
+        continue;
+      }
+      // A tool outside the closed list: the rule stays and the exception goes, as the reader
+      // answers. Taken out here, before the list is compacted, so it is named by its own place.
+      const r = rule as Record<string, unknown>;
+      const tool =
+        typeof r.unlessTool === "string" ? r.unlessTool.trim() : r.unlessTool;
+      if (isTurnRuleExcusingTool(tool)) r.unlessTool = tool;
+      else if (tool != null) {
+        r.unlessTool = null;
+        takePath(dropped, `guardrails.turnReview.rules.${i}.unlessTool`);
+      }
+      kept.push(rule);
     }
     turnRules.splice(0, turnRules.length, ...kept);
   }

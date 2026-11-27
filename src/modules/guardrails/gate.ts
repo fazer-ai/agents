@@ -159,7 +159,10 @@ export interface GuardrailReport {
 export type GuardrailFailureCause =
   | "credential_not_found"
   | "model_unavailable"
-  | "analysis_failed";
+  | "analysis_failed"
+  // A turn review rule (turn-rules.ts) whose pattern ran out of time, or that the engine gave up on.
+  | "pattern_timeout"
+  | "pattern_error";
 
 // The cause in the words the note's reader uses. The provider's own error stays in the flow line.
 const HELD_CAUSE: Record<GuardrailFailureCause, string> = {
@@ -168,6 +171,10 @@ const HELD_CAUSE: Record<GuardrailFailureCause, string> = {
     "o modelo do guardrail não pôde ser usado com essa configuração",
   analysis_failed:
     "o modelo do guardrail falhou ou não respondeu dentro do limite",
+  pattern_timeout:
+    "o padrão de uma regra da revisão do turno não terminou de ser conferido dentro do limite",
+  pattern_error:
+    "o padrão de uma regra da revisão do turno não pôde ser conferido",
 };
 
 // The scores as one line an operator reads in the note: the tripped ones first.
@@ -237,7 +244,7 @@ export function chatwootNoteSink(
     const head = r.external
       ? externalNoteHead(r)
       : r.held
-        ? `Guardrail (${r.direction}): a checagem não pôde ser feita${r.cause ? ` (${HELD_CAUSE[r.cause]})` : ""}, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
+        ? `Guardrail (${r.direction}): a checagem não pôde ser feita${r.cause ? ` (${HELD_CAUSE[r.cause]}${r.rule ? `: regra "${r.rule}"` : ""})` : ""}, e a mensagem foi segurada.${r.scores?.length ? ` ${scoresLine(r.scores)}` : ""}`
         : r.scores
           ? `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${scoresLine(r.scores)}`
           : `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;

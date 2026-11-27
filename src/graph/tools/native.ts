@@ -2751,12 +2751,20 @@ function setVoicePreferenceTool(ctx: ToolCtx) {
       // (text→text, audio→audio), which is exactly how `shouldReplyWithAudio` treats null.
       const value =
         preference === "audio" ? true : preference === "text" ? false : null;
-      await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+      const saving = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
         db.contact.updateMany({
           where: { id: contactId },
           data: { voiceReply: value },
         }),
       );
+      // The row is where the preference lives: a contact gone since the turn was prepared stored
+      // nothing.
+      if (saving.count === 0) {
+        ctx.onNoEffect?.("set_voice_preference");
+        return didNothing(
+          "Could not record the preference (the contact is no longer there).",
+        );
+      }
       const saved =
         preference === "default"
           ? "Voice preference reset: replies now mirror what the customer sends (audio→audio, text→text)."
@@ -3566,7 +3574,10 @@ export function unverifiedAddressNote(email: string): string {
 
 // The answer of a call to `open_case_in_inbox`, said by what became of the case: with a case of
 // the team's to show for it (opened now, continued, added to, or already open) the call acted.
-function caseOutcome(r: OpenCaseResult, text: string): Outcome {
+// Not when what the call passed on never reached that case (`additionLost`): the case stands, and
+// the team did not get the update.
+export function caseOutcome(r: OpenCaseResult, text: string): Outcome {
+  if (additionLost(r)) return didNothing(text);
   switch (r.kind) {
     case "opened":
     case "continued":

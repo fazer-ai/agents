@@ -43,6 +43,7 @@ import { type DatedContextMessage, isNudge } from "./context";
 import type {
   GuardrailAnnounce,
   GuardrailDecision,
+  GuardrailFailureCause,
   GuardrailReport,
 } from "./gate";
 import {
@@ -750,6 +751,15 @@ export function buildTurnReviewGate(
             : {}),
         };
 
+  // The cause as the report carries it: a rule that could not be matched is said as that, so the
+  // note's reader is not told that a model failed when no model ran.
+  const reportCause = (
+    outcome: "credential_not_found" | "model_unavailable" | "analysis_failed",
+    detail: Record<string, unknown>,
+  ): GuardrailFailureCause =>
+    detail.cause === "pattern_timeout" || detail.cause === "pattern_error"
+      ? detail.cause
+      : outcome;
   const couldNotReview = async (
     step: TurnStep,
     outcome: "credential_not_found" | "model_unavailable" | "analysis_failed",
@@ -782,14 +792,16 @@ export function buildTurnReviewGate(
         ...stepDetail(step),
         outcome: "handed-off",
         held: true,
-        cause: outcome,
+        cause: reportCause(outcome, detail),
+        ...(typeof detail.rule === "string" ? { rule: detail.rule } : {}),
       });
     } else {
       await p.announce?.({
         ...base,
         ...stepDetail(step),
         outcome: "unavailable",
-        cause: outcome,
+        cause: reportCause(outcome, detail),
+        ...(typeof detail.rule === "string" ? { rule: detail.rule } : {}),
       });
     }
     return null;
@@ -1005,8 +1017,9 @@ export function buildTurnReviewGate(
     const verdict = await (p.matchRules ?? firstTurnRuleMatch)(
       candidates.map((r) => r.pattern),
       step.text,
+      { signal: p.signal },
     );
-    if (verdict.kind === "none") return null;
+    if (verdict.kind === "none" || verdict.kind === "aborted") return null;
     const rule = candidates[verdict.index];
     if (verdict.kind === "match" && rule) return rule;
     await couldNotReview(

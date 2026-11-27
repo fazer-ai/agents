@@ -25,7 +25,9 @@ export type TurnRulesVerdict =
   | { kind: "match"; index: number }
   | { kind: "none" }
   | { kind: "timeout"; index: number }
-  | { kind: "error"; index: number };
+  | { kind: "error"; index: number }
+  // The turn ended while this review waited for a thread: nothing was tested, and nobody reads it.
+  | { kind: "aborted" };
 
 // The budget of one review, all rules together. A pattern a person can reasonably write answers in
 // well under a millisecond. The rest is the thread starting. The reply is matched whole, however
@@ -45,11 +47,31 @@ const defaultQueue = new SandboxQueue(TURN_RULES_MAX_CONCURRENCY);
 export async function firstTurnRuleMatch(
   patterns: readonly string[],
   text: string,
-  opts: { timeoutMs?: number; workerUrl?: string; queue?: SandboxQueue } = {},
+  opts: {
+    timeoutMs?: number;
+    workerUrl?: string;
+    queue?: SandboxQueue;
+    // The turn's own signal: a turn that ends while waiting for a thread starts none.
+    signal?: AbortSignal;
+  } = {},
 ): Promise<TurnRulesVerdict> {
   if (patterns.length === 0) return { kind: "none" };
   const queue = opts.queue ?? defaultQueue;
-  await queue.acquire();
+  const { signal } = opts;
+  if (signal?.aborted) return { kind: "aborted" };
+  const slot = queue.acquire();
+  let left: (() => void) | undefined;
+  const gone = new Promise<"gone">((resolve) => {
+    left = () => resolve("gone");
+    signal?.addEventListener("abort", left, { once: true });
+  });
+  const first = await Promise.race([slot.then(() => "slot" as const), gone]);
+  if (left) signal?.removeEventListener("abort", left);
+  if (first === "gone") {
+    // The slot still arrives, to nobody: handed straight back, so the queue loses no permit.
+    void slot.then(() => queue.release());
+    return { kind: "aborted" };
+  }
   try {
     return await matchInThread(patterns, text, opts);
   } finally {

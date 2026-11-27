@@ -7,6 +7,7 @@ import { declaresOutcome } from "@/graph/tools/failure";
 import {
   buildNativeTools,
   buildSimulatedNativeTools,
+  caseOutcome,
 } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
@@ -67,6 +68,49 @@ const named = (ctx: Ctx, name: string) =>
   buildNativeTools(ctx).find((t) => t.name === name);
 
 describe("native tools say whether the call acted", () => {
+  // The bug it catches: a case that stands while what the call passed on never reached it was
+  // said as acted, so "I forwarded your update" went out after the tool said the team did not get it.
+  test("a case whose update did not reach the team is not a call that acted", async () => {
+    const result = (kind: "appended" | "opened", additionDelivered: boolean) =>
+      ({ kind, additionDelivered }) as unknown as Parameters<
+        typeof caseOutcome
+      >[0];
+    const said = async (r: Parameters<typeof caseOutcome>[0]) =>
+      (await inCallScope(async () => caseOutcome(r, "texto"))).didNothing;
+    expect([
+      await said(result("appended", false)),
+      await said(result("appended", true)),
+      await said(result("opened", true)),
+    ]).toEqual([true, false, false]);
+  });
+
+  // The bug it catches: a contact gone since the turn was prepared updated no row, and the call
+  // still said the preference was saved.
+  test("a voice preference that stored nothing is not a call that acted", async () => {
+    const withRows = (count: number) =>
+      ({
+        ...everything(),
+        tenantId: 1n,
+        contactDbId: 3n,
+        base: {
+          $extends: () => ({
+            $transaction: (fn: (t: unknown) => unknown) =>
+              fn({
+                $executeRaw: async () => 0,
+                contact: { updateMany: async () => ({ count }) },
+              }),
+          }),
+        },
+      }) as unknown as Ctx;
+    const gone = await run(named(withRows(0), "set_voice_preference"), {
+      preference: "audio",
+    });
+    const there = await run(named(withRows(1), "set_voice_preference"), {
+      preference: "audio",
+    });
+    expect([gone.didNothing, there.didNothing]).toEqual([true, false]);
+  });
+
   // The bug it catches: the step in hand is read before the model writes. A card somebody moved
   // meanwhile was answered "already there" for the step it had left, with no move.
   test("a card that left the step in hand is moved, and one still there is not", async () => {

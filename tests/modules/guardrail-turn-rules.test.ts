@@ -27,7 +27,10 @@ import type { AppError } from "@/lib/errors";
 import { assertSettingsClosedValues } from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { FlowContext } from "@/modules/flowlog/service";
-import type { GuardrailReport } from "@/modules/guardrails/gate";
+import {
+  chatwootNoteSink,
+  type GuardrailReport,
+} from "@/modules/guardrails/gate";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
@@ -388,6 +391,26 @@ describe("the matcher", () => {
     expect([queue.active, queue.queued]).toEqual([0, 0]);
   });
 
+  // The bug it catches: a review waiting for a thread had no way out, so a turn that ended
+  // meanwhile still started its thread when the slot came, ahead of live conversations.
+  test("a turn that ends while its review waits starts no thread and keeps no slot", async () => {
+    const queue = new SandboxQueue(1);
+    await queue.acquire();
+    const turn = new AbortController();
+    const waiting = firstTurnRuleMatch(["vou"], DRAFT, {
+      queue,
+      signal: turn.signal,
+    });
+    turn.abort();
+    expect(await waiting).toEqual({ kind: "aborted" });
+    queue.release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect([queue.active, queue.queued]).toEqual([0, 0]);
+    expect(
+      await firstTurnRuleMatch(["vou"], DRAFT, { queue, signal: turn.signal }),
+    ).toEqual({ kind: "aborted" });
+  });
+
   // The bug it catches: a backtracking pattern matched on the server's own thread stalls every
   // tenant for as long as it runs. Here the caller gets its answer at the budget, naming the pattern.
   test("a pattern that backtracks is stopped at the budget, and the answer names it", async () => {
@@ -740,14 +763,32 @@ describe("the rules in the gate", () => {
           unchecked: true,
         },
       ]);
+      const reports: GuardrailReport[] = [];
       const holds = gate(cfg({}, { onFailure: "hold" }), {
         matchRules: timeout,
+        reports,
       });
       expect(await holds.g?.reviewReply(asked(), DRAFT)).toBeNull();
       expect(holds.g?.pending()).toEqual({
         kind: "handed-off",
         reply: HANDOFF,
       });
+      // The report names the rule and says a pattern ran out of time: the note the team reads
+      // must not say a model failed when none ran.
+      expect(reports).toMatchObject([
+        { held: true, cause: "pattern_timeout", rule: PROMISE.name },
+      ]);
+      const notes: string[] = [];
+      await chatwootNoteSink(
+        {
+          sendPrivateNote: async (_c: number, text: string) => {
+            notes.push(text);
+          },
+        } as never,
+        1,
+      )(reports[0] as GuardrailReport);
+      expect(notes.join()).toContain(`regra "${PROMISE.name}"`);
+      expect(notes.join()).not.toContain("modelo");
     },
   );
 

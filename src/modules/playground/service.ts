@@ -495,7 +495,7 @@ async function buildPlaygroundGraph(params: {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
-  reviewsCall?: (name: string) => boolean;
+  reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;

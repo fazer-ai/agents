@@ -84,11 +84,30 @@ describe("native tools say whether the call acted", () => {
       );
     const stale = await at(2);
     const there = await at(1);
-    expect([moved, stale.didNothing, there.didNothing]).toEqual([
-      [1],
-      false,
-      false,
-    ]);
+    // Withdrawn while the card was being read: the card is not moved back.
+    const calledOff = await run(
+      named(
+        {
+          ...everything(),
+          stillWanted: async () => false,
+          client: client({
+            getKanbanTask: async () => ({ board_step_id: 2 }),
+            moveKanbanTask: async () => {
+              moved.push(-1);
+              return {};
+            },
+          }),
+        },
+        "kanban_move_card",
+      ),
+      { targetStep: "Novo" },
+    );
+    expect([
+      moved,
+      stale.didNothing,
+      there.didNothing,
+      calledOff.didNothing,
+    ]).toEqual([[1], false, false, true]);
     expect(there.text).toContain("already in");
   });
 

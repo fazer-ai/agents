@@ -257,7 +257,7 @@ export interface BuildAgentGraphParams {
   ) => Promise<string | null>;
   // Which write calls `reviewCall` wants to see, by name. Absent means every one. A call it does
   // not want runs as a call of a turn with no review.
-  reviewsCall?: (name: string) => boolean;
+  reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
   // fallback at once, and the note only says it was flagged.
   reviewTurnReply?: (
@@ -1847,7 +1847,9 @@ export function buildAgentGraph({
             reviewCall && !revision
               ? await setAsideReviewedCalls(
                   judged,
-                  (name) => isWriteName(name) && (reviewsCall?.(name) ?? true),
+                  (name) =>
+                    isWriteName(name) &&
+                    (reviewsCall?.(name, judged.messages) ?? true),
                   (turn, call, o) => {
                     reviewsRan = true;
                     const index = written.indexOf(

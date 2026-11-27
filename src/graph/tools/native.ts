@@ -2415,6 +2415,14 @@ function kanbanMoveTool(ctx: ToolCtx) {
           // Already where the call asked: nothing to write, and the answer the model wanted.
           return acted(`The card is already in "${step.name}".`);
         }
+        // Asked again: that read is a wait, and the graph's ask at the tool boundary came before
+        // it. A turn withdrawn meanwhile must not move the card back.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.("kanban_move_card");
+          return didNothing(
+            "Could not move the card (the run was called off while this write waited).",
+          );
+        }
       }
       await ctx.client.moveKanbanTask(taskId, step.id);
       // NOTE: Best-effort fleet event (ids only, no PII).

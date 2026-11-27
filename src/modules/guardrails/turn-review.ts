@@ -556,10 +556,11 @@ export interface TurnReviewGate {
   // past the attempts or a review held.
   pending: () => GuardrailDecision | null;
   // The graph's `reviewsCall`: whether a write call of this name goes through `reviewCall` at all.
-  // With the reviewer off only a `skip_reply` does, and only while a rule's reply is owed: it is
+  // With the reviewer off only a `skip_reply` does, and only while a rule's reply is owed in this
+  // turn (a rule whose tool ran since is owed nothing): it is
   // the one call a rule's redo may not end in. Every other write then runs as it would with no
   // review: no review, no ownership read around it.
-  reviewsCall: (name: string) => boolean;
+  reviewsCall: (name: string, turn: BaseMessage[]) => boolean;
   // The graph's `turnReviewHalted`: a call still flagged past the attempts, or a review held under
   // `onFailure: "hold"`. No call of the batch runs and the round ends, for the caller's output gate
   // to apply `pending()`.
@@ -1104,8 +1105,8 @@ export function buildTurnReviewGate(
       return flagged ? turnReviewFeedback(reply, flagged.rationale) : null;
     },
     pending: () => decision,
-    reviewsCall: (name) =>
-      tr.judge || (name === SKIP_REPLY_TOOL && owed !== null),
+    reviewsCall: (name, turn) =>
+      tr.judge || (name === SKIP_REPLY_TOOL && stillOwed(turn) !== null),
     halted: () => held || refused,
   };
 }

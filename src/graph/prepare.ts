@@ -2571,7 +2571,7 @@ export interface GraphBuildDeps {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
-  reviewsCall?: (name: string) => boolean;
+  reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as

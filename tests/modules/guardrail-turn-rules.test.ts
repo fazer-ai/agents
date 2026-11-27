@@ -770,19 +770,23 @@ describe("the rules in the gate", () => {
     async () => {
       const rulesOnly = gate(cfg({})).g;
       const before = [
-        rulesOnly?.reviewsCall("transferir"),
-        rulesOnly?.reviewsCall("skip_reply"),
+        rulesOnly?.reviewsCall("transferir", asked()),
+        rulesOnly?.reviewsCall("skip_reply", asked()),
       ];
       await rulesOnly?.reviewReply(asked(), DRAFT);
       expect([
         before,
-        rulesOnly?.reviewsCall("transferir"),
-        rulesOnly?.reviewsCall("skip_reply"),
+        rulesOnly?.reviewsCall("transferir", asked()),
+        rulesOnly?.reviewsCall("skip_reply", asked()),
       ]).toEqual([[false, false], false, true]);
+      // The rule's tool ran since: nothing is owed in that turn.
+      expect(
+        rulesOnly?.reviewsCall("skip_reply", after("transferir", "ran")),
+      ).toBe(false);
       // Under observe nothing is ever owed.
       const watching = gate(cfg({ action: "observe" })).g;
       await watching?.reviewReply(asked(), DRAFT);
-      expect(watching?.reviewsCall("skip_reply")).toBe(false);
+      expect(watching?.reviewsCall("skip_reply", asked())).toBe(false);
     },
   );
 

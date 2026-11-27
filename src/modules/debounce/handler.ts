@@ -28,7 +28,10 @@ import { retireRedirectFollowUp } from "@/modules/channel-redirect/followup";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
   awaitOpenTranscriptions,
+  mediaAnnotationFor,
+  mediaStillArriving,
   overlayMediaAnnotations,
+  transcriptionOpen,
 } from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
@@ -108,6 +111,7 @@ import {
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
+  readMediaWaitSince,
   readReactionArmed,
   readReactionFrom,
   stampDeferral,
@@ -134,6 +138,14 @@ const DEFER_ON_TURN_MS = 2_000;
 // paying out its balloons — and short enough that a thread wedged by a dead process does not swallow
 // the conversation.
 const DEFER_CEILING_MS = 5 * 60_000;
+
+// A file the arrival pass could not download, on a failure that may pass, is one external storage
+// has not finished writing. The flush comes back for it instead of rendering it unread, every
+// `MEDIA_DEFER_MS`, and each round tries the download again (free: the provider was never asked).
+// Past `MEDIA_DEFER_CEILING_MS` from the first such deferral the reply goes with what it has, so a
+// file that never lands costs the customer a minute, not the deferral's five.
+const MEDIA_DEFER_MS = 5_000;
+const MEDIA_DEFER_CEILING_MS = 60_000;
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -201,6 +213,10 @@ export interface CoalesceTurnContext {
   // runs seconds after that pass, and the attachments it still finds unread are the ones attached
   // AFTER the message was created, which the arrival pass never saw.
   fillMissingMedia?: "all" | "untried";
+  // Until when (epoch ms) the caller can come back later for media still being written
+  // (`mediaPending`). Only the flush can, up to its media ceiling, and it is asked after the retries,
+  // which take seconds per file: the re-engage has nowhere to defer to.
+  mediaWaitUntil?: number;
   // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
   // everybody else's. Null when the caller has no bot to name, and then every outgoing message on the
   // page counts as somebody else's.
@@ -252,6 +268,9 @@ interface AnswerableBurst {
   // Whether selection waited on extraction (up to 60 seconds per file): time in which the
   // conversation can change owner, so the caller that invokes the graph must know.
   waitedOnMedia: boolean;
+  // A message of the burst still has a file the download could not get on a failure that may pass,
+  // after this selection tried it again: the storage has not finished writing it.
+  mediaPending: boolean;
 }
 
 // The page the burst is selected from. The fork's default page carries only the reactions that reply
@@ -329,6 +348,7 @@ export async function selectAnswerableBurst(
     | "settings"
     | "label"
     | "catchUp"
+    | "mediaWaitUntil"
     | "onEmptyBurst"
   > & {
     // Presente só quando o chamador quer os anexos sem extração abertos antes do render (ver
@@ -389,7 +409,10 @@ export async function selectAnswerableBurst(
   let dropped: typeof pending = [];
 
   const cfg = readDebounceConfig(ctx.settings);
-  if (pending.length > cfg.maxMessagesPerBurst) {
+  // An agent with debounce off reaches a flush only through the media wait, and its burst is
+  // the late file plus what joined it: the cap of a debounce it never turned on would drop the file.
+  const capped = cfg.enabled || ctx.mediaWaitUntil === undefined;
+  if (capped && pending.length > cfg.maxMessagesPerBurst) {
     logger.warn(
       "%s: burst of %d messages capped to %d (conv=%s)",
       ctx.label,
@@ -419,6 +442,7 @@ export async function selectAnswerableBurst(
       messages,
       pending,
       fill: ctx.fillMedia,
+      retryUntil: ctx.mediaWaitUntil,
       base,
       deps,
     });
@@ -460,6 +484,25 @@ export async function selectAnswerableBurst(
   // first overlay above, during the selection's own reads, is closed by now and stashed all the same.
   if (unheard.length > 0)
     overlayMediaAnnotations(tenantId, instanceId, messages);
+  // Read after the wait, so a download the arrival pass is still retrying has settled into words or
+  // into the mark this asks for.
+  if (
+    unheard.length > 0 &&
+    ctx.fillMedia?.mode === "untried" &&
+    (await fillMissingAudio({
+      tenantId,
+      instanceId,
+      conversationId,
+      settings: ctx.settings,
+      pending,
+      fill: ctx.fillMedia,
+      base,
+      deps,
+      onlyUnavailable: true,
+      retryUntil: ctx.mediaWaitUntil,
+    }))
+  )
+    waitedOnMedia = true;
 
   const targetWatermark = pending[pending.length - 1]?.id as number;
   // The agent answers the burst's MOST RECENT message, so {{message_id}} must be that exact id.
@@ -501,7 +544,37 @@ export async function selectAnswerableBurst(
     inTurn: rendered.map((r) => r.message),
     text: rendered.map((r) => r.text).join("\n"),
     waitedOnMedia,
+    mediaPending: await mediaStillRetryable(tenantId, ctx, pending, base),
   };
+}
+
+// Whether a file of the burst is still on its way AND the next flush would try it again: the agent
+// still reads that kind of file, and the conversation's media refusal mark does not cover it. A file
+// no flush will open is no reason to wait.
+async function mediaStillRetryable(
+  tenantId: bigint,
+  ctx: { fillMedia?: { convDbId: bigint }; settings: unknown },
+  pending: ChatwootMessageRow[],
+  base: PrismaClient,
+): Promise<boolean> {
+  if (!ctx.fillMedia) return false;
+  const sttOn = readSttConfig(ctx.settings).enabled;
+  const visionOn = readVisionConfig(ctx.settings).enabled;
+  // The fetched row still has to carry the file: an edit can remove it after the download failed.
+  const waiting = pending.filter(
+    (m) =>
+      (sttOn &&
+        m.audio &&
+        m.transcriptionUnavailable === true &&
+        !m.transcribedText) ||
+      (visionOn &&
+        hasUnextractedVisual(m.visuals) &&
+        mediaStillArriving({ ...m, transcriptionUnavailable: false })),
+  );
+  if (waiting.length === 0) return false;
+  const fill = ctx.fillMedia;
+  const recusadaAte = await refusalMarkOrClosed({ tenantId, fill, base });
+  return waiting.some((m) => recusadaAte === null || m.id > recusadaAte);
 }
 
 // Extracts the burst's attachments nobody has read yet. Returns whether any extraction was attempted,
@@ -529,6 +602,9 @@ export async function fillMissingVisuals(args: {
   // Asked before each paid read: a caller whose work can be withdrawn while it reads (a retired job)
   // stops opening files there. Absent answers yes.
   stillWanted?: () => Promise<boolean>;
+  // Past this instant (epoch ms) a file is no longer opened again for being late: the media wait is
+  // over and the reply goes with what it has. Files never tried are still read.
+  retryUntil?: number;
 }): Promise<boolean> {
   // DAS SETTINGS QUE O TURNO JÁ CARREGOU, sem ir ao banco. `resolveVisionConfig` faz exatamente
   // isto depois de descobrir o agente pela inbox, e aqui o agente já está decidido: quem chegou até
@@ -540,15 +616,23 @@ export async function fillMissingVisuals(args: {
   // attachment meta and the overlaid stash meet): re-extracting a partial one could publish a poorer
   // aggregate over the complete one. An email body image has no attachment meta, so only the body
   // pass's stash covers it.
-  const alvos = args.pending.filter(
-    (m) =>
+  const alvos = args.pending.filter((m) => {
+    // The files' own mark only: a voice note on its way says nothing about them. A message read in
+    // part is opened again for its late file, and the files already read come back from the per-file
+    // cache (`rememberFileRead`), so the aggregate is complete and nothing is paid twice.
+    const late =
+      mediaStillArriving({ ...m, transcriptionUnavailable: false }) &&
+      (args.retryUntil === undefined || Date.now() < args.retryUntil);
+    return (
       hasUnextractedVisual(m.visuals) &&
-      ((m.bodyImages ?? 0) > 0
-        ? !m.bodyRead
-        : !m.imageDescription && !m.extractedText) &&
+      (late ||
+        ((m.bodyImages ?? 0) > 0
+          ? !m.bodyRead
+          : !m.imageDescription && !m.extractedText)) &&
       // The arrival pass's count of unread files is the mark that it tried: see `fillMissingMedia`.
-      (args.fill.mode === "all" || !m.attachmentsUnread),
-  );
+      (args.fill.mode === "all" || !m.attachmentsUnread || late)
+    );
+  });
   if (alvos.length === 0) return false;
   // Media the contact authorization refused stays unread even when the gate now says yes
   // (docs/contact-auth.md, "Media waits for the gate").
@@ -572,6 +656,14 @@ export async function fillMissingVisuals(args: {
       const agora = await refusalMarkOrClosed(args);
       if (agora !== null && m.id <= agora) continue;
     }
+    // NOTE: An earlier download, or the reads above, can run the media wait out; a file tried before
+    // is not opened again past it, and a file never tried still is.
+    if (
+      args.retryUntil !== undefined &&
+      Date.now() >= args.retryUntil &&
+      mediaStillArriving({ ...m, transcriptionUnavailable: false })
+    )
+      continue;
     try {
       const lido = await extractMessageVisuals({
         tenantId: args.tenantId,
@@ -649,15 +741,30 @@ export async function fillMissingAudio(args: {
   base: PrismaClient;
   deps?: RuntimeDeps;
   stillWanted?: () => Promise<boolean>;
+  // Only the voice notes the arrival pass could not download (`transcriptionUnavailable`): the flush
+  // reads after that pass, which already tried every other one.
+  onlyUnavailable?: boolean;
+  // Past this instant (epoch ms) no further voice note is tried: the media wait is over.
+  retryUntil?: number;
   // True once a transcription was attempted: the caller waited on the provider.
 }): Promise<boolean> {
   const cfg = readSttConfig(args.settings);
   if (!cfg.enabled) return false;
-  const alvos = args.pending.filter((m) => m.audio && !m.transcribedText);
+  const alvos = args.pending.filter(
+    (m) =>
+      m.audio &&
+      !m.transcribedText &&
+      (!args.onlyUnavailable ||
+        (m.transcriptionUnavailable &&
+          // NOTE: The arrival pass is still retrying it: a second download would pay the provider
+          // twice, and the note stays on its way for the next round.
+          !transcriptionOpen(args.tenantId, args.instanceId, m.id))),
+  );
   if (alvos.length === 0) return false;
   let attempted = false;
   for (const m of alvos) {
     if (args.fill.signal?.aborted) break;
+    if (args.retryUntil !== undefined && Date.now() >= args.retryUntil) break;
     if (args.stillWanted && !(await args.stillWanted())) break;
     const recusadaAte = await refusalMarkOrClosed(args);
     if (recusadaAte !== null && m.id <= recusadaAte) continue;
@@ -700,6 +807,10 @@ export async function fillMissingAudio(args: {
         err instanceof Error ? err.message : String(err),
       );
     }
+    // NOTE: The row carries what this attempt's download left, so `mediaPending` reads it.
+    m.transcriptionUnavailable =
+      mediaAnnotationFor(args.tenantId, args.instanceId, m.id)
+        ?.transcriptionUnavailable === true;
   }
   return attempted;
 }
@@ -753,11 +864,22 @@ export function oldestCreatedAt(rows: ChatwootMessageRow[]): Date | null {
   return dated > 1 ? oldest : null;
 }
 
+// `media-pending` only comes back to a caller that said it can come back (`mediaWaitUntil`).
+export async function coalesceAndRunTurn(
+  ctx: CoalesceTurnContext & { mediaWaitUntil?: undefined },
+  base: PrismaClient,
+  deps?: RuntimeDeps,
+): Promise<RunAgentTurnOutcome | "empty">;
 export async function coalesceAndRunTurn(
   ctx: CoalesceTurnContext,
   base: PrismaClient,
   deps?: RuntimeDeps,
-): Promise<RunAgentTurnOutcome | "empty"> {
+): Promise<RunAgentTurnOutcome | "empty" | "media-pending">;
+export async function coalesceAndRunTurn(
+  ctx: CoalesceTurnContext,
+  base: PrismaClient,
+  deps?: RuntimeDeps,
+): Promise<RunAgentTurnOutcome | "empty" | "media-pending"> {
   const {
     tenantId,
     instanceId,
@@ -793,6 +915,13 @@ export async function coalesceAndRunTurn(
     deps,
   );
   if (!burst) return "empty";
+  // NOTE: Before any claim or invoke, so nothing is written and the burst stays owed to the return.
+  if (
+    burst.mediaPending &&
+    ctx.mediaWaitUntil !== undefined &&
+    Date.now() < ctx.mediaWaitUntil
+  )
+    return "media-pending";
   const {
     client,
     pending,
@@ -2337,6 +2466,9 @@ export async function flushDebounceJob(
   const deferringSince =
     readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? nowMs;
   const pastDeferralCeiling = nowMs >= deferringSince + DEFER_CEILING_MS;
+  // The media wait counts from the flush that first found a file on its way, on its own stamp: the
+  // debounce window and the time spent waiting for a busy thread are not time spent waiting for it.
+  const mediaSince = readMediaWaitSince(job.payload) ?? nowMs;
   if (
     isTurnInFlight(graphThreadId) ||
     isFlushHeld(graphThreadId) ||
@@ -2451,6 +2583,7 @@ export async function flushDebounceJob(
         // NOTE: Some transports attach the file after creating the message: the arrival pass saw
         // nothing to read, and this is the last read before the turn renders the file as unread.
         fillMissingMedia: "untried",
+        mediaWaitUntil: mediaSince + MEDIA_DEFER_CEILING_MS,
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {
@@ -2484,6 +2617,47 @@ export async function flushDebounceJob(
         triggerMessageId: triggerId,
         base,
       });
+    }
+    // NOTE: The media wait's stamp outlives every exit that leaves the same messages owed (a throw
+    // above, a busy thread, a superseded turn), so a retry keeps the deadline, and goes once the burst
+    // is settled.
+    if (
+      outcome !== "media-pending" &&
+      outcome !== "thread-busy" &&
+      outcome !== "superseded" &&
+      outcome !== "agent-unavailable" &&
+      readMediaWaitSince(job.payload) !== null
+    )
+      await clearDeferral({
+        tenantId,
+        threadId,
+        field: "mediaWaitSince",
+        base,
+      }).catch((e) =>
+        logger.warn(
+          "debounce flush: could not clear the media wait stamp on thread %s: %s",
+          graphThreadId,
+          err(e),
+        ),
+      );
+    // NOTE: A file of the burst is still being written to storage. Nothing was claimed or invoked; the
+    // stamp carries the burst's start across re-arms, so the media ceiling holds.
+    if (outcome === "media-pending") {
+      const retryAt = new Date(
+        Math.min(
+          Date.now() + MEDIA_DEFER_MS,
+          mediaSince + MEDIA_DEFER_CEILING_MS,
+        ),
+      );
+      await stampDeferral({
+        tenantId,
+        threadId,
+        since: mediaSince,
+        field: "mediaWaitSince",
+        retryAt,
+        base,
+      });
+      return { outcome: "reschedule", runAt: retryAt };
     }
     // NOTE: Nothing was written and the burst is still owed: another invoke held the thread at claim
     // time. Deferred like the busy thread above, with the stamp keeping the ceiling honest.

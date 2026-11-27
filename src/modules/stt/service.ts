@@ -9,7 +9,11 @@ import {
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  isTransientAttachmentFailure,
+} from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { cleanTranscription } from "@/modules/chatwoot/render";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
@@ -140,10 +144,21 @@ async function transcribeOnce(
 ): Promise<string | null> {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
+  const target = {
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    messageId: params.messageId,
+  };
 
   // Surface a misconfig skip on the turn trail / Logs (warn + skipped), so an STT that silently does
   // nothing (voice note left untranscribed) is visible to the operator instead of vanishing.
   const skip = (reason: string): null => {
+    // A note no configuration can read is no longer on its way: no flush should wait for it.
+    if (
+      mediaAnnotationFor(params.tenantId, params.instanceId, params.messageId)
+        ?.transcriptionUnavailable
+    )
+      stashMediaAnnotation(target, { transcriptionUnavailable: false });
     if (params.flow) {
       emitFlowEvent(params.flow, {
         stage: "stt",
@@ -206,6 +221,9 @@ async function transcribeOnce(
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
       signal: params.signal,
+      // A flush that stops waiting while this backoff runs still sees the note as on its way.
+      onMissing: () =>
+        stashMediaAnnotation(target, { transcriptionUnavailable: true }),
     }));
   } catch (err) {
     if (params.flow) {
@@ -218,8 +236,21 @@ async function transcribeOnce(
         errorMessage: err instanceof Error ? err.message : String(err),
       });
     }
+    // The mark follows the LATEST answer from Chatwoot: a failure that may pass lets the reply try
+    // again for free, a refusal ends the wait. A download cut by a timeout or the caller's deadline is
+    // no answer, and leaves the mark as it was.
+    if (err instanceof ChatwootApiError)
+      stashMediaAnnotation(target, {
+        transcriptionUnavailable: isTransientAttachmentFailure(err),
+      });
     throw err;
   }
+  // The file is here: whatever the provider answers next, there is nothing left to wait for.
+  if (
+    mediaAnnotationFor(params.tenantId, params.instanceId, params.messageId)
+      ?.transcriptionUnavailable
+  )
+    stashMediaAnnotation(target, { transcriptionUnavailable: false });
   const result = await withFlowStage(
     params.flow,
     "stt",

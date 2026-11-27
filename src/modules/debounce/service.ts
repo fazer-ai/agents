@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { upsertJobRow } from "@/modules/scheduler/service";
@@ -16,6 +17,65 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 export function debounceDedupeKey(threadId: string): string {
   return `debounce:${threadId}`;
+}
+
+// The window of the flush an agent with debounce OFF still takes for a file on its way: the flush
+// then defers until the file can be read (`MEDIA_DEFER_*` in ./handler.ts).
+const MEDIA_WAIT_WINDOW_SECONDS = 5;
+
+// The debounce config a delivery arms with, in one read of the binding: the agent's own when
+// debounce is on, and for an agent with debounce OFF the media-wait flush instead of a direct turn
+// while a file of the message is still being written to storage (`mediaArriving`) and for every
+// message that arrives while that flush is live, so the burst is answered once and in order. Null
+// (direct turn) otherwise, or when the inbox has no enabled agent. The media wait is never armed
+// while the debounce worker is off: nothing would drain its row, and every later message of the
+// thread would join it.
+export async function resolveArmConfig(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  chatwootInboxId: number;
+  threadId: string;
+  mediaArriving: boolean;
+  base?: PrismaClient;
+}): Promise<DebounceConfig | null> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const inbox = await db.inbox.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootInboxId: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: params.instanceId,
+          chatwootInboxId: params.chatwootInboxId,
+        },
+      },
+      select: { agentId: true },
+    });
+    if (!inbox?.agentId) return null;
+    const agent = await db.agent.findUnique({
+      where: { id: inbox.agentId },
+      select: { enabled: true, settings: true },
+    });
+    if (!agent?.enabled) return null;
+    const cfg = readDebounceConfig(agent.settings);
+    if (cfg.enabled) return cfg;
+    if (!config.debounceWorker.enabled) return null;
+    if (!params.mediaArriving) {
+      const live = await db.schedulerJob.findFirst({
+        where: {
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(params.threadId),
+          status: { in: ["PENDING", "CLAIMED"] },
+        },
+        select: { id: true },
+      });
+      if (!live) return null;
+    }
+    return {
+      ...cfg,
+      enabled: true,
+      windowSeconds: MEDIA_WAIT_WINDOW_SECONDS,
+    };
+  });
 }
 
 // Resolves the debounce config for the inbox's agent. Returns null when the agent is unbound,
@@ -54,6 +114,14 @@ export async function resolveDebounceConfig(
 export function readDeferringSince(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).deferringSince;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+// When the flush first deferred for a file still on its way. Its own stamp, apart from
+// `deferringSince`: time spent waiting for a busy thread is not time spent waiting for the file.
+export function readMediaWaitSince(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).mediaWaitSince;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
@@ -120,26 +188,40 @@ export async function stampDeferral(params: {
   tenantId: bigint;
   threadId: string;
   since: number;
+  field?: "deferringSince" | "mediaWaitSince";
+  // The retry the deferring flush asks for. A message that re-armed the row during the flush already
+  // set its own runAt, which the flush's reschedule can no longer touch (it needs the row CLAIMED), so
+  // a later one is brought forward to this here.
+  retryAt?: Date;
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
+  const field = params.field ?? "deferringSince";
+  const read =
+    field === "deferringSince" ? readDeferringSince : readMediaWaitSince;
   const dedupeKey = debounceDedupeKey(params.threadId);
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
       const row = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { id: true, payload: true },
+        select: { id: true, payload: true, status: true, runAt: true },
       });
       // No row means the flush that is deferring has already been completed or retired by somebody
       // else; there is nothing whose deadline this would be.
-      if (!row || readDeferringSince(row.payload) !== null) return;
+      if (!row) return;
+      const forward =
+        params.retryAt !== undefined &&
+        row.status === "PENDING" &&
+        row.runAt.getTime() > params.retryAt.getTime();
+      if (read(row.payload) !== null && !forward) return;
       await db.schedulerJob.update({
         where: { id: row.id },
         data: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
-            deferringSince: params.since,
+            [field]: read(row.payload) ?? params.since,
           },
+          ...(forward ? { runAt: params.retryAt } : {}),
         },
       });
     }),
@@ -153,9 +235,13 @@ export async function stampDeferral(params: {
 export async function clearDeferral(params: {
   tenantId: bigint;
   threadId: string;
+  field?: "deferringSince" | "mediaWaitSince";
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
+  const field = params.field ?? "deferringSince";
+  const read =
+    field === "deferringSince" ? readDeferringSince : readMediaWaitSince;
   const dedupeKey = debounceDedupeKey(params.threadId);
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
@@ -163,8 +249,8 @@ export async function clearDeferral(params: {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { id: true, payload: true },
       });
-      if (!row || readDeferringSince(row.payload) === null) return;
-      const { deferringSince: _dropped, ...rest } = row.payload as Record<
+      if (!row || read(row.payload) === null) return;
+      const { [field]: _dropped, ...rest } = row.payload as Record<
         string,
         unknown
       >;
@@ -205,7 +291,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
     withEntityLock(db, `debounce-arm:${threadId}`, async () => {
       const existing = await db.schedulerJob.findFirst({
         where: { kind: "DEBOUNCE", dedupeKey },
-        select: { status: true, payload: true },
+        select: { status: true, payload: true, runAt: true },
       });
       // The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
       // `burstStartedAt`, which a claim in flight resets: it measures how long the burst has waited
@@ -215,6 +301,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         existing?.status === "PENDING" || existing?.status === "CLAIMED";
       const deferringSince = stillLive
         ? readDeferringSince(existing.payload)
+        : null;
+      const mediaWaitSince = stillLive
+        ? readMediaWaitSince(existing.payload)
         : null;
       // A live PENDING row is the burst this message joins; anything else (no row, DONE,
       // DEAD, or a claim in flight) means the previous flush is finished business and this message
@@ -250,9 +339,14 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
           : ownReactionFrom === null
             ? prevReactionFrom
             : Math.min(prevReactionFrom, ownReactionFrom);
+      // A burst waiting for a file keeps its next retry: a message pushing it out by the window could
+      // carry it past the media deadline.
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
+        mediaWaitSince !== null && existing?.runAt
+          ? existing.runAt.getTime()
+          : Number.POSITIVE_INFINITY,
       );
       const payload = {
         threadId,
@@ -262,6 +356,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         ...(reactionArmed ? { reactionArmed: true } : {}),
         ...(reactionFrom !== null ? { reactionFrom } : {}),
         ...(deferringSince !== null ? { deferringSince } : {}),
+        ...(mediaWaitSince !== null ? { mediaWaitSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {
         tenantId,

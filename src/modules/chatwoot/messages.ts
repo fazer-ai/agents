@@ -50,6 +50,9 @@ export interface ChatwootMessageRow {
   // STT transcription, read back from the FIRST attachment's meta.transcribed_text (set by the
   // eager STT pass). Null when absent (text message, or audio not yet/never transcribed).
   transcribedText: string | null;
+  // Only from the stash: the arrival pass could not download the voice note, on a failure that may
+  // pass, and the reply's turn tries it again.
+  transcriptionUnavailable?: boolean;
   // Vision extraction, read back from attachment meta (set by the eager vision pass). Null when
   // absent (vision off/failed/unsupported, or not an image/document).
   imageDescription: string | null;

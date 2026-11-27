@@ -9,7 +9,14 @@
 
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import {
+  mediaAnnotationFor,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
+import {
+  ChatwootApiError,
+  isTransientAttachmentFailure,
+} from "@/modules/chatwoot/client";
 import {
   onChatwootHost,
   oneByBlob,
@@ -199,7 +206,24 @@ export async function extractMessageVisuals(params: {
               params.convLabel ?? String(params.conversationId),
               err instanceof Error ? err.message : String(err),
             );
-            return { unread: "failed" } as const;
+            // An email body image was stored before its message existed: its 404 does not heal.
+            // A download cut short with no answer from the storage (a timeout, an abort) says nothing
+            // new about the file, so a file a 404 left on its way stays on its way. A provider's
+            // failure on a downloaded file is answered as unread, never thrown, and ends the wait.
+            const stillOnItsWay =
+              visual.id !== null &&
+              (isTransientAttachmentFailure(err) ||
+                (!(err instanceof ChatwootApiError) &&
+                  mediaAnnotationFor(
+                    tenantId,
+                    instanceId,
+                    messageId,
+                  )?.unreadFiles?.some(
+                    (f) => f.name === visual.name && f.retryable,
+                  ) === true));
+            return stillOnItsWay
+              ? ({ unread: "failed", retryable: true } as const)
+              : ({ unread: "failed" } as const);
           })
           .then((r) => ({ nome: visual.name, r }));
 
@@ -274,7 +298,11 @@ export async function extractMessageVisuals(params: {
     // Arquivo que não deu para ler NÃO é arquivo que não foi enviado. Contado junto com os que
     // passaram do teto porque o movimento do modelo é o mesmo: nomear o que falta e pedir de novo.
     if (isUnread(r)) {
-      unreadFiles.push({ name: nome, cause: r.unread });
+      unreadFiles.push({
+        name: nome,
+        cause: r.unread,
+        ...(r.retryable ? { retryable: true as const } : {}),
+      });
       continue;
     }
     (r.kind === "image" ? imagens : documentos).push(

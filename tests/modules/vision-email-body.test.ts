@@ -21,7 +21,10 @@ import {
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
@@ -129,6 +132,8 @@ function stub(opts: {
   downloads: string[];
   metaWrites: number[];
   fail?: Set<string>;
+  // Answered with what the real client throws for a missing file past its retries.
+  missing?: Set<string>;
   types?: Record<string, string>;
   retries?: Map<string, boolean>;
 }) {
@@ -150,6 +155,8 @@ function stub(opts: {
       opts.downloads.push(dataUrl);
       opts.retries?.set(dataUrl, o?.retryOnMissing === true);
       if (opts.fail?.has(dataUrl)) throw new Error("404 on the blob");
+      if (opts.missing?.has(dataUrl))
+        throw new ChatwootApiError(404, "GET attachment");
       const [w, h] = opts.sizes[dataUrl] ?? [1200, 1600];
       return {
         bytes: png(w, h),
@@ -626,6 +633,56 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       [blob(46, "a.png")]: true,
       [gone]: false,
     });
+  });
+
+  // A late attachment is worth coming back for; a body image's 404 does not heal, so it never
+  // carries the mark that makes the reply wait.
+  test("a body image that 404s is not marked as on its way, an attachment is", async () => {
+    await setVision(true);
+    const gone = blob(48, "gone.png");
+    const late = blob(49, "late.png");
+    const out = await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1048,
+      messageId: 1,
+      visuals: [
+        {
+          id: 149,
+          dataUrl: late,
+          name: "late.png",
+          imageDescription: null,
+          extractedText: null,
+        },
+        {
+          id: null,
+          dataUrl: gone,
+          name: "gone.png",
+          imageDescription: null,
+          extractedText: null,
+        },
+      ],
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: stub({
+          page: [],
+          sizes: {},
+          downloads: [],
+          metaWrites: [],
+          missing: new Set([gone, late]),
+        }),
+        fetchImpl: visionFetch(["não deveria ler"]),
+      },
+    });
+    expect(out?.unreadFiles).toEqual([
+      { name: "late.png", cause: "failed", retryable: true },
+      { name: "gone.png", cause: "failed" },
+    ]);
   });
 
   test("an email whose only content is a body image is answered", async () => {

@@ -7,12 +7,16 @@ export type UnreadCause = "format" | "too_large" | "failed";
 export interface UnreadFile {
   name: string | null;
   cause: UnreadCause;
+  // The download failed on something that may pass (`isTransientAttachmentFailure`): the provider
+  // was never asked, so the reply can try the file again for free.
+  retryable?: true;
 }
 
 // What a skip carries back instead of a result, so a shared in-flight read hands the cause to every
 // delivery waiting on it.
 export interface Unread {
   unread: UnreadCause;
+  retryable?: true;
 }
 
 export function isUnread(v: unknown): v is Unread {

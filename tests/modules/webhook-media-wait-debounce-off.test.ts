@@ -167,11 +167,13 @@ async function deliver(
       instanceId: bigint;
       messageId: number;
     }) => Promise<string | null>;
+    // The Chatwoot message id, to deliver the same message twice.
+    messageId?: number;
     // An image instead of a voice note, read through this provider call.
     visionFetch?: typeof fetch;
   },
 ) {
-  const messageId = 7000 + nextId++;
+  const messageId = opts.messageId ?? 7000 + nextId++;
   const n = normalizeChatwootEvent({
     event: "message_created",
     id: messageId,
@@ -1435,6 +1437,26 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
       "a transcrição não ficou pronta a tempo",
     );
     expect(model.seen.join("\n")).not.toContain("não audível");
+  });
+
+  // The note's update is still being read when its create finishes: one message, not two.
+  test("a voice note whose other delivery is still in flight takes the direct turn", async () => {
+    await seedConversation(9835);
+    const update = mediaArrivingHold({
+      tenantId,
+      instanceId,
+      conversationId: 9835,
+      messageId: 79_835,
+    });
+    update.mark();
+
+    const { model } = await deliver(9835, {
+      audio: true,
+      messageId: 79_835,
+    }).finally(update.release);
+
+    expect(model.calls).toBeGreaterThan(0);
+    expect(await flushRows(9835)).toBe(0);
   });
 
   test("a text message with no flush live takes the direct turn as before", async () => {

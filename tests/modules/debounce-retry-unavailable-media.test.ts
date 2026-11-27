@@ -1503,9 +1503,14 @@ describe.skipIf(!dbUp)(
       s.state.stored = true;
       const p = provider();
       const page = [voice(1)];
-      await arriveVoice(9777, 1, s.client(page), (async () => {
+      let asked = 0;
+      const hung = (async () => {
+        asked++;
         throw new DOMException("signal timed out", "TimeoutError");
-      }) as unknown as typeof fetch);
+      }) as unknown as typeof fetch;
+      await arriveVoice(9777, 1, s.client(page), hung);
+      // A second pass of the delivery, or the message's update, does not send it again.
+      await arriveVoice(9777, 1, s.client(page), hung);
 
       const { out, seen } = await flush(9777, s.client(page), p);
 
@@ -1513,6 +1518,7 @@ describe.skipIf(!dbUp)(
       expect(seen).toContain(LATE);
       expect(seen).not.toContain(UNHEARD);
       expect(p.calls.stt).toBe(0);
+      expect(asked).toBe(1);
     });
 
     // A provider that answers with an error is a failure, not a late answer.
@@ -1695,6 +1701,28 @@ describe.skipIf(!dbUp)(
       expect(noteSeesText).toBe(true);
       expect(afterNote).toBe(true);
       expect(conversationMediaArriving(tenantId, instanceId, 9775)).toBe(false);
+    });
+
+    // Chatwoot sends a create and an update for one voice note, and the two deliveries overlap.
+    test("a second delivery of the same message is not another message on its way", () => {
+      const conv = { tenantId, instanceId, conversationId: 9779 };
+      const created = mediaArrivingHold({ ...conv, messageId: 41 });
+      const updated = mediaArrivingHold({ ...conv, messageId: 41 });
+      const text = mediaArrivingHold({ ...conv, messageId: 42 });
+      created.mark();
+      updated.mark();
+
+      const sameMessage = created.others();
+      const otherMessage = text.others();
+      created.release();
+      const afterOne = conversationMediaArriving(tenantId, instanceId, 9779);
+      updated.release();
+      text.release();
+
+      expect(sameMessage).toBe(false);
+      expect(otherMessage).toBe(true);
+      expect(afterOne).toBe(true);
+      expect(conversationMediaArriving(tenantId, instanceId, 9779)).toBe(false);
     });
 
     test("a delivery marking one conversation leaves another conversation's hold alone", () => {

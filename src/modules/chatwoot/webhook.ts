@@ -4662,6 +4662,7 @@ export async function processChatwootDelivery(
     tenantId: params.tenantId,
     instanceId: params.instanceId,
     conversationId: params.normalized.conversationId,
+    messageId: params.normalized.message?.id,
   });
   try {
     return await processDelivery(params, arriving);

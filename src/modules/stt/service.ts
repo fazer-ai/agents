@@ -118,7 +118,8 @@ export async function transcribeInboundAudio(
     params.messageId,
   );
   if (stashed?.transcribedText) return stashed.transcribedText;
-  if (stashed?.transcriptionEmpty) return null;
+  if (stashed?.transcriptionEmpty || stashed?.transcriptionTimedOut)
+    return null;
   return shareAbortableInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
     (signal) => transcribeOnce({ ...params, signal }),

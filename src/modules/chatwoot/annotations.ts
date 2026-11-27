@@ -295,18 +295,20 @@ export async function awaitOpenTranscriptions(
 
 // How long a conversation still counts as having a file on its way after the delivery that said so
 // let go: its flush is armed by then, and a message landing in between has to see it.
-// Deliveries in flight that hold each conversation, by conversation key.
-const arrivingConversations = new Map<string, number>();
+// The message each delivery in flight is reading, per conversation it holds (null: no message id).
+const arrivingConversations = new Map<string, Array<number | null>>();
 
 // A delivery's claim that a file of its message is on its way. The delivery owns it from the first
 // 404 to its own exit: no reader of a single file can end it, and another delivery's is its own.
 // There is no grace after the exit: by then the delivery's flush row is committed and says the same.
 export interface MediaArrivingHold {
-  // Whether another delivery of the conversation holds it. The owner's own mark is left out: its
-  // file is judged by what its own pass found. A delivery that finds others joins their wait and
-  // holds the conversation too, so the one it waits behind cannot overtake it before its row lands.
+  // Whether a delivery of ANOTHER message of the conversation holds it. The owner's own mark is left
+  // out, and so is a second delivery of the same message (a create and its update overlap): the
+  // message's file is judged by what its own pass found. A delivery that finds others joins their
+  // wait and holds the conversation too, so the one it waits behind cannot overtake it before its
+  // row lands.
   others(): boolean;
-  // A download of this delivery answered 404 and is being asked again. Counted once.
+  // This delivery is reading its message's file. Counted once.
   mark(): void;
   // The delivery armed its flush, chose its turn, or ended. Counted once, and nothing before `mark`.
   release(): void;
@@ -316,23 +318,31 @@ export function mediaArrivingHold(target: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number | null;
+  messageId?: number | null;
 }): MediaArrivingHold {
   const { conversationId } = target;
   if (conversationId === null)
     return { mark() {}, release() {}, others: () => false };
   const k = keyOf(target.tenantId, target.instanceId, conversationId);
+  const messageId = target.messageId ?? null;
   let holding = false;
   let released = false;
   const mark = () => {
     if (holding || released) return;
     holding = true;
-    arrivingConversations.set(k, (arrivingConversations.get(k) ?? 0) + 1);
+    arrivingConversations.set(k, [
+      ...(arrivingConversations.get(k) ?? []),
+      messageId,
+    ]);
   };
   return {
     others() {
-      const held = (arrivingConversations.get(k) ?? 0) - (holding ? 1 : 0);
-      if (held > 0) mark();
-      return held > 0;
+      const held = arrivingConversations.get(k) ?? [];
+      const same = held.filter((id) => id === messageId).length;
+      // Without a message id nothing says two holds are the same message: only its own is left out.
+      const mine = messageId === null ? (holding ? 1 : 0) : same;
+      if (held.length - mine > 0) mark();
+      return held.length - mine > 0;
     },
     mark,
     release() {
@@ -340,8 +350,10 @@ export function mediaArrivingHold(target: {
       released = true;
       if (!holding) return;
       holding = false;
-      const left = (arrivingConversations.get(k) ?? 1) - 1;
-      if (left > 0) arrivingConversations.set(k, left);
+      const held = [...(arrivingConversations.get(k) ?? [])];
+      const at = held.indexOf(messageId);
+      if (at >= 0) held.splice(at, 1);
+      if (held.length > 0) arrivingConversations.set(k, held);
       else arrivingConversations.delete(k);
     },
   };

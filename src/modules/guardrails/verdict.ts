@@ -35,6 +35,15 @@ export const unanalyzed = (error: string): GuardrailVerdict => ({
   error,
 });
 
+// Whether a verdict says its analysis never ran. The field's presence is the answer, never its text:
+// an adapter can fail with an empty message, and reading that as "no error" is a clean verdict for a
+// step nobody judged. Every guardrail reader asks through here.
+export function analysisFailed<V extends { error?: string }>(
+  v: V,
+): v is V & { error: string } {
+  return v.error !== undefined;
+}
+
 // The verdict shape, as JSON Schema rather than as prose in the prompt. A plain schema, NOT a zod
 // type: with a schema, json that is not a verdict arrives as `parsed` unvalidated (so
 // `verdictFromObject` re-checks it), while a zod type makes the OpenAI adapter reject the whole call.

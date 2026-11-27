@@ -13,6 +13,10 @@ import {
 } from "@/modules/guardrails/settings";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import {
+  EMPTY_FAILURES,
+  passRawModelFailures,
+} from "../utils/raw-model-failures";
 import { guardrailModel } from "../utils/scripted-models";
 
 // `guardrails.onFailure: "hold"`: a screening that could not judge stops the message as a hand-over
@@ -206,6 +210,92 @@ describe.skipIf(!dbUp)("a guardrail that could not judge, under hold", () => {
       unchecked: false,
       held: true,
     });
+  });
+
+  // The bug it catches: a failure with nothing to say read as a clean screening, on one call or on
+  // one half of the split output screening.
+  test("a chat verdict that fails with an empty message is a failure: handed over under hold, unavailable under pass", async () => {
+    const raw = passRawModelFailures();
+    try {
+      for (const thrown of EMPTY_FAILURES) {
+        const failing = (() =>
+          guardrailModel(async () => {
+            throw thrown;
+          })) as never;
+        const f = flow();
+        const gate = buildGuardrailGate({
+          langfuseCfg: null,
+          cfg: held({
+            input: { ...cfg().input, handoffMessage: "LINHA-ENTRADA" },
+          }),
+          apiKey: "k",
+          flow: f,
+          makeModel: failing,
+        });
+        expect(await gate("input", CUSTOMER)).toEqual({
+          kind: "handed-off",
+          reply: "LINHA-ENTRADA",
+        });
+        expect((await lines(f.turnId))[0]?.detail).toMatchObject({
+          outcome: "analysis_failed",
+          held: true,
+        });
+
+        const reports: GuardrailReport[] = [];
+        const passing = buildGuardrailGate({
+          langfuseCfg: null,
+          cfg: cfg(),
+          apiKey: "k",
+          flow: flow(),
+          makeModel: failing,
+          announce: (r) => {
+            reports.push(r);
+          },
+        });
+        expect(await passing("input", CUSTOMER)).toEqual({
+          kind: "unavailable",
+          modelRan: true,
+        });
+        expect(reports).toMatchObject([
+          { outcome: "unavailable", cause: "analysis_failed" },
+        ]);
+
+        const relevanceFails = (() =>
+          guardrailModel(async (msgs) => {
+            if (
+              msgs.some((m) => String(m.content).includes("<customer_message>"))
+            )
+              throw thrown;
+            return {
+              content: JSON.stringify({
+                violated: false,
+                categories: [],
+                rationale: "",
+              }),
+            };
+          })) as never;
+        const split = buildGuardrailGate({
+          langfuseCfg: null,
+          cfg: held({
+            output: {
+              ...cfg().output,
+              checks: { ...ALL_CHECKS, answerRelevance: true },
+              handoffMessage: "LINHA-SAIDA",
+            },
+          }),
+          apiKey: "k",
+          flow: flow(),
+          makeModel: relevanceFails,
+          customerMessage: "Qual o horário?",
+        });
+        expect(await split("output", "Abrimos às 9h.")).toEqual({
+          kind: "handed-off",
+          reply: "LINHA-SAIDA",
+        });
+      }
+    } finally {
+      raw.mockRestore();
+    }
   });
 
   // The bug it catches: the reply going out unchecked, or the hand-over sending the input line.

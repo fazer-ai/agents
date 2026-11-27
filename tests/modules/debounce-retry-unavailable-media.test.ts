@@ -293,6 +293,8 @@ async function flush(
     retired?: boolean;
     // When the job was armed; absent, now.
     burstStartedAt?: number;
+    // When the live row was first armed, kept by a re-arm that restarts the burst.
+    liveSince?: number;
     transcriptionWaitMs?: number;
   } = {},
 ) {
@@ -321,6 +323,7 @@ async function flush(
         threadId: thread,
         agentBotId: 9,
         burstStartedAt: opts.burstStartedAt ?? Date.now(),
+        ...(opts.liveSince !== undefined ? { liveSince: opts.liveSince } : {}),
         ...(mediaWaitSince !== undefined ? { mediaWaitSince } : {}),
         ...(deferringSince !== undefined ? { deferringSince } : {}),
         ...(opts.mediaOnly ? { mediaOnly: true } : {}),
@@ -1429,6 +1432,10 @@ describe.skipIf(!dbUp)(
       const landed = new Promise<void>((r) => {
         release = r;
       });
+      let reached: () => void = () => {};
+      const backingOff = new Promise<void>((r) => {
+        reached = r;
+      });
       const s = storage();
       const retrying = s.client([voice(1)]);
       retrying.downloadAttachment = (async (
@@ -1436,6 +1443,7 @@ describe.skipIf(!dbUp)(
         opts?: { onMissing?: () => void },
       ) => {
         opts?.onMissing?.();
+        reached();
         await landed;
         return {
           bytes: new Uint8Array([0x4f, 0x67, 0x67, 0x53]).buffer,
@@ -1458,7 +1466,7 @@ describe.skipIf(!dbUp)(
         },
         deps: { makeClient: async () => retrying, fetchImpl: p.sttFetch },
       });
-      await Bun.sleep(20);
+      await backingOff;
       const during = told;
       release();
       await arrival;
@@ -1528,6 +1536,59 @@ describe.skipIf(!dbUp)(
 
       expect(out).toEqual({ outcome: "done" });
       expect(seen).toContain(WORDS);
+    });
+
+    // The first flush was claimed, the process restarted, and a follow-up re-armed the claimed row:
+    // the burst start is the follow-up's, and only the row's first arm predates the process.
+    test("a restart followed by a re-arm before the first retry still retries the voice note", async () => {
+      await seedConversation(9773);
+      const s = storage();
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9773, 1, s.client(page), p.sttFetch);
+      const armedAt = Date.now();
+
+      await Bun.sleep(5);
+      clearMediaAnnotations();
+      s.state.stored = true;
+      const { out, seen } = await flush(
+        9773,
+        s.client(page),
+        p,
+        undefined,
+        undefined,
+        { liveSince: armedAt },
+      );
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(WORDS);
+    });
+
+    // A duplicate delivery opens a transcription for a note whose empty result is already stashed.
+    test("a voice note already answered with nothing is not waited for when it is opened again", async () => {
+      await seedConversation(9774);
+      const s = storage();
+      const p = provider();
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionEmpty: true },
+      );
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+
+      const { out, seen } = await flush(
+        9774,
+        s.client([voice(1)]),
+        p,
+        undefined,
+        undefined,
+        {
+          transcriptionWaitMs: 5,
+        },
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
     });
 
     // Note 1 is still being transcribed when the bounded wait ends, and its words land while the

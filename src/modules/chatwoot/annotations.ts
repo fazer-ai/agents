@@ -211,6 +211,18 @@ export function transcriptionOpen(
   return openTranscriptions.has(keyOf(tenantId, instanceId, messageId));
 }
 
+// A transcription in flight that has no result yet. A duplicate delivery opens one again for a note
+// whose result is already stashed: that note is settled, heard or not.
+export function transcriptionPending(
+  tenantId: bigint,
+  instanceId: bigint,
+  messageId: number,
+): boolean {
+  if (!transcriptionOpen(tenantId, instanceId, messageId)) return false;
+  const note = mediaAnnotationFor(tenantId, instanceId, messageId);
+  return !note?.transcribedText && !note?.transcriptionEmpty;
+}
+
 // Announces a transcription in flight for a message. The returned function closes it, once.
 export function openTranscription(target: {
   tenantId: bigint;
@@ -290,6 +302,9 @@ const arrivingConversations = new Map<
 // A delivery's claim that a file of its message is on its way. The delivery owns it from the first
 // 404 to its own exit: no reader of a single file can end it, and another delivery's is its own.
 export interface MediaArrivingHold {
+  // Whether another delivery of the conversation holds it, or let go of it a moment ago. The
+  // owner's own mark is left out: its file is judged by what its own pass found.
+  others(nowMs?: number): boolean;
   // A download of this delivery answered 404 and is being asked again. Counted once.
   mark(): void;
   // The delivery armed its flush, chose its turn, or ended. Counted once, and nothing before `mark`.
@@ -302,11 +317,18 @@ export function mediaArrivingHold(target: {
   conversationId: number | null;
 }): MediaArrivingHold {
   const { conversationId } = target;
-  if (conversationId === null) return { mark() {}, release() {} };
+  if (conversationId === null)
+    return { mark() {}, release() {}, others: () => false };
   const k = keyOf(target.tenantId, target.instanceId, conversationId);
   let entry: { count: number; until: number } | undefined;
   let released = false;
   return {
+    others(nowMs = Date.now()) {
+      const e = arrivingConversations.get(k);
+      if (!e) return false;
+      const own = entry === e && !released ? 1 : 0;
+      return e.count - own > 0 || nowMs < e.until;
+    },
     mark() {
       if (entry || released) return;
       const now = Date.now();

@@ -103,7 +103,7 @@ const client = (async () =>
 
 // What `transcribeInboundAudio` does: on a 404 past the window it marks the note and throws; with
 // the file served it returns the words.
-function transcriber(state: "uploading" | "stored") {
+function transcriber(state: "uploading" | "stored" | "recovered") {
   return async (p: {
     tenantId: bigint;
     instanceId: bigint;
@@ -112,6 +112,7 @@ function transcriber(state: "uploading" | "stored") {
   }) => {
     if (state === "stored") return WORDS;
     p.onMediaMissing?.();
+    if (state === "recovered") return WORDS;
     stashMediaAnnotation(
       {
         tenantId: p.tenantId,
@@ -140,7 +141,7 @@ async function seedConversation(convId: number) {
 
 async function deliver(
   convId: number,
-  opts: { audio: boolean; storage?: "uploading" | "stored" },
+  opts: { audio: boolean; storage?: "uploading" | "stored" | "recovered" },
 ) {
   const messageId = 7000 + nextId++;
   const n = normalizeChatwootEvent({
@@ -333,6 +334,64 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     expect(model.calls).toBeGreaterThan(0);
   });
 
+  // The download answered 404 once and then read the file: the delivery's own mark is not a reason
+  // to queue a reply that is ready.
+  test("a voice note read after one 404 takes the direct turn", async () => {
+    await seedConversation(9827);
+    const { model } = await deliver(9827, {
+      audio: true,
+      storage: "recovered",
+    });
+
+    expect(await flushRows(9827)).toBe(0);
+    expect(model.calls).toBeGreaterThan(0);
+  });
+
+  // The claimed row is re-armed as a new burst, and still says when the row was first armed.
+  test("a re-arm of a claimed row keeps when the row was first armed", async () => {
+    const threadId = `${tenantId}:${instanceId}:9828`;
+    const first = Date.now() - 30_000;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 1_000),
+        payload: { threadId, agentBotId: AGENT_BOT_ID, burstStartedAt: first },
+      },
+    });
+    const arm = () =>
+      armDebounce({
+        tenantId,
+        threadId,
+        agentBotId: AGENT_BOT_ID,
+        cfg: {
+          enabled: true,
+          windowSeconds: 5,
+          maxMessagesPerBurst: 20,
+          maxWindowSeconds: 60,
+        },
+        base: appDb,
+      });
+    const read = async () =>
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+          select: { payload: true },
+        })
+      ).payload as { liveSince: number; burstStartedAt: number };
+
+    await arm();
+    const once = await read();
+    await arm();
+    const twice = await read();
+
+    expect(once.liveSince).toBe(first);
+    expect(once.burstStartedAt).toBeGreaterThan(first);
+    expect(twice.liveSince).toBe(first);
+  });
+
   // An agent with debounce on arms with its own window: the media wait never stands in for it.
   test("debounce on arms with the agent's own window", async () => {
     const before = await suDb.agent.findFirstOrThrow({
@@ -355,6 +414,18 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         base: appDb,
       });
       expect(cfg?.windowSeconds).toBe(30);
+      // The arm still says a file is on its way: debounce can be turned off before the flush.
+      expect(cfg?.lateMedia).toBe(true);
+      expect(cfg?.mediaOnly).toBeUndefined();
+      const plain = await resolveArmConfig({
+        tenantId,
+        instanceId,
+        chatwootInboxId: CHATWOOT_INBOX_ID,
+        threadId: `${tenantId}:${instanceId}:9805`,
+        mediaArriving: false,
+        base: appDb,
+      });
+      expect(plain?.lateMedia).toBeUndefined();
     } finally {
       await suDb.agent.updateMany({
         where: { tenantId },
@@ -712,6 +783,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         maxMessagesPerBurst: 20,
         maxWindowSeconds: 60,
         mediaOnly: true,
+        lateMedia: true,
       },
       base: appDb,
     });
@@ -821,6 +893,7 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         maxMessagesPerBurst: 20,
         maxWindowSeconds: 60,
         mediaOnly: true,
+        lateMedia: true,
       },
       base: appDb,
     });
@@ -900,18 +973,22 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
         base: appDb,
       });
     const before = await resolve();
+    // What the late file's own delivery arms with.
+    const late = await resolveArmConfig({
+      tenantId,
+      instanceId,
+      chatwootInboxId: CHATWOOT_INBOX_ID,
+      threadId,
+      mediaArriving: true,
+      base: appDb,
+    });
+    if (!late) throw new Error("unreachable: a late file always arms");
 
     await armDebounce({
       tenantId,
       threadId,
       agentBotId: AGENT_BOT_ID,
-      cfg: {
-        enabled: true,
-        windowSeconds: 5,
-        maxMessagesPerBurst: 20,
-        maxWindowSeconds: 60,
-        mediaOnly: true,
-      },
+      cfg: late,
       base: appDb,
     });
 

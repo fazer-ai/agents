@@ -82,7 +82,6 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
-  conversationMediaArriving,
   type MediaArrivingHold,
   mediaAnnotationFor,
   mediaArrivingHold,
@@ -5933,11 +5932,7 @@ async function processDelivery(
                         message.id,
                       )?.transcriptionUnavailable,
                     })) ||
-                  conversationMediaArriving(
-                    params.tenantId,
-                    params.instanceId,
-                    conversationId,
-                  ),
+                  arriving.others(),
                 base,
               });
               if (!cfg) return null;

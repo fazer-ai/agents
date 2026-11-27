@@ -35,6 +35,7 @@ import {
   overlayMediaAnnotations,
   stashMediaAnnotation,
   transcriptionOpen,
+  transcriptionPending,
 } from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
@@ -114,6 +115,7 @@ import {
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
+  readLiveSince,
   readMediaOnly,
   readMediaWaitSince,
   readReactionArmed,
@@ -530,7 +532,7 @@ export async function selectAnswerableBurst(
     if (
       unheard.includes(m.id) &&
       !m.transcribedText &&
-      transcriptionOpen(tenantId, instanceId, m.id)
+      transcriptionPending(tenantId, instanceId, m.id)
     )
       m.transcriptionLate = true;
 
@@ -605,7 +607,7 @@ async function mediaStillRetryable(
         m.audio &&
         !m.transcribedText &&
         (m.transcriptionUnavailable === true ||
-          transcriptionOpen(tenantId, instanceId, m.id))) ||
+          transcriptionPending(tenantId, instanceId, m.id))) ||
       (visionOn &&
         hasUnextractedVisual(m.visuals) &&
         mediaStillArriving({ ...m, transcriptionUnavailable: false })),
@@ -2660,8 +2662,12 @@ export async function flushDebounceJob(
         mediaOnlyBurst: readMediaOnly(job.payload),
         // NOTE: The arm time too: a job armed for a file and not yet flushed has no wait stamp.
         mediaMarksLost:
-          Math.min(mediaSince, readBurstStart(job.payload) ?? mediaSince) <
-          mediaAnnotationsBornAt(),
+          Math.min(
+            mediaSince,
+            readLiveSince(job.payload) ??
+              readBurstStart(job.payload) ??
+              mediaSince,
+          ) < mediaAnnotationsBornAt(),
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {

@@ -20,7 +20,10 @@ export function debounceDedupeKey(threadId: string): string {
 }
 
 // What a delivery arms with: the agent's debounce, or the media wait of an agent whose debounce is off.
-export type ArmConfig = DebounceConfig & { mediaOnly?: true };
+export type ArmConfig = DebounceConfig & {
+  mediaOnly?: true;
+  lateMedia?: true;
+};
 
 // The window of the flush an agent with debounce OFF still takes for a file on its way: the flush
 // then defers until the file can be read (`MEDIA_DEFER_*` in ./handler.ts).
@@ -60,7 +63,8 @@ export async function resolveArmConfig(params: {
     });
     if (!agent?.enabled) return null;
     const cfg = readDebounceConfig(agent.settings);
-    if (cfg.enabled) return cfg;
+    if (cfg.enabled)
+      return params.mediaArriving ? { ...cfg, lateMedia: true } : cfg;
     if (!config.debounceWorker.enabled) return null;
     if (!params.mediaArriving) {
       const live = await db.schedulerJob.findFirst({
@@ -88,6 +92,7 @@ export async function resolveArmConfig(params: {
       enabled: true,
       windowSeconds: MEDIA_WAIT_WINDOW_SECONDS,
       mediaOnly: true,
+      lateMedia: true,
     };
   });
 }
@@ -162,6 +167,12 @@ function readRetryAt(payload: unknown, claimSeq: number): number | null {
 export function readLateMedia(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   return (payload as Record<string, unknown>).lateMedia === true;
+}
+
+export function readLiveSince(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).liveSince;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
 export function readBurstStart(payload: unknown): number | null {
@@ -270,8 +281,9 @@ export async function stampDeferral(params: {
       // the flush's own reschedule lands reads it there (`armDebounce`).
       const noted = params.retryAt !== undefined && row.status === "CLAIMED";
       if (read(row.payload) !== null && !forward && !noted) return;
-      await db.schedulerJob.update({
-        where: { id: row.id },
+      // NOTE: Retiring the row does not take the arm lock: the write names the claim it read.
+      await db.schedulerJob.updateMany({
+        where: { id: row.id, claimSeq: row.claimSeq },
         data: {
           payload: {
             ...(row.payload as Prisma.InputJsonObject),
@@ -369,6 +381,13 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       // opens a new burst. Every question below reads that one fact, so they cannot answer it
       // differently.
       const continuingBurst = existing?.status === "PENDING";
+      // When the live row was first armed. Unlike `burstStartedAt`, a re-arm of a claimed row keeps
+      // it: the flush reads it to tell a job armed before this process started.
+      const liveSince =
+        (stillLive
+          ? (readLiveSince(existing.payload) ??
+            readBurstStart(existing.payload))
+          : null) ?? nowMs;
       const prevBurst = continuingBurst
         ? readBurstStart(existing.payload)
         : null;
@@ -407,7 +426,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         (stillLive && readMediaOnly(existing.payload)) ||
         (!sameBurst && cfg.mediaOnly === true);
       const lateMedia =
-        cfg.mediaOnly === true ||
+        cfg.lateMedia === true ||
         (stillLive && readLateMedia(existing.payload));
       // The retry the flush in flight noted on the row it still holds. Already due is honoured too:
       // the last round before the ceiling can be milliseconds ahead.
@@ -430,6 +449,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         threadId,
         agentBotId,
         burstStartedAt,
+        liveSince,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
         ...(reactionArmed ? { reactionArmed: true } : {}),
         ...(reactionFrom !== null ? { reactionFrom } : {}),

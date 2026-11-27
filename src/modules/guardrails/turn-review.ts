@@ -508,6 +508,18 @@ export function turnRuleSilenceNote(
   ].join("\n");
 }
 
+// What a transfer is answered with when the line it carries for the customer matched a rule.
+export function turnRuleLineNote(
+  rule: Pick<TurnReviewRule, "note">,
+  tool: string,
+): string {
+  return [
+    `${TURN_REVIEW_NOTE_MARK}: a chamada a ${tool} NÃO foi executada. A mensagem ao cliente que ela levava foi recusada por uma regra configurada pelo operador, e o cliente ainda não recebeu nada. O que o operador pede nesta situação está entre <${RULE_NOTE_TAG}>.`,
+    fencedRuleNote(rule.note),
+    RULE_REDO_CLOSING,
+  ].join("\n");
+}
+
 class ReviewTokens extends BaseCallbackHandler {
   name = "fazerai-turn-review-tokens";
   override awaitHandlers = true;
@@ -1052,19 +1064,27 @@ export function buildTurnReviewGate(
 
   // The rules on a reply, in order, the first that fires. No model is called. `failed` when the
   // matcher ran out of time or could not run: a review that could not judge, never a clean one.
+  // `text` is what the customer would read: the reply, or the line a transfer's call carries, for
+  // which `excused` is the tool that transfer satisfies even before it ran.
   const reviewRules = async (
     turn: BaseMessage[],
-    step: Extract<TurnStep, { kind: "reply" }>,
+    step: TurnStep,
+    text: string,
+    excused?: string,
   ): Promise<TurnReviewRule | "failed" | null> => {
     const acted = actedIn(turn);
     const candidates = rules.filter(
-      (r) => !(r.unlessTool && acted.has(r.unlessTool)),
+      (r) =>
+        !(
+          r.unlessTool &&
+          (acted.has(r.unlessTool) || r.unlessTool === excused)
+        ),
     );
     if (candidates.length === 0) return null;
     const started = Date.now();
     const verdict = await (p.matchRules ?? firstTurnRuleMatch)(
       candidates.map((r) => r.pattern),
-      step.text,
+      text,
       { signal: p.signal },
     );
     // A turn that ended while the thread ran reports nothing: a timeout of a cancelled turn is not
@@ -1121,6 +1141,20 @@ export function buildTurnReviewGate(
           ? turnRuleSilenceNote(rule, call.name)
           : null;
       }
+      // The line a transfer carries is a reply by another door: once the transfer completes
+      // nothing reviews the turn's text, so the rules read it here, before the call runs. A rule
+      // whose tool is the transfer itself is excused by this very call.
+      const line = transferLine(call);
+      if (line && rules.length > 0 && !stopped && !p.signal?.aborted) {
+        const fired = await reviewRules(turn, step, line, HANDOFF_TOOL_NAME);
+        if (p.signal?.aborted) return null;
+        if (fired === "failed" && stopped) return null;
+        if (fired && fired !== "failed") {
+          if ((await ruleFlag(fired, step, true)) !== "revised") return null;
+          owed = fired;
+          return turnRuleLineNote(fired, call.name);
+        }
+      }
       if (!tr.judge) return null;
       const flagged = await review(
         turn,
@@ -1151,7 +1185,7 @@ export function buildTurnReviewGate(
           : null;
       }
       if (rules.length > 0) {
-        const fired = await reviewRules(turn, step);
+        const fired = await reviewRules(turn, step, reply);
         if (p.signal?.aborted) return null;
         if (fired === "failed") {
           if (stopped) return null;
@@ -1181,6 +1215,9 @@ export function buildTurnReviewGate(
     pending: () => decision,
     reviewsCall: (name, turn) =>
       tr.judge ||
+      // A transfer's line is read by every rule the transfer itself does not excuse.
+      (name in TRANSFER_LINE_ARG &&
+        rules.some((r) => r.unlessTool !== HANDOFF_TOOL_NAME)) ||
       ((name === SKIP_REPLY_TOOL || name in TRANSFER_LINE_ARG) &&
         stillOwed(turn) !== null),
     halted: () => held || refused,

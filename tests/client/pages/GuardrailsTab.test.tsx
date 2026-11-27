@@ -13,6 +13,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { useRef, useState } from "react";
@@ -1095,6 +1096,37 @@ describe("GuardrailsTab turn review rules", () => {
       render(tab(c));
       await new Promise((r) => setTimeout(r, 20));
       expect(asked.filter((u) => u.includes("/playground/tools"))).toEqual([]);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  // The bug it catches: the editor asked for an API key on a configuration whose only check is
+  // the rules, which run on no model.
+  test("a rules-only configuration is not asked for an API key, and the model reviewer is", async () => {
+    const ASK = "Select an API key to use this feature.";
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ entries: [], tools: [] }), {
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    try {
+      const c = reviewing();
+      c.input.enabled = false;
+      c.output.enabled = false;
+      c.turnReview.judge = false;
+      c.turnReview.rules = [
+        { name: "a", pattern: "a", unlessTool: null, note: "n" },
+      ];
+      render(<Dirty initial={c} />);
+      // The picker says it only once the vault answered.
+      await new Promise((r) => setTimeout(r, 30));
+      const rulesOnly = screen.queryAllByText(ASK).length;
+      fireEvent.click(
+        document.getElementById("gr-turn-review-judge") as HTMLElement,
+      );
+      await waitFor(() => expect(screen.queryAllByText(ASK).length).toBe(1));
+      expect(rulesOnly).toBe(0);
     } finally {
       globalThis.fetch = previous;
     }

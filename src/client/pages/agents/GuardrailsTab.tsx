@@ -51,6 +51,7 @@ import type {
 import {
   GROUNDING_ACTIONS,
   type GroundingAction,
+  guardrailsUseModel,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
   MAX_TURN_REVIEW_RULES,
@@ -1008,7 +1009,12 @@ export function GuardrailsTab({
                     onChange={(v) =>
                       setG((s) => ({ ...s, credentialRef: v || null }))
                     }
-                    required={g.provider !== "openai-compatible"}
+                    // Asked for only when a configured check runs on this model: the rules of
+                    // turn review alone need no key.
+                    required={
+                      g.provider !== "openai-compatible" &&
+                      guardrailsUseModel(g)
+                    }
                     compatibleTypes={credentialCompat.model(g.provider)}
                     defaultCreateType={credentialCompat.model(g.provider)[0]}
                     ariaLabel={t("editor.credential", "API key")}

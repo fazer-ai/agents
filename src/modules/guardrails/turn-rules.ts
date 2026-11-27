@@ -72,27 +72,32 @@ export async function firstTurnRuleMatch(
     void slot.then(() => queue.release());
     return { kind: "aborted" };
   }
-  try {
-    return await matchInThread(patterns, text, opts);
-  } finally {
-    queue.release();
-  }
+  // The slot is the thread's, not the verdict's: a thread past its budget is told to stop and the
+  // answer goes back at once, while the next review waits until that thread is really gone.
+  const { verdict, exited } = matchInThread(patterns, text, opts);
+  void exited.then(() => queue.release());
+  return verdict;
 }
 
 function matchInThread(
   patterns: readonly string[],
   text: string,
   opts: { timeoutMs?: number; workerUrl?: string },
-): Promise<TurnRulesVerdict> {
-  return new Promise((resolve) => {
-    let worker: Worker;
-    try {
-      worker = new Worker(opts.workerUrl ?? WORKER_URL);
-    } catch {
-      // NOTE: no thread, no check: reported as a review that could not run, never as clean.
-      resolve({ kind: "timeout", index: -1 });
-      return;
-    }
+): { verdict: Promise<TurnRulesVerdict>; exited: Promise<void> } {
+  let worker: Worker;
+  try {
+    worker = new Worker(opts.workerUrl ?? WORKER_URL);
+  } catch {
+    // NOTE: no thread, no check: reported as a review that could not run, never as clean.
+    return {
+      verdict: Promise.resolve({ kind: "timeout", index: -1 }),
+      exited: Promise.resolve(),
+    };
+  }
+  const exited = new Promise<void>((resolve) =>
+    worker.addEventListener("close", () => resolve(), { once: true }),
+  );
+  const verdict = new Promise<TurnRulesVerdict>((resolve) => {
     let settled = false;
     let testing = -1;
     const finish = (verdict: TurnRulesVerdict) => {
@@ -128,4 +133,5 @@ function matchInThread(
       text,
     } satisfies TurnRulesRequest);
   });
+  return { verdict, exited };
 }

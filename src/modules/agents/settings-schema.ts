@@ -1096,6 +1096,21 @@ const guardrailDecisions = z.looseObject({
 // One rule of the turn review (docs/turn-review.md). The pattern is refused here, on the write, when
 // it does not compile or passes its cap: the reader drops such a rule, so a stored one would be a
 // rule that silently never fires.
+function requireTurnRuleFields(
+  v: Record<string, unknown>,
+  ctx: z.core.$RefinementCtx,
+) {
+  for (const key of ["name", "pattern", "note"] as const) {
+    if (v[key] !== undefined) continue;
+    ctx.addIssue({
+      code: "custom",
+      path: [key],
+      message: `a rule needs its ${key}`,
+      params: { wholeBlock: 1, expected: "required" },
+    });
+  }
+}
+
 const turnReviewRule = z
   .looseObject({
     name: z
@@ -1136,17 +1151,7 @@ const turnReviewRule = z
   // The three required fields, refused by absence here and not by type: the write boundary judges a
   // value by whether the write changed it, and an absent field never differs from an absent stored
   // one. `wholeBlock` asks instead whether the rule changed.
-  .superRefine((v, ctx) => {
-    for (const key of ["name", "pattern", "note"] as const) {
-      if (v[key] !== undefined) continue;
-      ctx.addIssue({
-        code: "custom",
-        path: [key],
-        message: `a rule needs its ${key}`,
-        params: { wholeBlock: 1, expected: "required" },
-      });
-    }
-  });
+  .superRefine(requireTurnRuleFields);
 
 const guardrails = z
   .looseObject({
@@ -1591,6 +1596,17 @@ export const BLOCK_REFINEMENTS: Record<string, z.ZodType> = {
   }),
   channelRedirect: delayPairs(...REDIRECT_DELAY_PAIRS),
   monitoring: z.looseObject({}).superRefine(refineMonitoringEngine),
+  // A rule's required fields, asked also when another field of the rule fails: a stored tool
+  // outside the closed list is tolerated unchanged, and must not hide a note the write removed.
+  guardrails: z.looseObject({
+    turnReview: z
+      .looseObject({
+        rules: z
+          .array(z.looseObject({}).superRefine(requireTurnRuleFields))
+          .optional(),
+      })
+      .optional(),
+  }),
 };
 
 // What agent_settings_set takes: the patch shape with `monitoring.decisions` and the delays unrefined,

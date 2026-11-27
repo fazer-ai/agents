@@ -48,6 +48,7 @@ import {
 import {
   buildTurnReviewGate,
   TURN_REVIEW_NOTE_MARK,
+  turnRuleLineNote,
   turnRuleSilenceWaitNote,
 } from "@/modules/guardrails/turn-review";
 import {
@@ -368,6 +369,18 @@ describe("settings", () => {
       ).not.toThrow();
   });
 
+  // The bug it catches: a stored tool outside the list, tolerated when unchanged, failed the
+  // rule's parse before its required fields were asked, so an update could remove the note and
+  // the reader then dropped the whole guard.
+  test("an update that removes a required field is refused also on a rule stored with a tool outside the list", () => {
+    const stored = withRule({ ...PROMISE, unlessTool: "set_labels" });
+    expect(() => assertSettingsClosedValues(stored, stored)).not.toThrow();
+    const { note: _, ...noteless } = { ...PROMISE, unlessTool: "set_labels" };
+    expect(refusalOf(withRule(noteless), stored).field).toBe(
+      "guardrails.turnReview.rules.0.note",
+    );
+  });
+
   test("a whole rule, and one with no tool, are stored", () => {
     expect(() =>
       assertSettingsClosedValues(
@@ -470,6 +483,12 @@ describe("an imported bundle", () => {
   });
 });
 
+// A slot goes back when its thread is gone, which is after the answer.
+async function idle(queue: SandboxQueue) {
+  for (let i = 0; i < 300 && queue.active > 0; i++)
+    await new Promise((r) => setTimeout(r, 10));
+}
+
 describe("the matcher", () => {
   test("answers the first pattern in order that matches, upper and lower case alike", async () => {
     expect(
@@ -505,6 +524,7 @@ describe("the matcher", () => {
       { kind: "match", index: 0 },
       { kind: "match", index: 0 },
     ]);
+    await idle(queue);
     expect([queue.active, queue.queued]).toEqual([0, 0]);
   });
 
@@ -530,6 +550,23 @@ describe("the matcher", () => {
 
   // The bug it catches: a backtracking pattern matched on the server's own thread stalls every
   // tenant for as long as it runs. Here the caller gets its answer at the budget, naming the pattern.
+  // The bug it catches: the slot handed on when the verdict was given, while the thread past its
+  // budget was still shutting down, so the ceiling counted answers and not live threads.
+  test("a thread past its budget keeps its slot until it is gone, and its answer does not wait", async () => {
+    const queue = new SandboxQueue(1);
+    const verdict = await firstTurnRuleMatch(["(a+)+$"], `${"a".repeat(40)}!`, {
+      queue,
+      timeoutMs: 50,
+    });
+    const held = queue.active;
+    await idle(queue);
+    expect([verdict, held, queue.active]).toEqual([
+      { kind: "timeout", index: 0 },
+      1,
+      0,
+    ]);
+  });
+
   test("a pattern that backtracks is stopped at the budget, and the answer names it", async () => {
     const started = Date.now();
     const verdict = await firstTurnRuleMatch(
@@ -926,6 +963,73 @@ describe("the rules in the gate", () => {
         caseWithAPlaceholder: true,
         skipBesideASilentTransfer: true,
       });
+    },
+  );
+
+  // The bug it catches: the redo put the refused text in the transfer's `customerMessage`, which
+  // the transfer delivered with no review after it.
+  test.skipIf(!dbUp)(
+    "the line a transfer carries is read by the rules the transfer does not excuse",
+    async () => {
+      const LINE = "Vou encaminhar o seu pedido de reembolso.";
+      const transfer = {
+        name: "handoff_to_human",
+        args: { customerMessage: LINE },
+        id: "t",
+      };
+      const turn = [
+        ...asked(),
+        new AIMessage({ content: "", tool_calls: [transfer] }),
+      ];
+      // The rule whose tool is the transfer: "vou encaminhar" in the line is what it asked for.
+      const promise = gate(cfg({ rules: [PROMISE] })).g;
+      expect([
+        promise?.reviewsCall("handoff_to_human", asked()),
+        await promise?.reviewCall(turn, transfer),
+      ]).toEqual([false, null]);
+      // The same pattern with no tool: the line is a reply, and it is refused before the transfer.
+      const always = { ...PROMISE, unlessTool: null };
+      const { f, g } = gate(
+        cfg({ rules: [always], maxAttempts: 1, fallback: "template" }),
+      );
+      expect(g?.reviewsCall("handoff_to_human", asked())).toBe(true);
+      const note = await g?.reviewCall(turn, transfer);
+      expect(note).toBe(turnRuleLineNote(always, "handoff_to_human"));
+      expect(note).toContain(NOTE);
+      // The reply is owed from here: a silence is refused, and past the attempts the fallback.
+      expect(g?.reviewsCall("skip_reply", asked())).toBe(true);
+      expect(await g?.reviewCall(turn, transfer)).toBeNull();
+      expect([g?.halted(), g?.pending()]).toEqual([
+        true,
+        { kind: "replaced", reply: TEMPLATE },
+      ]);
+      expect(
+        (await lines(f.turnId as string))
+          .map((l) => `${l.step} ${l.tool} ${l.rule} ${l.outcome}`)
+          .sort(),
+      ).toEqual([
+        "call handoff_to_human promessa-sem-transferir exhausted",
+        "call handoff_to_human promessa-sem-transferir revised",
+      ]);
+      // Both rules together: only the one with no tool reads the line.
+      const both = gate(cfg({ rules: [PROMISE, BANNED] })).g;
+      expect(await both?.reviewCall(turn, transfer)).toContain(BANNED.note);
+      const clean = {
+        ...transfer,
+        args: { customerMessage: "Vou encaminhar o seu caso." },
+      };
+      expect(await both?.reviewCall(turn, clean)).toBeNull();
+      // Under observe the line only writes its line, and the fallback's line of a case is read too.
+      const watching = gate(cfg({ rules: [BANNED], action: "observe" })).g;
+      expect(await watching?.reviewCall(turn, transfer)).toBeNull();
+      const opened = {
+        name: "open_case_in_inbox",
+        args: { reason: "r", handoff_message: LINE },
+        id: "o",
+      };
+      expect(
+        await gate(cfg({ rules: [BANNED] })).g?.reviewCall(turn, opened),
+      ).toContain(BANNED.note);
     },
   );
 
@@ -1675,6 +1779,31 @@ describe("the rules in the graph", () => {
         null,
         ["revised"],
       ]);
+    },
+  );
+
+  test.skipIf(!dbUp)(
+    "a redo that moves the refused text into the transfer does not transfer, and one that fixes it does",
+    async () => {
+      const carrying = (customerMessage: string) => ({
+        name: "handoff_to_human",
+        args: { customerMessage },
+      });
+      const t = await runTurn(
+        [
+          { text: "Vou pedir o seu reembolso." },
+          { text: "", calls: [carrying("Vou pedir o seu reembolso.")] },
+          { text: "", calls: [carrying("Um atendente vai continuar.")] },
+          { text: "Pronto, o time já foi avisado." },
+        ],
+        cfg({ rules: [BANNED], maxAttempts: 2 }),
+      );
+      expect([t.ran, t.pending, t.outcomes]).toEqual([
+        ["handoff_to_human"],
+        null,
+        ["revised", "revised"],
+      ]);
+      expect(t.thread).not.toContain("Vou pedir o seu reembolso.\nok");
     },
   );
 

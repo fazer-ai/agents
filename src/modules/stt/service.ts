@@ -274,7 +274,14 @@ async function transcribeOnce(
         fetchImpl: params.deps?.fetchImpl ?? fetch,
         signal: params.signal,
       }),
-  );
+  ).catch((err: unknown) => {
+    // NOTE: A time limit cut the call: the note was sent and nobody answered in time, which the
+    // reply reports as late and never as inaudible.
+    if (err instanceof Error && err.name === "TimeoutError")
+      stashMediaAnnotation(target, { transcriptionTimedOut: true });
+    throw err;
+  });
+
   const text = cleanTranscription(result.text);
   if (!text) {
     stashMediaAnnotation(

@@ -2177,11 +2177,12 @@ export async function runEagerMedia(
         logger.warn("stt failed (conv=%s): %s", convLabel, errMsg(err));
       } finally {
         closeTranscription();
+        const heard = mediaAnnotationFor(tenantId, instanceId, n.message.id);
         // NOTE: On the event too, for the direct turn, which renders it and never re-reads the stash.
         // Both values: a later pass of this delivery that read the file takes the mark back.
         n.message.transcriptionUnavailable =
-          mediaAnnotationFor(tenantId, instanceId, n.message.id)
-            ?.transcriptionUnavailable === true;
+          heard?.transcriptionUnavailable === true ||
+          heard?.transcriptionTimedOut === true;
       }
     }
   }

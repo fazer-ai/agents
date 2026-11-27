@@ -162,7 +162,11 @@ async function deliver(
     audio: boolean;
     storage?: "uploading" | "stored";
     // Stands in for the transcription call, to hold it open.
-    transcribe?: () => Promise<string | null>;
+    transcribe?: (p: {
+      tenantId: bigint;
+      instanceId: bigint;
+      messageId: number;
+    }) => Promise<string | null>;
     // An image instead of a voice note, read through this provider call.
     visionFetch?: typeof fetch;
   },
@@ -1414,6 +1418,23 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
 
     expect(afterFirst).toBe(true);
     expect(n.message.transcriptionUnavailable).toBe(false);
+  });
+
+  test("a direct turn is told a transcription cut by the provider's time limit is late", async () => {
+    await seedConversation(9834);
+    const { model } = await deliver(9834, {
+      audio: true,
+      transcribe: async (p) => {
+        stashMediaAnnotation(p, { transcriptionTimedOut: true });
+        throw new DOMException("signal timed out", "TimeoutError");
+      },
+    });
+
+    expect(model.calls).toBeGreaterThan(0);
+    expect(model.seen.join("\n")).toContain(
+      "a transcrição não ficou pronta a tempo",
+    );
+    expect(model.seen.join("\n")).not.toContain("não audível");
   });
 
   test("a text message with no flush live takes the direct turn as before", async () => {

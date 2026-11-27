@@ -18,6 +18,9 @@ export interface MediaAnnotation {
   // The voice note's download failed on something that may pass (`isTransientAttachmentFailure`),
   // so it was never sent to the provider: the reply's turn tries it again.
   transcriptionUnavailable?: boolean;
+  // The provider call was cut by its own time limit: the note was sent and no answer came. Not a
+  // refusal and not silence, so it reads as late, and it is not sent again.
+  transcriptionTimedOut?: boolean;
   imageDescription?: string;
   extractedText?: string;
   // How many attachments the eager pass did NOT read (over the cap, or failed): the model's move is
@@ -155,6 +158,8 @@ export function overlayMediaAnnotations(
     // marked.
     if (hit.note.transcriptionUnavailable !== undefined && !row.transcribedText)
       row.transcriptionUnavailable = hit.note.transcriptionUnavailable;
+    if (hit.note.transcriptionTimedOut && !row.transcribedText)
+      row.transcriptionLate = true;
     // NOTE: the vision fields are aggregates, so "meta wins" inverts. The write-back is per
     // attachment, so a page with one of two meta writes landed carries a partial description that
     // `??=` would keep. The stash is written once by the pass that produced all of them (idempotent

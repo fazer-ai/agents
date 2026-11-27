@@ -1496,6 +1496,47 @@ describe.skipIf(!dbUp)(
       expect(seen).not.toContain(UNHEARD);
     });
 
+    // The provider never answers and its own time limit cuts the call.
+    test("a provider call cut by its time limit is called late, not inaudible, and is not sent again", async () => {
+      await seedConversation(9777);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(9777, 1, s.client(page), (async () => {
+        throw new DOMException("signal timed out", "TimeoutError");
+      }) as unknown as typeof fetch);
+
+      const { out, seen } = await flush(9777, s.client(page), p);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+      expect(seen).not.toContain(UNHEARD);
+      expect(p.calls.stt).toBe(0);
+    });
+
+    // A provider that answers with an error is a failure, not a late answer.
+    test("a provider that answers with an error keeps the inaudible marker", async () => {
+      await seedConversation(9778);
+      const s = storage();
+      s.state.stored = true;
+      const p = provider();
+      const page = [voice(1)];
+      await arriveVoice(
+        9778,
+        1,
+        s.client(page),
+        (async () =>
+          new Response("{}", { status: 500 })) as unknown as typeof fetch,
+      );
+
+      const { out, seen } = await flush(9778, s.client(page), p);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(UNHEARD);
+      expect(seen).not.toContain(LATE);
+    });
+
     // A duplicate delivery opens a transcription for a note whose empty result is already stashed.
     test("a voice note already answered with nothing is not waited for when it is opened again", async () => {
       await seedConversation(9774);

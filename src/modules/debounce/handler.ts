@@ -888,7 +888,8 @@ function audioTried(note: MediaAnnotation | null): boolean {
   return (
     note?.transcribedText !== undefined ||
     note?.transcriptionEmpty !== undefined ||
-    note?.transcriptionUnavailable !== undefined
+    note?.transcriptionUnavailable !== undefined ||
+    note?.transcriptionTimedOut !== undefined
   );
 }
 

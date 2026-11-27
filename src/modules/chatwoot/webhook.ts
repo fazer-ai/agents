@@ -5915,24 +5915,28 @@ async function processDelivery(
               // Debounce off still answers through the flush while a file is on its way, since only the
               // flush can come back for it.
               const message = n.message;
+              // Its own file, or one an earlier message of the conversation is still asking storage for:
+              // that delivery has armed nothing yet, and this one must not overtake it.
+              const mediaArriving =
+                (message?.id != null &&
+                  mediaStillArriving({
+                    ...message,
+                    transcriptionUnavailable: mediaAnnotationFor(
+                      params.tenantId,
+                      params.instanceId,
+                      message.id,
+                    )?.transcriptionUnavailable,
+                  })) ||
+                arriving.others();
+              // NOTE: Let go before the first await: a message that checks next must not start a wait
+              // behind a delivery that has already chosen the direct turn.
+              if (!mediaArriving) arriving.release();
               const cfg = await resolveArmConfig({
                 tenantId: params.tenantId,
                 instanceId: params.instanceId,
                 chatwootInboxId: inboxId,
                 threadId,
-                // NOTE: Its own file, or one an earlier message of the conversation is still asking
-                // storage for: that delivery has armed nothing yet, and this one must not overtake it.
-                mediaArriving:
-                  (message?.id != null &&
-                    mediaStillArriving({
-                      ...message,
-                      transcriptionUnavailable: mediaAnnotationFor(
-                        params.tenantId,
-                        params.instanceId,
-                        message.id,
-                      )?.transcriptionUnavailable,
-                    })) ||
-                  arriving.others(),
+                mediaArriving,
                 base,
               });
               if (!cfg) return null;

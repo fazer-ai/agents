@@ -69,6 +69,9 @@ let instanceId = 0n;
 let inboxDbId = 0n;
 let nextId = 1;
 
+// Called when the model is invoked: what a test reads while the turn is still running.
+let duringTurn: (() => void) | null = null;
+
 class CountingModel extends BaseChatModel {
   calls = 0;
   seen: string[] = [];
@@ -83,6 +86,7 @@ class CountingModel extends BaseChatModel {
   }
   async _generate(messages: BaseMessage[]): Promise<ChatResult> {
     this.calls++;
+    duringTurn?.();
     for (const m of messages)
       if (m.type === "human" && typeof m.content === "string")
         this.seen.push(m.content);
@@ -338,9 +342,15 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
   // to queue a reply that is ready.
   test("a voice note read after one 404 takes the direct turn", async () => {
     await seedConversation(9827);
+    let heldDuringTurn: boolean | null = null;
+    duringTurn = () => {
+      heldDuringTurn = conversationMediaArriving(tenantId, instanceId, 9827);
+    };
     const { model } = await deliver(9827, {
       audio: true,
       storage: "recovered",
+    }).finally(() => {
+      duringTurn = null;
     });
     // A text right after that reply is not queued behind a file that was read.
     const next = await deliver(9827, { audio: false });
@@ -348,6 +358,8 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     expect(await flushRows(9827)).toBe(0);
     expect(model.calls).toBeGreaterThan(0);
     expect(next.model.calls).toBeGreaterThan(0);
+    // The delivery let go when it chose the direct turn, not when the turn ended.
+    expect(heldDuringTurn as boolean | null).toBe(false);
   });
 
   // The claimed row is re-armed as a new burst, and still says when the row was first armed.

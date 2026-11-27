@@ -216,6 +216,16 @@ export function transcriptionOpen(
   return openTranscriptions.has(keyOf(tenantId, instanceId, messageId));
 }
 
+// The provider's answer is in for this note: words, nothing usable, or no answer inside its time
+// limit. None of the three is asked for again by an automatic read.
+export function audioSettled(note: MediaAnnotation | null): boolean {
+  return Boolean(
+    note?.transcribedText ||
+      note?.transcriptionEmpty ||
+      note?.transcriptionTimedOut,
+  );
+}
+
 // A transcription in flight that has no result yet. A duplicate delivery opens one again for a note
 // whose result is already stashed: that note is settled, heard or not.
 export function transcriptionPending(
@@ -225,7 +235,7 @@ export function transcriptionPending(
 ): boolean {
   if (!transcriptionOpen(tenantId, instanceId, messageId)) return false;
   const note = mediaAnnotationFor(tenantId, instanceId, messageId);
-  return !note?.transcribedText && !note?.transcriptionEmpty;
+  return !audioSettled(note);
 }
 
 // Announces a transcription in flight for a message. The returned function closes it, once.
@@ -262,7 +272,7 @@ export async function awaitOpenTranscriptions(
   const open = messageIds
     .filter((id) => {
       const note = mediaAnnotationFor(tenantId, instanceId, id);
-      return !note?.transcribedText && !note?.transcriptionEmpty;
+      return !audioSettled(note);
     })
     .map((id) => openTranscriptions.get(keyOf(tenantId, instanceId, id)))
     .filter((e): e is { count: number; waiters: Set<() => void> } => !!e);

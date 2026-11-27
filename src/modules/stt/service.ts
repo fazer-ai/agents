@@ -6,6 +6,7 @@ import { shareAbortableInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
+  audioSettled,
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -117,9 +118,7 @@ export async function transcribeInboundAudio(
     params.instanceId,
     params.messageId,
   );
-  if (stashed?.transcribedText) return stashed.transcribedText;
-  if (stashed?.transcriptionEmpty || stashed?.transcriptionTimedOut)
-    return null;
+  if (audioSettled(stashed)) return stashed?.transcribedText ?? null;
   return shareAbortableInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
     (signal) => transcribeOnce({ ...params, signal }),
@@ -276,9 +275,14 @@ async function transcribeOnce(
         signal: params.signal,
       }),
   ).catch((err: unknown) => {
-    // NOTE: A time limit cut the call: the note was sent and nobody answered in time, which the
-    // reply reports as late and never as inaudible.
-    if (err instanceof Error && err.name === "TimeoutError")
+    // NOTE: The provider's own time limit cut the call: the note was sent and nobody answered in
+    // time, which the reply reports as late and never as inaudible. A caller that ran out of its own
+    // budget settles nothing: the next read, with a fresh budget, sends the note.
+    if (
+      err instanceof Error &&
+      err.name === "TimeoutError" &&
+      !params.signal?.aborted
+    )
       stashMediaAnnotation(target, { transcriptionTimedOut: true });
     throw err;
   });

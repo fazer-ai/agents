@@ -1521,6 +1521,67 @@ describe.skipIf(!dbUp)(
       expect(asked).toBe(1);
     });
 
+    // The reminder shares one budget across its reads: the caller ran out, not the provider.
+    test("a provider call cut by the caller's own deadline settles nothing", async () => {
+      await seedConversation(9780);
+      const s = storage();
+      s.state.stored = true;
+      const budget = new AbortController();
+      let asked = 0;
+      await transcribeInboundAudio({
+        tenantId,
+        instanceId,
+        conversationId: 9780,
+        messageId: 1,
+        attachmentId: 301,
+        dataUrl: AUDIO_URL,
+        cfg: readSttConfig(settings()),
+        base: appDb,
+        signal: budget.signal,
+        deps: {
+          makeClient: async () => s.client([voice(1)]),
+          fetchImpl: (async () => {
+            asked++;
+            const spent = new DOMException("signal timed out", "TimeoutError");
+            budget.abort(spent);
+            throw spent;
+          }) as unknown as typeof fetch,
+        },
+      }).catch(() => null);
+
+      // The caller is answered at its abort: the cut call settles on its own a moment later.
+      await Bun.sleep(25);
+
+      expect(asked).toBe(1);
+      expect(
+        mediaAnnotationFor(tenantId, instanceId, 1)?.transcriptionTimedOut,
+      ).toBeUndefined();
+    });
+
+    // A duplicate delivery opens the transcription again for a note the provider timed out on.
+    test("a note the provider timed out on is not waited for when it is opened again", async () => {
+      await seedConversation(9781);
+      const s = storage();
+      const p = provider();
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 1 },
+        { transcriptionTimedOut: true },
+      );
+      const close = openTranscription({ tenantId, instanceId, messageId: 1 });
+
+      const { out, seen } = await flush(
+        9781,
+        s.client([voice(1)]),
+        p,
+        undefined,
+        undefined,
+        { transcriptionWaitMs: 5 },
+      ).finally(close);
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(seen).toContain(LATE);
+    });
+
     // A provider that answers with an error is a failure, not a late answer.
     test("a provider that answers with an error keeps the inaudible marker", async () => {
       await seedConversation(9778);

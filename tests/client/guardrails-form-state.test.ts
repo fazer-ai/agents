@@ -4,6 +4,7 @@ import {
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
   turnRulesIncomplete,
+  withoutIncompleteTurnRules,
 } from "@/client/pages/agents/guardrailsFormState";
 import {
   CUSTOM_POLICY_MAX,
@@ -142,6 +143,19 @@ describe("turn review rules in the form", () => {
       turnRulesIncomplete([{ ...RULE, pattern: "" }]),
       turnRulesIncomplete([{ ...RULE, pattern: "(" }]),
     ]).toEqual([false, false, true, true, true, true]);
+  });
+
+  test("taking the half-written rules out keeps the whole ones and the rest of the form", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const g = {
+      ...on,
+      turnReview: {
+        ...on.turnReview,
+        rules: [RULE, { ...RULE, pattern: "(" }, { ...RULE, name: "" }],
+      },
+    };
+    expect(withoutIncompleteTurnRules(g).turnReview.rules).toEqual([RULE]);
+    expect(withoutIncompleteTurnRules(on)).toBe(on);
   });
 
   // The bug it catches: rules alone under the Decisions classifier asking for a chat model key that

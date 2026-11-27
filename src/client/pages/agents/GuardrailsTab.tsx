@@ -71,6 +71,7 @@ import { ExternalCheckContract } from "./ExternalCheckContract";
 import {
   guardrailsChatModelShown,
   turnRulesIncomplete,
+  withoutIncompleteTurnRules,
 } from "./guardrailsFormState";
 import { ManagedKnowledgeBaseCards } from "./KnowledgeBaseCards";
 import {
@@ -802,7 +803,12 @@ export function GuardrailsTab({
           >
             <SwitchField
               checked={g.enabled}
-              onCheckedChange={(v) => setG((s) => ({ ...s, enabled: v }))}
+              onCheckedChange={(v) =>
+                setG((s) => {
+                  const next = { ...s, enabled: v };
+                  return v ? next : withoutIncompleteTurnRules(next);
+                })
+              }
               label={t("editor.guardrails.enabled", "Enable guardrails")}
             />
             {g.enabled && (
@@ -1451,7 +1457,15 @@ export function GuardrailsTab({
               >
                 <SwitchField
                   checked={tr.enabled}
-                  onCheckedChange={(v) => setTurnReview({ enabled: v })}
+                  onCheckedChange={(v) =>
+                    setG((s) => {
+                      const next = {
+                        ...s,
+                        turnReview: { ...s.turnReview, enabled: v },
+                      };
+                      return v ? next : withoutIncompleteTurnRules(next);
+                    })
+                  }
                   label={t(
                     "editor.guardrails.turnReviewEnabled",
                     "Review the turn's actions and reply",
@@ -1752,7 +1766,10 @@ export function GuardrailsTab({
                                   value={rule.unlessTool ?? ""}
                                   onChange={(e) =>
                                     setRule(i, {
-                                      unlessTool: e.target.value || null,
+                                      // Only spaces is an empty field: the server trims the name.
+                                      unlessTool: e.target.value.trim()
+                                        ? e.target.value
+                                        : null,
                                     })
                                   }
                                   list="gr-turn-rule-tools"

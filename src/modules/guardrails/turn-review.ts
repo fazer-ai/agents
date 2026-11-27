@@ -965,10 +965,12 @@ export function buildTurnReviewGate(
     return outcome === "exhausted" && !canRedo ? { rationale } : null;
   };
 
-  // The tool a rule excuses the reply for ran in the turn: called, not refused, and not failed.
+  // The tool a rule excuses the reply for acted in the turn: called, not refused by the review or
+  // the graph, not failed, and not answered with a refusal of its own (a precondition, a fence, a
+  // write that changed nothing), which reads as an ordinary result.
   const ranInTurn = (turn: BaseMessage[], tool: string) =>
     groundingToolCalls(turn, []).some(
-      (c) => c.name === tool && !c.notRun && !c.isError,
+      (c) => c.name === tool && !c.notRun && !c.isError && !c.noEffect,
     );
   // Whether the reply a rule refused is still owed: not once the rule's tool ran.
   const stillOwed = (turn: BaseMessage[]): TurnReviewRule | null =>

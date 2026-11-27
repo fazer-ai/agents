@@ -24,13 +24,32 @@ export function guardrailsChatModelShown(g: GuardrailsConfig): boolean {
 
 // Whether a rule in the form is one the server would refuse or the reader would drop: a missing
 // name or note, or a pattern that is empty, too long or does not compile.
+const turnRuleIncomplete = (
+  r: GuardrailsConfig["turnReview"]["rules"][number],
+): boolean =>
+  !r.name.trim() || !r.note.trim() || !!turnRulePatternProblem(r.pattern);
+
 export function turnRulesIncomplete(
   rules: GuardrailsConfig["turnReview"]["rules"],
 ): boolean {
-  return rules.some(
-    (r) =>
-      !r.name.trim() || !r.note.trim() || !!turnRulePatternProblem(r.pattern),
-  );
+  return rules.some(turnRuleIncomplete);
+}
+
+// The form as it stands once the rules' fields leave the screen (turn review or guardrails switched
+// off): the save still sends the whole block, so a half-written rule nobody can see or fix any more
+// is taken out, where it would otherwise have the server refuse the save of every tab.
+export function withoutIncompleteTurnRules(
+  g: GuardrailsConfig,
+): GuardrailsConfig {
+  return turnRulesIncomplete(g.turnReview.rules)
+    ? {
+        ...g,
+        turnReview: {
+          ...g.turnReview,
+          rules: g.turnReview.rules.filter((r) => !turnRuleIncomplete(r)),
+        },
+      }
+    : g;
 }
 
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime

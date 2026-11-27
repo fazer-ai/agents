@@ -11,6 +11,7 @@ import {
   isMemoryHead,
   isUnranToolResult,
   pairedResults,
+  reportedNoEffect,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
@@ -74,6 +75,9 @@ export interface GroundingToolCall {
   notRun?: true;
   // A call that ran and failed (its result has status "error").
   isError?: true;
+  // A call that ran and reported that it did not do what it was asked (`reportedNoEffect`): a fence
+  // or a precondition refused it, or the write changed nothing. Its result reads as an ordinary one.
+  noEffect?: true;
 }
 
 export interface GroundingReviewInput {
@@ -240,6 +244,7 @@ function toolCallsIn(
         ...(turnsBackAt ? { turnsBack: turnsBackAt(index) } : {}),
         ...(notRun ? { notRun: true as const } : {}),
         ...(res.isError && !notRun ? { isError: true as const } : {}),
+        ...(!notRun && reportedNoEffect(r) ? { noEffect: true as const } : {}),
       });
     }
   }

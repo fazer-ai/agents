@@ -60,6 +60,7 @@ import {
   callsRefusedByReview,
   droppedCallCount,
   droppedCallsStamp,
+  markedNoEffect,
   markedSetAside,
   pairedResults,
   turnReviewHeldToolResult,
@@ -82,6 +83,7 @@ import {
 import {
   type CallReport,
   fenceReporterOf,
+  reportsNoEffect,
   withFenceReporter,
 } from "./tools/fence-report";
 import { isMcpArgumentRefusal } from "./tools/mcp";
@@ -1641,10 +1643,33 @@ export function buildAgentGraph({
     view: typeof MessagesAnnotation.State,
     config: ToolRunnableConfig,
   ): Promise<{ messages: BaseMessage[] }> => {
+    // A call that reports it did nothing (fence-report.ts) keeps that fact on its result: the result
+    // itself reads as an ordinary answer. Heard here for every batch, and passed on.
+    const outer = fenceReporterOf(config);
+    const idle = new Set<string>();
+    let idleUnnamed = false;
+    const heard = withFenceReporter(config, (r: CallReport, callId) => {
+      if (reportsNoEffect(r)) {
+        if (callId) idle.add(callId);
+        else idleUnnamed = true;
+      }
+      outer?.(r, callId);
+    });
     // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-    const out = await toolNode!.invoke(view, config);
-    for (const m of out.messages as BaseMessage[])
+    const out = await toolNode!.invoke(view, heard);
+    const answers = (out.messages as BaseMessage[]).filter(
+      (m) => m.getType() === "tool",
+    );
+    for (const m of out.messages as BaseMessage[]) {
       if (unknownToolAnswer(m)) markedSetAside(m);
+      const id = (m as ToolMessage).tool_call_id;
+      // A report with no id can only be told apart in a batch of one.
+      if (
+        m.getType() === "tool" &&
+        ((id && idle.has(id)) || (idleUnnamed && answers.length === 1))
+      )
+        markedNoEffect(m);
+    }
     return out;
   };
   const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));

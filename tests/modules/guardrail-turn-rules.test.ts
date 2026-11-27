@@ -12,8 +12,9 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { buildAgentGraph } from "@/graph/graph";
-import { turnReviewVetoToolResult } from "@/graph/markers";
+import { markedNoEffect, turnReviewVetoToolResult } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
+import { fenceReporterOf } from "@/graph/tools/fence-report";
 import type { AppError } from "@/lib/errors";
 import { assertSettingsClosedValues } from "@/modules/agents/service";
 import type { FlowContext } from "@/modules/flowlog/service";
@@ -126,19 +127,26 @@ function flow(): FlowContext {
 
 const asked = () => [new HumanMessage("Meu pedido não chegou.")];
 // The turn after a call to `name` came back: ran, refused by the review, or failed.
-function after(name: string, how: "ran" | "vetoed" | "failed"): BaseMessage[] {
+// `idle`: it ran and reported that it did nothing, in a result that reads as an ordinary one.
+function after(
+  name: string,
+  how: "ran" | "vetoed" | "failed" | "idle",
+): BaseMessage[] {
   const call = { name, args: {}, id: "c1" };
+  const answer = new ToolMessage({
+    content: how === "failed" ? "erro" : "ok",
+    tool_call_id: "c1",
+    name,
+    ...(how === "failed" ? { status: "error" as const } : {}),
+  });
   return [
     ...asked(),
     new AIMessage({ content: "", tool_calls: [call] }),
     how === "vetoed"
       ? turnReviewVetoToolResult(call, "não executada")
-      : new ToolMessage({
-          content: how === "ran" ? "ok" : "erro",
-          tool_call_id: "c1",
-          name,
-          ...(how === "failed" ? { status: "error" as const } : {}),
-        }),
+      : how === "idle"
+        ? markedNoEffect(answer)
+        : answer,
   ];
 }
 
@@ -355,6 +363,20 @@ describe("the matcher", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  // The bug it catches: a long reply matched by its first characters only, so a phrase near the end
+  // went out unseen, and a pattern anchored at the end fired on the cut.
+  test("a long reply is matched whole", async () => {
+    const long = `${"Segue abaixo lista. ".repeat(3000)}Vou encaminhar o seu caso. Até logo.`;
+    expect(long.length).toBeGreaterThan(40_000);
+    expect(await firstTurnRuleMatch(["vou encaminhar"], long)).toEqual({
+      kind: "match",
+      index: 0,
+    });
+    expect(await firstTurnRuleMatch(["lista\\. $"], long)).toEqual({
+      kind: "none",
+    });
+  });
+
   test("a thread that cannot start is a review that could not run, never a clean one", async () => {
     expect(
       await firstTurnRuleMatch(["a"], "a", {
@@ -377,7 +399,6 @@ describe("the rules in the gate", () => {
     if (!dbUp) return;
     await clearFlowLog(suDb, { tenantId });
     await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantId}`);
-    await suDb.$disconnect();
   });
 
   test("with the model reviewer off and no rule there is no hook, and with a rule there is", () => {
@@ -439,6 +460,11 @@ describe("the rules in the gate", () => {
       const failed = gate(cfg({})).g;
       expect(
         await failed?.reviewReply(after("transferir", "failed"), DRAFT),
+      ).toBeTruthy();
+      // A precondition or a fence refused it inside the tool: the result reads "ok", nothing happened.
+      const idle = gate(cfg({})).g;
+      expect(
+        await idle?.reviewReply(after("transferir", "idle"), DRAFT),
       ).toBeTruthy();
       // Another tool's call excuses nothing.
       const other = gate(cfg({})).g;
@@ -735,12 +761,18 @@ class ScriptedModel {
   }
 }
 
-async function runTurn(steps: Step[], c: GuardrailsConfig) {
+// `idle`: tools that answer "ok" and report, on the call's config, that they did nothing.
+async function runTurn(
+  steps: Step[],
+  c: GuardrailsConfig,
+  idle: string[] = [],
+) {
   const ran: string[] = [];
   const named = (name: string) =>
     tool(
-      async () => {
+      async (_input, config) => {
         ran.push(name);
+        if (idle.includes(name)) fenceReporterOf(config)?.({ noEffect: true });
         return "ok";
       },
       { name, description: name, schema: z.object({}) },
@@ -781,6 +813,17 @@ describe("the rules in the graph", () => {
     });
     tenantId = t.id;
   });
+  // The last suite of the file: it clears its own tenant and closes the clients both suites share.
+  afterAll(async () => {
+    if (dbUp) {
+      await clearFlowLog(suDb, { tenantId });
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+    await app?.$disconnect();
+    await su?.$disconnect();
+  });
 
   test.skipIf(!dbUp)(
     "the redo reads the note as a system instruction, can call the tool, and the draft never reaches the thread",
@@ -803,6 +846,28 @@ describe("the rules in the graph", () => {
       );
       expect(carrying.map((m) => m.getType())).toEqual(["system"]);
       expect(t.pending).toBeNull();
+    },
+  );
+
+  // The bug it catches: a transfer the tool itself refused (a precondition) answered with ordinary
+  // text, and the promise that followed it was excused as if somebody had been called.
+  test.skipIf(!dbUp)(
+    "a call of the rule's tool that reported doing nothing does not excuse the promise, and one that acted does",
+    async () => {
+      const steps = [
+        { text: "", calls: ["transferir"] },
+        { text: DRAFT },
+        { text: "Não consegui transferir agora. Qual é o seu telefone?" },
+      ];
+      const refused = await runTurn(steps, cfg({}), ["transferir"]);
+      expect(refused.ran).toEqual(["transferir"]);
+      expect(refused.outcomes).toEqual(["revised"]);
+      expect(refused.last).toBe(
+        "Não consegui transferir agora. Qual é o seu telefone?",
+      );
+      const acted = await runTurn(steps, cfg({}));
+      expect(acted.outcomes).toEqual([]);
+      expect(acted.last).toBe(DRAFT);
     },
   );
 

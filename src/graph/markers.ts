@@ -453,6 +453,22 @@ export function markedSetAside<T extends BaseMessage>(message: T): T {
   return message;
 }
 
+// A call that ran and reported, on its own config (fence-report.ts), that it did not do what it was
+// asked: a fence or a precondition refused it, or the write changed nothing. To the model that is an
+// ordinary result, so the fact is kept beside it, for a reader that asks whether a tool really acted
+// (a turn-review rule's `unlessTool`). A key of its own: the call did run, so none of the readers
+// of the markers above may take it for a call set aside.
+const NO_EFFECT_KWARG = "fazerNoEffect";
+export function markedNoEffect<M extends BaseMessage>(message: M): M {
+  message.additional_kwargs = {
+    ...message.additional_kwargs,
+    [NO_EFFECT_KWARG]: true,
+  };
+  return message;
+}
+export const reportedNoEffect = (message: BaseMessage): boolean =>
+  message.additional_kwargs?.[NO_EFFECT_KWARG] === true;
+
 export function turnReviewVetoToolResult(
   call: { id?: string; name: string },
   note: string,

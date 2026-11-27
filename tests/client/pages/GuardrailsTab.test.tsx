@@ -984,17 +984,38 @@ describe("GuardrailsTab turn review rules", () => {
     ]).toEqual(["true", false, true]);
   });
 
-  test("with turn review off, no rule is drawn and a half-written one does not hold Save", () => {
+  // The bug it catches: a half-written rule hidden by switching the section off still went in the
+  // save, which the server refused whole, edits of the other tabs included, with nothing on screen
+  // to fix.
+  test("switching turn review or the guardrails off takes a half-written rule out, and keeps a whole one", () => {
+    const whole = { name: "a", pattern: "a", unlessTool: null, note: "n" };
     const c = reviewing();
-    c.turnReview = {
-      ...c.turnReview,
-      enabled: false,
-      rules: [{ name: "", pattern: "[", unlessTool: null, note: "" }],
-    };
+    c.turnReview.rules = [whole];
     render(<Dirty initial={c} />);
-    expect([at("gr-turn-rule-add") === null, saveHeld()]).toEqual([
+    fireEvent.click(at("gr-turn-rule-add"));
+    const held = saveHeld();
+    const section = document.getElementById("gr-turn-review") as HTMLElement;
+    fireEvent.click(within(section).getAllByRole("switch")[0] as HTMLElement);
+    const afterReview = [form?.turnReview.rules, saveHeld()];
+    cleanup();
+    render(<Dirty initial={c} />);
+    fireEvent.click(at("gr-turn-rule-add"));
+    fireEvent.click(screen.getAllByRole("switch")[0] as HTMLElement);
+    expect([held, afterReview, form?.enabled, form?.turnReview.rules]).toEqual([
       true,
+      [[whole], false],
       false,
+      [whole],
     ]);
+  });
+
+  test("a tool field left with only spaces is no tool", () => {
+    const c = reviewing();
+    c.turnReview.rules = [
+      { name: "a", pattern: "a", unlessTool: "t", note: "n" },
+    ];
+    render(<Dirty initial={c} />);
+    fireEvent.change(at("gr-turn-rule-0-tool"), { target: { value: "  " } });
+    expect(form?.turnReview.rules[0]?.unlessTool).toBe(null);
   });
 });

@@ -40,6 +40,12 @@ const store = new Map<string, { at: number; note: MediaAnnotation }>();
 // message reuses it instead of paying the provider again.
 const fileReads = new Map<string, { at: number; value: unknown }>();
 let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+// When this store came to exist. A wait that began before it has marks this process never held.
+let bornAt = Date.now();
+
+export function mediaAnnotationsBornAt(): number {
+  return bornAt;
+}
 
 function keyOf(tenantId: bigint, instanceId: bigint, messageId: number) {
   return `${tenantId}:${instanceId}:${messageId}`;
@@ -270,11 +276,63 @@ export async function awaitOpenTranscriptions(
   return true;
 }
 
+// How long a conversation still counts as having a file on its way after the download that said so
+// ended: the delivery arms its flush right after, and a message landing in between has to see it.
+const ARRIVING_GRACE_MS = 2000;
+
+// Conversations with a download that storage answered 404 to and that is still being asked again, so a
+// message arriving meanwhile can join the wait before any flush exists for it.
+const arrivingConversations = new Map<
+  string,
+  { count: number; until: number }
+>();
+
+// Announces a file on its way in a conversation. The returned function ends it, once.
+export function openConversationMediaArriving(target: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+}): () => void {
+  const k = keyOf(target.tenantId, target.instanceId, target.conversationId);
+  const entry = arrivingConversations.get(k) ?? { count: 0, until: 0 };
+  entry.count += 1;
+  arrivingConversations.delete(k);
+  arrivingConversations.set(k, entry);
+  while (arrivingConversations.size > MAX_ENTRIES) {
+    const oldest = arrivingConversations.keys().next().value;
+    if (oldest === undefined) break;
+    arrivingConversations.delete(oldest);
+  }
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    entry.count -= 1;
+    if (entry.count === 0) entry.until = Date.now() + ARRIVING_GRACE_MS;
+  };
+}
+
+export function conversationMediaArriving(
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+  nowMs: number = Date.now(),
+): boolean {
+  const k = keyOf(tenantId, instanceId, conversationId);
+  const entry = arrivingConversations.get(k);
+  if (!entry) return false;
+  if (entry.count > 0 || nowMs < entry.until) return true;
+  arrivingConversations.delete(k);
+  return false;
+}
+
 // Test isolation only — production never clears the store wholesale (the TTL sweep does).
 export function clearMediaAnnotations(): void {
   store.clear();
   fileReads.clear();
   openTranscriptions.clear();
+  arrivingConversations.clear();
+  bornAt = Date.now();
   if (sweepTimer) {
     clearTimeout(sweepTimer);
     sweepTimer = undefined;

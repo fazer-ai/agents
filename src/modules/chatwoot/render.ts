@@ -18,6 +18,9 @@ export interface RenderableLocation {
 export interface RenderableMessage {
   text: string;
   transcribedText?: string | null;
+  // The voice note's file or its transcription did not arrive before the reply stopped waiting.
+  transcriptionUnavailable?: boolean;
+  transcriptionLate?: boolean;
   // Vision extraction written back by the eager pass (or absent when vision is off/failed/unsupported).
   imageDescription?: string | null;
   extractedText?: string | null;
@@ -100,6 +103,12 @@ const QUOTE_MAX = 200;
 
 // O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador por
 // `startsWith`; ver a nota no ramo de imagem de `renderInboundMessage`.
+// A voice note whose file or transcription did not arrive before the reply stopped waiting. It says
+// what happened and nothing about the audio itself, which may be perfectly audible. No "ainda": the
+// marker stays in the thread and is read again on later turns.
+export const AUDIO_SEM_TRANSCRICAO_A_TEMPO =
+  "mensagem de áudio recebida, mas a transcrição não ficou pronta a tempo";
+
 const CORPO_SEM_CONTEUDO =
   "<e-mail sem texto; as imagens do corpo não trouxeram conteúdo legível>";
 const IMAGEM_ILEGIVEL =
@@ -245,11 +254,16 @@ export function renderInboundMessage(
   let pediuReenvio = false;
   if (types.has("audio")) {
     const tr = cleanTranscription(m.transcribedText ?? text);
+    const late = m.transcriptionUnavailable === true || m.transcriptionLate;
     const audio = tr
       ? `<mensagem-de-audio>${tr}</mensagem-de-audio>`
-      : observer
-        ? "<mensagem de áudio não audível>"
-        : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
+      : late
+        ? observer
+          ? `<${AUDIO_SEM_TRANSCRICAO_A_TEMPO}>`
+          : `<${AUDIO_SEM_TRANSCRICAO_A_TEMPO}; peça que o cliente reenvie por texto>`
+        : observer
+          ? "<mensagem de áudio não audível>"
+          : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
     // NOTE: the audio does not decide the body alone: what vision read and a pin sent with it ride
     // beside it, as they would without the audio ("olha o print" needs the print). Not through
     // `withText`, since the customer's text already stood in for the transcription above.

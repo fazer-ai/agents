@@ -9,6 +9,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
 import {
   clearMediaAnnotations,
+  openConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -446,6 +447,212 @@ describe.skipIf(!dbUp)("debounce off: a file still on its way", () => {
     });
     expect(row.runAt.getTime()).toBe(retryAt.getTime());
     expect(row.payload).toHaveProperty("mediaWaitSince", since);
+  });
+
+  test("the flush a debounce-off agent arms for a late file is marked as armed for media only", async () => {
+    await seedConversation(9811);
+    await deliver(9811, { audio: true, storage: "uploading" });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        dedupeKey: debounceDedupeKey(`${tenantId}:${instanceId}:9811`),
+      },
+      select: { payload: true },
+    });
+    expect(row.payload).toHaveProperty("mediaOnly", true);
+  });
+
+  // Queued while debounce was on, with no file on its way: not a wait this text joins.
+  test("a text does not join an ordinary burst queued before debounce was turned off", async () => {
+    await seedConversation(9812);
+    const threadId = `${tenantId}:${instanceId}:9812`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 90_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+        },
+      },
+    });
+
+    const { model } = await deliver(9812, { audio: false });
+
+    expect(model.calls).toBeGreaterThan(0);
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(row.payload).not.toHaveProperty("mediaOnly");
+  });
+
+  test("a text joins a burst that debounce armed and that is now waiting for a file", async () => {
+    await seedConversation(9813);
+    const threadId = `${tenantId}:${instanceId}:9813`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 5_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+          mediaWaitSince: Date.now(),
+        },
+      },
+    });
+
+    const { model } = await deliver(9813, { audio: false });
+
+    expect(model.calls).toBe(0);
+    expect(await flushRows(9813)).toBe(1);
+  });
+
+  // The voice note's own delivery is still asking storage for the file and has armed nothing yet.
+  test("a text that arrives while a voice note of the conversation is still being asked for joins its wait", async () => {
+    await seedConversation(9814);
+    const close = openConversationMediaArriving({
+      tenantId,
+      instanceId,
+      conversationId: 9814,
+    });
+
+    const { model } = await deliver(9814, { audio: false }).finally(close);
+
+    expect(model.calls).toBe(0);
+    expect(await flushRows(9814)).toBe(1);
+  });
+
+  // The row's time is when the run in flight came due, already in the past: kept, the worker would
+  // run the next retry on its next tick.
+  test("a message that joins while a media retry runs does not bring the next retry to now", async () => {
+    const threadId = `${tenantId}:${instanceId}:9815`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "CLAIMED",
+        runAt: new Date(Date.now() - 8_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now() - 20_000,
+          mediaWaitSince: Date.now() - 10_000,
+        },
+      },
+    });
+    const before = Date.now();
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 90,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 600,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { runAt: true, payload: true },
+    });
+    expect(row.runAt.getTime()).toBeGreaterThan(before);
+    expect(row.payload).toHaveProperty("mediaWaitSince");
+  });
+
+  test("a flush whose claim was retired stamps nothing on the row a newer burst armed", async () => {
+    const threadId = `${tenantId}:${instanceId}:9816`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 90_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+        },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const stamp = (claimSeq: number) =>
+      stampDeferral({
+        tenantId,
+        threadId,
+        since: Date.now() - 1_000,
+        field: "mediaWaitSince",
+        retryAt: new Date(Date.now() + 5_000),
+        job: { id: row.id, claimSeq },
+        base: appDb,
+      });
+    const read = () =>
+      suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+        select: { runAt: true, payload: true },
+      });
+
+    await stamp(row.claimSeq - 1);
+    const untouched = await read();
+    await stamp(row.claimSeq);
+    const stamped = await read();
+
+    expect(untouched.payload).not.toHaveProperty("mediaWaitSince");
+    expect(untouched.runAt.getTime()).toBeGreaterThan(Date.now() + 60_000);
+    expect(stamped.payload).toHaveProperty("mediaWaitSince");
+  });
+
+  test("a media wait stays one when a message arms it with the agent's own debounce", async () => {
+    const threadId = `${tenantId}:${instanceId}:9817`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+        status: "PENDING",
+        runAt: new Date(Date.now() + 5_000),
+        payload: {
+          threadId,
+          agentBotId: AGENT_BOT_ID,
+          burstStartedAt: Date.now(),
+          mediaOnly: true,
+        },
+      },
+    });
+
+    await armDebounce({
+      tenantId,
+      threadId,
+      agentBotId: AGENT_BOT_ID,
+      cfg: {
+        enabled: true,
+        windowSeconds: 15,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 60,
+      },
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: debounceDedupeKey(threadId) },
+      select: { payload: true },
+    });
+    expect(row.payload).toHaveProperty("mediaOnly", true);
   });
 
   test("a text message with no flush live takes the direct turn as before", async () => {

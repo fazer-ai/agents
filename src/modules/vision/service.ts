@@ -8,6 +8,7 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   fileReadFor,
+  openConversationMediaArriving,
   rememberFileRead,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -283,6 +284,8 @@ export interface ExtractInboundParams {
   stashAnnotation?: boolean;
   // The caller's deadline, handed to the provider attempts.
   signal?: AbortSignal;
+  // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
+  downloadRetryUntil?: number;
   // The ledger step the call is billed under: an agent's reading by default, the occurrence
   // monitor's when it reads again what upstream Chatwoot no longer holds.
   usageNode?: Extract<UsageNode, "vision" | "occurrence_vision">;
@@ -584,17 +587,26 @@ async function extractInboundOnce(
   let bytes: ArrayBuffer;
   let contentType: string | null;
   let missing = false;
+  let closeArriving: (() => void) | undefined;
   try {
     // A body image was stored by the mailbox before the message existed: its 404 will not heal, and
     // retrying it would multiply whatever a crafted body asks for.
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: !params.bodyImage,
       signal: params.signal,
+      retryUntil: params.downloadRetryUntil,
       onMissing: () => {
         missing = true;
+        closeArriving ??= openConversationMediaArriving({
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: params.conversationId,
+        });
       },
     }));
+    closeArriving?.();
   } catch (caught) {
+    closeArriving?.();
     // A retry cut short with no answer (a timeout, an abort) leaves the storage's last answer standing:
     // the file is still on its way, not unreadable.
     const err =

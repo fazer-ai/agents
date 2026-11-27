@@ -10,6 +10,9 @@ export interface UnreadFile {
   // The download failed on something that may pass (`isTransientAttachmentFailure`): the provider
   // was never asked, so the reply can try the file again for free.
   retryable?: true;
+  // The attachment a retryable entry speaks of, so a later pass asks about that file and not about
+  // another one carrying the same name.
+  id?: number;
 }
 
 // What a skip carries back instead of a result, so a shared in-flight read hands the cause to every

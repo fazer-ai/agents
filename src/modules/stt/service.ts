@@ -7,6 +7,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
   mediaAnnotationFor,
+  openConversationMediaArriving,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import {
@@ -94,6 +95,8 @@ export interface TranscribeInboundParams {
   flow?: FlowContext;
   // The caller's deadline: it aborts the download and the provider call in flight.
   signal?: AbortSignal;
+  // Bounds the download's retries only (`AttachmentDownloadOptions.retryUntil`), never the provider.
+  downloadRetryUntil?: number;
 }
 
 // Downloads, transcribes, and writes the transcription back to Chatwoot. Returns the transcription
@@ -217,15 +220,26 @@ async function transcribeOnce(
   // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
   let bytes: ArrayBuffer;
   let contentType: string | null;
+  let closeArriving: (() => void) | undefined;
   try {
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
       signal: params.signal,
-      // A flush that stops waiting while this backoff runs still sees the note as on its way.
-      onMissing: () =>
-        stashMediaAnnotation(target, { transcriptionUnavailable: true }),
+      retryUntil: params.downloadRetryUntil,
+      // A flush that stops waiting while this backoff runs still sees the note as on its way, and so
+      // does a message that arrives in the conversation meanwhile.
+      onMissing: () => {
+        stashMediaAnnotation(target, { transcriptionUnavailable: true });
+        closeArriving ??= openConversationMediaArriving({
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: params.conversationId,
+        });
+      },
     }));
+    closeArriving?.();
   } catch (err) {
+    closeArriving?.();
     if (params.flow) {
       emitFlowEvent(params.flow, {
         stage: "stt",

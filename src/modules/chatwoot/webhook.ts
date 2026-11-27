@@ -82,6 +82,7 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
+  conversationMediaArriving,
   mediaAnnotationFor,
   mediaStillArriving,
   openTranscription,
@@ -5888,16 +5889,23 @@ export async function processChatwootDelivery(
                 instanceId: params.instanceId,
                 chatwootInboxId: inboxId,
                 threadId,
+                // NOTE: Its own file, or one an earlier message of the conversation is still asking
+                // storage for: that delivery has armed nothing yet, and this one must not overtake it.
                 mediaArriving:
-                  message?.id != null &&
-                  mediaStillArriving({
-                    ...message,
-                    transcriptionUnavailable: mediaAnnotationFor(
-                      params.tenantId,
-                      params.instanceId,
-                      message.id,
-                    )?.transcriptionUnavailable,
-                  }),
+                  (message?.id != null &&
+                    mediaStillArriving({
+                      ...message,
+                      transcriptionUnavailable: mediaAnnotationFor(
+                        params.tenantId,
+                        params.instanceId,
+                        message.id,
+                      )?.transcriptionUnavailable,
+                    })) ||
+                  conversationMediaArriving(
+                    params.tenantId,
+                    params.instanceId,
+                    conversationId,
+                  ),
                 base,
               });
               if (!cfg) return null;

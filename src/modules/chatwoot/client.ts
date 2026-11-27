@@ -391,11 +391,15 @@ export interface AttachmentDownloadOptions {
   retryOnMissing?: boolean;
   // Injectable for tests (no real waiting).
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
   // The caller's deadline, on top of the request timeout.
   signal?: AbortSignal;
   // Called on each 404 that will be asked again, before the backoff: the file is known to be on its
   // way from the first answer, not only once the retries are spent.
   onMissing?: () => void;
+  // The instant (epoch ms) past which a file still missing is not asked for again: no backoff sleep
+  // runs past it and a request in flight is cut at it. A first request is always made.
+  retryUntil?: number;
 }
 
 // `activity` is a gray row of the timeline's own, never delivered to the channel nor shown to the
@@ -1643,19 +1647,22 @@ export class ChatwootClient {
     else await assertSafeOutboundUrl(target.url);
     const delays = opts.retryOnMissing ? ATTACHMENT_RETRY_DELAYS_MS : [];
     const sleep = opts.sleep ?? realSleep;
+    const now = opts.now ?? Date.now;
     for (let attempt = 0; ; attempt++) {
+      const left =
+        opts.retryUntil === undefined
+          ? Number.POSITIVE_INFINITY
+          : opts.retryUntil - now();
+      const timeout = AbortSignal.timeout(
+        left > 0 ? Math.min(REQUEST_TIMEOUT_MS, left) : REQUEST_TIMEOUT_MS,
+      );
       const res = await this.fetchImpl(target.url, {
         method: "GET",
         headers: sameHost
           ? { [CHATWOOT_AUTH_HEADER]: this.config.adminToken }
           : {},
         redirect: "follow",
-        signal: opts.signal
-          ? AbortSignal.any([
-              AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-              opts.signal,
-            ])
-          : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout,
       });
       if (res.ok) {
         const bytes = await res.arrayBuffer();
@@ -1665,7 +1672,11 @@ export class ChatwootClient {
         return { bytes, contentType: res.headers.get("content-type") };
       }
       const delay = delays[attempt];
-      if (res.status !== 404 || delay === undefined) {
+      if (
+        res.status !== 404 ||
+        delay === undefined ||
+        (opts.retryUntil !== undefined && now() + delay >= opts.retryUntil)
+      ) {
         throw new ChatwootApiError(res.status, "GET attachment");
       }
       opts.onMissing?.();

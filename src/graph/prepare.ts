@@ -16,6 +16,7 @@ import {
   type ResolveCaseHold,
   resolveCaseHoldFor,
 } from "@/graph/resolve-labels";
+import { scopedNoEffect } from "@/graph/tools/call-scope";
 import {
   choiceCheckOverridden,
   readChoiceCheckConfig,
@@ -1661,7 +1662,7 @@ export async function buildToolset(
     // NOTE: Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
     // four packs with four request helpers is four places to forget.
     stillWanted: ctx.stillWanted,
-    onNoEffect: ctx.onNoEffect,
+    onNoEffect: scopedNoEffect(ctx.onNoEffect),
     ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
@@ -1901,7 +1902,7 @@ export async function buildToolset(
       // NOTE: The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,
-      onNoEffect: ctx.onNoEffect,
+      onNoEffect: scopedNoEffect(ctx.onNoEffect),
       // NOTE: A caller with its own record of the turn (the observation tick) keeps it. Every other
       // turn gets the write as its own `tool` line, so `outsideAllowed` under `accept` is counted on
       // a responder and a follow-up turn too, as the setting promises. Counts and operator titles
@@ -2051,7 +2052,7 @@ export async function buildToolset(
         // NOTE: The same fence the native tools and the precondition wrapper ask, at the same point: past
         // every wait, immediately before the request leaves for somebody else's system.
         stillWanted: ctx.stillWanted,
-        onNoEffect: ctx.onNoEffect,
+        onNoEffect: scopedNoEffect(ctx.onNoEffect),
         ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
         // NOTE: HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
@@ -2132,7 +2133,7 @@ export async function buildToolset(
     // read between the graph's ask and the call, so a tool whose first act is a write would
     // otherwise lose the cover that ask gives it.
     ctx.stillWanted,
-    ctx.onNoEffect,
+    scopedNoEffect(ctx.onNoEffect),
     customerChoiceCheck(cfg, ctx, deps),
   );
   if (dropped.length > 0) {

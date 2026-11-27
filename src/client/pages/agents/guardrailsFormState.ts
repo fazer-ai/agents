@@ -35,21 +35,39 @@ export function turnRulesIncomplete(
   return rules.some(turnRuleIncomplete);
 }
 
+type TurnRules = GuardrailsConfig["turnReview"]["rules"];
+
+// The last whole version of each rule, by its place in the list: what a rule goes back to when an
+// edit that left it incomplete is hidden. Kept by the tab as the form changes (`rememberTurnRules`).
+export type LastWholeTurnRules = (TurnRules[number] | undefined)[];
+
+export function rememberTurnRules(
+  last: LastWholeTurnRules,
+  rules: TurnRules,
+): LastWholeTurnRules {
+  return rules.map((r, i) => (turnRuleIncomplete(r) ? last[i] : r));
+}
+
 // The form as it stands once the rules' fields leave the screen (turn review or guardrails switched
-// off): the save still sends the whole block, so a half-written rule nobody can see or fix any more
-// is taken out, where it would otherwise have the server refuse the save of every tab.
+// off): the save still sends the whole block, so a rule left incomplete, which nobody can see or fix
+// any more and the server would refuse with the save of every tab, goes back to its last whole
+// version. A rule that never had one (added and not finished) is taken out.
 export function withoutIncompleteTurnRules(
   g: GuardrailsConfig,
+  last: LastWholeTurnRules = [],
 ): GuardrailsConfig {
-  return turnRulesIncomplete(g.turnReview.rules)
-    ? {
-        ...g,
-        turnReview: {
-          ...g.turnReview,
-          rules: g.turnReview.rules.filter((r) => !turnRuleIncomplete(r)),
-        },
-      }
-    : g;
+  if (!turnRulesIncomplete(g.turnReview.rules)) return g;
+  return {
+    ...g,
+    turnReview: {
+      ...g.turnReview,
+      rules: g.turnReview.rules.flatMap((r, i) => {
+        if (!turnRuleIncomplete(r)) return [r];
+        const whole = last[i];
+        return whole ? [whole] : [];
+      }),
+    },
+  };
 }
 
 // Whether the playground's "Run guardrails" toggle is usable: the same hard requirements the runtime

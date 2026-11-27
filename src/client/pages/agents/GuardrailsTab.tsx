@@ -9,7 +9,7 @@ import {
   TriangleAlert,
   Webhook,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -70,6 +70,8 @@ import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
 import {
   guardrailsChatModelShown,
+  type LastWholeTurnRules,
+  rememberTurnRules,
   turnRulesIncomplete,
   withoutIncompleteTurnRules,
 } from "./guardrailsFormState";
@@ -290,6 +292,11 @@ export function GuardrailsTab({
     setTurnReview({
       rules: tr.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)),
     });
+  // The last whole version of each rule, by place: what an edit left incomplete goes back to when
+  // its fields leave the screen. Followed on every render, so a form replaced from outside (a
+  // discard, a reload) is followed too. Removing a rule takes its place out first.
+  const lastWholeRules = useRef<LastWholeTurnRules>([]);
+  lastWholeRules.current = rememberTurnRules(lastWholeRules.current, tr.rules);
   const rulesFull = tr.rules.length >= MAX_TURN_REVIEW_RULES;
   const rulesShown = g.enabled && tr.enabled;
   // A rule missing a field or with a pattern that does not compile holds the save, as the server
@@ -806,7 +813,9 @@ export function GuardrailsTab({
               onCheckedChange={(v) =>
                 setG((s) => {
                   const next = { ...s, enabled: v };
-                  return v ? next : withoutIncompleteTurnRules(next);
+                  return v
+                    ? next
+                    : withoutIncompleteTurnRules(next, lastWholeRules.current);
                 })
               }
               label={t("editor.guardrails.enabled", "Enable guardrails")}
@@ -1463,7 +1472,12 @@ export function GuardrailsTab({
                         ...s,
                         turnReview: { ...s.turnReview, enabled: v },
                       };
-                      return v ? next : withoutIncompleteTurnRules(next);
+                      return v
+                        ? next
+                        : withoutIncompleteTurnRules(
+                            next,
+                            lastWholeRules.current,
+                          );
                     })
                   }
                   label={t(
@@ -1692,11 +1706,15 @@ export function GuardrailsTab({
                                 </div>
                                 <Button
                                   variant="ghost"
-                                  onClick={() =>
+                                  onClick={() => {
+                                    lastWholeRules.current =
+                                      lastWholeRules.current.filter(
+                                        (_, j) => j !== i,
+                                      );
                                     setTurnReview({
                                       rules: tr.rules.filter((_, j) => j !== i),
-                                    })
-                                  }
+                                    });
+                                  }}
                                   aria-label={t(
                                     "editor.guardrails.turnRuleRemove",
                                     "Remove rule",

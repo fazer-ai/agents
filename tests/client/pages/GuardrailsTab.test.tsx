@@ -1009,6 +1009,26 @@ describe("GuardrailsTab turn review rules", () => {
     ]);
   });
 
+  // The bug it catches: a saved rule mid-edit when the section was switched off left the form, and
+  // the save removed a protection nobody deleted. Kept by place, so a removal above must not shift it.
+  test("a saved rule mid-edit goes back to what it was when the section is switched off, also after a removal above it", () => {
+    const first = { name: "a", pattern: "a", unlessTool: null, note: "n" };
+    const second = { name: "b", pattern: "b", unlessTool: null, note: "n" };
+    const c = reviewing();
+    c.turnReview.rules = [first, second];
+    render(<Dirty initial={c} />);
+    fireEvent.click(at("gr-turn-rule-0-remove"));
+    fireEvent.change(at("gr-turn-rule-0-pattern"), { target: { value: "(" } });
+    const held = saveHeld();
+    const section = document.getElementById("gr-turn-review") as HTMLElement;
+    fireEvent.click(within(section).getAllByRole("switch")[0] as HTMLElement);
+    expect([held, form?.turnReview.rules, saveHeld()]).toEqual([
+      true,
+      [second],
+      false,
+    ]);
+  });
+
   test("a tool field left with only spaces is no tool", () => {
     const c = reviewing();
     c.turnReview.rules = [

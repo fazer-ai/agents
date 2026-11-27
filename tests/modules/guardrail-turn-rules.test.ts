@@ -6,17 +6,24 @@ import {
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import { tool } from "@langchain/core/tools";
+import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { buildAgentGraph } from "@/graph/graph";
-import { markedNoEffect, turnReviewVetoToolResult } from "@/graph/markers";
+import {
+  markedNoEffect,
+  reportedNoEffect,
+  turnReviewVetoToolResult,
+} from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
+import { scopedNoEffect } from "@/graph/tools/call-scope";
 import { fenceReporterOf } from "@/graph/tools/fence-report";
+import { buildNativeTools } from "@/graph/tools/native";
 import type { AppError } from "@/lib/errors";
 import { assertSettingsClosedValues } from "@/modules/agents/service";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { FlowContext } from "@/modules/flowlog/service";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
 import {
@@ -736,7 +743,11 @@ describe("the rules in the gate", () => {
 });
 
 // The rules through the real graph and the real gate: what the customer would get.
-type Step = { text: string; calls?: string[] };
+type Step = {
+  text: string;
+  // A name, or a call with its argument and its id (null: none).
+  calls?: (string | { name: string; n: number; id: string | null })[];
+};
 class ScriptedModel {
   seen: BaseMessage[][] = [];
   constructor(private steps: Step[]) {}
@@ -746,11 +757,11 @@ class ScriptedModel {
     if (!step) return new AIMessage("");
     return new AIMessage({
       content: step.text,
-      tool_calls: (step.calls ?? []).map((name, i) => ({
-        name,
-        args: {},
-        id: `call_${this.seen.length}_${i}`,
-      })),
+      tool_calls: (step.calls ?? []).map((c, i) =>
+        typeof c === "string"
+          ? { name: c, args: {}, id: `call_${this.seen.length}_${i}` }
+          : { name: c.name, args: { n: c.n }, ...(c.id ? { id: c.id } : {}) },
+      ),
     });
   }
   async invoke(messages: BaseMessage[]): Promise<AIMessage> {
@@ -761,21 +772,34 @@ class ScriptedModel {
   }
 }
 
-// `idle`: tools that answer "ok" and report, on the call's config, that they did nothing.
+// `idle`: how a tool that answers "ok" says it did nothing. `report` is the call's own config
+// (fence-report.ts), `callback` the `onNoEffect` the tool sources are handed (`scopedNoEffect`, as
+// prepare.ts wraps it, with no listener behind it, which is the reactive turn), and a function
+// decides per call from its argument.
+type Idle = "report" | "callback" | ((args: { n?: number }) => boolean);
 async function runTurn(
   steps: Step[],
   c: GuardrailsConfig,
-  idle: string[] = [],
+  idle: Partial<Record<string, Idle>> = {},
+  extra: StructuredToolInterface[] = [],
 ) {
   const ran: string[] = [];
+  const onNoEffect = scopedNoEffect();
   const named = (name: string) =>
     tool(
-      async (_input, config) => {
+      async (input: { n?: number }, config) => {
         ran.push(name);
-        if (idle.includes(name)) fenceReporterOf(config)?.({ noEffect: true });
+        const how = idle[name];
+        if (how === "callback") onNoEffect(name);
+        else if (how === "report" || (typeof how === "function" && how(input)))
+          fenceReporterOf(config)?.({ noEffect: true });
         return "ok";
       },
-      { name, description: name, schema: z.object({}) },
+      {
+        name,
+        description: name,
+        schema: z.object({ n: z.number().optional() }),
+      },
     );
   const model = new ScriptedModel(steps);
   const { f, g } = gate(c);
@@ -784,7 +808,7 @@ async function runTurn(
     model: model as unknown as BaseChatModel,
     systemPrompt: "PROMPT",
     checkpointer: new MemorySaver(),
-    tools: [named("transferir"), named("skip_reply")],
+    tools: [named("transferir"), named("skip_reply"), ...extra],
     retrySilence: () => true,
     reviewCall: g?.reviewCall,
     reviewTurnReply: g?.reviewReply,
@@ -798,6 +822,10 @@ async function runTurn(
   return {
     model,
     ran,
+    // Per tool result of the turn, in order: whether it carries the no-effect fact.
+    idleResults: messages
+      .filter((m) => m.getType() === "tool")
+      .map((m) => reportedNoEffect(m)),
     last: contentToText(messages.at(-1)?.content ?? "").trim(),
     thread: messages.map((m) => contentToText(m.content)).join("\n"),
     pending: g?.pending() ?? null,
@@ -859,7 +887,7 @@ describe("the rules in the graph", () => {
         { text: DRAFT },
         { text: "Não consegui transferir agora. Qual é o seu telefone?" },
       ];
-      const refused = await runTurn(steps, cfg({}), ["transferir"]);
+      const refused = await runTurn(steps, cfg({}), { transferir: "report" });
       expect(refused.ran).toEqual(["transferir"]);
       expect(refused.outcomes).toEqual(["revised"]);
       expect(refused.last).toBe(
@@ -868,6 +896,103 @@ describe("the rules in the graph", () => {
       const acted = await runTurn(steps, cfg({}));
       expect(acted.outcomes).toEqual([]);
       expect(acted.last).toBe(DRAFT);
+    },
+  );
+
+  // The bug it catches: the natives and the packs refuse through `onNoEffect`, a callback with the
+  // tool's name and no call, which the reactive turn does not even pass. Their refusals read "ok".
+  test.skipIf(!dbUp)(
+    "a handler that refuses through onNoEffect, with no listener behind it, does not excuse the promise",
+    async () => {
+      const t = await runTurn(
+        [
+          { text: "", calls: ["transferir"] },
+          { text: DRAFT },
+          { text: "Qual é o seu telefone?" },
+        ],
+        cfg({}),
+        { transferir: "callback" },
+      );
+      expect(t.idleResults).toEqual([true]);
+      expect(t.outcomes).toEqual(["revised"]);
+    },
+  );
+
+  // The same through a handler of the product: `resolve_conversation` called off before its
+  // write, built as prepare.ts builds it, with no listener behind the callback.
+  test.skipIf(!dbUp)(
+    "a native tool that refuses on its own does not excuse the promise",
+    async () => {
+      const toggled: string[] = [];
+      const client = {
+        getConversationLabels: async () => [],
+        toggleStatus: async () => toggled.push("toggleStatus"),
+      } as unknown as ChatwootClient;
+      const run = (wanted: boolean) =>
+        runTurn(
+          [
+            { text: "", calls: ["resolve_conversation"] },
+            { text: "Certo, vou encerrar o atendimento." },
+            { text: "Posso ajudar em algo mais?" },
+          ],
+          cfg({
+            rules: [
+              {
+                name: "encerra-sem-resolver",
+                pattern: "vou encerrar",
+                unlessTool: "resolve_conversation",
+                note: NOTE,
+              },
+            ],
+          }),
+          {},
+          buildNativeTools({
+            client,
+            conversationId: 7,
+            stillWanted: async () => wanted,
+            onNoEffect: scopedNoEffect(),
+          }).filter((t) => t.name === "resolve_conversation"),
+        );
+      const calledOff = await run(false);
+      expect([toggled, calledOff.idleResults, calledOff.outcomes]).toEqual([
+        [],
+        [true],
+        ["revised"],
+      ]);
+      const done = await run(true);
+      expect([toggled, done.idleResults, done.outcomes]).toEqual([
+        ["toggleStatus"],
+        [false],
+        [],
+      ]);
+    },
+  );
+
+  // The bug it catches: the report tied to the call's id after the batch, so two calls sharing an
+  // id were both marked, and a call with no id lost its report.
+  test.skipIf(!dbUp)(
+    "in a batch, only the invocation that reported is marked, whatever the ids",
+    async () => {
+      const odd = (args: { n?: number }) => (args.n ?? 0) % 2 === 1;
+      for (const id of ["mesmo", null]) {
+        const t = await runTurn(
+          [
+            {
+              text: "",
+              calls: [
+                { name: "transferir", n: 1, id },
+                { name: "transferir", n: 2, id },
+              ],
+            },
+            { text: DRAFT },
+          ],
+          cfg({}),
+          { transferir: odd },
+        );
+        expect(t.idleResults).toEqual([true, false]);
+        // The second transfer acted, so the promise stands.
+        expect([t.outcomes, t.last]).toEqual([[], DRAFT]);
+      }
     },
   );
 

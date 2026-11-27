@@ -3,6 +3,7 @@ import {
   guardrailsChatModelShown,
   playgroundGuardrailsUsable,
   readGuardrailsFormState,
+  rememberTurnRules,
   turnRulesIncomplete,
   withoutIncompleteTurnRules,
 } from "@/client/pages/agents/guardrailsFormState";
@@ -156,6 +157,22 @@ describe("turn review rules in the form", () => {
     };
     expect(withoutIncompleteTurnRules(g).turnReview.rules).toEqual([RULE]);
     expect(withoutIncompleteTurnRules(on)).toBe(on);
+  });
+
+  // The bug it catches: a saved rule whose pattern was mid-edit when the section was switched off
+  // left the form, and the next save removed a protection the operator never deleted.
+  test("a rule left incomplete goes back to its last whole version, and one that never had any leaves", () => {
+    const on = readGuardrailsFormState({ guardrails: { enabled: true } });
+    const other = { ...RULE, name: "outra" };
+    let last = rememberTurnRules([], [RULE, other]);
+    const edited = [{ ...RULE, pattern: "(" }, other, { ...RULE, name: "" }];
+    last = rememberTurnRules(last, edited);
+    expect(last).toEqual([RULE, other, undefined]);
+    const g = { ...on, turnReview: { ...on.turnReview, rules: edited } };
+    expect(withoutIncompleteTurnRules(g, last).turnReview.rules).toEqual([
+      RULE,
+      other,
+    ]);
   });
 
   // The bug it catches: rules alone under the Decisions classifier asking for a chat model key that

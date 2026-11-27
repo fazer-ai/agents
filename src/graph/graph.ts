@@ -80,6 +80,7 @@ import {
   saysNothing,
   skipReplyRan,
 } from "./silence";
+import { inCallScope, noteCallDidNothing } from "./tools/call-scope";
 import {
   type CallReport,
   fenceReporterOf,
@@ -1615,7 +1616,33 @@ export function buildAgentGraph({
     const d = Object.create(t) as StructuredToolInterface;
     d.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
       try {
-        return await t.invoke(input as never, config);
+        // A call that reports it did nothing keeps that fact on its own result, which otherwise
+        // reads as an ordinary answer. Heard inside this one invocation (call-scope.ts): a report
+        // on the call's config (fence-report.ts), passed on to a listener already there, or a
+        // handler's `onNoEffect`.
+        const outer = fenceReporterOf(config);
+        const { value, didNothing } = await inCallScope(() =>
+          t.invoke(
+            input as never,
+            withFenceReporter(config ?? {}, (r: CallReport, callId) => {
+              if (reportsNoEffect(r)) noteCallDidNothing();
+              outer?.(r, callId);
+            }),
+          ),
+        );
+        if (!didNothing) return value;
+        if (ToolMessage.isInstance(value)) return markedNoEffect(value);
+        // A call with no id comes back as bare text, which `ToolNode` would wrap after this point:
+        // wrapped here, the way it does, so the fact has a result to stay on.
+        return typeof value === "string"
+          ? markedNoEffect(
+              new ToolMessage({
+                content: value,
+                name: t.name,
+                tool_call_id: "",
+              }),
+            )
+          : value;
       } catch (e) {
         if (!isSchemaRefusal(e) && !isMcpArgumentRefusal(e)) throw e;
         return markedSetAside(
@@ -1643,33 +1670,10 @@ export function buildAgentGraph({
     view: typeof MessagesAnnotation.State,
     config: ToolRunnableConfig,
   ): Promise<{ messages: BaseMessage[] }> => {
-    // A call that reports it did nothing (fence-report.ts) keeps that fact on its result: the result
-    // itself reads as an ordinary answer. Heard here for every batch, and passed on.
-    const outer = fenceReporterOf(config);
-    const idle = new Set<string>();
-    let idleUnnamed = false;
-    const heard = withFenceReporter(config, (r: CallReport, callId) => {
-      if (reportsNoEffect(r)) {
-        if (callId) idle.add(callId);
-        else idleUnnamed = true;
-      }
-      outer?.(r, callId);
-    });
     // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
-    const out = await toolNode!.invoke(view, heard);
-    const answers = (out.messages as BaseMessage[]).filter(
-      (m) => m.getType() === "tool",
-    );
-    for (const m of out.messages as BaseMessage[]) {
+    const out = await toolNode!.invoke(view, config);
+    for (const m of out.messages as BaseMessage[])
       if (unknownToolAnswer(m)) markedSetAside(m);
-      const id = (m as ToolMessage).tool_call_id;
-      // A report with no id can only be told apart in a batch of one.
-      if (
-        m.getType() === "tool" &&
-        ((id && idle.has(id)) || (idleUnnamed && answers.length === 1))
-      )
-        markedNoEffect(m);
-    }
     return out;
   };
   const toolsByName = new Map((tools ?? []).map((t) => [t.name, t]));

@@ -139,6 +139,8 @@ export interface GuardrailReport {
   rationale?: string;
   // On a turn-review report an operator's rule made: the rule's name, with its note as `rationale`.
   rule?: string;
+  // The rule matched the line a transfer carries for the customer, not the turn's reply.
+  line?: true;
   // The text that was refused, on a hand-over only: the person taking the case over has to read what
   // the customer was not sent, and nobody else will ever show it to them.
   refused?: string;

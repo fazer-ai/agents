@@ -1277,6 +1277,7 @@ async function runTurnBody(
             : turnReview.reviewReply(turn, reply, opts)
       : undefined,
     turnReviewHalted: turnReview?.halted,
+    replyOwed: turnReview?.owes,
     // A completed transfer answers the turn (or silences it) and the model's text is dropped,
     // so nothing is reviewed after one: no bill, no rewrite, no note about a reply nobody reads.
     // Nor once the turn review decided the output: that decision wins at delivery.

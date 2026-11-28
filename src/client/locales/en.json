@@ -3900,7 +3900,8 @@
       "rationaleHidden": "a rationale was given ({{chars}} characters), shown here only when \"Log the values sent to tools\" is on",
       "turnReviewCall": "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
       "turnReviewReply": "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
-      "turnRule": "The turn review rule “{{rule}}” fired on the reply. Only recorded, the turn review did not block it"
+      "turnRule": "The turn review rule “{{rule}}” fired on the reply. Only recorded, the turn review did not block it",
+      "turnRuleLine": "The turn review rule “{{rule}}” fired on the customer message carried by the call to {{tool}}. Only recorded, the turn review did not block it"
     },
     "guardrailUnchecked": {
       "input": "The check failed, so the customer's message was let through unchecked",
@@ -4735,6 +4736,8 @@
       "turnReviewReply": "Turn review of the reply",
       "turnReviewReplyRevised": "against the agent's instructions; the agent redid the reply",
       "turnRule": "Turn review rule “{{rule}}”",
+      "turnRuleLineObserved": "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
+      "turnRuleLineRevised": "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
       "turnRuleObserved": "the rule fired. Only recorded, the review did not block the reply",
       "turnRuleReplyRevised": "the rule fired and the agent redid the reply",
       "turnRuleSilenceRevised": "the turn may not end in silence after the rule sent the reply back. The call did not run and the agent was told why",

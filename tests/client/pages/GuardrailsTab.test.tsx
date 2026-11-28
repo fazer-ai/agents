@@ -1127,6 +1127,23 @@ describe("GuardrailsTab turn review rules", () => {
       );
       await waitFor(() => expect(screen.queryAllByText(ASK).length).toBe(1));
       expect(rulesOnly).toBe(0);
+      // The same under the Decisions classifier, whose key is the screening's alone.
+      cleanup();
+      render(<Dirty initial={{ ...c, classifier: "decisions" }} />);
+      await new Promise((r) => setTimeout(r, 30));
+      const idle = screen.queryAllByText(ASK).length;
+      cleanup();
+      render(
+        <Dirty
+          initial={{
+            ...c,
+            classifier: "decisions",
+            output: { ...c.output, enabled: true },
+          }}
+        />,
+      );
+      await waitFor(() => expect(screen.queryAllByText(ASK).length).toBe(1));
+      expect(idle).toBe(0);
     } finally {
       globalThis.fetch = previous;
     }

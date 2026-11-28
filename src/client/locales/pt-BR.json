@@ -4043,7 +4043,8 @@
       "rationaleHidden": "o modelo deu uma justificativa ({{chars}} caracteres), mostrada aqui só com \"Registrar os valores enviados às ferramentas\" ligado",
       "turnReviewCall": "A revisão do turno achou a chamada a {{tool}} contra as instruções do agente; só registrado, a revisão não a bloqueou",
       "turnReviewReply": "A revisão do turno achou a resposta contra as instruções do agente; só registrado, a revisão não a bloqueou",
-      "turnRule": "A regra “{{rule}}” da revisão do turno disparou na resposta. Só registrado, a revisão não a bloqueou"
+      "turnRule": "A regra “{{rule}}” da revisão do turno disparou na resposta. Só registrado, a revisão não a bloqueou",
+      "turnRuleLine": "A regra “{{rule}}” da revisão do turno disparou na mensagem ao cliente que a chamada a {{tool}} levava. Só registrado, a revisão não a bloqueou"
     },
     "guardrailUnchecked": {
       "input": "A checagem falhou, e a mensagem do cliente foi liberada sem checagem",
@@ -4940,6 +4941,8 @@
       "turnReviewReply": "Revisão do turno da resposta",
       "turnReviewReplyRevised": "contra as instruções do agente; o agente refez a resposta",
       "turnRule": "Regra “{{rule}}” da revisão do turno",
+      "turnRuleLineObserved": "a regra disparou na mensagem que esta transferência leva ao cliente. Só registrado, a revisão não bloqueou a chamada",
+      "turnRuleLineRevised": "a regra disparou na mensagem que esta transferência levava ao cliente. A chamada não rodou e o agente foi avisado do motivo",
       "turnRuleObserved": "a regra disparou. Só registrado, a revisão não bloqueou a resposta",
       "turnRuleReplyRevised": "a regra disparou e o agente refez a resposta",
       "turnRuleSilenceRevised": "o turno não pode terminar em silêncio depois que a regra devolveu a resposta. A chamada não rodou e o agente foi avisado do motivo",

@@ -1361,6 +1361,7 @@ export function guardrailTraceLabel(
     | "check"
     | "step"
     | "rule"
+    | "line"
   >,
 ): string {
   // The turn review says what happened to the step it judged: a call that did not run, a reply redone.
@@ -1377,6 +1378,16 @@ export function guardrailTraceLabel(
         "could not be judged; the review did not block the call",
       );
     // A rule of the operator's, named in the row's title: what its match did to the step.
+    if (entry.rule && entry.line)
+      return entry.outcome === "revised"
+        ? t(
+            "playground.trace.turnRuleLineRevised",
+            "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
+          )
+        : t(
+            "playground.trace.turnRuleLineObserved",
+            "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
+          );
     if (entry.rule && entry.outcome === "revised")
       return entry.step === "call"
         ? t(

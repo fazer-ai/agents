@@ -90,6 +90,29 @@ describe("agentTurn", () => {
     );
   });
 
+  // The bug it catches: a rule that refused the message a transfer carried read as a refused
+  // silence after an earlier reply, which never happened.
+  test("a rule on a transfer's message reads apart from a refused silence", () => {
+    const rule = (line: boolean, outcome: never) =>
+      guardrailTraceLabel(t, {
+        direction: "output",
+        check: "turn_review",
+        step: "call",
+        rule: "sem-reembolso",
+        outcome,
+        ...(line ? { line: true as const } : {}),
+      });
+    expect([
+      rule(true, "revised" as never),
+      rule(true, "observed" as never),
+      rule(false, "revised" as never),
+    ]).toEqual([
+      "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
+      "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
+      "the turn may not end in silence after the rule sent the reply back. The call did not run and the agent was told why",
+    ]);
+  });
+
   // The bug it catches: a turn review of a call that could not run read as a reply let through.
   test("a turn review of a call that could not run names the call", () => {
     const call = {

@@ -274,6 +274,9 @@ export interface BuildAgentGraphParams {
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
   turnReviewHalted?: () => boolean;
+  // Whether the turn review left a reply owed in this turn (a rule refused a reply or a transfer's
+  // line): an earlier `skip_reply` of the turn then no longer silences it.
+  replyOwed?: (turn: BaseMessage[]) => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -865,6 +868,7 @@ export function buildAgentGraph({
   reviewsCall,
   reviewTurnReply,
   turnReviewHalted,
+  replyOwed,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -985,7 +989,10 @@ export function buildAgentGraph({
     const hardLimit = hasTools && toolCalls >= max;
     const staySilent = hasTools && justDecidedToStaySilent(history);
     // The decision, taken alone, for the REST of the turn (see the function).
-    const silentTurn = hasTools && decidedToStaySilentAlone(history);
+    // Unless the turn review has since left a reply owed: the corrected reply, or the fallback,
+    // has to reach the customer.
+    const silentTurn =
+      hasTools && decidedToStaySilentAlone(history) && !replyOwed?.(history);
     // Only the message that ends the turn, the one carrying no calls: a message still requesting
     // tools is not what the runtime posts, and a preamble beside an ordinary call is left alone (the
     // same line `silenceNarration` draws). `narration` covers the text beside the decision itself.

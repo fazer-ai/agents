@@ -261,11 +261,13 @@ export interface GuardrailTurnReviewConfig {
 // A screening direction counts only when it has something to judge, as the gate reads it
 // (`judgesAnything`): one switched on with every check off and no custom policy asks nothing.
 export const guardrailsUseModel = (g: GuardrailsConfig): boolean =>
+  guardrailsScreen(g) ||
+  (g.enabled && (g.factualGrounding.enabled || turnReviewJudges(g)));
+// Whether a screening direction has something to judge: what the classifier's own key is for.
+export const guardrailsScreen = (g: GuardrailsConfig): boolean =>
   g.enabled &&
   ((g.input.enabled && screens(g, "input")) ||
-    (g.output.enabled && screens(g, "output")) ||
-    g.factualGrounding.enabled ||
-    turnReviewJudges(g));
+    (g.output.enabled && screens(g, "output")));
 const screens = (g: GuardrailsConfig, direction: "input" | "output") =>
   judgesAnything({
     direction,

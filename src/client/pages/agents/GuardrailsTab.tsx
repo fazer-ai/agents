@@ -51,6 +51,7 @@ import type {
 import {
   GROUNDING_ACTIONS,
   type GroundingAction,
+  guardrailsScreen,
   guardrailsUseModel,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
@@ -940,7 +941,8 @@ export function GuardrailsTab({
                   <CredentialPicker
                     value={g.decisions.credentialRef ?? ""}
                     onChange={(v) => setDecisions({ credentialRef: v || null })}
-                    required
+                    // Only when a check screens on it: turn review's rules alone need no key.
+                    required={guardrailsScreen(g)}
                     compatibleTypes={credentialCompat.decisions(
                       g.decisions.provider,
                     )}

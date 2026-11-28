@@ -595,6 +595,9 @@ export interface TurnReviewGate {
   // `onFailure: "hold"`. No call of the batch runs and the round ends, for the caller's output gate
   // to apply `pending()`.
   halted: () => boolean;
+  // The graph's `replyOwed`: a rule sent a reply or a transfer's line back in this turn and nothing
+  // has reached the customer since, so an earlier `skip_reply` of the turn no longer stands.
+  owes: (turn: BaseMessage[]) => boolean;
 }
 
 // The customer's messages in the open attendance (`selectClosedPrefix`, the cut the memory and the
@@ -1054,12 +1057,22 @@ export function buildTurnReviewGate(
     owed && !(owed.unlessTool && ranInTurn(turn, owed.unlessTool))
       ? owed
       : null;
-  const ruleFlag = (rule: TurnReviewRule, step: TurnStep, canRedo: boolean) =>
+  // `line`: the rule matched the line a transfer carries, not the reply.
+  const ruleFlag = (
+    rule: TurnReviewRule,
+    step: TurnStep,
+    canRedo: boolean,
+    line = false,
+  ) =>
     flag(
       step,
       canRedo,
-      { rationale: rule.note, rule: rule.name },
-      { rule: rule.name },
+      {
+        rationale: rule.note,
+        rule: rule.name,
+        ...(line ? { line: true as const } : {}),
+      },
+      { rule: rule.name, ...(line ? { line: true } : {}) },
     );
 
   // The rules on a reply, in order, the first that fires. No model is called. `failed` when the
@@ -1110,6 +1123,64 @@ export function buildTurnReviewGate(
     return "failed";
   };
 
+  // What a step's calls, taken together, would leave owed, read before any of them is admitted.
+  // `lines`: per transfer (by its arguments), the rule its line matched, or that the match could
+  // not run. A rule whose tool is the transfer itself does not read the line it carries. `owes`:
+  // the rule a refused line leaves a reply owed for. One plan per step, whichever call asks first.
+  type StepCall = { name: string; args: unknown; id?: string };
+  interface StepPlan {
+    calls: readonly StepCall[];
+    lines: Map<unknown, TurnReviewRule | "failed">;
+    owes: TurnReviewRule | null;
+    // The asking call as the step carries it.
+    own: StepCall;
+  }
+  const plans = new WeakMap<object, Promise<StepPlan>>();
+  const planOf = (turn: BaseMessage[], call: StepCall): Promise<StepPlan> => {
+    const last = turn.at(-1) as
+      | (object & { tool_calls?: StepCall[] })
+      | undefined;
+    const written = last?.tool_calls ?? [];
+    // A call the step's message does not carry is planned alone.
+    const mine = written.find(
+      (c) =>
+        c.args === call.args ||
+        (!!call.id && c.id === call.id && c.name === call.name),
+    );
+    const inStep = mine !== undefined;
+    const calls = inStep ? written : [call];
+    const build = async (): Promise<StepPlan> => {
+      const lines = new Map<unknown, TurnReviewRule | "failed">();
+      for (const c of rules.length > 0 ? calls : []) {
+        const line = transferLine(c);
+        if (!line || stopped || p.signal?.aborted) continue;
+        const fired = await reviewRules(
+          turn,
+          {
+            kind: "call",
+            name: c.name,
+            args: c.args,
+            ...(c.id ? { id: c.id } : {}),
+          },
+          line,
+          HANDOFF_TOOL_NAME,
+        );
+        if (fired) lines.set(c.args, fired);
+      }
+      const refusing = [...lines.values()].find((v) => v !== "failed");
+      return {
+        own: call,
+        calls,
+        lines,
+        owes: tr.action === "revise" && refusing ? refusing : null,
+      };
+    };
+    if (!inStep || !last) return build();
+    const made = plans.get(last) ?? build();
+    plans.set(last, made);
+    return made.then((plan) => ({ ...plan, own: mine }));
+  };
+
   return {
     reviewCall: async (turn, call, opts) => {
       const step = {
@@ -1119,41 +1190,46 @@ export function buildTurnReviewGate(
         ...(call.id ? { id: call.id } : callOrdinal(turn, opts?.index)),
         alongside: opts?.alongside ?? [],
       };
-      // A silence after a rule sent the reply back is the one end the rule's redo may not have:
-      // refused while the reply is owed, each call on its own. No call beside it settles the debt
-      // ahead of time, since a call that has not run is no proof anything will be delivered.
-      const rule = leavesSilent(call) ? stillOwed(turn) : null;
-      if (rule && !stopped && !p.signal?.aborted) {
-        // A `skip_reply` written beside the rule's transfer, one that speaks, is what a model
-        // does after transferring: it waits for that call's result and spends no attempt.
-        const siblings =
-          (
-            turn.at(-1) as
-              | { tool_calls?: { name: string; args: unknown }[] }
-              | undefined
-          )?.tool_calls ?? [];
+      // In two steps, so the order of the calls in a step changes nothing: first what the whole
+      // step would leave owed (`planOf`), then this call against that.
+      const plan = await planOf(turn, call);
+      if (p.signal?.aborted) return null;
+      const had = stillOwed(turn);
+      const rule = leavesSilent(call) ? (had ?? plan.owes) : null;
+      // A silence while a reply is owed, or would be once a call beside it is refused, is the one
+      // end a rule's redo may not have. No call beside it settles the debt ahead of time, since a
+      // call that has not run is no proof anything will be delivered.
+      if (rule && !stopped) {
+        // A `skip_reply` written beside the rule's transfer, one whose line passes, is what a
+        // model does after transferring: it waits for that call's result and spends no attempt.
         if (
           call.name === SKIP_REPLY_TOOL &&
-          siblings.some((c) => c.name === rule.unlessTool && transferLine(c))
+          had &&
+          !plan.owes &&
+          plan.calls.some(
+            (c) =>
+              c.name === had.unlessTool &&
+              transferLine(c) &&
+              !plan.lines.has(c.args),
+          )
         )
-          return turnRuleSilenceWaitNote(rule.unlessTool as string);
-        return (await ruleFlag(rule, step, true)) === "revised"
-          ? turnRuleSilenceNote(rule, call.name)
-          : null;
+          return turnRuleSilenceWaitNote(had.unlessTool as string);
+        if ((await ruleFlag(rule, step, true)) !== "revised") return null;
+        owed = owed ?? rule;
+        return turnRuleSilenceNote(rule, call.name);
       }
       // The line a transfer carries is a reply by another door: once the transfer completes
-      // nothing reviews the turn's text, so the rules read it here, before the call runs. A rule
-      // whose tool is the transfer itself is excused by this very call.
-      const line = transferLine(call);
-      if (line && rules.length > 0 && !stopped && !p.signal?.aborted) {
-        const fired = await reviewRules(turn, step, line, HANDOFF_TOOL_NAME);
-        if (p.signal?.aborted) return null;
-        if (fired === "failed" && stopped) return null;
-        if (fired && fired !== "failed") {
-          if ((await ruleFlag(fired, step, true)) !== "revised") return null;
+      // nothing reviews the turn's text, so the rules read it before the call runs.
+      const fired = plan.lines.get(plan.own.args);
+      if (fired === "failed" && stopped) return null;
+      if (fired && fired !== "failed" && !stopped) {
+        const outcome = await ruleFlag(fired, step, true, true);
+        if (outcome === "revised") {
           owed = fired;
           return turnRuleLineNote(fired, call.name);
         }
+        if (outcome === "exhausted") return null;
+        // Under observe the match is only recorded: the model reviewer still judges the call.
       }
       if (!tr.judge) return null;
       const flagged = await review(
@@ -1215,11 +1291,18 @@ export function buildTurnReviewGate(
     pending: () => decision,
     reviewsCall: (name, turn) =>
       tr.judge ||
-      // A transfer's line is read by every rule the transfer itself does not excuse.
-      (name in TRANSFER_LINE_ARG &&
-        rules.some((r) => r.unlessTool !== HANDOFF_TOOL_NAME)) ||
+      // A transfer's line is read by every rule the transfer itself does not excuse, and a
+      // `skip_reply` beside such a line is a silence that line's refusal would forbid.
+      (rules.some((r) => r.unlessTool !== HANDOFF_TOOL_NAME) &&
+        (name in TRANSFER_LINE_ARG ||
+          (name === SKIP_REPLY_TOOL &&
+            (
+              (turn.at(-1) as { tool_calls?: StepCall[] } | undefined)
+                ?.tool_calls ?? []
+            ).some((c) => transferLine(c))))) ||
       ((name === SKIP_REPLY_TOOL || name in TRANSFER_LINE_ARG) &&
         stillOwed(turn) !== null),
     halted: () => held || refused,
+    owes: (turn) => stillOwed(turn) !== null,
   };
 }

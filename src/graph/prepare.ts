@@ -2574,6 +2574,7 @@ export interface GraphBuildDeps {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
+  replyOwed?: (turn: BaseMessage[]) => boolean;
   reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
 }
 
@@ -2738,6 +2739,7 @@ export async function buildModelAndGraph(
     reviewsCall: deps.reviewsCall,
     reviewTurnReply: deps.reviewTurnReply,
     turnReviewHalted: deps.turnReviewHalted,
+    replyOwed: deps.replyOwed,
     clientToolNames: deps.clientToolNames,
     primaryDeadlineMs: fallback
       ? fallbackDeadlineMs(cfg.modelFallback)

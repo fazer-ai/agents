@@ -1033,6 +1033,124 @@ describe("the rules in the gate", () => {
     },
   );
 
+  // The bug it catches, three times over: the calls of a step were judged one by one in the order
+  // written, so a silent call admitted before the call that created the debt still ran.
+  test.skipIf(!dbUp)(
+    "in a step of two transfers the order written changes nothing, and no outcome leaves the customer with nothing",
+    async () => {
+      const kinds = {
+        silent: { customerMessage: "" },
+        bare: {},
+        banned: { customerMessage: "Vou pedir o seu reembolso." },
+        valid: { customerMessage: "Um atendente vai continuar." },
+      } as const;
+      type Kind = keyof typeof kinds;
+      const names = Object.keys(kinds) as Kind[];
+      // What the gate does to each call of the step, by kind, and how the step ends.
+      const outcome = async (order: [Kind, Kind], owing: boolean) => {
+        const { g } = gate(cfg({ rules: [BANNED], maxAttempts: 3 }));
+        if (owing) await g?.reviewReply(asked(), "Posso pedir o reembolso.");
+        const calls = order.map((k, i) => ({
+          name: "handoff_to_human",
+          args: { ...kinds[k] },
+          id: `c${i}`,
+        }));
+        const turn = [
+          ...asked(),
+          new AIMessage({ content: "", tool_calls: calls }),
+        ];
+        const admitted: Kind[] = [];
+        for (const [i, c] of calls.entries()) {
+          if (!g?.reviewsCall(c.name, turn)) admitted.push(order[i] as Kind);
+          else if ((await g.reviewCall(turn, c)) === null && !g.halted())
+            admitted.push(order[i] as Kind);
+        }
+        return {
+          admitted: admitted.sort(),
+          owes: g?.owes(turn) ?? false,
+          halted: g?.halted() ?? false,
+        };
+      };
+      for (const owing of [false, true])
+        for (const a of names)
+          for (const b of names) {
+            const forward = await outcome([a, b], owing);
+            const backward = await outcome([b, a], owing);
+            expect([a, b, owing, forward]).toEqual([a, b, owing, backward]);
+            // A reply owed and a silent transfer admitted would be a customer with no text and
+            // no fallback: the transfer completes and nothing reviews the turn after it.
+            const silentRan = forward.admitted.includes("silent");
+            expect([a, b, owing, forward.owes && silentRan]).toEqual([
+              a,
+              b,
+              owing,
+              false,
+            ]);
+            expect(forward.admitted).not.toContain("banned");
+          }
+    },
+  );
+
+  // The bug it catches: under observe a match on the transfer's line ended the review of the
+  // call, so the model reviewer never saw it and `hold` held nothing.
+  test.skipIf(!dbUp)(
+    "an observed match on a transfer's line still goes to the model reviewer, and hold still holds",
+    async () => {
+      const transfer = {
+        name: "handoff_to_human",
+        args: { customerMessage: "Vou pedir o seu reembolso." },
+        id: "t",
+      };
+      const turn = [
+        ...asked(),
+        new AIMessage({ content: "", tool_calls: [transfer] }),
+      ];
+      const r = reviewer([VIOLATED]);
+      const reports: GuardrailReport[] = [];
+      const seen = gate(
+        cfg({ rules: [BANNED], judge: true, action: "observe" }),
+        { make: r.make, reports },
+      );
+      expect(await seen.g?.reviewCall(turn, transfer)).toBeNull();
+      expect(r.calls).toHaveLength(1);
+      expect(reports.map((x) => [x.rule ?? null, x.line ?? null])).toEqual([
+        [BANNED.name, true],
+        [null, null],
+      ]);
+      // No reviewer to ask, under hold: the call is held.
+      const held = gate(
+        cfg(
+          { rules: [BANNED], judge: true, action: "observe" },
+          { onFailure: "hold" },
+        ),
+      ).g;
+      await held?.reviewCall(turn, transfer);
+      expect(held?.halted()).toBe(false);
+      const acting = gate(
+        cfg({ rules: [BANNED], judge: true }, { onFailure: "hold" }),
+      ).g;
+      await acting?.reviewCall(
+        [
+          ...asked(),
+          new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                ...transfer,
+                args: { customerMessage: "Um atendente vai continuar." },
+              },
+            ],
+          }),
+        ],
+        {
+          ...transfer,
+          args: { customerMessage: "Um atendente vai continuar." },
+        },
+      );
+      expect(acting?.halted()).toBe(true);
+    },
+  );
+
   test.skipIf(!dbUp)(
     "the rules run before the model reviewer, which never reads a draft a rule sent back",
     async () => {
@@ -1354,6 +1472,7 @@ async function runTurn(
     reviewsCall: g?.reviewsCall,
     reviewTurnReply: g?.reviewReply,
     turnReviewHalted: g?.halted,
+    replyOwed: g?.owes,
   });
   const out = await graph.invoke(
     { messages: asked() },
@@ -1804,6 +1923,63 @@ describe("the rules in the graph", () => {
         ["revised", "revised"],
       ]);
       expect(t.thread).not.toContain("Vou pedir o seu reembolso.\nok");
+    },
+  );
+
+  // The bug it catches: a `skip_reply` earlier in the turn kept the turn silent for good, so a
+  // reply owed by a later refusal was stripped, and neither it nor the fallback reached anyone.
+  test.skipIf(!dbUp)(
+    "a reply owed after an earlier skip_reply is delivered, and so is the fallback",
+    async () => {
+      const banned = {
+        name: "handoff_to_human",
+        args: { customerMessage: "Vou pedir o seu reembolso." },
+      };
+      const SKIPPED = { name: "skip_reply", args: { reason: "acknowledged" } };
+      // The product's own `skip_reply`, whose mark is what makes the turn a silent one.
+      const skip = () =>
+        buildNativeTools({
+          client: {} as ChatwootClient,
+          conversationId: 12,
+        }).filter((x) => x.name === "skip_reply");
+      const fixed = await runTurn(
+        [
+          { text: "", calls: [SKIPPED] },
+          { text: "", calls: [banned] },
+          { text: "Qual é o número do seu pedido?" },
+        ],
+        cfg({ rules: [BANNED], maxAttempts: 1 }),
+        {},
+        skip(),
+      );
+      expect([fixed.last, fixed.pending]).toEqual([
+        "Qual é o número do seu pedido?",
+        null,
+      ]);
+      const stuck = await runTurn(
+        [
+          { text: "", calls: [SKIPPED] },
+          { text: "", calls: [banned] },
+          { text: "" },
+          { text: "" },
+        ],
+        cfg({ rules: [BANNED], maxAttempts: 1, fallback: "template" }),
+        {},
+        skip(),
+      );
+      expect(stuck.pending).toEqual({ kind: "replaced", reply: TEMPLATE });
+      // In one step: the silence beside the refused line does not run either.
+      const together = await runTurn(
+        [
+          { text: "", calls: ["skip_reply", banned] },
+          { text: "Qual é o número do seu pedido?" },
+        ],
+        cfg({ rules: [BANNED], maxAttempts: 2 }),
+      );
+      expect([together.ran, together.last]).toEqual([
+        [],
+        "Qual é o número do seu pedido?",
+      ]);
     },
   );
 

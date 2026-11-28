@@ -1353,7 +1353,15 @@ export function guardrailTraceLabel(
   t: (key: string, fallback: string) => string,
   entry: Pick<
     Extract<TraceEntry, { type: "guardrail" }>,
-    "direction" | "outcome" | "action" | "held" | "external" | "check" | "step"
+    | "direction"
+    | "outcome"
+    | "action"
+    | "held"
+    | "external"
+    | "check"
+    | "step"
+    | "rule"
+    | "line"
   >,
 ): string {
   // The turn review says what happened to the step it judged: a call that did not run, a reply redone.
@@ -1368,6 +1376,33 @@ export function guardrailTraceLabel(
       return t(
         "playground.trace.turnReviewCallUnavailable",
         "could not be judged; the review did not block the call",
+      );
+    // A rule of the operator's, named in the row's title: what its match did to the step.
+    // A match on a transfer's message. Past the attempts it falls to the fallback's own wording.
+    if (entry.rule && entry.line && entry.outcome === "revised")
+      return t(
+        "playground.trace.turnRuleLineRevised",
+        "the rule fired on the text this call carried for the customer. The call did not run and the agent was told why",
+      );
+    if (entry.rule && entry.line && entry.outcome === "observed")
+      return t(
+        "playground.trace.turnRuleLineObserved",
+        "the rule fired on the text this call carries for the customer. Only recorded, the review did not block the call",
+      );
+    if (entry.rule && entry.outcome === "revised")
+      return entry.step === "call"
+        ? t(
+            "playground.trace.turnRuleSilenceRevised",
+            "the turn may not end in silence after the rule sent the reply back. The call did not run and the agent was told why",
+          )
+        : t(
+            "playground.trace.turnRuleReplyRevised",
+            "the rule fired and the agent redid the reply",
+          );
+    if (entry.rule && entry.outcome === "observed")
+      return t(
+        "playground.trace.turnRuleObserved",
+        "the rule fired. Only recorded, the review did not block the reply",
       );
     if (entry.outcome === "revised")
       return entry.step === "call"
@@ -1547,15 +1582,27 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
           {entry.external
             ? t("playground.trace.externalCheck", "External check on the reply")
             : entry.check === "turn_review"
-              ? entry.step === "call"
-                ? t("playground.trace.turnReviewCall", {
-                    defaultValue: "Turn review of the call to {{tool}}",
+              ? entry.rule && entry.line
+                ? t("playground.trace.turnRuleOnCall", {
+                    defaultValue:
+                      "Turn review rule “{{rule}}” on the call to {{tool}}",
+                    rule: entry.rule,
                     tool: entry.tool ?? "",
                   })
-                : t(
-                    "playground.trace.turnReviewReply",
-                    "Turn review of the reply",
-                  )
+                : entry.rule
+                  ? t("playground.trace.turnRule", {
+                      defaultValue: "Turn review rule “{{rule}}”",
+                      rule: entry.rule,
+                    })
+                  : entry.step === "call"
+                    ? t("playground.trace.turnReviewCall", {
+                        defaultValue: "Turn review of the call to {{tool}}",
+                        tool: entry.tool ?? "",
+                      })
+                    : t(
+                        "playground.trace.turnReviewReply",
+                        "Turn review of the reply",
+                      )
               : entry.check
                 ? t(
                     "playground.trace.groundingCheck",

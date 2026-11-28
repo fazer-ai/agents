@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ToolMessage } from "@langchain/core/messages";
 import { z } from "zod";
+import { acted } from "@/graph/tools/call-scope";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 
 // failableTool contract: a toolFailure(...) return surfaces to the model as the SAME friendly
@@ -10,7 +11,8 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 const MSG = "Provider returned HTTP 500.";
 
 const probe = failableTool(
-  async (input: { fail?: boolean }) => (input.fail ? toolFailure(MSG) : "ok"),
+  async (input: { fail?: boolean }) =>
+    input.fail ? toolFailure(MSG) : acted("ok"),
   {
     name: "probe",
     description: "failure probe",

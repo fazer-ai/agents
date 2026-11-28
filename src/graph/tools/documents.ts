@@ -10,6 +10,7 @@ import {
 import type { DocumentField } from "@/modules/documents/blocks";
 import { calendarDay, sysCtx } from "@/modules/documents/issue";
 import { documentToolName } from "@/modules/documents/slug";
+import { acted, didNothing, type Outcome } from "./call-scope";
 import { failableTool, toolFailure } from "./failure";
 import type { TurnState } from "./native";
 
@@ -171,7 +172,18 @@ export function screenableValues(input: Record<string, unknown>): string {
 
 // What the model is told about a request its call landed on. A repeated call returns the request
 // the first one made, whatever became of it, so the answer follows its status.
+// Said as acted only while the request stands with the team: the call did put the document in
+// front of someone. Approved already, refused or expired, this call changed nothing.
 function approvalAnswer(
+  request: { status: ApprovalStatus; expiresAt: Date },
+  at: Date,
+): Outcome {
+  return request.status === "PENDING" && request.expiresAt > at
+    ? acted(approvalText(request, at))
+    : didNothing(approvalText(request, at));
+}
+
+function approvalText(
   request: { status: ApprovalStatus; expiresAt: Date },
   at: Date,
 ): string {
@@ -207,11 +219,15 @@ export function buildDocumentTools(
         // gates, so a superseded, taken-over or blocked turn must not have already put a priced
         // document in front of the customer.
         if (deps.simulate) {
-          return `[simulado] Documento "${selection.name}" seria emitido e anexado à sua resposta deste turno. Nada foi emitido: no playground não há conversa para receber o arquivo.`;
+          return acted(
+            `[simulado] Documento "${selection.name}" seria emitido e anexado à sua resposta deste turno. Nada foi emitido: no playground não há conversa para receber o arquivo.`,
+          );
         }
         const turnState = deps.turnState;
         if (!turnState) {
-          return "Não é possível anexar um documento neste momento (mensagem proativa). Diga ao cliente que ele será enviado na conversa.";
+          return didNothing(
+            "Não é possível anexar um documento neste momento (mensagem proativa). Diga ao cliente que ele será enviado na conversa.",
+          );
         }
         // NOTE: at most one document per turn, across every document tool. The slot is taken BEFORE
         // the await: one response's tool calls run under Promise.all, so a check that only reads the
@@ -221,7 +237,9 @@ export function buildDocumentTools(
           turnState.documentsInFlight > 0 ||
           turnState.pendingAttachments.some((a) => a.kind === "document")
         ) {
-          return "Um documento já vai junto com a sua resposta deste turno. Envie o próximo em outra mensagem.";
+          return didNothing(
+            "Um documento já vai junto com a sua resposta deste turno. Envie o próximo em outra mensagem.",
+          );
         }
         turnState.documentsInFlight++;
         const order = turnState.attachmentsSeq++;
@@ -277,7 +295,9 @@ export function buildDocumentTools(
           // NOTE: no field values here, and no customer name. This string is the tool's OUTPUT, and
           // ToolFlowLogger stores tool outputs verbatim in `ExecutionLog.detail` — a column that
           // carries no customer data. The number is ours and identifies nobody.
-          return `Documento ${issued.number} pronto; ele vai junto com a sua resposta deste turno.`;
+          return acted(
+            `Documento ${issued.number} pronto; ele vai junto com a sua resposta deste turno.`,
+          );
         } catch (e) {
           // TERMINAL, whatever the status code: the operator voided the document, turned the
           // template off, or deleted it between this turn loading its tools and the model calling
@@ -290,13 +310,17 @@ export function buildDocumentTools(
             e instanceof AppError &&
             TERMINAL_ERROR_KEYS.has(e.translationKey ?? "")
           ) {
-            return "Não é possível enviar esse documento. Siga a conversa sem prometer o envio, ou ofereça encaminhar para um atendente.";
+            return didNothing(
+              "Não é possível enviar esse documento. Siga a conversa sem prometer o envio, ou ofereça encaminhar para um atendente.",
+            );
           }
           // A rejected argument is the model's to fix and it has the message to do it with — normal
           // operation, not an integration failure. Anything else (storage gone, render crashed) is
           // the operator's problem and has to reach the alert channels.
           if (e instanceof AppError && e.statusCode === 400) {
-            return `Não consegui emitir o documento: ${e.message} Corrija os dados e tente de novo, ou siga a conversa sem prometer o envio.`;
+            return didNothing(
+              `Não consegui emitir o documento: ${e.message} Corrija os dados e tente de novo, ou siga a conversa sem prometer o envio.`,
+            );
           }
           throw e;
         } finally {

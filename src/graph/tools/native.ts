@@ -3,7 +3,6 @@ import type {
   StructuredToolInterface,
   ToolRunnableConfig,
 } from "@langchain/core/tools";
-import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
@@ -22,7 +21,7 @@ import {
   type SkipReplyReason,
 } from "@/graph/silence";
 import { SKIP_NOTE_DETAIL_MAX as SKIP_DETAIL_MAX } from "@/graph/skip-handover";
-import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { failableTool, outcomeTool, toolFailure } from "@/graph/tools/failure";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -119,6 +118,13 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
 // (fail-closed: a tool not in the allowlist is never exposed to the model).
 
+import {
+  type AsCall,
+  acted,
+  asThisCall,
+  didNothing,
+  type Outcome,
+} from "./call-scope";
 import {
   HANDOFF_DONE_PREFIX,
   HANDOFF_TOOL_NAME,
@@ -611,6 +617,11 @@ function handoffTargetsXml(targets: HandoffTargets | undefined): string {
   return `<handoff_targets>\n${lines.join("\n")}\n</handoff_targets>`;
 }
 
+// How every native tool is built: `outcomeTool` and `failableTool` (failure.ts), whose handlers
+// answer an `Outcome`, so each answer says whether the call acted or did nothing.
+const nativeTool = outcomeTool;
+const nativeFailable = failableTool;
+
 function handoffTool(ctx: ToolCtx) {
   const mode = ctx.handoff?.mode ?? "route";
   const agentChoice = mode === "agent_choice";
@@ -650,7 +661,7 @@ function handoffTool(ctx: ToolCtx) {
           ),
       }
     : {};
-  return tool(
+  return nativeTool(
     async (
       {
         reason,
@@ -683,7 +694,9 @@ function handoffTool(ctx: ToolCtx) {
         // just told was cleared. Same rule `set_labels` applies in its queue and
         // `resolve_conversation` after its read.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
+          return didNothing(
+            "Did not hand off (the run was called off while the note was in flight); the note was already filed.",
+          );
         }
       }
       // NOTE: Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
@@ -775,7 +788,9 @@ function handoffTool(ctx: ToolCtx) {
         : customerLine(customerMessage)
           ? " The message you wrote will be delivered to the customer; do not repeat it."
           : " No message will be sent to the customer, as you indicated.";
-      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`;
+      return acted(
+        `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`,
+      );
     },
     {
       // NOTE: From the catalog, because the hand-back decision matches results by this exact name
@@ -807,7 +822,7 @@ function handoffTool(ctx: ToolCtx) {
 }
 
 function privateNoteTool(ctx: ToolCtx) {
-  return tool(
+  return nativeTool(
     async ({ content }: { content: string }, config?: ToolRunnableConfig) => {
       await ctx.client.sendPrivateNote(
         ctx.conversationId,
@@ -815,7 +830,9 @@ function privateNoteTool(ctx: ToolCtx) {
       );
       // Said as it lands: a deadline can end the call before it returns, and the note is still filed.
       fenceReporterOf(config)?.({ committed: true });
-      return "Private note posted (visible to agents, not the customer).";
+      return acted(
+        "Private note posted (visible to agents, not the customer).",
+      );
     },
     {
       name: "private_note",
@@ -1060,7 +1077,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
   const attributesXml = listed
     ? knownAttributesXml(convDefs, contactDefs, taskScope ? taskDefs : null)
     : undefined;
-  return tool(
+  return nativeTool(
     async (
       {
         key: rawKey,
@@ -1103,7 +1120,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         const def = defs?.find((d) => d.key === key);
         // Every refusal is decided here, before any lookup or write: a refused value never reaches
         // Chatwoot or the mirror, so a precondition on the same key keeps reading the previous state.
-        const refuse = (rule: AttributeRefusal["rule"]): string => {
+        const refuse = (rule: AttributeRefusal["rule"]): Outcome => {
           noEffect();
           // Only operator vocabulary goes on the line. A key the model invented is its own text,
           // and a phone number or a name fits a slug just as well as a field does.
@@ -1113,7 +1130,9 @@ function setCustomAttributeTool(ctx: ToolCtx) {
             rule,
             ...(known ? { key } : {}),
           });
-          return attributeRefusalText(target, key, rule, def, writable);
+          return didNothing(
+            attributeRefusalText(target, key, rule, def, writable),
+          );
         };
         if (writable.length > 0 && !writableHas(target, key))
           return refuse("not_allowed");
@@ -1131,7 +1150,9 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         if (scope === "task") {
           if (!ctx.kanban) {
             noEffect();
-            return "Could not set the task attribute (this conversation has no linked card).";
+            return didNothing(
+              "Could not set the task attribute (this conversation has no linked card).",
+            );
           }
           try {
             await admitted(
@@ -1144,19 +1165,21 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           } catch (e) {
             if (e instanceof ChatwootCalledOffError) {
               noEffect();
-              return CALLED_OFF_ATTRIBUTE;
+              return didNothing(CALLED_OFF_ATTRIBUTE);
             }
             throw e;
           }
           // Written: said now, before the mirror, which a deadline can still interrupt.
           fenceReporterOf(config)?.({ committed: true });
           await mirrorAttributeWrite(ctx, "task", key, value);
-          return `Task attribute ${key} ${clear ? "cleared" : "set"}.`;
+          return acted(`Task attribute ${key} ${clear ? "cleared" : "set"}.`);
         }
         if (scope === "contact") {
           if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
             noEffect();
-            return "Could not set the contact attribute (no contact in scope).";
+            return didNothing(
+              "Could not set the contact attribute (no contact in scope).",
+            );
           }
           const tenantId = ctx.tenantId;
           const contactDbId = ctx.contactDbId;
@@ -1173,7 +1196,9 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           });
           if (!contact?.chatwootContactId) {
             noEffect();
-            return "Could not set the contact attribute (contact not linked to Chatwoot).";
+            return didNothing(
+              "Could not set the contact attribute (contact not linked to Chatwoot).",
+            );
           }
           // NOTE: ASKED AGAIN, after the lookup and before the write: the graph's ask happens at
           // DISPATCH, and this handler waits on a database read after it. A contact attribute outlives
@@ -1181,7 +1206,9 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           // agent was switched off) is one nothing later corrects.
           if (ctx.stillWanted && !(await ctx.stillWanted())) {
             noEffect();
-            return "Could not set the contact attribute (the run was called off while this write waited).";
+            return didNothing(
+              "Could not set the contact attribute (the run was called off while this write waited).",
+            );
           }
           try {
             await admitted(
@@ -1197,13 +1224,15 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           } catch (e) {
             if (e instanceof ChatwootCalledOffError) {
               noEffect();
-              return CALLED_OFF_ATTRIBUTE;
+              return didNothing(CALLED_OFF_ATTRIBUTE);
             }
             throw e;
           }
           fenceReporterOf(config)?.({ committed: true });
           await mirrorAttributeWrite(ctx, "contact", key, value);
-          return `Contact attribute ${key} ${clear ? "cleared" : "set"}.`;
+          return acted(
+            `Contact attribute ${key} ${clear ? "cleared" : "set"}.`,
+          );
         }
         try {
           await admitted(
@@ -1222,13 +1251,15 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         } catch (e) {
           if (e instanceof ChatwootCalledOffError) {
             noEffect();
-            return CALLED_OFF_ATTRIBUTE;
+            return didNothing(CALLED_OFF_ATTRIBUTE);
           }
           throw e;
         }
         fenceReporterOf(config)?.({ committed: true });
         await mirrorAttributeWrite(ctx, "conversation", key, value);
-        return `Conversation attribute ${key} ${clear ? "cleared" : "set"}.`;
+        return acted(
+          `Conversation attribute ${key} ${clear ? "cleared" : "set"}.`,
+        );
       } finally {
         admit();
       }
@@ -1489,11 +1520,13 @@ export function sharedWriteKey(
 interface PendingLabelDelta {
   add: string[];
   remove: string[];
-  resolve: (report: string) => void;
+  resolve: (report: Outcome) => void;
   reject: (reason: unknown) => void;
   // The call's own fence reporter (fence-report.ts): the batch is written by whichever call opened
   // it, so each delta carries its caller's.
   fenced?: FenceReporter;
+  // The same for the delta's own answer, which names no call: said as the caller (call-scope.ts).
+  asCall: AsCall;
 }
 
 // Which fence of `applyLabelDelta` held part or all of one call, told to the caller that asked. A
@@ -1617,6 +1650,23 @@ function setLabelsTool(ctx: ToolCtx) {
   ]
     .filter(Boolean)
     .join(" ");
+  // What a call of the batch is answered, said as that call: the batch runs in the context of the
+  // call that opened it. A call that moved nothing acted only when nothing it named was refused
+  // (the labels already were what it asked).
+  const refusedSome = (o: {
+    refusedAdd: string[];
+    refusedRemove: string[];
+    heldRemove?: string[];
+    refusedOutside?: string[];
+    refusedForeign?: string[];
+  }) =>
+    o.refusedAdd.length > 0 ||
+    o.refusedRemove.length > 0 ||
+    (o.heldRemove ?? []).length > 0 ||
+    (o.refusedOutside ?? []).length > 0 ||
+    (o.refusedForeign ?? []).length > 0;
+  const unmoved = (o: Parameters<typeof refusedSome>[0], text: string) =>
+    refusedSome(o) ? didNothing(text) : acted(text);
   // One entry of the conversation's label queue, shared with the observer's verdict and the nudge's
   // own merge: the endpoint replaces the whole set, so an unqueued read-then-POST erases what
   // another writer added between the two. Every call the entry holds is applied to ONE read, one
@@ -1675,7 +1725,7 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           reportLabelFence(o.delta.fenced, o);
           logRefusedOnly("conversation", o);
-          o.delta.resolve(report(o));
+          o.delta.resolve(o.delta.asCall(() => unmoved(o, report(o))));
         }
         return;
       }
@@ -1690,7 +1740,11 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           o.delta.fenced?.({ noEffect: true });
           o.delta.resolve(
-            "Could not set the labels (the run was called off while this write waited its turn).",
+            o.delta.asCall(() =>
+              didNothing(
+                "Could not set the labels (the run was called off while this write waited its turn).",
+              ),
+            ),
           );
         }
         return;
@@ -1707,7 +1761,9 @@ function setLabelsTool(ctx: ToolCtx) {
           if (first) {
             reportLabelFence(first.delta.fenced, first);
             logRefusedOnly("conversation", first);
-            first.delta.resolve(report(first));
+            first.delta.resolve(
+              first.delta.asCall(() => unmoved(first, report(first))),
+            );
           }
           return;
         }
@@ -1739,7 +1795,11 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           logRefusedOnly("conversation", o);
         }
-        o.delta.resolve(report(o));
+        o.delta.resolve(
+          moved(o)
+            ? acted(report(o))
+            : o.delta.asCall(() => unmoved(o, report(o))),
+        );
       }
     } catch (err) {
       close();
@@ -1757,7 +1817,7 @@ function setLabelsTool(ctx: ToolCtx) {
       await writeConversationLabels(one);
     }
   };
-  return tool(
+  return nativeTool(
     async (
       args: {
         add?: string[];
@@ -1781,16 +1841,24 @@ function setLabelsTool(ctx: ToolCtx) {
       const legacy = (args as { labels?: unknown }).labels;
       if (Array.isArray(legacy)) {
         noEffect();
-        return "Could not set the labels: this tool no longer takes a complete `labels` list. Name only what changes, with `add` and `remove` — a label you do not name is left as it is.";
+        return didNothing(
+          "Could not set the labels: this tool no longer takes a complete `labels` list. Name only what changes, with `add` and `remove` — a label you do not name is left as it is.",
+        );
       }
-      if (add.length === 0 && remove.length === 0) {
+      // A blank entry names nothing: `applyLabelDelta` trims it away, and a delta of blanks would
+      // otherwise read as labels that already were what the call asked.
+      if (![...add, ...remove].some((l) => l.trim() !== "")) {
         noEffect();
-        return "Could not set the labels (neither `add` nor `remove` named anything).";
+        return didNothing(
+          "Could not set the labels (neither `add` nor `remove` named anything).",
+        );
       }
       if (scope === "task") {
         if (!ctx.kanban) {
           noEffect();
-          return "Could not set the labels (this conversation has no linked card).";
+          return didNothing(
+            "Could not set the labels (this conversation has no linked card).",
+          );
         }
         // THE CARD IS READ FRESH, like the other two scopes: one GET by id, since the id is in
         // hand. The turn-prep snapshot would make "not named, not touched" false on this scope. A
@@ -1807,7 +1875,9 @@ function setLabelsTool(ctx: ToolCtx) {
             : [];
         } catch {
           noEffect();
-          return "Could not set the labels (the card could not be read just now). Try again.";
+          return didNothing(
+            "Could not set the labels (the card could not be read just now). Try again.",
+          );
         }
         const {
           next,
@@ -1835,23 +1905,34 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "task", next);
           logRefusedOnly("task", { next, refusedForeign });
-          return labelWriteReport(
-            "kanban card",
-            added,
-            removed,
-            next,
-            refusedAdd,
-            refusedRemove,
-            heldRemove,
-            refusedOutside,
-            refusedForeign,
+          return unmoved(
+            {
+              refusedAdd,
+              refusedRemove,
+              heldRemove,
+              refusedOutside,
+              refusedForeign,
+            },
+            labelWriteReport(
+              "kanban card",
+              added,
+              removed,
+              next,
+              refusedAdd,
+              refusedRemove,
+              heldRemove,
+              refusedOutside,
+              refusedForeign,
+            ),
           );
         }
         // NOTE: ASKED AGAIN, after the GET and before the write, for the reason the two sibling
         // scopes state: the read is a WAIT, and `/reset` can retire the run while it is in flight.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           noEffect();
-          return "Could not set the card labels (the run was called off while this write waited).";
+          return didNothing(
+            "Could not set the card labels (the run was called off while this write waited).",
+          );
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
         fenced?.({ committed: true });
@@ -1867,22 +1948,26 @@ function setLabelsTool(ctx: ToolCtx) {
         // its own call has already moved.
         ctx.kanban.card.labels = [...next];
         recordShown(ctx, "task", next);
-        return labelWriteReport(
-          "kanban card",
-          added,
-          removed,
-          next,
-          refusedAdd,
-          refusedRemove,
-          heldRemove,
-          refusedOutside,
-          refusedForeign,
+        return acted(
+          labelWriteReport(
+            "kanban card",
+            added,
+            removed,
+            next,
+            refusedAdd,
+            refusedRemove,
+            heldRemove,
+            refusedOutside,
+            refusedForeign,
+          ),
         );
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
           noEffect();
-          return "Could not set the contact labels (no contact in scope).";
+          return didNothing(
+            "Could not set the contact labels (no contact in scope).",
+          );
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
@@ -1906,7 +1991,9 @@ function setLabelsTool(ctx: ToolCtx) {
         );
         if (!contact?.chatwootContactId) {
           noEffect();
-          return "Could not set the contact labels (contact not linked to Chatwoot).";
+          return didNothing(
+            "Could not set the contact labels (contact not linked to Chatwoot).",
+          );
         }
         const chatwootContactId = contact.chatwootContactId;
         const current = await ctx.client.getContactLabels(chatwootContactId);
@@ -1933,16 +2020,25 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "contact", next);
           logRefusedOnly("contact", { next, refusedForeign });
-          return labelWriteReport(
-            "contact",
-            added,
-            removed,
-            next,
-            refusedAdd,
-            refusedRemove,
-            heldRemove,
-            refusedOutside,
-            refusedForeign,
+          return unmoved(
+            {
+              refusedAdd,
+              refusedRemove,
+              heldRemove,
+              refusedOutside,
+              refusedForeign,
+            },
+            labelWriteReport(
+              "contact",
+              added,
+              removed,
+              next,
+              refusedAdd,
+              refusedRemove,
+              heldRemove,
+              refusedOutside,
+              refusedForeign,
+            ),
           );
         }
         // NOTE: ASKED AGAIN, after the GET and before the write, the same rule as every handler
@@ -1950,7 +2046,9 @@ function setLabelsTool(ctx: ToolCtx) {
         // has no queue, and the read above is just as much a wait.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           noEffect();
-          return "Could not set the contact labels (the run was called off while this write waited).";
+          return didNothing(
+            "Could not set the contact labels (the run was called off while this write waited).",
+          );
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
         fenced?.({ committed: true });
@@ -1962,28 +2060,31 @@ function setLabelsTool(ctx: ToolCtx) {
           }),
         );
         recordShown(ctx, "contact", next);
-        return labelWriteReport(
-          "contact",
-          added,
-          removed,
-          next,
-          refusedAdd,
-          refusedRemove,
-          heldRemove,
-          refusedOutside,
-          refusedForeign,
+        return acted(
+          labelWriteReport(
+            "contact",
+            added,
+            removed,
+            next,
+            refusedAdd,
+            refusedRemove,
+            heldRemove,
+            refusedOutside,
+            refusedForeign,
+          ),
         );
       }
       // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: a call that finds this turn's own entry at
       // the TAIL of the label queue, its read still out, joins that entry. Only the tail can be
       // joined, so a call is never merged ahead of a writer queued in between.
-      return new Promise<string>((resolve, reject) => {
+      return new Promise<Outcome>((resolve, reject) => {
         const mine: PendingLabelDelta = {
           add,
           remove,
           resolve,
           reject,
           ...(fenced ? { fenced } : {}),
+          asCall: asThisCall(),
         };
         const alone = ctx.writesAlone?.() === true;
         const tail = alone
@@ -2067,7 +2168,7 @@ function reportResolveLabels(ctx: ToolCtx, result: ResolveLabelsResult) {
 
 function resolveConversationTool(ctx: ToolCtx) {
   const deferred = ctx.turnState !== undefined;
-  return tool(
+  return nativeTool(
     async () => {
       // NOTE: THE TRANSFER OF THIS TURN ALREADY HAPPENED, so the conversation belongs to the human
       // queue and closing it is not ours to do. The reactive runtime drops a DEFERRED intent after a
@@ -2076,7 +2177,9 @@ function resolveConversationTool(ctx: ToolCtx) {
       // the queue the transfer just put it in. Asked before both branches, so the model reads what
       // happened rather than a schedule cancelled out of sight.
       if (ctx.handoffState?.completed) {
-        return "Did not resolve: this turn transferred the conversation to a human, so it is theirs to close, not yours.";
+        return didNothing(
+          "Did not resolve: this turn transferred the conversation to a human, so it is theirs to close, not yours.",
+        );
       }
       const ts = ctx.turnState;
       if (ts) {
@@ -2087,7 +2190,9 @@ function resolveConversationTool(ctx: ToolCtx) {
         ts.resolveByModel = true;
         ts.resolveLabels = ctx.resolveLabels ?? [];
         ts.resolveCaseHold = ctx.resolveCaseHold ?? null;
-        return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
+        return acted(
+          "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.",
+        );
       }
       // The row id and tenant are absent on hand-built contexts (and the playground never reaches a
       // real Chatwoot), so an unrecordable close is left unattributed rather than guessed at.
@@ -2112,7 +2217,9 @@ function resolveConversationTool(ctx: ToolCtx) {
       // cleared. Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
         ctx.onNoEffect?.("resolve_conversation");
-        return "Did not resolve the conversation (the run was called off while this read was in flight).";
+        return didNothing(
+          "Did not resolve the conversation (the run was called off while this read was in flight).",
+        );
       }
       // Before the toggle, for the reason the deferred path writes them before its own: Chatwoot
       // reads the survey rules when the status changes.
@@ -2139,7 +2246,9 @@ function resolveConversationTool(ctx: ToolCtx) {
         if (!labelled.dispatched) {
           ctx.onNoEffect?.("resolve_conversation");
         }
-        return "Did not resolve the conversation (the run was called off while this read was in flight).";
+        return didNothing(
+          "Did not resolve the conversation (the run was called off while this read was in flight).",
+        );
       }
       await ownStatusChange(ctx, () =>
         ctx.client.toggleStatus(ctx.conversationId, "resolved"),
@@ -2154,7 +2263,7 @@ function resolveConversationTool(ctx: ToolCtx) {
           base: ctx.base,
         });
       }
-      return RESOLVE_DONE;
+      return acted(RESOLVE_DONE);
     },
     {
       name: "resolve_conversation",
@@ -2230,24 +2339,53 @@ function kanbanMoveTool(ctx: ToolCtx) {
     ? "Move this conversation's kanban card to another funnel step. Pass the target step's name as `targetStep`, picking one from `<available_steps>` below (the card's board and current step are shown there too)."
     : "Move this conversation's kanban card to another funnel step. This conversation has no linked card, so there is nothing to move.";
   const contextXml = k ? kanbanMoveContextXml(k) : undefined;
-  return tool(
+  return nativeTool(
     async ({ targetStep }: { targetStep: string }) => {
       if (!ctx.kanban) {
         ctx.onNoEffect?.("kanban_move_card");
-        return "This conversation has no linked kanban card, so there is nothing to move.";
+        return didNothing(
+          "This conversation has no linked kanban card, so there is nothing to move.",
+        );
       }
       const step = matchKanbanStep(ctx.kanban.steps, targetStep);
       if (!step) {
         ctx.onNoEffect?.("kanban_move_card");
-        return `Unknown funnel step "${targetStep}". Available: ${ctx.kanban.steps
-          .map((s) => s.name)
-          .join(", ")}.`;
-      }
-      if (step.id === ctx.kanban.currentStepId) {
-        ctx.onNoEffect?.("kanban_move_card");
-        return `The card is already in "${step.name}".`;
+        return didNothing(
+          `Unknown funnel step "${targetStep}". Available: ${ctx.kanban.steps
+            .map((s) => s.name)
+            .join(", ")}.`,
+        );
       }
       const taskId = ctx.kanban.taskId;
+      if (step.id === ctx.kanban.currentStepId) {
+        // The step in hand was read before the model wrote, and an operator or an automation may
+        // have moved the card since: read again before saying the card is where the call asked.
+        let live: number;
+        try {
+          const fresh = (await ctx.client.getKanbanTask(taskId)) as {
+            board_step_id?: unknown;
+          } | null;
+          live = Number(fresh?.board_step_id);
+        } catch {
+          ctx.onNoEffect?.("kanban_move_card");
+          return didNothing(
+            "Could not move the card (it could not be read just now). Try again.",
+          );
+        }
+        if (live === step.id) {
+          ctx.onNoEffect?.("kanban_move_card");
+          // Already where the call asked: nothing to write, and the answer the model wanted.
+          return acted(`The card is already in "${step.name}".`);
+        }
+        // Asked again: that read is a wait, and the graph's ask at the tool boundary came before
+        // it. A turn withdrawn meanwhile must not move the card back.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.("kanban_move_card");
+          return didNothing(
+            "Could not move the card (the run was called off while this write waited).",
+          );
+        }
+      }
       await ctx.client.moveKanbanTask(taskId, step.id);
       // NOTE: Best-effort fleet event (ids only, no PII).
       if (ctx.base && ctx.tenantId != null) {
@@ -2273,7 +2411,7 @@ function kanbanMoveTool(ctx: ToolCtx) {
           });
         }
       }
-      return `Moved the card to "${step.name}".`;
+      return acted(`Moved the card to "${step.name}".`);
     },
     {
       name: "kanban_move_card",
@@ -2303,7 +2441,7 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
   const k = ctx.kanban;
   const baseDescription = `Update this conversation's kanban card: its title, description, priority (one of urgent/high/medium/low) and/or scheduled dates. Provide ONLY the fields you want to change; the card's current values are shown in \`<current_card>\` below. Dates are ISO 8601 (e.g. "2026-06-20" or "2026-06-20T14:00:00-03:00") and the start date must not be after the due date. To move the card between funnel steps, add a label, set a custom attribute or change the amount, use the dedicated tools instead.`;
   const contextXml = k ? kanbanCardFieldsXml(k) : undefined;
-  return tool(
+  return nativeTool(
     async (input: {
       title?: string;
       description?: string;
@@ -2313,7 +2451,9 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
     }) => {
       if (!ctx.kanban) {
         ctx.onNoEffect?.("update_kanban_task");
-        return "This conversation has no linked kanban card, so there is nothing to update.";
+        return didNothing(
+          "This conversation has no linked kanban card, so there is nothing to update.",
+        );
       }
       const fields: {
         title?: string;
@@ -2330,10 +2470,14 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
       if (input.dueDate !== undefined) fields.dueDate = input.dueDate;
       if (Object.keys(fields).length === 0) {
         ctx.onNoEffect?.("update_kanban_task");
-        return "No fields provided. Set at least one of title, description, priority, dueDate or startDate.";
+        return didNothing(
+          "No fields provided. Set at least one of title, description, priority, dueDate or startDate.",
+        );
       }
       await ctx.client.updateKanbanTask(ctx.kanban.taskId, fields);
-      return `Updated the kanban card (${Object.keys(fields).join(", ")}).`;
+      return acted(
+        `Updated the kanban card (${Object.keys(fields).join(", ")}).`,
+      );
     },
     {
       name: "update_kanban_task",
@@ -2480,7 +2624,7 @@ async function mirrorContactFieldsWrite(
 function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
   const shape: Partial<Record<ContactField, z.ZodOptional<z.ZodString>>> = {};
   for (const f of writable) shape[f] = CONTACT_FIELD_SCHEMA[f].optional();
-  return failableTool(
+  return nativeFailable(
     async (input: Partial<Record<ContactField, string>>) => {
       const written: Partial<Record<ContactField, string>> = {};
       const refused: string[] = [];
@@ -2505,7 +2649,9 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
       }
       if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
         ctx.onNoEffect?.("update_contact");
-        return "Could not update the contact (no contact in scope).";
+        return didNothing(
+          "Could not update the contact (no contact in scope).",
+        );
       }
       const tenantId = ctx.tenantId;
       const contactDbId = ctx.contactDbId;
@@ -2517,13 +2663,17 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
       );
       if (!contact?.chatwootContactId) {
         ctx.onNoEffect?.("update_contact");
-        return "Could not update the contact (contact not linked to Chatwoot).";
+        return didNothing(
+          "Could not update the contact (contact not linked to Chatwoot).",
+        );
       }
       // NOTE: Asked after the lookup and before the write, as set_custom_attribute does: a contact's
       // data outlives the conversation, so a write after a `/reset` is one nothing later corrects.
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
         ctx.onNoEffect?.("update_contact");
-        return "Could not update the contact (the run was called off while this write waited).";
+        return didNothing(
+          "Could not update the contact (the run was called off while this write waited).",
+        );
       }
       const additional: Partial<Record<AdditionalContactField, string>> = {};
       for (const [f, v] of Object.entries(written) as [
@@ -2552,7 +2702,9 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
           ctx.onNoEffect?.("update_contact");
-          return "Could not update the contact (the run was called off while this write waited its turn).";
+          return didNothing(
+            "Could not update the contact (the run was called off while this write waited its turn).",
+          );
         }
         if (
           e instanceof ChatwootApiError &&
@@ -2567,7 +2719,7 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
         }
         throw e;
       }
-      return `Contact updated: ${Object.keys(written).join(", ")}.`;
+      return acted(`Contact updated: ${Object.keys(written).join(", ")}.`);
     },
     {
       name: "update_contact",
@@ -2586,31 +2738,43 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
 // Records the customer's audio-vs-text reply preference on the Contact (TTS "preference" mode). A
 // DB write (RLS-scoped), not a Chatwoot call — the elegant replacement for the n8n custom attribute.
 function setVoicePreferenceTool(ctx: ToolCtx) {
-  return tool(
+  return nativeTool(
     async ({ preference }: { preference: "audio" | "text" | "default" }) => {
       if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
         ctx.onNoEffect?.("set_voice_preference");
-        return "Could not record the preference (no contact in scope).";
+        return didNothing(
+          "Could not record the preference (no contact in scope).",
+        );
       }
       const contactId = ctx.contactDbId;
       // "default" clears the preference (null) → the reply mirrors the customer's own format
       // (text→text, audio→audio), which is exactly how `shouldReplyWithAudio` treats null.
       const value =
         preference === "audio" ? true : preference === "text" ? false : null;
-      await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+      const saving = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
         db.contact.updateMany({
           where: { id: contactId },
           data: { voiceReply: value },
         }),
       );
+      // The row is where the preference lives: a contact gone since the turn was prepared stored
+      // nothing.
+      if (saving.count === 0) {
+        ctx.onNoEffect?.("set_voice_preference");
+        return didNothing(
+          "Could not record the preference (the contact is no longer there).",
+        );
+      }
       const saved =
         preference === "default"
           ? "Voice preference reset: replies now mirror what the customer sends (audio→audio, text→text)."
           : `Voice preference saved: the customer prefers ${preference} replies.`;
-      if (!ctx.replyIsAudioWith) return saved;
-      return `${saved} The reply you are writing now will be sent as ${
-        ctx.replyIsAudioWith(value) ? "a voice note" : "a text message"
-      }.`;
+      if (!ctx.replyIsAudioWith) return acted(saved);
+      return acted(
+        `${saved} The reply you are writing now will be sent as ${
+          ctx.replyIsAudioWith(value) ? "a voice note" : "a text message"
+        }.`,
+      );
     },
     {
       name: "set_voice_preference",
@@ -2637,31 +2801,35 @@ function setVoicePreferenceTool(ctx: ToolCtx) {
 // reacting with the same emoji again removes it. Pair with skip_reply when a reaction is the whole
 // response (e.g. the customer sent just "ok"/👍).
 function reactToMessageTool(ctx: ToolCtx) {
-  return failableTool(
+  return nativeFailable(
     async ({ emoji }: { emoji: string }) => {
       const e = emoji.trim();
-      if (!e) return "Provide an emoji to react with.";
+      if (!e) return didNothing("Provide an emoji to react with.");
       try {
         const latest = await ctx.client.getLatestIncomingMessage(
           ctx.conversationId,
         );
         if (latest == null) {
-          return "No customer message found to react to.";
+          return didNothing("No customer message found to react to.");
         }
         // NOTE: The customer's last message is itself a reaction → WhatsApp can't react to a reaction, and
         // reacting would target the wrong (penultimate) message. Refuse without calling the API.
         if (latest.isReaction) {
-          return "The customer's last message is a reaction (emoji), and you can't react to a reaction. Do not react now.";
+          return didNothing(
+            "The customer's last message is a reaction (emoji), and you can't react to a reaction. Do not react now.",
+          );
         }
         // NOTE: ASKED AGAIN, after the lookup that found the message to react to. A reaction is on the
         // customer's phone, so this is the same question every customer-facing send asks before it
         // goes out — and the lookup above is a wait after the graph's ask at dispatch.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           ctx.onNoEffect?.("react_to_message");
-          return "Could not add the reaction (the run was called off while this write waited).";
+          return didNothing(
+            "Could not add the reaction (the run was called off while this write waited).",
+          );
         }
         await ctx.client.addMessageReaction(ctx.conversationId, latest.id, e);
-        return `Reacted with ${e} to the customer's last message.`;
+        return acted(`Reacted with ${e} to the customer's last message.`);
       } catch {
         return toolFailure("Could not add the reaction.");
       }
@@ -2701,7 +2869,7 @@ function skipReplyTool(ctx: ToolCtx) {
   // to put a person on the conversation is named instead, the contract `handoff_to_human` already
   // gives the same turn.
   const speaks = !ctx.client?.muted;
-  return tool(
+  return nativeTool(
     async (
       { reason, detail }: { reason: SkipReplyReason; detail?: string },
       config: ToolRunnableConfig,
@@ -2715,7 +2883,7 @@ function skipReplyTool(ctx: ToolCtx) {
       // direct-tool-output passthrough `failableTool` uses; without a tool_call in scope (a direct
       // invocation with plain args) it degrades to the plain string, as that one does.
       const id = config?.toolCall?.id;
-      if (!id) return ack;
+      if (!id) return acted(ack);
       return new ToolMessage({
         content: ack,
         tool_call_id: id,
@@ -2789,7 +2957,7 @@ function sendImageTool(ctx: ToolCtx) {
         ? hosts.map((h) => `\n  <host>${xmlEscape(h)}</host>`).join("")
         : "\n  <nenhum>Nenhum host liberado: a ferramenta vai recusar qualquer URL até o operador configurar a lista.</nenhum>"
     }\n</imagens-permitidas>`;
-  return failableTool(
+  return nativeFailable(
     async ({ url, caption }: { url: string; caption?: string }) => {
       // Both refusals below are decided BEFORE the fetch. Downloading megabytes over ten
       // seconds only to throw the result away is work a model can ask for repeatedly, and the DNS
@@ -2801,7 +2969,9 @@ function sendImageTool(ctx: ToolCtx) {
       // declines rather than posting behind that gate's back.
       const turnState = ctx.turnState;
       if (!turnState) {
-        return "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.";
+        return didNothing(
+          "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.",
+        );
       }
       // One model response can carry a batch of tool calls, and the graph's tool-call limit is
       // only re-checked between responses, so the queue needs its own ceiling (every accepted image
@@ -2814,7 +2984,7 @@ function sendImageTool(ctx: ToolCtx) {
         queuedImages(turnState).length + turnState.imagesInFlight >=
         SEND_IMAGE_MAX_PER_TURN;
       if (tooManyQueued) {
-        return limitReached();
+        return didNothing(limitReached());
       }
       turnState.imagesInFlight++;
       const order = turnState.attachmentsSeq++;
@@ -2830,7 +3000,7 @@ function sendImageTool(ctx: ToolCtx) {
           const message = sendImageRefusal(res.reason, res.detail);
           return res.reason === "unreachable" || res.reason === "http_error"
             ? toolFailure(message)
-            : message;
+            : didNothing(message);
         }
         // Re-read the queue and count THIS image in: the batch's other calls may have queued
         // while this one downloaded, and a budget that excludes the candidate lets the last accepted
@@ -2841,7 +3011,7 @@ function sendImageTool(ctx: ToolCtx) {
           0,
         );
         if (queuedBytes + res.bytes.byteLength > SEND_IMAGE_MAX_TURN_BYTES) {
-          return limitReached();
+          return didNothing(limitReached());
         }
         turnState.pendingAttachments.push({
           bytes: res.bytes,
@@ -2855,7 +3025,9 @@ function sendImageTool(ctx: ToolCtx) {
         // NOTE: No file name here. This string is the tool's OUTPUT, and `ToolFlowLogger` stores tool
         // outputs verbatim in `ExecutionLog.detail` — a name derived from the URL path would put back
         // exactly what the argument sanitizer strips out of that column.
-        return "Imagem pronta para envio; ela vai junto com a sua resposta deste turno.";
+        return acted(
+          "Imagem pronta para envio; ela vai junto com a sua resposta deste turno.",
+        );
       } finally {
         turnState.imagesInFlight--;
       }
@@ -2910,14 +3082,14 @@ function sendImageRefusal(reason: ImageFetchFailure, detail?: string): string {
 // Utility tool: exact arithmetic without a model round-trip. Context-free, so it is also exposed
 // in the playground (where there is no conversation to act on).
 function calculatorTool(_ctx: ToolCtx) {
-  return tool(
+  return nativeTool(
     async ({ expression }: { expression: string }) => {
       try {
         const value = evaluateExpression(expression);
-        return `${expression} = ${value}`;
+        return acted(`${expression} = ${value}`);
       } catch (e) {
         const reason = e instanceof CalculatorError ? e.message : "invalid";
-        return `Could not evaluate "${expression}" (${reason}).`;
+        return didNothing(`Could not evaluate "${expression}" (${reason}).`);
       }
     },
     {
@@ -2937,7 +3109,7 @@ function calculatorTool(_ctx: ToolCtx) {
 // Utility tool: the current date/time in the agent's timezone, optionally floored to a slot (so
 // the model can reason about "now" without it being baked into a cached system prompt).
 function getCurrentTimeTool(ctx: ToolCtx) {
-  return tool(
+  return nativeTool(
     async ({ roundToMinutes }: { roundToMinutes?: number }) => {
       const tz = ctx.timezone || DEFAULT_TIMEZONE;
       const now = new Date();
@@ -2948,7 +3120,7 @@ function getCurrentTimeTool(ctx: ToolCtx) {
           ? flooredLocalParts(now, tz, roundToMinutes)
           : partsInTimezone(now, tz);
       const iso = formatParts(when, "YYYY-MM-DD HH:mm");
-      return `${formatPartsHuman(when)} (${iso}, ${tz})`;
+      return acted(`${formatPartsHuman(when)} (${iso}, ${tz})`);
     },
     {
       name: "get_current_time",
@@ -3090,7 +3262,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
     (ctx.crossInboxCase?.config.resolveOrigin && ctx.turnState
       ? " Once the case is open, this conversation is closed after your reply is delivered."
       : " This tool does NOT close this conversation; close with resolve_conversation if that is the next step.");
-  return failableTool(
+  return nativeFailable(
     async ({
       reason,
       customer_message,
@@ -3107,7 +3279,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       summary?: string;
     }) => {
       const cic = ctx.crossInboxCase;
-      if (!cic) return openCaseOutcomeText({ kind: "not_configured" });
+      if (!cic)
+        return didNothing(openCaseOutcomeText({ kind: "not_configured" }));
       const result = await openCaseInInbox(ctx.client, {
         config: cic.config,
         originConversationId: ctx.conversationId,
@@ -3262,7 +3435,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
             }
           }
         }
-        return openCaseOutcomeText(result, closing);
+        return caseOutcome(result, openCaseOutcomeText(result, closing));
       }
       // NOTE: THE FAILURE BRANCH IS A REQUIREMENT, NOT A DETAIL: the customer asked for help, and a case
       // that did not open must not leave them talking to a bot that cannot deliver it. The
@@ -3283,14 +3456,18 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         // withdrawn must not transfer the conversation the operator just cleared.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
-          return "Did not open the case, and did not hand off (the run was called off).";
+          return didNothing(
+            "Did not open the case, and did not hand off (the run was called off).",
+          );
         }
         await ctx.client.sendPrivateNote(
           ctx.conversationId,
           `⚠️ Não consegui abrir o caso na outra caixa (etapa: ${result.step}). O cliente está aguardando atendimento aqui. Motivo informado: ${literalForChatwoot(reason.trim())}`,
         );
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
+          return didNothing(
+            "Did not hand off (the run was called off while the note was in flight); the note was already filed.",
+          );
         }
         await ownStatusChange(ctx, () =>
           ctx.client.toggleStatus(ctx.conversationId, "open"),
@@ -3395,6 +3572,23 @@ export function unverifiedAddressNote(email: string): string {
   return `The reply address ${literalForChatwoot(email)} was typed by a visitor who was not signed in to the application, and is not verified: do not take it as proof of who they are.`;
 }
 
+// The answer of a call to `open_case_in_inbox`, said by what became of the case: with a case of
+// the team's to show for it (opened now, continued, added to, or already open) the call acted.
+// Not when what the call passed on never reached that case (`additionLost`): the case stands, and
+// the team did not get the update.
+export function caseOutcome(r: OpenCaseResult, text: string): Outcome {
+  if (additionLost(r)) return didNothing(text);
+  switch (r.kind) {
+    case "opened":
+    case "continued":
+    case "already_open":
+    case "appended":
+      return acted(text);
+    default:
+      return didNothing(text);
+  }
+}
+
 function detachedOpenCaseOutcomeText(
   r: OpenCaseResult,
   anonymous = false,
@@ -3457,7 +3651,7 @@ function detachedOpenCaseTool(
   // address with the case the first one recorded, and no call changes the contact's address between
   // another's reconciliation and its opening.
   const outcome = (r: OpenCaseResult) =>
-    detachedOpenCaseOutcomeText(r, anonymous);
+    caseOutcome(r, detachedOpenCaseOutcomeText(r, anonymous));
   const open = async ({
     reason,
     customer_message,
@@ -3501,11 +3695,15 @@ function detachedOpenCaseTool(
         !normalized ||
         (deliverable && !deliverable.ok && deliverable.why === "invalid")
       )
-        return "Nothing was opened: that is not a valid email address. Ask the user to type it again.";
-      if (!deliverable?.ok) return NON_ASCII_EMAIL_TEXT("user");
+        return didNothing(
+          "Nothing was opened: that is not a valid email address. Ask the user to type it again.",
+        );
+      if (!deliverable?.ok) return didNothing(NON_ASCII_EMAIL_TEXT("user"));
       try {
         if (!(await detached.userTyped?.(normalized)))
-          return "Nothing was opened: the user did not write that address in this chat. Ask them to type the address where the team should reply, and pass exactly what they wrote.";
+          return didNothing(
+            "Nothing was opened: the user did not write that address in this chat. Ask them to type the address where the team should reply, and pass exactly what they wrote.",
+          );
       } catch {
         return toolFailure(
           "Could not open the case (failed at: read_messages). Tell the user you could not pass the request on to the team right now.",
@@ -3532,7 +3730,9 @@ function detachedOpenCaseTool(
     }
     if (contact === null) return outcome({ kind: "needs_email" });
     if (contact === "held")
-      return "Nothing was opened: that address belongs to someone the team already knows, so a case cannot be opened for it from a chat where nobody signed in. Tell the user to sign in to the application to reach the team.";
+      return didNothing(
+        "Nothing was opened: that address belongs to someone the team already knows, so a case cannot be opened for it from a chat where nobody signed in. Tell the user to sign in to the application to reach the team.",
+      );
     const result = await openCaseInInbox(detached.client, {
       config: cic.config,
       originConversationId: 0,
@@ -3628,7 +3828,7 @@ function detachedOpenCaseTool(
         );
     return outcome(result);
   };
-  return failableTool(
+  return nativeFailable(
     (args: Parameters<typeof open>[0]) =>
       withKeyedQueue(detached.serialKey, () => open(args)),
     {
@@ -3758,10 +3958,17 @@ export function buildChannelNativeTools(
 // Replaces a tool's execution with a no-op that returns a synthetic success — keeps the model-facing
 // name/description/schema so the agent can still decide to call it, but nothing happens for real.
 function simulatedTool(orig: StructuredToolInterface): StructuredToolInterface {
-  return tool(
+  return nativeTool(
+    // Said as acted: the playground stands in for the call having worked.
     async () =>
-      `[simulated] '${orig.name}' was called — no real effect in the playground.`,
-    { name: orig.name, description: orig.description, schema: orig.schema },
+      acted(
+        `[simulated] '${orig.name}' was called — no real effect in the playground.`,
+      ),
+    {
+      name: orig.name,
+      description: orig.description,
+      schema: orig.schema as z.ZodTypeAny,
+    },
   );
 }
 

@@ -478,6 +478,13 @@ async function buildPlaygroundGraph(params: {
       alongside?: { name: string; args: unknown }[];
       // The call's place among the calls of its step, from 0.
       index?: number;
+      // The calls of the step that may run, each with its place as written when known.
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
@@ -495,6 +502,7 @@ async function buildPlaygroundGraph(params: {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
+  reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -565,6 +573,7 @@ async function buildPlaygroundGraph(params: {
     revisionPlan: params.revisionPlan,
     onReplyRevised: params.onReplyRevised,
     reviewCall: params.reviewCall,
+    reviewsCall: params.reviewsCall,
     reviewTurnReply: params.reviewTurnReply,
     turnReviewHalted: params.turnReviewHalted,
   });
@@ -1061,6 +1070,7 @@ async function runPlaygroundTurnOnce(
       revisionPlan: grounding?.revisionPlan,
       onReplyRevised: grounding?.revised,
       reviewCall: turnReview?.reviewCall,
+      reviewsCall: turnReview?.reviewsCall,
       reviewTurnReply: turnReview?.reviewReply,
       turnReviewHalted: turnReview?.halted,
       spokenNotice: () =>

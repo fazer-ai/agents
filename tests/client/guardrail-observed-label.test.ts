@@ -17,6 +17,27 @@ const t = ((_k: string, o: string | { defaultValue: string }) => {
 }) as unknown as TFunction;
 
 describe("an observed guardrail line on the Logs page", () => {
+  // The bug it catches: a rule observed on a transfer's message read as the model reviewer
+  // finding the call against the instructions, with no rule named.
+  test("a rule observed on a transfer's message names the rule and the tool", () => {
+    expect(
+      guardrailObservedLabel(
+        "guardrail",
+        {
+          check: "turn_review",
+          action: "observe",
+          step: "call",
+          tool: "handoff_to_human",
+          rule: "sem-reembolso",
+          line: true,
+        },
+        t,
+      ),
+    ).toBe(
+      "The turn review rule “sem-reembolso” fired on the customer message carried by the call to handoff_to_human. Only recorded, the turn review did not block it",
+    );
+  });
+
   // The bug it catches: an observed trip read as a trip that acted, so the operator goes looking for
   // a note or a hand-over that never happened.
   test("says the conversation was left alone, the categories and the rationale", () => {

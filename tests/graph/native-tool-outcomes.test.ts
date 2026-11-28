@@ -1,0 +1,356 @@
+import { describe, expect, test } from "bun:test";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+import { inCallScope } from "@/graph/tools/call-scope";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { buildDocumentTools } from "@/graph/tools/documents";
+import { declaresOutcome } from "@/graph/tools/failure";
+import {
+  buildNativeTools,
+  buildSimulatedNativeTools,
+  caseOutcome,
+} from "@/graph/tools/native";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
+import {
+  buildToolpackTools,
+  getToolpackToolNames,
+  type ToolpackCtx,
+} from "@/modules/integrations/toolpacks";
+
+// What a turn review rule's `unlessTool` reads: whether a native tool's call acted or did nothing
+// (call-scope.ts, `Outcome`). The handlers say it in their return type, and these tests hold the
+// two ends of that: every native is built the way that enforces it, and the answers a model reads
+// as an ordinary result while nothing was done are said as such.
+
+type Ctx = Parameters<typeof buildNativeTools>[0];
+const client = (over: Record<string, unknown> = {}) =>
+  ({
+    getConversationLabels: async () => ["urgente"],
+    setConversationLabels: async () => ({}),
+    getLatestIncomingMessage: async () => ({ id: 1, isReaction: true }),
+    addMessageReaction: async () => ({}),
+    moveKanbanTask: async () => ({}),
+    getKanbanTask: async () => ({ board_step_id: 1 }),
+    updateKanbanTask: async () => ({}),
+    sendPrivateNote: async () => ({}),
+    ...over,
+  }) as unknown as ChatwootClient;
+
+// A context that offers every native of the catalog.
+const everything = (): Ctx =>
+  ({
+    client: client(),
+    conversationId: 7,
+    kanban: {
+      taskId: 3,
+      currentStepId: 1,
+      boardName: "Funil",
+      card: {},
+      steps: [
+        { id: 1, name: "Novo" },
+        { id: 2, name: "Fechado" },
+      ],
+    },
+    contactFields: { writable: ["name"] },
+    crossInboxCase: {
+      config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 9 },
+      contactId: 55,
+    },
+  }) as unknown as Ctx;
+
+const run = async (t: StructuredToolInterface | undefined, args: object) => {
+  const { value, didNothing } = await inCallScope(async () =>
+    (t as StructuredToolInterface).invoke(args),
+  );
+  return { text: String(value), didNothing };
+};
+const named = (ctx: Ctx, name: string) =>
+  buildNativeTools(ctx).find((t) => t.name === name);
+
+describe("native tools say whether the call acted", () => {
+  // The bug it catches: a case that stands while what the call passed on never reached it was
+  // said as acted, so "I forwarded your update" went out after the tool said the team did not get it.
+  test("a case whose update did not reach the team is not a call that acted", async () => {
+    const result = (kind: "appended" | "opened", additionDelivered: boolean) =>
+      ({ kind, additionDelivered }) as unknown as Parameters<
+        typeof caseOutcome
+      >[0];
+    const said = async (r: Parameters<typeof caseOutcome>[0]) =>
+      (await inCallScope(async () => caseOutcome(r, "texto"))).didNothing;
+    expect([
+      await said(result("appended", false)),
+      await said(result("appended", true)),
+      await said(result("opened", true)),
+    ]).toEqual([true, false, false]);
+  });
+
+  // The bug it catches: a contact gone since the turn was prepared updated no row, and the call
+  // still said the preference was saved.
+  test("a voice preference that stored nothing is not a call that acted", async () => {
+    const withRows = (count: number) =>
+      ({
+        ...everything(),
+        tenantId: 1n,
+        contactDbId: 3n,
+        base: {
+          $extends: () => ({
+            $transaction: (fn: (t: unknown) => unknown) =>
+              fn({
+                $executeRaw: async () => 0,
+                contact: { updateMany: async () => ({ count }) },
+              }),
+          }),
+        },
+      }) as unknown as Ctx;
+    const gone = await run(named(withRows(0), "set_voice_preference"), {
+      preference: "audio",
+    });
+    const there = await run(named(withRows(1), "set_voice_preference"), {
+      preference: "audio",
+    });
+    expect([gone.didNothing, there.didNothing]).toEqual([true, false]);
+  });
+
+  // The bug it catches: the step in hand is read before the model writes. A card somebody moved
+  // meanwhile was answered "already there" for the step it had left, with no move.
+  test("a card that left the step in hand is moved, and one still there is not", async () => {
+    const moved: number[] = [];
+    const at = (liveStep: number) =>
+      run(
+        named(
+          {
+            ...everything(),
+            client: client({
+              getKanbanTask: async () => ({ board_step_id: liveStep }),
+              moveKanbanTask: async (_task: number, step: number) => {
+                moved.push(step);
+                return {};
+              },
+            }),
+          },
+          "kanban_move_card",
+        ),
+        { targetStep: "Novo" },
+      );
+    const stale = await at(2);
+    const there = await at(1);
+    // Withdrawn while the card was being read: the card is not moved back.
+    const calledOff = await run(
+      named(
+        {
+          ...everything(),
+          stillWanted: async () => false,
+          client: client({
+            getKanbanTask: async () => ({ board_step_id: 2 }),
+            moveKanbanTask: async () => {
+              moved.push(-1);
+              return {};
+            },
+          }),
+        },
+        "kanban_move_card",
+      ),
+      { targetStep: "Novo" },
+    );
+    expect([
+      moved,
+      stale.didNothing,
+      there.didNothing,
+      calledOff.didNothing,
+    ]).toEqual([[1], false, false, true]);
+    expect(there.text).toContain("already in");
+  });
+
+  // The bug it catches: a native added with `tool()` or `failableTool()` directly, whose answers
+  // nothing obliges to pick a side, so its refusals read as a call that acted.
+  test("every native of the catalog is built by the wrappers that type its answers", () => {
+    for (const build of [buildNativeTools, buildSimulatedNativeTools]) {
+      const tools = build(everything());
+      const names = tools.map((t) => t.name).sort();
+      if (build === buildNativeTools)
+        expect(names).toEqual([...NATIVE_TOOL_NAMES].sort());
+      expect(
+        tools.filter((t) => !declaresOutcome(t)).map((t) => t.name),
+      ).toEqual([]);
+    }
+  });
+
+  // The bug it catches: each of these answered ordinary text while doing nothing, and none said so,
+  // so a rule against "I sent the image" was excused by the call that sent none.
+  test("a refusal in ordinary text is said as a call that did nothing", async () => {
+    const ctx = everything();
+    const refused = [
+      // No host is allowed for images.
+      await run(
+        named(
+          {
+            ...ctx,
+            turnState: {
+              pendingAttachments: [],
+              imagesInFlight: 0,
+              attachmentsSeq: 0,
+            },
+          } as unknown as Ctx,
+          "send_image",
+        ),
+        {
+          url: "https://exemplo.test/a.png",
+        },
+      ),
+      // No turn to queue the image into.
+      await run(named(ctx, "send_image"), {
+        url: "https://exemplo.test/a.png",
+      }),
+      // The customer's last message is a reaction.
+      await run(named(ctx, "react_to_message"), { emoji: "👍" }),
+      await run(named(ctx, "kanban_move_card"), { targetStep: "Inexistente" }),
+      await run(named(ctx, "update_kanban_task"), {}),
+      await run(named(ctx, "set_voice_preference"), { preference: "audio" }),
+      await run(named(ctx, "update_contact"), { name: "Maria" }),
+      await run(named({ ...ctx, protectedLabels: ["vip"] }, "set_labels"), {
+        add: ["vip"],
+      }),
+      await run(
+        named(
+          { ...ctx, handoffState: { completed: true } } as unknown as Ctx,
+          "resolve_conversation",
+        ),
+        {},
+      ),
+      await run(named(ctx, "calculator"), { expression: "2 +" }),
+      // Blank entries name no label.
+      await run(named(ctx, "set_labels"), { add: ["   "], remove: [""] }),
+      // The step in hand says the card is there, and the card cannot be read to confirm it.
+      await run(
+        named(
+          {
+            ...ctx,
+            client: client({
+              getKanbanTask: async () => {
+                throw new Error("timeout");
+              },
+            }),
+          },
+          "kanban_move_card",
+        ),
+        { targetStep: "Novo" },
+      ),
+    ];
+    expect(refused.filter((r) => !r.didNothing).map((r) => r.text)).toEqual([]);
+  });
+
+  // The other side: a call that did it, or found the state already as it asked, is not marked.
+  // Marking the second would send back, attempt after attempt, a reply that says what is true.
+  test("a call that acted, or found things already as asked, is not marked", async () => {
+    const ctx = everything();
+    const acted = [
+      await run(named(ctx, "kanban_move_card"), { targetStep: "Fechado" }),
+      await run(named(ctx, "kanban_move_card"), { targetStep: "Novo" }),
+      await run(named(ctx, "update_kanban_task"), { title: "Novo título" }),
+      await run(named(ctx, "set_labels"), { add: ["urgente"] }),
+      await run(named(ctx, "set_labels"), { add: ["financeiro"] }),
+      await run(named(ctx, "private_note"), { content: "nota" }),
+      await run(named(ctx, "calculator"), { expression: "2 + 2" }),
+      await run(
+        named(
+          {
+            ...ctx,
+            client: client({
+              getLatestIncomingMessage: async () => ({
+                id: 1,
+                isReaction: false,
+              }),
+            }),
+          },
+          "react_to_message",
+        ),
+        { emoji: "👍" },
+      ),
+    ];
+    expect(acted.filter((r) => r.didNothing).map((r) => r.text)).toEqual([]);
+  });
+});
+
+// The same contract outside the natives: the packs, the document tools and the other tools the
+// product writes are built by `failableTool` or `outcomeTool`, so their answers pick a side too.
+describe("the other tools the product writes say it too", () => {
+  const PACKS = [
+    "ASAAS",
+    "GOOGLE_CALENDAR",
+    "GOOGLE_DRIVE",
+    "GOOGLE_SHEETS",
+    "RESEND",
+  ] as const;
+  const packCtx = (over: Partial<ToolpackCtx> = {}): ToolpackCtx =>
+    ({
+      tenantId: 1n,
+      base: {} as never,
+      threadId: "1:1:1",
+      resolveCredential: async () => "tok_live",
+      assertSafe: async () => undefined,
+      fetchImpl: (async () => new Response("{}")) as unknown as typeof fetch,
+      ...over,
+    }) as ToolpackCtx;
+  const pack = (type: (typeof PACKS)[number], ctx = packCtx()) =>
+    buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: type,
+          config: { calendarIds: ["primary"] },
+          credentialRef: "cred",
+          enabledTools: getToolpackToolNames(type),
+        },
+      ],
+      ctx,
+    );
+
+  // The bug it catches: a pack tool built with `tool()` directly, whose answers nothing types.
+  test("every tool of every pack is built by the wrappers that type its answers", () => {
+    for (const type of PACKS) {
+      const tools = pack(type);
+      expect(tools.map((t) => t.name).sort()).toEqual(
+        [...getToolpackToolNames(type)].sort(),
+      );
+      expect(
+        tools.filter((t) => !declaresOutcome(t)).map((t) => t.name),
+      ).toEqual([]);
+    }
+  });
+
+  // The bug it catches: these refused in ordinary text with no mark, so a rule against "you are
+  // booked" or "I attached the document" was excused by the call that did neither.
+  test("a pack or a document tool that refuses in ordinary text did nothing", async () => {
+    const calendar = pack("GOOGLE_CALENDAR").find(
+      (t) => t.name === "calendar_create_event",
+    );
+    const drive = pack("GOOGLE_DRIVE").find(
+      (t) => t.name === "drive_send_file",
+    );
+    const [document] = buildDocumentTools(
+      [
+        {
+          templateId: 1n,
+          name: "Orçamento",
+          slug: "orcamento",
+          description: null,
+          fields: [],
+        },
+      ],
+      { tenantId: 1n, threadId: "1:1:1" } as never,
+    );
+    const refused = [
+      // No contact in scope: nothing is booked.
+      await run(calendar, {
+        summary: "Consulta",
+        start: "2026-12-01T10:00:00-03:00",
+        end: "2026-12-01T11:00:00-03:00",
+      }),
+      // No conversation to send the file into.
+      await run(drive, { fileId: "abc" }),
+      // No turn to attach the document to.
+      await run(document, {}),
+    ];
+    expect(refused.map((r) => r.didNothing)).toEqual([true, true, true]);
+  });
+});

@@ -16,6 +16,7 @@ import {
   type ResolveCaseHold,
   resolveCaseHoldFor,
 } from "@/graph/resolve-labels";
+import { scopedNoEffect } from "@/graph/tools/call-scope";
 import {
   choiceCheckOverridden,
   readChoiceCheckConfig,
@@ -120,8 +121,10 @@ import {
   type GroundingReviewerModel,
   type GuardrailsConfig,
   guardrailCredentialRef,
+  guardrailsKeyUsed,
   readGuardrailsConfig,
   resolveGroundingReviewer,
+  turnReviewJudges,
 } from "@/modules/guardrails/settings";
 import type { TurnReviewFeedback } from "@/modules/guardrails/turn-review";
 import {
@@ -636,7 +639,9 @@ export async function loadAgentConfig(
   let guardrailsCredentialBaseUrl: string | null = null;
   // The chat model's key, or the decisions provider's, whichever the screening uses.
   const guardrailsRef = guardrailCredentialRef(guardrails);
-  if (guardrails.enabled && guardrailsRef) {
+  // Read only when a configured check runs on a model: a turn with the rules alone resolves and
+  // decrypts no key, so a stale or unreadable one cannot warn about it or stop it.
+  if (guardrailsRef && guardrailsKeyUsed(guardrails)) {
     const gEntry = await tryResolveApiKeyEntry(db, guardrailsRef);
     if (gEntry.state === "ok") {
       guardrailsApiKey = gEntry.secret;
@@ -684,7 +689,7 @@ export async function loadAgentConfig(
   }
   // The turn reviewer runs on the guardrails chat model and its key, whichever classifier screens.
   let turnReviewer: GroundingReviewerModel | null = null;
-  if (guardrails.enabled && guardrails.turnReview.enabled) {
+  if (turnReviewJudges(guardrails)) {
     const parent = await resolveReviewerKey(guardrails.credentialRef);
     turnReviewer = parent.key
       ? {
@@ -1660,7 +1665,7 @@ export async function buildToolset(
     // NOTE: Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
     // four packs with four request helpers is four places to forget.
     stillWanted: ctx.stillWanted,
-    onNoEffect: ctx.onNoEffect,
+    onNoEffect: scopedNoEffect(ctx.onNoEffect),
     ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
@@ -2050,7 +2055,7 @@ export async function buildToolset(
         // NOTE: The same fence the native tools and the precondition wrapper ask, at the same point: past
         // every wait, immediately before the request leaves for somebody else's system.
         stillWanted: ctx.stillWanted,
-        onNoEffect: ctx.onNoEffect,
+        onNoEffect: scopedNoEffect(ctx.onNoEffect),
         ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
         // NOTE: HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
@@ -2131,7 +2136,7 @@ export async function buildToolset(
     // read between the graph's ask and the call, so a tool whose first act is a write would
     // otherwise lose the cover that ask gives it.
     ctx.stillWanted,
-    ctx.onNoEffect,
+    scopedNoEffect(ctx.onNoEffect),
     customerChoiceCheck(cfg, ctx, deps),
   );
   if (dropped.length > 0) {
@@ -2552,6 +2557,13 @@ export interface GraphBuildDeps {
       alongside?: { name: string; args: unknown }[];
       // The call's place among the calls of its step, from 0.
       index?: number;
+      // The calls of the step that may run, each with its place as written when known.
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
@@ -2569,6 +2581,7 @@ export interface GraphBuildDeps {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
+  reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
 }
 
 // The second provider, built or deliberately absent. Every undefined leaves the install behaving as
@@ -2729,6 +2742,7 @@ export async function buildModelAndGraph(
     onReplyRevised: deps.onReplyRevised,
     recoversReply: deps.recoversReply,
     reviewCall: deps.reviewCall,
+    reviewsCall: deps.reviewsCall,
     reviewTurnReply: deps.reviewTurnReply,
     turnReviewHalted: deps.turnReviewHalted,
     clientToolNames: deps.clientToolNames,

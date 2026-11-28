@@ -15,6 +15,7 @@ import {
   DEFAULT_DECISION_MODEL,
   type DecisionProvider,
 } from "@/modules/decisions/config";
+import { judgesAnything } from "./prompts";
 
 // Per-agent guardrails (input/output moderation) config, read from `agent.settings.guardrails`. A
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
@@ -186,7 +187,7 @@ export interface GuardrailGroundingConfig {
 
 export const MAX_SOURCE_TOOLS = 50;
 export const MAX_REFERENCE_KNOWLEDGE_BASES = 20;
-const MAX_TOOL_NAME_LEN = 128;
+export const MAX_TOOL_NAME_LEN = 128;
 
 // What a turn-review trip does (./turn-review.ts, docs/turn-review.md). `observe` records the verdict
 // and lets the step happen. `revise` sends the step back to the agent with the reviewer's reason: a
@@ -204,14 +205,85 @@ export const TURN_REVIEW_FALLBACKS: readonly TurnReviewFallback[] = [
   "silent",
 ];
 
-// The review of each step the agent is about to take (a write tool call, the final reply) against
-// its own instructions and `customPolicy`, by the guardrails chat model, before the step takes effect.
+// An operator's rule on the final reply (./turn-rules.ts): it fires when `pattern` matches the reply
+// about to be sent and, with `unlessTool`, only when that tool did not run in the turn ("said X
+// without doing Y"). `note` is what the agent reads with the refused draft. No model is called.
+export interface TurnReviewRule {
+  // What the flow line names. The operator's own label, never customer text.
+  name: string;
+  // A regular expression source, matched case-insensitively (`TURN_RULE_FLAGS`).
+  pattern: string;
+  unlessTool: string | null;
+  note: string;
+}
+
+export const MAX_TURN_REVIEW_RULES = 20;
+export const TURN_RULE_NAME_MAX = 60;
+// A pattern a person writes for a phrase and its variants fits well under this. The cap bounds what
+// the matcher compiles on every reply; the time budget (./turn-rules.ts) bounds what it runs.
+export const TURN_RULE_PATTERN_MAX = 500;
+export const TURN_RULE_NOTE_MAX = 1000;
+// Case-insensitive, since a reply starts a sentence with a capital the operator did not type. No `g`
+// or `y`: they make `test` stateful, and a rule answers the same for the same reply.
+export const TURN_RULE_FLAGS = "i";
+
+// Whether a rule's pattern can be stored: within the cap and compiling. Compiling is linear in the
+// pattern, so it is safe on the request path. Only matching is isolated.
+export function turnRulePatternProblem(
+  pattern: string,
+): "empty" | "too_long" | "invalid" | null {
+  if (!pattern) return "empty";
+  if (pattern.length > TURN_RULE_PATTERN_MAX) return "too_long";
+  try {
+    new RegExp(pattern, TURN_RULE_FLAGS);
+  } catch {
+    return "invalid";
+  }
+  return null;
+}
+
+// The review of each step the agent is about to take (a write tool call, the final reply) before the
+// step takes effect, by two checkers: the guardrails chat model (`judge`), which reads the step
+// against the agent's instructions and `customPolicy`, and the operator's `rules` on the final reply.
 export interface GuardrailTurnReviewConfig {
   enabled: boolean;
   action: TurnReviewAction;
   maxAttempts: number;
   fallback: TurnReviewFallback;
+  // The model reviewer. On by default, so a block stored before the rules existed keeps reviewing.
+  judge: boolean;
+  rules: TurnReviewRule[];
 }
+
+// Whether any configured check runs on a guardrails model: a screening direction, the turn
+// review's model reviewer or the factual-grounding check. With none of them (the turn review's
+// rules alone) the guardrails work with no key, and none is asked for.
+// A screening direction counts only when it has something to judge, as the gate reads it
+// (`judgesAnything`): one switched on with every check off and no custom policy asks nothing.
+export const guardrailsUseModel = (g: GuardrailsConfig): boolean =>
+  guardrailsScreen(g) ||
+  (g.enabled && (g.factualGrounding.enabled || turnReviewJudges(g)));
+// Whether the key `guardrailCredentialRef` names is used at all. Under the Decisions classifier
+// it is the screening's alone: the reviewers run on the chat model and its own key.
+export const guardrailsKeyUsed = (g: GuardrailsConfig): boolean =>
+  g.classifier === "decisions" ? guardrailsScreen(g) : guardrailsUseModel(g);
+// Whether a screening direction has something to judge: what the classifier's own key is for.
+export const guardrailsScreen = (g: GuardrailsConfig): boolean =>
+  g.enabled &&
+  ((g.input.enabled && screens(g, "input")) ||
+    (g.output.enabled && screens(g, "output")));
+const screens = (g: GuardrailsConfig, direction: "input" | "output") =>
+  judgesAnything({
+    direction,
+    checks: g[direction].checks,
+    customPolicy: g.customPolicy,
+  });
+
+// Whether the model reviewer runs: what decides if its key is resolved, checked and asked for.
+export const turnReviewJudges = (g: {
+  enabled: boolean;
+  turnReview: Pick<GuardrailTurnReviewConfig, "enabled" | "judge">;
+}): boolean => g.enabled && g.turnReview.enabled && g.turnReview.judge;
 
 // An endpoint the operator runs that judges a reply before it is delivered (./external.ts). Active
 // when guardrails are on and `url` is set; a block fires the output direction's action.
@@ -297,6 +369,8 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     action: "observe",
     maxAttempts: 1,
     fallback: "handoff",
+    judge: true,
+    rules: [],
   },
 };
 
@@ -511,6 +585,55 @@ function readGrounding(v: unknown): GuardrailGroundingConfig {
   };
 }
 
+// The tools a rule may name in `unlessTool`, a closed list (docs/turn-review.md, "What excuses a
+// rule"). A rule is excused only by a call that acted, and whether a call acted is a contract
+// checked tool by tool: every refusal, failure and no-op of the tool has to be said as such, with
+// a test that walks them. A tool enters this list with that test, never before.
+export const TURN_RULE_EXCUSING_TOOLS = ["handoff_to_human"] as const;
+export type TurnRuleExcusingTool = (typeof TURN_RULE_EXCUSING_TOOLS)[number];
+export const isTurnRuleExcusingTool = (
+  name: unknown,
+): name is TurnRuleExcusingTool =>
+  (TURN_RULE_EXCUSING_TOOLS as readonly unknown[]).includes(name);
+
+// Whether the reader takes this stored rule. The import asks, to drop whole the ones it does not.
+export function turnRuleUsable(v: unknown): boolean {
+  return readTurnRule(v) !== null;
+}
+
+// A stored rule the matcher can run, or null: a rule missing its name or note, or whose pattern would
+// be refused on a write, is dropped, since the bag is free-form and a bad row must not stop a turn.
+function readTurnRule(v: unknown): TurnReviewRule | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const b = v as Record<string, unknown>;
+  const name = str(b.name);
+  const note = str(b.note);
+  const pattern = typeof b.pattern === "string" ? b.pattern : "";
+  if (!name || name.length > TURN_RULE_NAME_MAX) return null;
+  if (!note || note.length > TURN_RULE_NOTE_MAX) return null;
+  if (turnRulePatternProblem(pattern)) return null;
+  // A stored name outside the list is no exception: the rule stays and fires on every match,
+  // which is the closed way to fail.
+  const tool = str(b.unlessTool);
+  return {
+    name,
+    pattern,
+    unlessTool: isTurnRuleExcusingTool(tool) ? tool : null,
+    note,
+  };
+}
+
+function readTurnRules(v: unknown): TurnReviewRule[] {
+  if (!Array.isArray(v)) return [];
+  const out: TurnReviewRule[] = [];
+  for (const raw of v) {
+    const rule = readTurnRule(raw);
+    if (rule) out.push(rule);
+    if (out.length >= MAX_TURN_REVIEW_RULES) break;
+  }
+  return out;
+}
+
 function readTurnReview(v: unknown): GuardrailTurnReviewConfig {
   const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
   const d = GUARDRAILS_DEFAULTS.turnReview;
@@ -527,6 +650,8 @@ function readTurnReview(v: unknown): GuardrailTurnReviewConfig {
     fallback: TURN_REVIEW_FALLBACKS.includes(b.fallback as TurnReviewFallback)
       ? (b.fallback as TurnReviewFallback)
       : d.fallback,
+    judge: bool(b.judge, d.judge),
+    rules: readTurnRules(b.rules),
   };
 }
 

@@ -83,7 +83,12 @@ import {
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
-import { readGuardrailsConfig } from "@/modules/guardrails/settings";
+import {
+  isTurnRuleExcusingTool,
+  MAX_TURN_REVIEW_RULES,
+  readGuardrailsConfig,
+  turnRuleUsable,
+} from "@/modules/guardrails/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -992,6 +997,30 @@ function describeExpected(issue: z.core.$ZodIssue): Expected {
           params: { max },
         };
   }
+  // A text refused for its length says the bound: "a valid value" would leave the caller guessing.
+  if (issue.code === "too_big" && issue.origin === "string") {
+    const max = String(issue.maximum);
+    return {
+      message: `a text of at most ${max} characters`,
+      key: "errors.settingsExpectedMaxChars",
+      params: { max },
+    };
+  }
+  if (
+    (issue.code === "too_small" && issue.origin === "string") ||
+    (issue.code === "custom" && issue.params?.expected === "required")
+  ) {
+    return {
+      message: "a text that is not empty",
+      key: "errors.settingsExpectedNotEmpty",
+    };
+  }
+  if (issue.code === "custom" && issue.params?.expected === "regex") {
+    return {
+      message: "a regular expression that compiles",
+      key: "errors.settingsExpectedRegex",
+    };
+  }
   if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern) {
     const pattern = String(issue.pattern);
     return {
@@ -1455,6 +1484,33 @@ export function dropUnusableImportedSettingsInPlace(
     if (raw === null || parseToolPreconditionList(raw) !== null) continue;
     delete (guards as Record<string, unknown>)[name];
     takePath(dropped, `toolPreconditions.${name}`);
+  }
+  // A turn review rule the reader does not take (a field missing, a pattern that does not compile)
+  // is dropped whole and named, for the same reason: taking out the one bad field would leave a
+  // rule the settings list and the runtime never runs.
+  const turnRules = plainObject(plainObject(bag.guardrails)?.turnReview)?.rules;
+  // The same for a usable rule past the count the reader runs: stored, it would be a guard that
+  // is listed and inactive. Named by its place in the bundle.
+  if (Array.isArray(turnRules)) {
+    const kept: unknown[] = [];
+    for (const [i, rule] of turnRules.entries()) {
+      if (!turnRuleUsable(rule) || kept.length >= MAX_TURN_REVIEW_RULES) {
+        takePath(dropped, `guardrails.turnReview.rules.${i}`);
+        continue;
+      }
+      // A tool outside the closed list: the rule stays and the exception goes, as the reader
+      // answers. Taken out here, before the list is compacted, so it is named by its own place.
+      const r = rule as Record<string, unknown>;
+      const tool =
+        typeof r.unlessTool === "string" ? r.unlessTool.trim() : r.unlessTool;
+      if (isTurnRuleExcusingTool(tool)) r.unlessTool = tool;
+      else if (tool != null) {
+        r.unlessTool = null;
+        takePath(dropped, `guardrails.turnReview.rules.${i}.unlessTool`);
+      }
+      kept.push(rule);
+    }
+    turnRules.splice(0, turnRules.length, ...kept);
   }
   // The contact gate's local rule, on the same terms: the reader drops one that does not parse,
   // so it is taken out and named rather than stored as a list the runtime never reads.

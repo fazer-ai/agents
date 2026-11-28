@@ -134,6 +134,9 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
     ...(r.rationale
       ? { rationale: scrubbedClip(r.rationale, OUTPUT_MAX) }
       : {}),
+    // A turn-review rule's name: the operator's text, bounded like a category.
+    ...(r.rule ? { rule: scrubbedClip(r.rule, CATEGORY_MAX) } : {}),
+    ...(r.line ? { line: true as const } : {}),
     // Numbers and the screening's own question keys (./guardrails/classify), not model text: copied
     // as they are, bounded in count like the categories.
     ...(r.scores?.length
@@ -211,9 +214,9 @@ function extractSources(artifact: unknown): TraceSource[] | undefined {
   return out.length ? out : undefined;
 }
 
-// The turn's entries with each call verdict placed right after the call it judged (by id and tool
-// name, each verdict taken once, in order, or for a call with no id by its place among the turn's
-// calls, `callOrdinal`), as the review ran: before the call was answered. A verdict on a reply (the
+// The turn's entries with each call verdict placed right after the call it judged (by its place
+// among the turn's calls, `callOrdinal`, or for a verdict without one by id and tool name, taken
+// once, in order), as the review ran: before the call was answered. A verdict on a reply (the
 // turn review's, a factual-grounding rewrite's) goes after the results of the step of its
 // `afterCallId` (or of the turn's `afterCalls`-th call), before the step a redo or a rewrite made,
 // or ahead of every call when the turn had made none. Any other verdict keeps its place at the end.
@@ -266,26 +269,33 @@ export function withCallVerdicts(
     }
     if (e.type === "tool_result" && e.id)
       due.push(...take((v) => v.afterCallId === e.id));
-    // A call with no id takes the verdict that names its place among the turn's calls.
-    if (e.type === "tool_call" && !e.id) {
-      const k = pending.findIndex(
-        (v) =>
-          v.step === "call" &&
-          v.callId === undefined &&
-          v.callOrdinal === callsSeen &&
-          (v.tool === undefined || e.name.startsWith(v.tool)),
-      );
-      if (k >= 0) out.push(...pending.splice(k, 1));
-    }
-    if (e.type === "tool_call" && e.id) {
+    // By its place among the turn's calls first, every verdict that names it: a call can carry
+    // two (a rule's observation and the model reviewer's), and an id may be missing or repeated.
+    const placed =
+      e.type === "tool_call"
+        ? take(
+            (v) =>
+              v.step === "call" &&
+              v.callOrdinal === callsSeen &&
+              (v.callId === undefined || v.callId === e.id) &&
+              (v.tool === undefined || e.name.startsWith(v.tool)),
+          )
+        : [];
+    out.push(...placed);
+    if (e.type === "tool_call" && e.id && placed.length === 0) {
       // By id and tool name, in order: an id a provider repeats does not pair a verdict with the
       // wrong call.
-      let k = pending.findIndex((v) => v.callId === e.id && v.tool === e.name);
+      // Only a verdict that names no place: one with an ordinal waits for its own call.
+      let k = pending.findIndex(
+        (v) =>
+          v.callOrdinal === undefined && v.callId === e.id && v.tool === e.name,
+      );
       // By id alone only for a verdict that names no tool, or an id no other call carries whose
       // tool name the trace may have clipped.
       if (k < 0)
         k = pending.findIndex(
           (v) =>
+            v.callOrdinal === undefined &&
             v.callId === e.id &&
             (v.tool === undefined ||
               (idCount.get(e.id as string) === 1 && e.name.startsWith(v.tool))),

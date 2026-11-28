@@ -1,6 +1,7 @@
-import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { acted } from "./call-scope";
 import { REPLY_AS_TEXT_TOOL } from "./catalog";
+import { outcomeTool } from "./failure";
 
 // THE MODEL'S WAY TO SAY "THIS ONE HAS TO BE READ": sends THIS reply as text; the customer's stored
 // preference and later turns are untouched. Offered on EVERY turn of an agent that enabled it: the
@@ -26,10 +27,10 @@ export function buildReplyAsTextTool(opts: {
   const base =
     "Send THIS reply as a text message instead of a voice note. Call it before writing the reply when the customer needs to read or keep what you are about to say: a table of prices, several options to compare, steps to follow, a code, an address or anything to copy. It changes only this reply; the customer's audio preference and later replies are untouched. When the reply already goes as text it changes nothing.";
   const note = opts.note?.trim();
-  return tool(
+  return outcomeTool(
     async () => {
       opts.choice.textChosen = true;
-      return REPLY_AS_TEXT_DONE;
+      return acted(REPLY_AS_TEXT_DONE);
     },
     {
       name: REPLY_AS_TEXT_TOOL,

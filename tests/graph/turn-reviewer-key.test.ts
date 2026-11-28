@@ -128,4 +128,67 @@ describe.skipIf(!dbUp)("the turn reviewer's key at turn prep", () => {
       apiKey: "sk-test",
     });
   });
+
+  // The bug it catches: rules alone, with the model reviewer off, still resolving its key on every
+  // turn and reporting a missing credential for a model nothing calls.
+  test("with the model reviewer off there is no reviewer, key or not", async () => {
+    const rulesOnly = await agentWith("Só regras", {
+      provider: "openai",
+      model: "gpt-4o-mini",
+      credentialRef: `vault:${keyId}`,
+      turnReview: {
+        enabled: true,
+        judge: false,
+        rules: [{ name: "r", pattern: "x", note: "n" }],
+      },
+    });
+    const loaded = await load(rulesOnly);
+    expect(loaded?.turnReviewer ?? null).toBeNull();
+    expect(loaded?.guardrails.turnReview.rules).toHaveLength(1);
+  });
+
+  // The bug it catches: the screening's key read and decrypted on every turn of an agent whose
+  // only check is the rules, so a stale entry warned about a model nothing calls.
+  test("the screening key is resolved only when a check runs on a model", async () => {
+    const rules = {
+      enabled: true,
+      judge: false,
+      rules: [{ name: "r", pattern: "x", note: "n" }],
+    };
+    const keyed = { provider: "openai", model: "gpt-4o-mini" };
+    const rulesOnly = await agentWith("Regras, sem triagem", {
+      ...keyed,
+      credentialRef: `vault:${keyId}`,
+      input: { enabled: false },
+      output: { enabled: false },
+      turnReview: rules,
+    });
+    const screening = await agentWith("Regras e triagem", {
+      ...keyed,
+      credentialRef: `vault:${keyId}`,
+      input: { enabled: false },
+      output: { enabled: true },
+      turnReview: rules,
+    });
+    expect([
+      (await load(rulesOnly))?.guardrailsApiKey,
+      (await load(screening))?.guardrailsApiKey,
+    ]).toEqual(["", "sk-test"]);
+    // Under Decisions the classifier's key is the screening's alone: with only the model
+    // reviewer on, it is not read, and the reviewer still gets the chat key.
+    const reviewerOnly = await agentWith("Decisions, só revisor", {
+      ...keyed,
+      credentialRef: `vault:${keyId}`,
+      classifier: "decisions",
+      decisions: { provider: "openai", credentialRef: `vault:${keyId}` },
+      input: { enabled: false },
+      output: { enabled: false },
+      turnReview: { enabled: true, judge: true },
+    });
+    const loaded = await load(reviewerOnly);
+    expect([loaded?.guardrailsApiKey, loaded?.turnReviewer]).toMatchObject([
+      "",
+      { runnable: true, apiKey: "sk-test" },
+    ]);
+  });
 });

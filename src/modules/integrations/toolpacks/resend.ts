@@ -2,6 +2,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import type { Prisma } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { acted, didNothing } from "@/graph/tools/call-scope";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fetchBounded } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -258,7 +259,7 @@ function buildSendTool(
           err,
         });
       }
-      return `Email sent to ${input.to}.\n(emailId: ${emailId})`;
+      return acted(`Email sent to ${input.to}.\n(emailId: ${emailId})`);
     },
     {
       name: "resend_send_email",
@@ -286,7 +287,9 @@ function buildStatusTool(
       // Reject pasted URLs/paths outright — Resend ids never contain slashes or colons; letting
       // one through would surface as a confusing 404 from the provider.
       if (/[/:]/.test(emailId))
-        return "Provide the emailId returned by resend_send_email, not a URL.";
+        return didNothing(
+          "Provide the emailId returned by resend_send_email, not a URL.",
+        );
 
       // The projection returns `to` and `subject`, so an id from another conversation is one
       // customer's correspondence read out in another's. The send already wrote this row.
@@ -303,7 +306,9 @@ function buildStatusTool(
       ).catch(() => null);
       if (!owned) {
         ctx.onNoEffect?.("resend_email_status");
-        return "That emailId was not sent from this conversation. Use the one resend_send_email returned here.";
+        return didNothing(
+          "That emailId was not sent from this conversation. Use the one resend_send_email returned here.",
+        );
       }
 
       let res: ResendResponse;
@@ -319,7 +324,9 @@ function buildStatusTool(
       }
       if (res.status < 200 || res.status >= 300) {
         if (res.status === 404)
-          return "The email provider returned HTTP 404 (email not found). Use the emailId returned by resend_send_email.";
+          return didNothing(
+            "The email provider returned HTTP 404 (email not found). Use the emailId returned by resend_send_email.",
+          );
         // NOTE: measured. A sending-only key sends fine and answers 401 HERE, and the credential
         // test passes it on purpose (vault/secret-types.ts treats `restricted_api_key` as a valid
         // key), so the operator arrives with a green credential and an unreadable status forever.
@@ -341,13 +348,15 @@ function buildStatusTool(
       }
       const d = (res.json ?? {}) as Record<string, unknown>;
       // Bounded projection (status-relevant fields only; never the html body back into context).
-      return JSON.stringify({
-        id: d.id,
-        last_event: d.last_event,
-        to: d.to,
-        subject: d.subject,
-        created_at: d.created_at,
-      });
+      return acted(
+        JSON.stringify({
+          id: d.id,
+          last_event: d.last_event,
+          to: d.to,
+          subject: d.subject,
+          created_at: d.created_at,
+        }),
+      );
     },
     {
       name: "resend_email_status",

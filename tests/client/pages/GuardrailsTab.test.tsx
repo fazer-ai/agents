@@ -13,10 +13,12 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { GuardrailsTab } from "@/client/pages/agents/GuardrailsTab";
+import type { LastWholeTurnRules } from "@/client/pages/agents/guardrailsFormState";
 import type { GuardrailsRefusals } from "@/client/pages/agents/types";
 import {
   CUSTOM_POLICY_MAX,
@@ -28,6 +30,7 @@ import {
   type GuardrailAction,
   type GuardrailsConfig,
   MAX_SOURCE_TOOLS,
+  TURN_RULE_EXCUSING_TOOLS,
 } from "@/modules/guardrails/settings";
 
 // The template message is what the customer reads, and the `generated` action falls back to it
@@ -878,5 +881,288 @@ describe("GuardrailsTab factual grounding", () => {
     expect(
       document.querySelector('[data-testid="gr-grounding-action"]') === null,
     ).toBe(true);
+  });
+});
+
+describe("GuardrailsTab turn review rules", () => {
+  afterEach(() => cleanup());
+
+  let form: GuardrailsConfig | null = null;
+  // `away`: the editor's other tabs. The draft and the rules' whole versions stay with the owner,
+  // and the tab itself unmounts, as in AgentEditorPage.
+  function Dirty({ initial }: { initial: GuardrailsConfig }) {
+    const [g, setG] = useState(initial);
+    const [away, setAway] = useState(false);
+    const whole = useRef<LastWholeTurnRules>([]);
+    form = g;
+    if (away)
+      return (
+        <button type="button" onClick={() => setAway(false)}>
+          back
+        </button>
+      );
+    return (
+      <>
+        <button type="button" onClick={() => setAway(true)}>
+          away
+        </button>
+        <GuardrailsTab
+          wholeRules={whole}
+          agentId=""
+          guardrails={g}
+          setGuardrails={setG as never}
+          refusals={NO_REFUSALS}
+          dirty
+          saving={false}
+          onSave={() => {}}
+          onDiscard={() => {}}
+        />
+      </>
+    );
+  }
+  const reviewing = (): GuardrailsConfig => {
+    const c = structuredClone(GUARDRAILS_DEFAULTS);
+    return {
+      ...c,
+      enabled: true,
+      turnReview: { ...c.turnReview, enabled: true },
+    };
+  };
+  const at = (testId: string) =>
+    document.querySelector(`[data-testid="${testId}"]`) as HTMLInputElement;
+  const saveHeld = () =>
+    (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
+      .disabled;
+
+  // The bug it catches: a rule saved half-written, which the server refuses with a path the operator
+  // has to decode, or a pattern that does not compile reaching the save at all.
+  test("a new rule holds Save until its fields are filled and its pattern compiles", () => {
+    render(<Dirty initial={reviewing()} />);
+    const before = saveHeld();
+    fireEvent.click(at("gr-turn-rule-add"));
+    const blank = saveHeld();
+    fireEvent.change(at("gr-turn-rule-0-name"), {
+      target: { value: "promessa" },
+    });
+    fireEvent.change(at("gr-turn-rule-0-note"), {
+      target: { value: "Chame a ferramenta." },
+    });
+    fireEvent.change(at("gr-turn-rule-0-pattern"), { target: { value: "[" } });
+    const invalid = saveHeld();
+    const said = screen.queryAllByText(
+      "This is not a valid regular expression.",
+    ).length;
+    fireEvent.change(at("gr-turn-rule-0-pattern"), {
+      target: { value: "vou (encaminhar|passar)" },
+    });
+    fireEvent.change(at("gr-turn-rule-0-tool"), {
+      target: { value: "handoff_to_human" },
+    });
+    expect([before, blank, invalid, said, saveHeld()]).toEqual([
+      false,
+      true,
+      true,
+      1,
+      false,
+    ]);
+    expect(form?.turnReview.rules).toEqual([
+      {
+        name: "promessa",
+        pattern: "vou (encaminhar|passar)",
+        unlessTool: "handoff_to_human",
+        note: "Chame a ferramenta.",
+      },
+    ]);
+  });
+
+  test("a rule is taken out by its own button, and an emptied tool is stored as none", () => {
+    const c = reviewing();
+    c.turnReview.rules = [
+      { name: "a", pattern: "a", unlessTool: "handoff_to_human", note: "n" },
+      { name: "b", pattern: "b", unlessTool: null, note: "n" },
+    ];
+    render(<Dirty initial={c} />);
+    fireEvent.change(at("gr-turn-rule-0-tool"), { target: { value: "" } });
+    const cleared = form?.turnReview.rules[0]?.unlessTool;
+    fireEvent.click(at("gr-turn-rule-0-remove"));
+    expect([cleared, form?.turnReview.rules.map((r) => r.name)]).toEqual([
+      null,
+      ["b"],
+    ]);
+  });
+
+  test("the model reviewer has its own switch, on by default, and the rules do not depend on it", () => {
+    render(<Dirty initial={reviewing()} />);
+    const judge = document.getElementById("gr-turn-review-judge");
+    const on = judge?.getAttribute("aria-checked");
+    fireEvent.click(judge as HTMLElement);
+    expect([
+      on,
+      form?.turnReview.judge,
+      at("gr-turn-rule-add") !== null,
+    ]).toEqual(["true", false, true]);
+  });
+
+  // The bug it catches: a half-written rule hidden by switching the section off still went in the
+  // save, which the server refused whole, edits of the other tabs included, with nothing on screen
+  // to fix.
+  test("switching turn review or the guardrails off takes a half-written rule out, and keeps a whole one", () => {
+    const whole = { name: "a", pattern: "a", unlessTool: null, note: "n" };
+    const c = reviewing();
+    c.turnReview.rules = [whole];
+    render(<Dirty initial={c} />);
+    fireEvent.click(at("gr-turn-rule-add"));
+    const held = saveHeld();
+    const section = document.getElementById("gr-turn-review") as HTMLElement;
+    fireEvent.click(within(section).getAllByRole("switch")[0] as HTMLElement);
+    const afterReview = [form?.turnReview.rules, saveHeld()];
+    cleanup();
+    render(<Dirty initial={c} />);
+    fireEvent.click(at("gr-turn-rule-add"));
+    fireEvent.click(screen.getAllByRole("switch")[0] as HTMLElement);
+    expect([held, afterReview, form?.enabled, form?.turnReview.rules]).toEqual([
+      true,
+      [[whole], false],
+      false,
+      [whole],
+    ]);
+  });
+
+  // The bug it catches: a saved rule mid-edit when the section was switched off left the form, and
+  // the save removed a protection nobody deleted. Kept by place, so a removal above must not shift it.
+  test("a saved rule mid-edit goes back to what it was when the section is switched off, also after a removal above it", () => {
+    const first = { name: "a", pattern: "a", unlessTool: null, note: "n" };
+    const second = { name: "b", pattern: "b", unlessTool: null, note: "n" };
+    const c = reviewing();
+    c.turnReview.rules = [first, second];
+    render(<Dirty initial={c} />);
+    fireEvent.click(at("gr-turn-rule-0-remove"));
+    fireEvent.change(at("gr-turn-rule-0-pattern"), { target: { value: "(" } });
+    const held = saveHeld();
+    const section = document.getElementById("gr-turn-review") as HTMLElement;
+    fireEvent.click(within(section).getAllByRole("switch")[0] as HTMLElement);
+    expect([held, form?.turnReview.rules, saveHeld()]).toEqual([
+      true,
+      [second],
+      false,
+    ]);
+  });
+
+  // The bug it catches: the whole versions kept in the tab, which unmounts on a tab switch, so an
+  // edit left invalid, a visit to another tab and the switch turned off deleted the saved rule.
+  test("a saved rule mid-edit survives a visit to another tab before the section is switched off", () => {
+    const saved = { name: "a", pattern: "a", unlessTool: null, note: "n" };
+    const c = reviewing();
+    c.turnReview.rules = [saved];
+    render(<Dirty initial={c} />);
+    fireEvent.change(at("gr-turn-rule-0-pattern"), { target: { value: "(" } });
+    fireEvent.click(screen.getByRole("button", { name: "away" }));
+    fireEvent.click(screen.getByRole("button", { name: "back" }));
+    const section = document.getElementById("gr-turn-review") as HTMLElement;
+    fireEvent.click(within(section).getAllByRole("switch")[0] as HTMLElement);
+    expect(form?.turnReview.rules).toEqual([saved]);
+  });
+
+  // The bug it catches: the tab asked for the agent's toolset (which builds it, MCP servers
+  // included) whenever turn review was on, for a picker that reads a fixed list.
+  test("turn review alone asks for no tool catalog", async () => {
+    const asked: string[] = [];
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return new Response(JSON.stringify({ tools: [], entries: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const c = reviewing();
+      c.turnReview.rules = [
+        { name: "a", pattern: "a", unlessTool: null, note: "n" },
+      ];
+      const noop = () => {};
+      // A saved agent's id: with none the tab asks for no catalog whatever is on.
+      const tab = (g: GuardrailsConfig) => (
+        <GuardrailsTab
+          agentId="7"
+          guardrails={g}
+          setGuardrails={noop as never}
+          refusals={NO_REFUSALS}
+          dirty={false}
+          saving={false}
+          onSave={noop}
+          onDiscard={noop}
+        />
+      );
+      render(tab(c));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(asked.filter((u) => u.includes("/playground/tools"))).toEqual([]);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  // The bug it catches: the editor asked for an API key on a configuration whose only check is
+  // the rules, which run on no model.
+  test("a rules-only configuration is not asked for an API key, and the model reviewer is", async () => {
+    const ASK = "Select an API key to use this feature.";
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ entries: [], tools: [] }), {
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    try {
+      const c = reviewing();
+      c.input.enabled = false;
+      c.output.enabled = false;
+      c.turnReview.judge = false;
+      c.turnReview.rules = [
+        { name: "a", pattern: "a", unlessTool: null, note: "n" },
+      ];
+      render(<Dirty initial={c} />);
+      // The picker says it only once the vault answered.
+      await new Promise((r) => setTimeout(r, 30));
+      const rulesOnly = screen.queryAllByText(ASK).length;
+      fireEvent.click(
+        document.getElementById("gr-turn-review-judge") as HTMLElement,
+      );
+      await waitFor(() => expect(screen.queryAllByText(ASK).length).toBe(1));
+      expect(rulesOnly).toBe(0);
+      // The same under the Decisions classifier, whose key is the screening's alone.
+      cleanup();
+      render(<Dirty initial={{ ...c, classifier: "decisions" }} />);
+      await new Promise((r) => setTimeout(r, 30));
+      const idle = screen.queryAllByText(ASK).length;
+      cleanup();
+      render(
+        <Dirty
+          initial={{
+            ...c,
+            classifier: "decisions",
+            output: { ...c.output, enabled: true },
+          }}
+        />,
+      );
+      await waitFor(() => expect(screen.queryAllByText(ASK).length).toBe(1));
+      expect(idle).toBe(0);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  // Only a tool whose outcomes are tested can excuse a rule, so the field is a choice, not a text.
+  test("the tool field offers the closed list and none, and nothing else", () => {
+    const c = reviewing();
+    c.turnReview.rules = [
+      { name: "a", pattern: "a", unlessTool: null, note: "n" },
+    ];
+    render(<Dirty initial={c} />);
+    const field = at("gr-turn-rule-0-tool") as unknown as HTMLSelectElement;
+    expect([
+      field.tagName,
+      [...field.options].map((o) => o.value),
+      field.options[0]?.textContent,
+    ]).toEqual(["SELECT", ["", ...TURN_RULE_EXCUSING_TOOLS], "None"]);
+    fireEvent.change(field, { target: { value: "handoff_to_human" } });
+    expect(form?.turnReview.rules[0]?.unlessTool).toBe("handoff_to_human");
   });
 });

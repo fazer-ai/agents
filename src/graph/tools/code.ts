@@ -4,6 +4,7 @@ import type { PreconditionState } from "@/modules/agents/tool-preconditions";
 import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks/types";
 import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
 import { DEFAULT_TIMEZONE } from "../time";
+import { acted } from "./call-scope";
 import {
   CODE_TOOL_CONTEXT_MAX_CHARS,
   CODE_TOOL_INPUT_MAX_CHARS,
@@ -195,7 +196,8 @@ export function buildCodeTool(
     async (input: Record<string, unknown>) => {
       const r = await runCodeToolDefinition(def, input ?? {}, deps);
       if (r.cut && r.cut.length > 0) reportClip(def, r, deps);
-      return r.failed ? toolFailure(r.text) : r.text;
+      // The operator's code: what it returns is its answer, and only its failure is known here.
+      return r.failed ? toolFailure(r.text) : acted(r.text);
     },
     {
       // `sanitizeToolName`, exactly as buildHttpTool does: the row is canonicalized on write, and

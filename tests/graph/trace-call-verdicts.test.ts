@@ -337,3 +337,75 @@ describe("withCallVerdicts with a factual-grounding rewrite", () => {
     ]);
   });
 });
+
+// The bug it catches: two verdicts on one call (a rule's observation and the model reviewer's)
+// were taken one per call, so the second landed at the end of the trace, or on a later call that
+// reused the id.
+describe("withCallVerdicts with two verdicts on one call", () => {
+  test("both go right after their call, before its result, and none onto a call that repeats the id", () => {
+    const verdict = (outcome: "observed" | "revised", rule?: string) => ({
+      type: "guardrail" as const,
+      direction: "output" as const,
+      outcome,
+      step: "call" as const,
+      tool: "handoff_to_human",
+      callId: "x",
+      callOrdinal: 1,
+      ...(rule ? { rule, line: true as const } : {}),
+    });
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+        {
+          type: "tool_result",
+          id: "x",
+          name: "handoff_to_human",
+          output: "",
+          isError: false,
+        },
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+      ],
+      [verdict("observed", "sem-reembolso"), verdict("revised")],
+    );
+    expect(
+      placed.map((e) =>
+        e.type === "guardrail" ? `veredito:${e.outcome}` : e.type,
+      ),
+    ).toEqual([
+      "tool_call",
+      "veredito:observed",
+      "veredito:revised",
+      "tool_result",
+      "tool_call",
+    ]);
+  });
+});
+
+// The bug it catches: of two calls sharing an id, the first had no verdict and took the second's
+// by id, though that verdict named the second call's place.
+describe("withCallVerdicts with a verdict that names its place", () => {
+  test("waits for its own call, and is not taken by another that shares the id", () => {
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+      ],
+      [
+        {
+          type: "guardrail",
+          direction: "output",
+          outcome: "observed",
+          step: "call",
+          tool: "handoff_to_human",
+          callId: "x",
+          callOrdinal: 2,
+        },
+      ],
+    );
+    expect(placed.map((e) => e.type)).toEqual([
+      "tool_call",
+      "tool_call",
+      "guardrail",
+    ]);
+  });
+});

@@ -60,6 +60,8 @@ import {
   callsRefusedByReview,
   droppedCallCount,
   droppedCallsStamp,
+  isTurnRuleVeto,
+  markedNoEffect,
   markedSetAside,
   pairedResults,
   turnReviewHeldToolResult,
@@ -79,9 +81,11 @@ import {
   saysNothing,
   skipReplyRan,
 } from "./silence";
+import { inCallScope } from "./tools/call-scope";
 import {
   type CallReport,
   fenceReporterOf,
+  reportsNothingDone,
   withFenceReporter,
 } from "./tools/fence-report";
 import { isMcpArgumentRefusal } from "./tools/mcp";
@@ -247,11 +251,21 @@ export interface BuildAgentGraphParams {
       alongside?: { name: string; args: unknown }[];
       // The call's place among the calls of its step, from 0.
       index?: number;
+      // The calls of the step that may run, each with its place as written when known.
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
     },
   ) => Promise<string | null>;
+  // Which write calls `reviewCall` wants to see, by name. Absent means every one. A call it does
+  // not want runs as a call of a turn with no review.
+  reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
   // `canRedo: false` is the stalled exit, where no model call is left: a flagged reply then meets the
   // fallback at once, and the note only says it was flagged.
   reviewTurnReply?: (
@@ -339,6 +353,10 @@ function turnBatches(history: BaseMessage[]): Batch[] {
   const out: Batch[] = [];
   let sawTool = false;
   let skipped = false;
+  // A rule of the turn review refused a call in a LATER step (`isTurnRuleVeto`): the customer is
+  // owed a reply from there on, so a `skip_reply` that ran before it no longer stands.
+  let owedLater = false;
+  let owedHere = false;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     const t = m?.getType();
@@ -354,11 +372,18 @@ function turnBatches(history: BaseMessage[]): Batch[] {
       // turn with no text where the customer is waiting for one. `skipReplyRan` recognises our no-op
       // and nothing else, so anything unrecognised falls through to "answer them".
       if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) skipped = true;
+      if (m && isTurnRuleVeto(m)) owedHere = true;
       continue;
     }
     // NOTE: the batch ends at the AI message that requested it; anything before is an earlier round.
     if (sawTool) {
-      out.push({ skipped, alone: onlySkipped(m), caller: m ?? null });
+      out.push({
+        skipped: skipped && !owedLater,
+        alone: onlySkipped(m),
+        caller: m ?? null,
+      });
+      owedLater ||= owedHere;
+      owedHere = false;
       sawTool = false;
       skipped = false;
     }
@@ -856,6 +881,7 @@ export function buildAgentGraph({
   onReplyRevised,
   recoversReply,
   reviewCall,
+  reviewsCall,
   reviewTurnReply,
   turnReviewHalted,
   clientToolNames,
@@ -1012,8 +1038,11 @@ export function buildAgentGraph({
       text: string,
       canRedo: boolean,
       thisRound = false,
+      // Where the turn would end with no reply at all, the review is asked with the empty text too:
+      // a rule that sent the reply back does not let its redo end in silence.
+      orSilence = false,
     ): Promise<TurnReviewFeedback | null> =>
-      reviewTurnReply && !noReplyChannel && !silentTurn && text
+      reviewTurnReply && !noReplyChannel && !silentTurn && (text || orSilence)
         ? reviewTurnReply(reviewed(view), text, {
             canRedo,
             ...(thisRound && reviewCallable
@@ -1048,6 +1077,8 @@ export function buildAgentGraph({
           ? customerFacingReply(replyWrittenThisTurn(history)).text
           : "",
         false,
+        false,
+        true,
       ));
       // The reply the runtime may still recover from beside an earlier call, reviewed here too: with
       // no model call left to rewrite it, a revise reads as an empty rewrite.
@@ -1459,7 +1490,7 @@ export function buildAgentGraph({
       const recovered =
         !own && recoversReply?.() ? replyWrittenThisTurn(view) : "";
       const draft = customerFacingReply(own || recovered).text;
-      const note = await reviewHeadedOut(view, draft, true, !!own);
+      const note = await reviewHeadedOut(view, draft, true, !!own, true);
       if (!note) break;
       if (!own && recovered)
         draftRemoved = [...draftRemoved, ...recoveredDraftRemoved(view)];
@@ -1608,7 +1639,42 @@ export function buildAgentGraph({
     const d = Object.create(t) as StructuredToolInterface;
     d.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
       try {
-        return await t.invoke(input as never, config);
+        // A call that reports it did nothing keeps that fact on its own result, which otherwise
+        // reads as an ordinary answer. Heard inside this one invocation (call-scope.ts): a report
+        // on the call's config (fence-report.ts), passed on to a listener already there, or a
+        // handler's `onNoEffect`.
+        const outer = fenceReporterOf(config);
+        const { value, didNothing, failed } = await inCallScope((mark) =>
+          t.invoke(
+            input as never,
+            withFenceReporter(config ?? {}, (r: CallReport, callId) => {
+              if (reportsNothingDone(r)) mark();
+              outer?.(r, callId);
+            }),
+          ),
+        );
+        // A failure with no call id to answer comes back as bare text (failure.ts), which
+        // `ToolNode` would wrap as an ordinary result: wrapped here as the error it is.
+        if (failed && typeof value === "string")
+          return new ToolMessage({
+            status: "error",
+            content: value,
+            name: t.name,
+            tool_call_id: "",
+          });
+        if (!didNothing) return value;
+        if (ToolMessage.isInstance(value)) return markedNoEffect(value);
+        // A call with no id comes back as bare text, which `ToolNode` would wrap after this point:
+        // wrapped here, the way it does, so the fact has a result to stay on.
+        return typeof value === "string"
+          ? markedNoEffect(
+              new ToolMessage({
+                content: value,
+                name: t.name,
+                tool_call_id: "",
+              }),
+            )
+          : value;
       } catch (e) {
         if (!isSchemaRefusal(e) && !isMcpArgumentRefusal(e)) throw e;
         return markedSetAside(
@@ -1800,7 +1866,9 @@ export function buildAgentGraph({
             reviewCall && !revision
               ? await setAsideReviewedCalls(
                   judged,
-                  isWriteName,
+                  (name) =>
+                    isWriteName(name) &&
+                    (reviewsCall?.(name, judged.messages) ?? true),
                   (turn, call, o) => {
                     reviewsRan = true;
                     const index = written.indexOf(
@@ -1808,6 +1876,12 @@ export function buildAgentGraph({
                     );
                     return reviewCall(turn, call, {
                       ...o,
+                      // Each call of the step with its place as written, for a verdict given
+                      // while the step is read whole.
+                      step: o.step.map((c) => {
+                        const at = written.indexOf(c);
+                        return at >= 0 ? { ...c, index: at } : c;
+                      }),
                       index: index >= 0 ? index : undefined,
                       instructions: reviewInstructions,
                       tools: reviewTools,
@@ -1950,10 +2024,14 @@ function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
   // A `skip_reply` the turn review vetoed declared no silence (see `calledSkipThisTurn`).
   const refused = callsRefusedByReview(sinceLastHuman(messages));
   let found: AIMessage | null = null;
+  // A rule's veto later in the turn supersedes a `skip_reply` before it (`turnBatches`): what was
+  // written after that skip is recovered, and nothing from before it.
+  let owedLater = false;
   for (let i = messages.length - 2; i >= 0; i--) {
     const m = messages[i];
     if (!m) continue;
     if (m.getType() === "human") break;
+    if (isTurnRuleVeto(m)) owedLater = true;
     if (m.getType() !== "ai") continue;
     const ai = m as AIMessage;
     if (
@@ -1961,7 +2039,7 @@ function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
         (c) => c.name === SKIP_REPLY_TOOL && !refused.has(c),
       )
     )
-      return null;
+      return owedLater ? found : null;
     if (found) continue;
     const last = lastWritten(ai);
     if (last === "text") found = ai;
@@ -2022,17 +2100,20 @@ function fillerOnly(m: BaseMessage): boolean {
 // A `skip_reply` the turn review vetoed is not one: the reviewer rejected that silence.
 function calledSkipThisTurn(history: BaseMessage[]): boolean {
   const refused = callsRefusedByReview(sinceLastHuman(history));
+  // Superseded by a rule's veto after it, as in `recoveredReplyMessage`.
+  let owedLater = false;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (!m) continue;
     if (m.getType() === "human") return false;
+    if (isTurnRuleVeto(m)) owedLater = true;
     if (m.getType() !== "ai") continue;
     if (
       ((m as AIMessage).tool_calls ?? []).some(
         (c) => c.name === SKIP_REPLY_TOOL && !refused.has(c),
       )
     )
-      return true;
+      return !owedLater;
   }
   return false;
 }

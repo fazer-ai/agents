@@ -2,12 +2,14 @@ import {
   FileSearch,
   ListChecks,
   MessageCircle,
+  Plus,
   Send,
   ShieldCheck,
+  Trash2,
   TriangleAlert,
   Webhook,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -49,17 +51,32 @@ import type {
 import {
   GROUNDING_ACTIONS,
   type GroundingAction,
+  guardrailsScreen,
+  guardrailsUseModel,
   MAX_REFERENCE_KNOWLEDGE_BASES,
   MAX_SOURCE_TOOLS,
+  MAX_TURN_REVIEW_RULES,
   readCompetitors,
   TURN_REVIEW_ACTIONS,
   TURN_REVIEW_FALLBACKS,
+  TURN_RULE_EXCUSING_TOOLS,
+  TURN_RULE_NAME_MAX,
+  TURN_RULE_NOTE_MAX,
+  TURN_RULE_PATTERN_MAX,
   type TurnReviewAction,
   type TurnReviewFallback,
+  type TurnReviewRule,
+  turnRulePatternProblem,
 } from "@/modules/guardrails/settings";
 import { FieldSize } from "./CallFloor";
 import { ExternalCheckContract } from "./ExternalCheckContract";
-import { guardrailsChatModelShown } from "./guardrailsFormState";
+import {
+  guardrailsChatModelShown,
+  type LastWholeTurnRules,
+  rememberTurnRules,
+  turnRulesIncomplete,
+  withoutIncompleteTurnRules,
+} from "./guardrailsFormState";
 import { ManagedKnowledgeBaseCards } from "./KnowledgeBaseCards";
 import {
   ModelOverrideFields,
@@ -102,6 +119,9 @@ interface GuardrailsTabProps {
   // The agent's tool calls per turn as the form holds them (Behavior tab, `limits.maxToolCalls`):
   // the ceiling of the factual-grounding rewrite's cap, which spends calls from the same budget.
   maxToolCalls?: number;
+  // The last whole version of each turn review rule, kept by the owner of the draft so it lives as
+  // long as the draft does. Without it the tab keeps its own, which a tab switch loses.
+  wholeRules?: React.MutableRefObject<LastWholeTurnRules>;
 }
 
 // Product names, the same in every language (as on the Classifier card, DecisionsFields).
@@ -207,6 +227,7 @@ export function GuardrailsTab({
   knowledgeBases,
   onCatalogChange = () => {},
   maxToolCalls = DEFAULT_MAX_TOOL_CALLS,
+  wholeRules,
 }: GuardrailsTabProps) {
   const { t } = useTranslation();
   // The rewrite's cap stops at the agent's turn limit, as the write boundary does
@@ -262,7 +283,24 @@ export function GuardrailsTab({
   const tr = g.turnReview;
   const setTurnReview = (patch: Partial<GuardrailsConfig["turnReview"]>) =>
     setG((s) => ({ ...s, turnReview: { ...s.turnReview, ...patch } }));
+  // Only the source picker reads the catalog: a rule's tool is chosen from a fixed list.
   const toolNames = useAgentToolNames(agentId, g.enabled && fg.enabled);
+  const setRule = (index: number, patch: Partial<TurnReviewRule>) =>
+    setTurnReview({
+      rules: tr.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)),
+    });
+  // The last whole version of each rule, by place: what an edit left incomplete goes back to when
+  // its fields leave the screen. Followed on every render, so a form replaced from outside (a
+  // discard, a reload) is followed too. Removing a rule takes its place out first. The editor
+  // holds it beside the draft, since this tab unmounts on a tab switch and the draft does not.
+  const ownWholeRules = useRef<LastWholeTurnRules>([]);
+  const lastWholeRules = wholeRules ?? ownWholeRules;
+  lastWholeRules.current = rememberTurnRules(lastWholeRules.current, tr.rules);
+  const rulesFull = tr.rules.length >= MAX_TURN_REVIEW_RULES;
+  const rulesShown = g.enabled && tr.enabled;
+  // A rule missing a field or with a pattern that does not compile holds the save, as the server
+  // would refuse it: each field says what is wrong under it.
+  const rulesBlockSave = rulesShown && turnRulesIncomplete(tr.rules);
   // The reviewer's model, an override of the guardrails chat model drawn by the shared fields. The
   // stored block spells "unset" as null; the fields spell it as a blank string.
   const groundingOverride: ModelOverrideForm = {
@@ -771,7 +809,14 @@ export function GuardrailsTab({
           >
             <SwitchField
               checked={g.enabled}
-              onCheckedChange={(v) => setG((s) => ({ ...s, enabled: v }))}
+              onCheckedChange={(v) =>
+                setG((s) => {
+                  const next = { ...s, enabled: v };
+                  return v
+                    ? next
+                    : withoutIncompleteTurnRules(next, lastWholeRules.current);
+                })
+              }
               label={t("editor.guardrails.enabled", "Enable guardrails")}
             />
             {g.enabled && (
@@ -896,7 +941,8 @@ export function GuardrailsTab({
                   <CredentialPicker
                     value={g.decisions.credentialRef ?? ""}
                     onChange={(v) => setDecisions({ credentialRef: v || null })}
-                    required
+                    // Only when a check screens on it: turn review's rules alone need no key.
+                    required={guardrailsScreen(g)}
                     compatibleTypes={credentialCompat.decisions(
                       g.decisions.provider,
                     )}
@@ -965,7 +1011,12 @@ export function GuardrailsTab({
                     onChange={(v) =>
                       setG((s) => ({ ...s, credentialRef: v || null }))
                     }
-                    required={g.provider !== "openai-compatible"}
+                    // Asked for only when a configured check runs on this model: the rules of
+                    // turn review alone need no key.
+                    required={
+                      g.provider !== "openai-compatible" &&
+                      guardrailsUseModel(g)
+                    }
                     compatibleTypes={credentialCompat.model(g.provider)}
                     defaultCreateType={credentialCompat.model(g.provider)[0]}
                     ariaLabel={t("editor.credential", "API key")}
@@ -1415,12 +1466,25 @@ export function GuardrailsTab({
                 title={t("editor.guardrails.turnReview", "Turn review")}
                 description={t(
                   "editor.guardrails.turnReviewDesc",
-                  "Before an action takes effect, a reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges whether the step follows them. It reviews each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Only the tools that cannot change anything skip it: the knowledge search, the time, the calculator, code tools and an HTTP GET. MCP and integration calls are reviewed, since nothing guarantees they only read.",
+                  "Checks each step of a turn before it takes effect. A reviewer model reads the agent's instructions, the Policy above, the conversation and the turn's tool results, and judges each call that changes something (a handoff, a booking, a label) before it runs, and the final reply before it is sent. Only the tools that cannot change anything skip it: the knowledge search, the time, the calculator, code tools and an HTTP GET. MCP and integration calls are reviewed, since nothing guarantees they only read. Your own rules check the final reply with no model, for a phrase the agent must not say without calling a tool.",
                 )}
               >
                 <SwitchField
                   checked={tr.enabled}
-                  onCheckedChange={(v) => setTurnReview({ enabled: v })}
+                  onCheckedChange={(v) =>
+                    setG((s) => {
+                      const next = {
+                        ...s,
+                        turnReview: { ...s.turnReview, enabled: v },
+                      };
+                      return v
+                        ? next
+                        : withoutIncompleteTurnRules(
+                            next,
+                            lastWholeRules.current,
+                          );
+                    })
+                  }
                   label={t(
                     "editor.guardrails.turnReviewEnabled",
                     "Review the turn's actions and reply",
@@ -1428,6 +1492,19 @@ export function GuardrailsTab({
                 />
                 {tr.enabled && (
                   <>
+                    <SwitchField
+                      checked={tr.judge}
+                      onCheckedChange={(v) => setTurnReview({ judge: v })}
+                      label={t(
+                        "editor.guardrails.turnReviewJudge",
+                        "Review with the guardrails model",
+                      )}
+                      help={t(
+                        "editor.guardrails.turnReviewJudgeHint",
+                        "One model call per reviewed step. Off, only the rules below check the reply, at no model cost.",
+                      )}
+                      id="gr-turn-review-judge"
+                    />
                     <FormField
                       label={t(
                         "editor.guardrails.turnReviewAction",
@@ -1581,6 +1658,211 @@ export function GuardrailsTab({
                         )}
                       </>
                     )}
+                    <FormField
+                      label={t("editor.guardrails.turnRules", "Rules")}
+                      description={t(
+                        "editor.guardrails.turnRulesHint",
+                        "Checked on the reply about to be sent, before the model and at no model cost. A rule that fires follows the action, redos and ending above, and the turn cannot then end in silence.",
+                      )}
+                      group
+                    >
+                      <div
+                        className="flex flex-col gap-3"
+                        data-testid="gr-turn-rules"
+                      >
+                        {tr.rules.map((rule, i) => {
+                          const problem = turnRulePatternProblem(rule.pattern);
+                          return (
+                            <div
+                              // biome-ignore lint/suspicious/noArrayIndexKey: a rule has no id, and its fields are edited in place.
+                              key={i}
+                              className="border-border flex flex-col gap-2 rounded-md border p-3"
+                              data-testid={`gr-turn-rule-${i}`}
+                            >
+                              <div className="flex items-end gap-2">
+                                <div className="flex-1">
+                                  <FormField
+                                    label={t(
+                                      "editor.guardrails.turnRuleName",
+                                      "Name",
+                                    )}
+                                    error={
+                                      rule.name.trim()
+                                        ? null
+                                        : t(
+                                            "editor.guardrails.turnRuleRequired",
+                                            "Required.",
+                                          )
+                                    }
+                                  >
+                                    <Input
+                                      value={rule.name}
+                                      onChange={(e) =>
+                                        setRule(i, { name: e.target.value })
+                                      }
+                                      maxLength={TURN_RULE_NAME_MAX}
+                                      placeholder={t(
+                                        "editor.guardrails.turnRuleNamePlaceholder",
+                                        "Transfer promised without a handoff",
+                                      )}
+                                      data-testid={`gr-turn-rule-${i}-name`}
+                                    />
+                                  </FormField>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  onClick={() => {
+                                    lastWholeRules.current =
+                                      lastWholeRules.current.filter(
+                                        (_, j) => j !== i,
+                                      );
+                                    setTurnReview({
+                                      rules: tr.rules.filter((_, j) => j !== i),
+                                    });
+                                  }}
+                                  aria-label={t(
+                                    "editor.guardrails.turnRuleRemove",
+                                    "Remove rule",
+                                  )}
+                                  data-testid={`gr-turn-rule-${i}-remove`}
+                                >
+                                  <Trash2
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                  />
+                                </Button>
+                              </div>
+                              <FormField
+                                label={t(
+                                  "editor.guardrails.turnRulePattern",
+                                  "Pattern in the reply",
+                                )}
+                                description={t(
+                                  "editor.guardrails.turnRulePatternHint",
+                                  "A regular expression, upper and lower case alike. Example: vou (encaminhar|passar|transferir)",
+                                )}
+                                error={
+                                  problem === "invalid"
+                                    ? t(
+                                        "editor.guardrails.turnRulePatternInvalid",
+                                        "This is not a valid regular expression.",
+                                      )
+                                    : problem === "too_long"
+                                      ? t(
+                                          "editor.guardrails.turnRulePatternTooLong",
+                                          {
+                                            defaultValue:
+                                              "At most {{max}} characters.",
+                                            max: TURN_RULE_PATTERN_MAX,
+                                          },
+                                        )
+                                      : problem === "empty"
+                                        ? t(
+                                            "editor.guardrails.turnRuleRequired",
+                                            "Required.",
+                                          )
+                                        : null
+                                }
+                              >
+                                <Input
+                                  value={rule.pattern}
+                                  onChange={(e) =>
+                                    setRule(i, { pattern: e.target.value })
+                                  }
+                                  className="font-mono"
+                                  error={!!problem}
+                                  spellCheck={false}
+                                  data-testid={`gr-turn-rule-${i}-pattern`}
+                                />
+                              </FormField>
+                              <FormField
+                                label={t(
+                                  "editor.guardrails.turnRuleTool",
+                                  "Unless this tool ran in the turn",
+                                )}
+                                description={t(
+                                  "editor.guardrails.turnRuleToolHint",
+                                  "With None, the rule fires whenever the pattern matches. Only the tools listed can excuse a reply.",
+                                )}
+                              >
+                                <Select
+                                  value={rule.unlessTool ?? ""}
+                                  onChange={(e) =>
+                                    setRule(i, {
+                                      unlessTool: e.target.value || null,
+                                    })
+                                  }
+                                  data-testid={`gr-turn-rule-${i}-tool`}
+                                >
+                                  <option value="">
+                                    {t(
+                                      "editor.guardrails.turnRuleToolNone",
+                                      "None",
+                                    )}
+                                  </option>
+                                  {TURN_RULE_EXCUSING_TOOLS.map((name) => (
+                                    <option key={name} value={name}>
+                                      {name}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </FormField>
+                              <FormField
+                                label={t(
+                                  "editor.guardrails.turnRuleNote",
+                                  "What the agent is told",
+                                )}
+                                description={t(
+                                  "editor.guardrails.turnRuleNoteHint",
+                                  "Reaches the agent with the refused reply, never the customer. Say what to do in this situation.",
+                                )}
+                                error={
+                                  rule.note.trim()
+                                    ? null
+                                    : t(
+                                        "editor.guardrails.turnRuleRequired",
+                                        "Required.",
+                                      )
+                                }
+                              >
+                                <Textarea
+                                  value={rule.note}
+                                  onChange={(e) =>
+                                    setRule(i, { note: e.target.value })
+                                  }
+                                  rows={2}
+                                  maxLength={TURN_RULE_NOTE_MAX}
+                                  data-testid={`gr-turn-rule-${i}-note`}
+                                />
+                              </FormField>
+                            </div>
+                          );
+                        })}
+                        <div>
+                          <Button
+                            variant="secondary"
+                            onClick={() =>
+                              setTurnReview({
+                                rules: [
+                                  ...tr.rules,
+                                  {
+                                    name: "",
+                                    pattern: "",
+                                    unlessTool: null,
+                                    note: "",
+                                  },
+                                ],
+                              })
+                            }
+                            disabled={rulesFull}
+                            data-testid="gr-turn-rule-add"
+                          >
+                            <Plus className="h-4 w-4" aria-hidden="true" />
+                            {t("editor.guardrails.turnRuleAdd", "Add rule")}
+                          </Button>
+                        </div>
+                      </div>
+                    </FormField>
                   </>
                 )}
               </Section>
@@ -1656,8 +1938,9 @@ export function GuardrailsTab({
         saving={saving}
         onSave={onSave}
         onDiscard={onDiscard}
-        // The reviewer's endpoint checks, as every own-model section holds its save on them.
-        saveDisabled={groundingBlocksSave}
+        // The reviewer's endpoint checks, as every own-model section holds its save on them, and a
+        // turn-review rule the server would refuse.
+        saveDisabled={groundingBlocksSave || rulesBlockSave}
       />
     </div>
   );

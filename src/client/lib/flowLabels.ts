@@ -411,16 +411,29 @@ export function guardrailObservedLabel(
   // what the review did; running and delivery have lines of their own.
   const head =
     detail.check === "turn_review"
-      ? detail.step === "call"
-        ? t("logs.guardrailObserved.turnReviewCall", {
+      ? detail.step === "call" && typeof detail.rule === "string"
+        ? t("logs.guardrailObserved.turnRuleLine", {
             defaultValue:
-              "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
+              "The turn review rule “{{rule}}” fired on the customer message carried by the call to {{tool}}. Only recorded, the turn review did not block it",
+            rule: detail.rule,
             tool: typeof detail.tool === "string" ? detail.tool : "",
           })
-        : t(
-            "logs.guardrailObserved.turnReviewReply",
-            "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
-          )
+        : detail.step === "call"
+          ? t("logs.guardrailObserved.turnReviewCall", {
+              defaultValue:
+                "The turn review found the call to {{tool}} against the agent's instructions; only recorded, the turn review did not block it",
+              tool: typeof detail.tool === "string" ? detail.tool : "",
+            })
+          : typeof detail.rule === "string"
+            ? t("logs.guardrailObserved.turnRule", {
+                defaultValue:
+                  "The turn review rule “{{rule}}” fired on the reply. Only recorded, the turn review did not block it",
+                rule: detail.rule,
+              })
+            : t(
+                "logs.guardrailObserved.turnReviewReply",
+                "The turn review found the reply against the agent's instructions; only recorded, the turn review did not block it",
+              )
       : detail.direction === "input"
         ? t(
             "logs.guardrailObserved.input",

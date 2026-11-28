@@ -25,7 +25,25 @@ export type CallReport =
   | { committed: true }
   | { declined: true };
 
-export type FenceReporter = (report: CallReport) => void;
+// `callId` is the id of the call that reported, when its config carries one (`ToolNode` hands each
+// tool its own call): what lets a listener of a whole batch tell which call it was.
+export type FenceReporter = (report: CallReport, callId?: string) => void;
+
+// True for a report that says the call did not do what it was asked: refused whole by a fence, a
+// write that changed nothing, or an answer the other side declined. A partial fence and a write that
+// stayed (`committed`) did something.
+// The narrower reading the turn review takes (docs/turn-review.md, "What excuses a rule"): a call
+// that sent nothing or was refused whole. An answer the other side declined is not one: the HTTP
+// tool says `declined` for every non-2xx, a 404 the operator declared a result included, and that
+// lookup ran.
+export function reportsNothingDone(report: CallReport): boolean {
+  return "noEffect" in report || ("fence" in report && !report.partial);
+}
+
+export function reportsNoEffect(report: CallReport): boolean {
+  if ("noEffect" in report || "declined" in report) return true;
+  return "fence" in report && !report.partial;
+}
 
 const KEY = "fazeraiFenceReporter";
 
@@ -43,5 +61,7 @@ export function fenceReporterOf(
   config: ToolRunnableConfig | undefined,
 ): FenceReporter | undefined {
   const r = config?.configurable?.[KEY];
-  return typeof r === "function" ? (r as FenceReporter) : undefined;
+  if (typeof r !== "function") return undefined;
+  const own = config?.toolCall?.id;
+  return (report, callId) => (r as FenceReporter)(report, callId ?? own);
 }

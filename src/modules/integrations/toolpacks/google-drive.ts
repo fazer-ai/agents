@@ -1,6 +1,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
+import { acted, didNothing } from "@/graph/tools/call-scope";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fetchBounded, fetchBoundedBytes } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -216,24 +217,26 @@ function buildFindFileTool(
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
       const files = Array.isArray(data.files) ? data.files : [];
-      return JSON.stringify(
-        files.map((f) => {
-          const o = (f ?? {}) as Record<string, unknown>;
-          // The shareable link comes straight from the search (webViewLink, falling back to
-          // webContentLink for direct-download files) — no separate "get link" round-trip needed.
-          const link =
-            typeof o.webViewLink === "string"
-              ? o.webViewLink
-              : typeof o.webContentLink === "string"
-                ? o.webContentLink
-                : null;
-          return {
-            id: typeof o.id === "string" ? o.id : null,
-            name: typeof o.name === "string" ? o.name : null,
-            mimeType: typeof o.mimeType === "string" ? o.mimeType : null,
-            link,
-          };
-        }),
+      return acted(
+        JSON.stringify(
+          files.map((f) => {
+            const o = (f ?? {}) as Record<string, unknown>;
+            // The shareable link comes straight from the search (webViewLink, falling back to
+            // webContentLink for direct-download files) — no separate "get link" round-trip needed.
+            const link =
+              typeof o.webViewLink === "string"
+                ? o.webViewLink
+                : typeof o.webContentLink === "string"
+                  ? o.webContentLink
+                  : null;
+            return {
+              id: typeof o.id === "string" ? o.id : null,
+              name: typeof o.name === "string" ? o.name : null,
+              mimeType: typeof o.mimeType === "string" ? o.mimeType : null,
+              link,
+            };
+          }),
+        ),
       );
     },
     {
@@ -254,7 +257,9 @@ function buildSendFileTool(
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       if (!ctx.chatwoot) {
-        return "Sending a file to the customer is not available in this context (e.g. the playground). Share the file's link (returned by drive_find_file) instead.";
+        return didNothing(
+          "Sending a file to the customer is not available in this context (e.g. the playground). Share the file's link (returned by drive_find_file) instead.",
+        );
       }
 
       // 1) Metadata: name + mimeType decide the download path (native media vs Google-apps export).
@@ -298,7 +303,9 @@ function buildSendFileTool(
         );
       }
       if (dl.tooLarge) {
-        return "That file is too large to send here. Share the file's link (returned by drive_find_file) instead.";
+        return didNothing(
+          "That file is too large to send here. Share the file's link (returned by drive_find_file) instead.",
+        );
       }
       if (dl.status < 200 || dl.status >= 300 || !dl.bytes) {
         return toolFailure(
@@ -323,7 +330,7 @@ function buildSendFileTool(
           "Downloaded the file but could not deliver it to the conversation.",
         );
       }
-      return `Sent the file "${sendName}" to the customer.`;
+      return acted(`Sent the file "${sendName}" to the customer.`);
     },
     {
       name: "drive_send_file",

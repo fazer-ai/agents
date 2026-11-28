@@ -453,6 +453,22 @@ export function markedSetAside<T extends BaseMessage>(message: T): T {
   return message;
 }
 
+// A call that ran and reported, on its own config (fence-report.ts), that it did not do what it was
+// asked: a fence or a precondition refused it, or the write changed nothing. To the model that is an
+// ordinary result, so the fact is kept beside it, for a reader that asks whether a tool really acted
+// (a turn-review rule's `unlessTool`). A key of its own: the call did run, so none of the readers
+// of the markers above may take it for a call set aside.
+const NO_EFFECT_KWARG = "fazerNoEffect";
+export function markedNoEffect<M extends BaseMessage>(message: M): M {
+  message.additional_kwargs = {
+    ...message.additional_kwargs,
+    [NO_EFFECT_KWARG]: true,
+  };
+  return message;
+}
+export const reportedNoEffect = (message: BaseMessage): boolean =>
+  message.additional_kwargs?.[NO_EFFECT_KWARG] === true;
+
 export function turnReviewVetoToolResult(
   call: { id?: string; name: string },
   note: string,
@@ -534,6 +550,19 @@ export function callsRefusedByReview(
   for (const [c, r] of pairedResults(slice))
     if (isTurnReviewRefusal(r)) out.add(c);
   return out;
+}
+
+// The tag a turn-review rule's note travels in, inside the veto that answers a refused call. Only
+// the gate writes it (the operator's and the reviewer's text are escaped), so a veto that carries it
+// is a rule saying the customer is still owed a reply.
+export const TURN_RULE_NOTE_TAG = "orientacao_do_operador";
+export function isTurnRuleVeto(message: BaseMessage): boolean {
+  return (
+    typeOf(message) === "tool" &&
+    hasMarker(message, "turn_review_veto") &&
+    typeof message.content === "string" &&
+    message.content.includes(`<${TURN_RULE_NOTE_TAG}>`)
+  );
 }
 
 // Whether a tool result says its call never ran: called off, vetoed by the turn review, refused by

@@ -4,6 +4,11 @@ import {
   computeConfigIssues,
   issueHasAction,
 } from "@/modules/agents/config-health";
+import {
+  guardrailsKeyUsed,
+  guardrailsUseModel,
+  readGuardrailsConfig,
+} from "@/modules/guardrails/settings";
 
 // Phase E: detect features turned on without the credential they need (the import that strips
 // secrets is the common trigger), each carrying a deep-link target (tab + section anchor).
@@ -1188,6 +1193,66 @@ describe("computeConfigIssues — the guardrails credential", () => {
         knownRefs: new Set(["vault:1"]),
       }),
     ).toEqual([]);
+  });
+
+  // The bug it catches: guardrails that run only the turn review's rules use no model, and the
+  // panel still reported a missing key as a blocking issue of a configuration that works.
+  test("asks for no key while no configured check runs on a model", () => {
+    expect(
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "",
+        guardrailsKeyUnused: true,
+      }),
+    ).toEqual([]);
+    const idle = readGuardrailsConfig({
+      guardrails: {
+        enabled: true,
+        input: { enabled: false },
+        output: { enabled: false },
+        turnReview: { enabled: true, judge: false },
+      },
+    });
+    const nothing = Object.fromEntries(
+      Object.keys(idle.output.checks).map((k) => [k, false]),
+    ) as unknown as typeof idle.output.checks;
+    expect([
+      guardrailsUseModel(idle),
+      guardrailsUseModel({
+        ...idle,
+        output: { ...idle.output, enabled: true },
+      }),
+      guardrailsUseModel({
+        ...idle,
+        turnReview: { ...idle.turnReview, judge: true },
+      }),
+      // A direction switched on with nothing to judge runs no model, as the gate reads it.
+      guardrailsUseModel({
+        ...idle,
+        output: { ...idle.output, enabled: true, checks: nothing },
+        input: { ...idle.input, enabled: true, checks: nothing },
+      }),
+      guardrailsUseModel({
+        ...idle,
+        output: { ...idle.output, enabled: true, checks: nothing },
+        customPolicy: "Nunca fale de preço.",
+      }),
+    ]).toEqual([false, true, true, false, true]);
+    // The classifier's key under Decisions is the screening's alone: the model reviewer runs on
+    // the chat key, which has its own check.
+    const reviewing = {
+      ...idle,
+      classifier: "decisions" as const,
+      turnReview: { ...idle.turnReview, judge: true },
+    };
+    expect([
+      guardrailsKeyUsed(reviewing),
+      guardrailsKeyUsed({ ...reviewing, classifier: "chat" }),
+      guardrailsKeyUsed({
+        ...reviewing,
+        output: { ...idle.output, enabled: true },
+      }),
+    ]).toEqual([false, true, true]);
   });
 
   test("flags guardrails enabled with no credential", () => {

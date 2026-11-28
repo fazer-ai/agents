@@ -102,6 +102,9 @@ describe("agentTurn", () => {
         outcome,
         ...(line ? { line: true as const } : {}),
       });
+    // Past the attempts the whole step was refused: never "only recorded".
+    for (const outcome of ["replaced", "suppressed", "handed-off"])
+      expect(rule(true, outcome as never)).not.toContain("Only recorded");
     expect([
       rule(true, "revised" as never),
       rule(true, "observed" as never),

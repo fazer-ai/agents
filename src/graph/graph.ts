@@ -60,6 +60,7 @@ import {
   callsRefusedByReview,
   droppedCallCount,
   droppedCallsStamp,
+  isTurnRuleVeto,
   markedNoEffect,
   markedSetAside,
   pairedResults,
@@ -274,9 +275,6 @@ export interface BuildAgentGraphParams {
   // Whether the turn review held a step it could not judge (`onFailure: "hold"`): the tool node then
   // runs nothing more and ends the round, so the caller hands the conversation over before any write.
   turnReviewHalted?: () => boolean;
-  // Whether the turn review left a reply owed in this turn (a rule refused a reply or a transfer's
-  // line): an earlier `skip_reply` of the turn then no longer silences it.
-  replyOwed?: (turn: BaseMessage[]) => boolean;
   // Tools the host application runs in the browser (see ./client-tools.ts). A call to one suspends
   // the turn instead of running. Absent on every path but the client channel.
   clientToolNames?: ReadonlySet<string>;
@@ -348,6 +346,10 @@ function turnBatches(history: BaseMessage[]): Batch[] {
   const out: Batch[] = [];
   let sawTool = false;
   let skipped = false;
+  // A rule of the turn review refused a call in a LATER step (`isTurnRuleVeto`): the customer is
+  // owed a reply from there on, so a `skip_reply` that ran before it no longer stands.
+  let owedLater = false;
+  let owedHere = false;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     const t = m?.getType();
@@ -363,11 +365,18 @@ function turnBatches(history: BaseMessage[]): Batch[] {
       // turn with no text where the customer is waiting for one. `skipReplyRan` recognises our no-op
       // and nothing else, so anything unrecognised falls through to "answer them".
       if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) skipped = true;
+      if (m && isTurnRuleVeto(m)) owedHere = true;
       continue;
     }
     // NOTE: the batch ends at the AI message that requested it; anything before is an earlier round.
     if (sawTool) {
-      out.push({ skipped, alone: onlySkipped(m), caller: m ?? null });
+      out.push({
+        skipped: skipped && !owedLater,
+        alone: onlySkipped(m),
+        caller: m ?? null,
+      });
+      owedLater ||= owedHere;
+      owedHere = false;
       sawTool = false;
       skipped = false;
     }
@@ -868,7 +877,6 @@ export function buildAgentGraph({
   reviewsCall,
   reviewTurnReply,
   turnReviewHalted,
-  replyOwed,
   clientToolNames,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
@@ -989,10 +997,7 @@ export function buildAgentGraph({
     const hardLimit = hasTools && toolCalls >= max;
     const staySilent = hasTools && justDecidedToStaySilent(history);
     // The decision, taken alone, for the REST of the turn (see the function).
-    // Unless the turn review has since left a reply owed: the corrected reply, or the fallback,
-    // has to reach the customer.
-    const silentTurn =
-      hasTools && decidedToStaySilentAlone(history) && !replyOwed?.(history);
+    const silentTurn = hasTools && decidedToStaySilentAlone(history);
     // Only the message that ends the turn, the one carrying no calls: a message still requesting
     // tools is not what the runtime posts, and a preamble beside an ordinary call is left alone (the
     // same line `silenceNarration` draws). `narration` covers the text beside the decision itself.
@@ -2006,10 +2011,14 @@ function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
   // A `skip_reply` the turn review vetoed declared no silence (see `calledSkipThisTurn`).
   const refused = callsRefusedByReview(sinceLastHuman(messages));
   let found: AIMessage | null = null;
+  // A rule's veto later in the turn supersedes a `skip_reply` before it (`turnBatches`): what was
+  // written after that skip is recovered, and nothing from before it.
+  let owedLater = false;
   for (let i = messages.length - 2; i >= 0; i--) {
     const m = messages[i];
     if (!m) continue;
     if (m.getType() === "human") break;
+    if (isTurnRuleVeto(m)) owedLater = true;
     if (m.getType() !== "ai") continue;
     const ai = m as AIMessage;
     if (
@@ -2017,7 +2026,7 @@ function recoveredReplyMessage(messages: BaseMessage[]): AIMessage | null {
         (c) => c.name === SKIP_REPLY_TOOL && !refused.has(c),
       )
     )
-      return null;
+      return owedLater ? found : null;
     if (found) continue;
     const last = lastWritten(ai);
     if (last === "text") found = ai;
@@ -2078,17 +2087,20 @@ function fillerOnly(m: BaseMessage): boolean {
 // A `skip_reply` the turn review vetoed is not one: the reviewer rejected that silence.
 function calledSkipThisTurn(history: BaseMessage[]): boolean {
   const refused = callsRefusedByReview(sinceLastHuman(history));
+  // Superseded by a rule's veto after it, as in `recoveredReplyMessage`.
+  let owedLater = false;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (!m) continue;
     if (m.getType() === "human") return false;
+    if (isTurnRuleVeto(m)) owedLater = true;
     if (m.getType() !== "ai") continue;
     if (
       ((m as AIMessage).tool_calls ?? []).some(
         (c) => c.name === SKIP_REPLY_TOOL && !refused.has(c),
       )
     )
-      return true;
+      return !owedLater;
   }
   return false;
 }

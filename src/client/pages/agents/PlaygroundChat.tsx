@@ -1378,16 +1378,17 @@ export function guardrailTraceLabel(
         "could not be judged; the review did not block the call",
       );
     // A rule of the operator's, named in the row's title: what its match did to the step.
-    if (entry.rule && entry.line)
-      return entry.outcome === "revised"
-        ? t(
-            "playground.trace.turnRuleLineRevised",
-            "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
-          )
-        : t(
-            "playground.trace.turnRuleLineObserved",
-            "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
-          );
+    // A match on a transfer's message. Past the attempts it falls to the fallback's own wording.
+    if (entry.rule && entry.line && entry.outcome === "revised")
+      return t(
+        "playground.trace.turnRuleLineRevised",
+        "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
+      );
+    if (entry.rule && entry.line && entry.outcome === "observed")
+      return t(
+        "playground.trace.turnRuleLineObserved",
+        "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
+      );
     if (entry.rule && entry.outcome === "revised")
       return entry.step === "call"
         ? t(

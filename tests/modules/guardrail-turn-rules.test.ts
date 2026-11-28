@@ -11,13 +11,14 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { buildAgentGraph } from "@/graph/graph";
+import { buildAgentGraph, replyWrittenThisTurn } from "@/graph/graph";
 import {
   markedNoEffect,
   reportedNoEffect,
   turnReviewVetoToolResult,
 } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
+import { reviewableCalls } from "@/graph/reviewed-calls";
 import { scopedNoEffect } from "@/graph/tools/call-scope";
 import { SandboxQueue } from "@/graph/tools/code-sandbox";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
@@ -1091,6 +1092,79 @@ describe("the rules in the gate", () => {
     },
   );
 
+  // The bug it catches: a call was found in its step by id before identity, so of two transfers a
+  // provider gave one id, the second was judged by the first one's verdict.
+  test.skipIf(!dbUp)(
+    "two transfers that share an id are each judged by their own line, in either order",
+    async () => {
+      const lines = {
+        banned: "Vou pedir o seu reembolso.",
+        valid: "Um atendente vai continuar.",
+      };
+      const admitted = async (order: (keyof typeof lines)[]) => {
+        const { g } = gate(cfg({ rules: [BANNED], maxAttempts: 3 }));
+        const calls = order.map((k) => ({
+          name: "handoff_to_human",
+          args: { customerMessage: lines[k] },
+          id: "mesmo",
+        }));
+        const turn = [
+          ...asked(),
+          new AIMessage({ content: "", tool_calls: calls }),
+        ];
+        const out: string[] = [];
+        // The call is handed over as the graph does: a new object around the same arguments.
+        for (const [i, c] of calls.entries())
+          if ((await g?.reviewCall(turn, { ...c }, { step: calls })) === null)
+            out.push(order[i] as string);
+        return out;
+      };
+      expect([
+        await admitted(["valid", "banned"]),
+        await admitted(["banned", "valid"]),
+        await admitted(["banned", "banned"]),
+      ]).toEqual([["valid"], ["valid"], []]);
+    },
+  );
+
+  // The bug it catches: the plan of a step read a transfer the tools node skips (already
+  // answered), so its line vetoed the `skip_reply` beside it for a message nobody would get.
+  test.skipIf(!dbUp)(
+    "a call of the step that will not run creates no debt",
+    async () => {
+      const stale = {
+        name: "handoff_to_human",
+        args: { customerMessage: "Vou pedir o seu reembolso." },
+        id: "h1",
+      };
+      const skip = { name: "skip_reply", args: {}, id: "s1" };
+      const state = {
+        messages: [
+          ...asked(),
+          new AIMessage({ content: "", tool_calls: [stale] }),
+          new ToolMessage({
+            content: "ok",
+            tool_call_id: "h1",
+            name: stale.name,
+          }),
+          new AIMessage({ content: "", tool_calls: [stale, skip] }),
+        ],
+      };
+      const step = reviewableCalls(state, () => true);
+      expect(step.map((c) => c.name)).toEqual(["skip_reply"]);
+      const g = gate(cfg({ rules: [BANNED] })).g;
+      expect([
+        await g?.reviewCall(state.messages, skip, { step }),
+        g?.owes(state.messages),
+      ]).toEqual([null, false]);
+      // Read as written, with no word on what may run, the same step would owe a reply.
+      const blind = gate(cfg({ rules: [BANNED] })).g;
+      expect(await blind?.reviewCall(state.messages, skip)).toContain(
+        BANNED.note,
+      );
+    },
+  );
+
   // The bug it catches: under observe a match on the transfer's line ended the review of the
   // call, so the model reviewer never saw it and `hold` held nothing.
   test.skipIf(!dbUp)(
@@ -1419,11 +1493,20 @@ type Idle =
   | "callback"
   | "declined"
   | ((args: { n?: number }) => boolean);
+// A tool that answers "ok" and nothing else.
+const plain = (name: string) =>
+  tool(async () => "ok", {
+    name,
+    description: name,
+    schema: z.object({ n: z.number().optional() }),
+  });
 async function runTurn(
   steps: Step[],
   c: GuardrailsConfig,
   idle: Partial<Record<string, Idle>> = {},
   extra: StructuredToolInterface[] = [],
+  // Whether the caller would deliver a reply written beside a call (the runtime's recovery).
+  recovers = false,
 ) {
   const ran: string[] = [];
   const callsReviewed: string[] = [];
@@ -1472,7 +1555,7 @@ async function runTurn(
     reviewsCall: g?.reviewsCall,
     reviewTurnReply: g?.reviewReply,
     turnReviewHalted: g?.halted,
-    replyOwed: g?.owes,
+    ...(recovers ? { recoversReply: () => true } : {}),
   });
   const out = await graph.invoke(
     { messages: asked() },
@@ -1492,6 +1575,7 @@ async function runTurn(
       .map((m) => reportedNoEffect(m)),
     last: contentToText(messages.at(-1)?.content ?? "").trim(),
     thread: messages.map((m) => contentToText(m.content)).join("\n"),
+    recovered: replyWrittenThisTurn(messages),
     pending: g?.pending() ?? null,
     outcomes: (await lines(f.turnId as string)).map((l) => l.outcome).sort(),
   };
@@ -1968,6 +2052,28 @@ describe("the rules in the graph", () => {
         skip(),
       );
       expect(stuck.pending).toEqual({ kind: "replaced", reply: TEMPLATE });
+      // The correction written beside a call, with nothing after it: the review reads it and
+      // delivery recovers it, and nothing written before the superseded skip comes back.
+      const beside = await runTurn(
+        [
+          { text: "Rascunho de antes.", calls: [SKIPPED] },
+          { text: "", calls: [banned] },
+          {
+            text: "Qual é o número do seu pedido?",
+            calls: [{ name: "anotar", n: 1 }],
+          },
+          { text: "" },
+          { text: "" },
+        ],
+        cfg({ rules: [BANNED], maxAttempts: 1, fallback: "template" }),
+        {},
+        [...skip(), plain("anotar")],
+        true,
+      );
+      expect([beside.pending, beside.recovered]).toEqual([
+        null,
+        "Qual é o número do seu pedido?",
+      ]);
       // In one step: the silence beside the refused line does not run either.
       const together = await runTurn(
         [

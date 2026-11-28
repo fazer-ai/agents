@@ -495,7 +495,6 @@ async function buildPlaygroundGraph(params: {
     },
   ) => Promise<TurnReviewFeedback | null>;
   turnReviewHalted?: () => boolean;
-  replyOwed?: (turn: BaseMessage[]) => boolean;
   reviewsCall?: (name: string, turn: BaseMessage[]) => boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
@@ -570,7 +569,6 @@ async function buildPlaygroundGraph(params: {
     reviewsCall: params.reviewsCall,
     reviewTurnReply: params.reviewTurnReply,
     turnReviewHalted: params.turnReviewHalted,
-    replyOwed: params.replyOwed,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -1068,7 +1066,6 @@ async function runPlaygroundTurnOnce(
       reviewsCall: turnReview?.reviewsCall,
       reviewTurnReply: turnReview?.reviewReply,
       turnReviewHalted: turnReview?.halted,
-      replyOwed: turnReview?.owes,
       spokenNotice: () =>
         spokenNoticeFor(
           loadedConfig.ttsConfig,

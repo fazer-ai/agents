@@ -16,7 +16,12 @@ export async function setAsideReviewedCalls(
   review: (
     turn: typeof MessagesAnnotation.State.messages,
     call: { name: string; args: unknown; id?: string },
-    opts: { alongside: { name: string; args: unknown }[]; index: number },
+    opts: {
+      alongside: { name: string; args: unknown }[];
+      index: number;
+      // Every call of the step the tools node will consider (`reviewableCalls`), this one included.
+      step: readonly ToolCall[];
+    },
   ) => Promise<string | null>,
   // Asked between two reviews: a turn superseded or taken over during one stops the batch at once,
   // and "lost" tells the caller to refuse all of it. No later read may run a write left unreviewed.
@@ -37,21 +42,18 @@ export async function setAsideReviewedCalls(
   if (last?.getType() !== "ai") return null;
   const ai = last as AIMessage;
   const calls = ai.tool_calls ?? [];
-  const answered = new Set(
-    state.messages
-      .filter((m) => m.getType() === "tool")
-      .map((m) => (m as ToolMessage).tool_call_id),
-  );
+  const step = reviewableCalls(state, isWrite);
+  const eligible = new Set(step);
   const setAside: { call: ToolCall; note: string }[] = [];
   const admitted: { name: string; args: unknown }[] = [];
   let reviewed = 0;
   for (const [index, c] of calls.entries()) {
-    if (!isWrite(c.name) || (c.id && answered.has(c.id))) continue;
+    if (!eligible.has(c)) continue;
     if (reviewed++ > 0 && (await turnLost?.())) return "lost";
     const note = await review(
       state.messages,
       { name: c.name, args: c.args, ...(c.id ? { id: c.id } : {}) },
-      { alongside: [...admitted], index },
+      { alongside: [...admitted], index, step },
     );
     if (halted?.()) return "halted";
     if (note) setAside.push({ call: c, note });
@@ -73,4 +75,23 @@ export async function setAsideReviewedCalls(
       turnReviewVetoToolResult(call, note),
     ),
   };
+}
+
+// The calls of the last step that go through the review: writes the caller reviews, minus a call
+// that already has an answer in the state, which `ToolNode` skips. The one reading of "what this
+// step may run" the review and a reviewer's plan of the whole step share.
+export function reviewableCalls(
+  state: typeof MessagesAnnotation.State,
+  isWrite: (name: string) => boolean,
+): ToolCall[] {
+  const last = state.messages.at(-1);
+  if (last?.getType() !== "ai") return [];
+  const answered = new Set(
+    state.messages
+      .filter((m) => m.getType() === "tool")
+      .map((m) => (m as ToolMessage).tool_call_id),
+  );
+  return ((last as AIMessage).tool_calls ?? []).filter(
+    (c) => isWrite(c.name) && !(c.id && answered.has(c.id)),
+  );
 }

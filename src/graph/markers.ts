@@ -552,6 +552,19 @@ export function callsRefusedByReview(
   return out;
 }
 
+// The tag a turn-review rule's note travels in, inside the veto that answers a refused call. Only
+// the gate writes it (the operator's and the reviewer's text are escaped), so a veto that carries it
+// is a rule saying the customer is still owed a reply.
+export const TURN_RULE_NOTE_TAG = "orientacao_do_operador";
+export function isTurnRuleVeto(message: BaseMessage): boolean {
+  return (
+    typeOf(message) === "tool" &&
+    hasMarker(message, "turn_review_veto") &&
+    typeof message.content === "string" &&
+    message.content.includes(`<${TURN_RULE_NOTE_TAG}>`)
+  );
+}
+
 // Whether a tool result says its call never ran: called off, vetoed by the turn review, refused by
 // a held review, or set aside by the graph.
 export function isUnranToolResult(message: BaseMessage): boolean {

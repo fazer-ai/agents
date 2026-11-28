@@ -337,3 +337,46 @@ describe("withCallVerdicts with a factual-grounding rewrite", () => {
     ]);
   });
 });
+
+// The bug it catches: two verdicts on one call (a rule's observation and the model reviewer's)
+// were taken one per call, so the second landed at the end of the trace, or on a later call that
+// reused the id.
+describe("withCallVerdicts with two verdicts on one call", () => {
+  test("both go right after their call, before its result, and none onto a call that repeats the id", () => {
+    const verdict = (outcome: "observed" | "revised", rule?: string) => ({
+      type: "guardrail" as const,
+      direction: "output" as const,
+      outcome,
+      step: "call" as const,
+      tool: "handoff_to_human",
+      callId: "x",
+      callOrdinal: 1,
+      ...(rule ? { rule, line: true as const } : {}),
+    });
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+        {
+          type: "tool_result",
+          id: "x",
+          name: "handoff_to_human",
+          output: "",
+          isError: false,
+        },
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+      ],
+      [verdict("observed", "sem-reembolso"), verdict("revised")],
+    );
+    expect(
+      placed.map((e) =>
+        e.type === "guardrail" ? `veredito:${e.outcome}` : e.type,
+      ),
+    ).toEqual([
+      "tool_call",
+      "veredito:observed",
+      "veredito:revised",
+      "tool_result",
+      "tool_call",
+    ]);
+  });
+});

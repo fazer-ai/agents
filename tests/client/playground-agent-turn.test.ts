@@ -110,8 +110,8 @@ describe("agentTurn", () => {
       rule(true, "observed" as never),
       rule(false, "revised" as never),
     ]).toEqual([
-      "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
-      "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
+      "the rule fired on the text this call carried for the customer. The call did not run and the agent was told why",
+      "the rule fired on the text this call carries for the customer. Only recorded, the review did not block the call",
       "the turn may not end in silence after the rule sent the reply back. The call did not run and the agent was told why",
     ]);
   });

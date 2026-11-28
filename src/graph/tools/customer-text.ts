@@ -1,15 +1,17 @@
 import { HANDOFF_TOOL_NAME, OPEN_CASE_TOOL_NAME } from "./catalog";
+import { customerLine } from "./customer-line";
 
-// Every argument of every tool the product builds, classified by where the model's text goes:
-//   `customer`: the customer reads it (a caption, an email, an invitation, a charge's description);
-//   `transfer`: the customer reads it, and only when a transfer to a person happens with it;
+// Where the model's text in a tool's argument goes:
+//   `transfer`: the customer reads it, only when a transfer to a person happens with it;
+//   `case`: the customer reads it as the opening message of a case in another inbox;
+//   `customer`: the customer reads it by another channel (a caption, an email, a charge);
 //   `internal`: nobody outside the team reads it (an id, a note, a label, a search).
-// One place, because a reply the turn review's rules refuse must not reach the customer by
-// another door: the rules read every `customer` and `transfer` argument before the call runs
-// (docs/turn-review.md). `tests/graph/customer-text-registry.test.ts` fails for a tool, or an
-// argument, that is not listed here, so a new one has to pick a side.
-export type ArgAudience = "customer" | "transfer" | "internal";
+export type ArgAudience = "transfer" | "case" | "customer" | "internal";
 
+// Every argument of every tool the product builds. The turn review's rules read the `transfer`
+// and `case` ones before the call runs, and in this version not the `customer` ones, listed so
+// the inventory is whole (docs/turn-review.md, "What the rules read"). A tool or an argument
+// missing here fails `tests/graph/customer-text-registry.test.ts`.
 export const TOOL_ARG_AUDIENCE: Record<string, Record<string, ArgAudience>> = {
   [HANDOFF_TOOL_NAME]: {
     reason: "internal",
@@ -20,9 +22,10 @@ export const TOOL_ARG_AUDIENCE: Record<string, Record<string, ArgAudience>> = {
     reason: "internal",
     email: "internal",
     labels: "internal",
-    summary: "internal",
+    // Rendered into the case's subject, which an email destination sends as the mail's subject.
+    summary: "customer",
     // Sent to the customer in the destination inbox when the case opens.
-    customer_message: "customer",
+    customer_message: "case",
     // Sent here when the case could not open and the conversation goes to a person.
     handoff_message: "transfer",
   },
@@ -45,7 +48,8 @@ export const TOOL_ARG_AUDIENCE: Record<string, Record<string, ArgAudience>> = {
     startDate: "internal",
   },
   set_voice_preference: { preference: "internal" },
-  react_to_message: { emoji: "internal" },
+  // Posted on the customer's own message.
+  react_to_message: { emoji: "customer" },
   skip_reply: { reason: "internal", detail: "internal" },
   calculator: { expression: "internal" },
   get_current_time: { roundToMinutes: "internal" },
@@ -125,49 +129,34 @@ export interface CustomerText {
   transfer: boolean;
 }
 
-// Every string a value holds, however nested: a document's line items carry their own text.
-function stringsIn(value: unknown): string[] {
-  if (typeof value === "string") return value.trim() ? [value] : [];
-  if (Array.isArray(value)) return value.flatMap(stringsIn);
-  if (value && typeof value === "object")
-    return Object.values(value).flatMap(stringsIn);
-  return [];
-}
-
-// What a call would have the customer read, argument by argument. A document tool (named by the
-// operator's template, so known only to the caller) issues a document to the customer from every
-// value it is given.
-export function customerTextOf(
-  call: { name: string; args: unknown },
-  isDocumentTool: (name: string) => boolean = () => false,
-): CustomerText[] {
+// What a call would have the customer read in the arguments the rules read (`transfer`, `case`),
+// argument by argument, as the handler delivers it: `customerLine` trims it and reads a
+// placeholder such as "N/A" as nothing.
+export function customerTextOf(call: {
+  name: string;
+  args: unknown;
+}): CustomerText[] {
   const args =
     call.args && typeof call.args === "object"
       ? (call.args as Record<string, unknown>)
       : {};
-  if (isDocumentTool(call.name)) {
-    const text = stringsIn(args).join("\n");
-    return text ? [{ field: "*", text, transfer: false }] : [];
-  }
-  const audience = TOOL_ARG_AUDIENCE[call.name];
-  if (!audience) return [];
   const out: CustomerText[] = [];
-  for (const [field, who] of Object.entries(audience)) {
-    if (who === "internal") continue;
-    const text = stringsIn(args[field]).join("\n");
+  for (const [field, who] of Object.entries(
+    TOOL_ARG_AUDIENCE[call.name] ?? {},
+  )) {
+    if (who !== "transfer" && who !== "case") continue;
+    const said = args[field];
+    const text = typeof said === "string" ? customerLine(said) : "";
     if (text) out.push({ field, text, transfer: who === "transfer" });
   }
   return out;
 }
 
-// How the tool's arguments reach the customer, if any does: always, or only with a transfer.
-export function customerAudiences(
-  name: string,
-  isDocumentTool: (name: string) => boolean = () => false,
-): ("customer" | "transfer")[] {
-  if (isDocumentTool(name)) return ["customer"];
+// How the rules read the tool's arguments, if they read any: with a transfer, or as a case's
+// opening message.
+export function ruleReadAudiences(name: string): ("transfer" | "case")[] {
   return Object.values(TOOL_ARG_AUDIENCE[name] ?? {}).filter(
-    (w) => w !== "internal",
+    (w) => w === "transfer" || w === "case",
   );
 }
 

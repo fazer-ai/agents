@@ -203,7 +203,6 @@ function gate(
     matchRules?: typeof firstTurnRuleMatch;
     reports?: GuardrailReport[];
     signal?: AbortSignal;
-    documentTools?: string[];
   } = {},
 ) {
   const f = flow();
@@ -221,7 +220,6 @@ function gate(
           }
         : null,
       systemPrompt: "PROMPT",
-      documentTools: o.documentTools,
       flow: f,
       announce: (r) => {
         o.reports?.push(r);
@@ -1094,10 +1092,10 @@ describe("the rules in the gate", () => {
     },
   );
 
-  // The bug it catches: a refused text moved into another argument the customer reads (the
-  // opening message of a case in another inbox, a caption, an email, a document) and went out.
+  // The bug it catches: a refused text moved into the opening message of a case in another
+  // inbox, which reaches the customer with no transfer, and went out.
   test.skipIf(!dbUp)(
-    "every argument the customer reads is read by the rules, and no other",
+    "the rules read a transfer's line and a case's opening message, and nothing else of a call",
     async () => {
       const SAID = "Vou pedir o seu reembolso.";
       const refused = async (
@@ -1105,9 +1103,7 @@ describe("the rules in the gate", () => {
         args: object,
         rule: TurnReviewRule = BANNED,
       ) => {
-        const { g } = gate(cfg({ rules: [rule] }), {
-          documentTools: ["send_orcamento"],
-        });
+        const { g } = gate(cfg({ rules: [rule] }));
         const call = { name, args, id: "c" };
         const turn = [
           ...asked(),
@@ -1120,64 +1116,38 @@ describe("the rules in the gate", () => {
       };
       const clean = "Um atendente vai continuar.";
       expect({
+        transferLine: await refused("handoff_to_human", {
+          customerMessage: SAID,
+        }),
         caseOpening: await refused("open_case_in_inbox", {
           reason: "r",
           customer_message: SAID,
           handoff_message: clean,
         }),
-        caption: await refused("send_image", { url: "u", caption: SAID }),
-        fileCaption: await refused("drive_send_file", {
-          fileId: "f",
-          caption: SAID,
+        caseFallbackLine: await refused("open_case_in_inbox", {
+          reason: "r",
+          handoff_message: SAID,
         }),
-        emailSubject: await refused("resend_send_email", {
+        // Outside this version: the other channels are listed in the registry and not read.
+        caption: await refused("send_image", { url: "u", caption: SAID }),
+        email: await refused("resend_send_email", {
           to: "a@b.c",
           subject: SAID,
-          html: "<p>ok</p>",
+          html: SAID,
         }),
-        emailBody: await refused("resend_send_email", {
-          to: "a@b.c",
-          subject: "ok",
-          html: `<p>${SAID}</p>`,
-        }),
-        charge: await refused("asaas_create_pix_charge", {
-          value: 1,
-          description: SAID,
-        }),
-        linkName: await refused("asaas_payment_link_create", {
-          value: 1,
-          name: SAID,
-          description: "ok",
-        }),
-        eventTitle: await refused("calendar_create_event", { summary: SAID }),
-        eventDetails: await refused("calendar_update_event", {
-          eventId: "e",
-          description: SAID,
-        }),
-        document: await refused("send_orcamento", {
-          itens: [{ descricao: SAID }],
-        }),
-        // What only the team reads is not the rules' business.
         note: await refused("private_note", { content: SAID }),
         caseReason: await refused("open_case_in_inbox", {
           reason: SAID,
           handoff_message: clean,
         }),
-        sameNameNotADocument: await refused("send_outro", { texto: SAID }),
       }).toEqual({
+        transferLine: [true, true],
         caseOpening: [true, true],
-        caption: [true, true],
-        fileCaption: [true, true],
-        emailSubject: [true, true],
-        emailBody: [true, true],
-        charge: [true, true],
-        linkName: [true, true],
-        eventTitle: [true, true],
-        eventDetails: [true, true],
-        document: [true, true],
+        caseFallbackLine: [true, true],
+        caption: [false, false],
+        email: [false, false],
         note: [false, false],
         caseReason: [true, false],
-        sameNameNotADocument: [false, false],
       });
       // A rule on the transfer is excused for the line a transfer delivers, and for nothing else:
       // the opening message of a case reaches the customer with no transfer at all.
@@ -1198,13 +1168,79 @@ describe("the rules in the gate", () => {
           { reason: "r", customer_message: PROMISED, handoff_message: clean },
           PROMISE,
         ),
-        await refused("send_image", { url: "u", caption: PROMISED }, PROMISE),
       ]).toEqual([
         [false, false],
         [true, false],
         [true, true],
-        [true, true],
       ]);
+      // Matched as delivered: an anchored pattern meets the trimmed line.
+      const exact = { ...BANNED, pattern: "^Vou pedir o seu reembolso\\.$" };
+      expect(
+        await refused(
+          "handoff_to_human",
+          { customerMessage: `  ${SAID}  ` },
+          exact,
+        ),
+      ).toEqual([true, true]);
+    },
+  );
+
+  // The bug it catches: with only a rule the transfer excuses, a silent transfer was not read
+  // with its step, so a case opened beside it whose message the rule refused left a reply owed
+  // while the silent transfer ran and ended the turn.
+  test.skipIf(!dbUp)(
+    "a silent transfer beside a refused opening message is read with the step, in either order",
+    async () => {
+      const silent = {
+        name: "handoff_to_human",
+        args: { customerMessage: "" },
+        id: "h",
+      };
+      const opening = {
+        name: "open_case_in_inbox",
+        args: {
+          reason: "r",
+          customer_message: "Vou encaminhar o seu caso.",
+          handoff_message: "Um atendente vai continuar.",
+        },
+        id: "o",
+      };
+      for (const calls of [
+        [silent, opening],
+        [opening, silent],
+      ]) {
+        const { g } = gate(cfg({ rules: [PROMISE], maxAttempts: 3 }));
+        const state = {
+          messages: [
+            ...asked(),
+            new AIMessage({ content: "", tool_calls: calls }),
+          ],
+        };
+        const step = reviewableCalls(
+          state,
+          (name) => g?.reviewsCall(name, state.messages) ?? false,
+        );
+        expect(step.map((c) => c.name).sort()).toEqual([
+          "handoff_to_human",
+          "open_case_in_inbox",
+        ]);
+        const vetoed: string[] = [];
+        for (const c of step)
+          if (await g?.reviewCall(state.messages, c, { step }))
+            vetoed.push(c.name);
+        expect(vetoed.sort()).toEqual([
+          "handoff_to_human",
+          "open_case_in_inbox",
+        ]);
+      }
+      // Alone, with nothing owed and nothing beside it to refuse, it is the agent's to choose.
+      const alone = gate(cfg({ rules: [PROMISE] })).g;
+      expect(
+        alone?.reviewsCall("handoff_to_human", [
+          ...asked(),
+          new AIMessage({ content: "", tool_calls: [silent] }),
+        ]),
+      ).toBe(false);
     },
   );
 
@@ -1219,7 +1255,10 @@ describe("the rules in the gate", () => {
         matchRules: async () => ({ kind: "timeout", index: 0 }),
       });
       const earlier = { name: "buscar", args: {}, id: "b" };
-      const call = { name: "send_image", args: { url: "u", caption: "Oi." } };
+      const call = {
+        name: "open_case_in_inbox",
+        args: { reason: "r", customer_message: "Oi.", handoff_message: "Oi." },
+      };
       const turn = [
         ...asked(),
         new AIMessage({ content: "", tool_calls: [earlier] }),

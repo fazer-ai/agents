@@ -64,7 +64,6 @@ import {
   selectOpenMessages,
 } from "@/modules/debounce/watermark";
 import { approvalNoticesForTurn } from "@/modules/documents/approval";
-import { documentToolName } from "@/modules/documents/templates";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -1254,9 +1253,6 @@ async function runTurnBody(
     cfg: loaded.guardrails,
     reviewer: loaded.turnReviewer,
     systemPrompt: loaded.systemPrompt,
-    documentTools: loaded.documentSelections.map((d) =>
-      documentToolName(d.slug),
-    ),
     flow,
     logValues: loaded.logToolValues,
     announce: async (r) => {

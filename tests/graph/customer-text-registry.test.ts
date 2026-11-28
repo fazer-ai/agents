@@ -4,6 +4,7 @@ import { toJSONSchema } from "zod";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import {
   customerTextOf,
+  ruleReadAudiences,
   TOOL_ARG_AUDIENCE,
   TRANSFER_LINE_ARG,
 } from "@/graph/tools/customer-text";
@@ -109,7 +110,7 @@ describe("the registry of text that reaches the customer", () => {
     );
   });
 
-  test("the arguments the customer reads are these, and no others", () => {
+  test("the arguments the customer reads are these, and the rules read the transfer and case ones", () => {
     const read = Object.entries(TOOL_ARG_AUDIENCE).flatMap(([tool, args]) =>
       Object.entries(args)
         .filter(([, who]) => who !== "internal")
@@ -125,8 +126,10 @@ describe("the registry of text that reaches the customer", () => {
       "calendar_update_event.summary:customer",
       "drive_send_file.caption:customer",
       "handoff_to_human.customerMessage:transfer",
-      "open_case_in_inbox.customer_message:customer",
+      "open_case_in_inbox.customer_message:case",
       "open_case_in_inbox.handoff_message:transfer",
+      "open_case_in_inbox.summary:customer",
+      "react_to_message.emoji:customer",
       "resend_send_email.html:customer",
       "resend_send_email.subject:customer",
       "send_image.caption:customer",
@@ -135,15 +138,22 @@ describe("the registry of text that reaches the customer", () => {
       handoff_to_human: "customerMessage",
       open_case_in_inbox: "handoff_message",
     });
+    expect(
+      Object.keys(TOOL_ARG_AUDIENCE).filter(
+        (n) => ruleReadAudiences(n).length > 0,
+      ),
+    ).toEqual(["handoff_to_human", "open_case_in_inbox"]);
   });
 
-  test("a call's text is read per argument, and a document tool's from every value", () => {
+  // The text is read as the handler delivers it: trimmed, a placeholder read as nothing.
+  test("a call's text is read per argument, as delivered, and only where the rules read", () => {
     expect(
       customerTextOf({
         name: "open_case_in_inbox",
         args: {
           reason: "interno",
-          customer_message: "Abri o seu caso.",
+          summary: "Assunto",
+          customer_message: "  Abri o seu caso.  ",
           handoff_message: "Um atendente vai continuar.",
         },
       }),
@@ -155,13 +165,12 @@ describe("the registry of text that reaches the customer", () => {
         transfer: true,
       },
     ]);
-    const call = {
-      name: "send_orcamento",
-      args: { cliente: "Ana", itens: [{ descricao: "Reembolso", valor: 10 }] },
-    };
     expect([
-      customerTextOf(call),
-      customerTextOf(call, (n) => n === "send_orcamento"),
-    ]).toEqual([[], [{ field: "*", text: "Ana\nReembolso", transfer: false }]]);
+      customerTextOf({
+        name: "handoff_to_human",
+        args: { customerMessage: " N/A " },
+      }),
+      customerTextOf({ name: "send_image", args: { caption: "Oi." } }),
+    ]).toEqual([[], []]);
   });
 });

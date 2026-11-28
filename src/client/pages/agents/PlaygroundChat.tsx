@@ -1382,12 +1382,12 @@ export function guardrailTraceLabel(
     if (entry.rule && entry.line && entry.outcome === "revised")
       return t(
         "playground.trace.turnRuleLineRevised",
-        "the rule fired on the message this transfer carried for the customer. The call did not run and the agent was told why",
+        "the rule fired on the text this call carried for the customer. The call did not run and the agent was told why",
       );
     if (entry.rule && entry.line && entry.outcome === "observed")
       return t(
         "playground.trace.turnRuleLineObserved",
-        "the rule fired on the message this transfer carries for the customer. Only recorded, the review did not block the call",
+        "the rule fired on the text this call carries for the customer. Only recorded, the review did not block the call",
       );
     if (entry.rule && entry.outcome === "revised")
       return entry.step === "call"
@@ -1582,20 +1582,27 @@ export function TraceRow({ entry }: { entry: TraceEntry }) {
           {entry.external
             ? t("playground.trace.externalCheck", "External check on the reply")
             : entry.check === "turn_review"
-              ? entry.rule
-                ? t("playground.trace.turnRule", {
-                    defaultValue: "Turn review rule “{{rule}}”",
+              ? entry.rule && entry.line
+                ? t("playground.trace.turnRuleOnCall", {
+                    defaultValue:
+                      "Turn review rule “{{rule}}” on the call to {{tool}}",
                     rule: entry.rule,
+                    tool: entry.tool ?? "",
                   })
-                : entry.step === "call"
-                  ? t("playground.trace.turnReviewCall", {
-                      defaultValue: "Turn review of the call to {{tool}}",
-                      tool: entry.tool ?? "",
+                : entry.rule
+                  ? t("playground.trace.turnRule", {
+                      defaultValue: "Turn review rule “{{rule}}”",
+                      rule: entry.rule,
                     })
-                  : t(
-                      "playground.trace.turnReviewReply",
-                      "Turn review of the reply",
-                    )
+                  : entry.step === "call"
+                    ? t("playground.trace.turnReviewCall", {
+                        defaultValue: "Turn review of the call to {{tool}}",
+                        tool: entry.tool ?? "",
+                      })
+                    : t(
+                        "playground.trace.turnReviewReply",
+                        "Turn review of the reply",
+                      )
               : entry.check
                 ? t(
                     "playground.trace.groundingCheck",

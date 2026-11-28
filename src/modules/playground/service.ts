@@ -1036,9 +1036,6 @@ async function runPlaygroundTurnOnce(
         cfg: loadedConfig.guardrails,
         reviewer: loadedConfig.turnReviewer,
         systemPrompt: loadedConfig.systemPrompt,
-        documentTools: loadedConfig.documentSelections.map((d) =>
-          documentToolName(d.slug),
-        ),
         flow,
         logValues: loadedConfig.logToolValues,
         announce: (r) => {

@@ -285,12 +285,17 @@ export function withCallVerdicts(
     if (e.type === "tool_call" && e.id && placed.length === 0) {
       // By id and tool name, in order: an id a provider repeats does not pair a verdict with the
       // wrong call.
-      let k = pending.findIndex((v) => v.callId === e.id && v.tool === e.name);
+      // Only a verdict that names no place: one with an ordinal waits for its own call.
+      let k = pending.findIndex(
+        (v) =>
+          v.callOrdinal === undefined && v.callId === e.id && v.tool === e.name,
+      );
       // By id alone only for a verdict that names no tool, or an id no other call carries whose
       // tool name the trace may have clipped.
       if (k < 0)
         k = pending.findIndex(
           (v) =>
+            v.callOrdinal === undefined &&
             v.callId === e.id &&
             (v.tool === undefined ||
               (idCount.get(e.id as string) === 1 && e.name.startsWith(v.tool))),

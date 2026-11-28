@@ -5,6 +5,7 @@ import {
   issueHasAction,
 } from "@/modules/agents/config-health";
 import {
+  guardrailsKeyUsed,
   guardrailsUseModel,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
@@ -1237,6 +1238,21 @@ describe("computeConfigIssues — the guardrails credential", () => {
         customPolicy: "Nunca fale de preço.",
       }),
     ]).toEqual([false, true, true, false, true]);
+    // The classifier's key under Decisions is the screening's alone: the model reviewer runs on
+    // the chat key, which has its own check.
+    const reviewing = {
+      ...idle,
+      classifier: "decisions" as const,
+      turnReview: { ...idle.turnReview, judge: true },
+    };
+    expect([
+      guardrailsKeyUsed(reviewing),
+      guardrailsKeyUsed({ ...reviewing, classifier: "chat" }),
+      guardrailsKeyUsed({
+        ...reviewing,
+        output: { ...idle.output, enabled: true },
+      }),
+    ]).toEqual([false, true, true]);
   });
 
   test("flags guardrails enabled with no credential", () => {

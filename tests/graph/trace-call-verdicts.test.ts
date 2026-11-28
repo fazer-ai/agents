@@ -380,3 +380,32 @@ describe("withCallVerdicts with two verdicts on one call", () => {
     ]);
   });
 });
+
+// The bug it catches: of two calls sharing an id, the first had no verdict and took the second's
+// by id, though that verdict named the second call's place.
+describe("withCallVerdicts with a verdict that names its place", () => {
+  test("waits for its own call, and is not taken by another that shares the id", () => {
+    const placed = withCallVerdicts(
+      [
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+        { type: "tool_call", id: "x", name: "handoff_to_human", args: {} },
+      ],
+      [
+        {
+          type: "guardrail",
+          direction: "output",
+          outcome: "observed",
+          step: "call",
+          tool: "handoff_to_human",
+          callId: "x",
+          callOrdinal: 2,
+        },
+      ],
+    );
+    expect(placed.map((e) => e.type)).toEqual([
+      "tool_call",
+      "tool_call",
+      "guardrail",
+    ]);
+  });
+});

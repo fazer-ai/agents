@@ -121,7 +121,7 @@ import {
   type GroundingReviewerModel,
   type GuardrailsConfig,
   guardrailCredentialRef,
-  guardrailsUseModel,
+  guardrailsKeyUsed,
   readGuardrailsConfig,
   resolveGroundingReviewer,
   turnReviewJudges,
@@ -641,7 +641,7 @@ export async function loadAgentConfig(
   const guardrailsRef = guardrailCredentialRef(guardrails);
   // Read only when a configured check runs on a model: a turn with the rules alone resolves and
   // decrypts no key, so a stale or unreadable one cannot warn about it or stop it.
-  if (guardrailsRef && guardrailsUseModel(guardrails)) {
+  if (guardrailsRef && guardrailsKeyUsed(guardrails)) {
     const gEntry = await tryResolveApiKeyEntry(db, guardrailsRef);
     if (gEntry.state === "ok") {
       guardrailsApiKey = gEntry.secret;
@@ -2557,6 +2557,13 @@ export interface GraphBuildDeps {
       alongside?: { name: string; args: unknown }[];
       // The call's place among the calls of its step, from 0.
       index?: number;
+      // The calls of the step that may run, each with its place as written when known.
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;

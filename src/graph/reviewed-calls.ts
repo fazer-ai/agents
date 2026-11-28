@@ -92,6 +92,8 @@ export function reviewableCalls(
       .map((m) => (m as ToolMessage).tool_call_id),
   );
   return ((last as AIMessage).tool_calls ?? []).filter(
-    (c) => isWrite(c.name) && !(c.id && answered.has(c.id)),
+    // `ToolNode`'s own test of what it runs (`call.id == null || !toolMessageIds.has(call.id)`):
+    // an empty id is an id, and one already answered runs nothing.
+    (c) => isWrite(c.name) && (c.id == null || !answered.has(c.id)),
   );
 }

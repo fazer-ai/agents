@@ -174,5 +174,21 @@ describe.skipIf(!dbUp)("the turn reviewer's key at turn prep", () => {
       (await load(rulesOnly))?.guardrailsApiKey,
       (await load(screening))?.guardrailsApiKey,
     ]).toEqual(["", "sk-test"]);
+    // Under Decisions the classifier's key is the screening's alone: with only the model
+    // reviewer on, it is not read, and the reviewer still gets the chat key.
+    const reviewerOnly = await agentWith("Decisions, só revisor", {
+      ...keyed,
+      credentialRef: `vault:${keyId}`,
+      classifier: "decisions",
+      decisions: { provider: "openai", credentialRef: `vault:${keyId}` },
+      input: { enabled: false },
+      output: { enabled: false },
+      turnReview: { enabled: true, judge: true },
+    });
+    const loaded = await load(reviewerOnly);
+    expect([loaded?.guardrailsApiKey, loaded?.turnReviewer]).toMatchObject([
+      "",
+      { runnable: true, apiKey: "sk-test" },
+    ]);
   });
 });

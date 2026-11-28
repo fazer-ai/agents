@@ -203,6 +203,7 @@ function gate(
     matchRules?: typeof firstTurnRuleMatch;
     reports?: GuardrailReport[];
     signal?: AbortSignal;
+    documentTools?: string[];
   } = {},
 ) {
   const f = flow();
@@ -220,6 +221,7 @@ function gate(
           }
         : null,
       systemPrompt: "PROMPT",
+      documentTools: o.documentTools,
       flow: f,
       announce: (r) => {
         o.reports?.push(r);
@@ -1092,6 +1094,153 @@ describe("the rules in the gate", () => {
     },
   );
 
+  // The bug it catches: a refused text moved into another argument the customer reads (the
+  // opening message of a case in another inbox, a caption, an email, a document) and went out.
+  test.skipIf(!dbUp)(
+    "every argument the customer reads is read by the rules, and no other",
+    async () => {
+      const SAID = "Vou pedir o seu reembolso.";
+      const refused = async (
+        name: string,
+        args: object,
+        rule: TurnReviewRule = BANNED,
+      ) => {
+        const { g } = gate(cfg({ rules: [rule] }), {
+          documentTools: ["send_orcamento"],
+        });
+        const call = { name, args, id: "c" };
+        const turn = [
+          ...asked(),
+          new AIMessage({ content: "", tool_calls: [call] }),
+        ];
+        return [
+          g?.reviewsCall(name, turn),
+          ((await g?.reviewCall(turn, call)) ?? "").includes(rule.note),
+        ];
+      };
+      const clean = "Um atendente vai continuar.";
+      expect({
+        caseOpening: await refused("open_case_in_inbox", {
+          reason: "r",
+          customer_message: SAID,
+          handoff_message: clean,
+        }),
+        caption: await refused("send_image", { url: "u", caption: SAID }),
+        fileCaption: await refused("drive_send_file", {
+          fileId: "f",
+          caption: SAID,
+        }),
+        emailSubject: await refused("resend_send_email", {
+          to: "a@b.c",
+          subject: SAID,
+          html: "<p>ok</p>",
+        }),
+        emailBody: await refused("resend_send_email", {
+          to: "a@b.c",
+          subject: "ok",
+          html: `<p>${SAID}</p>`,
+        }),
+        charge: await refused("asaas_create_pix_charge", {
+          value: 1,
+          description: SAID,
+        }),
+        linkName: await refused("asaas_payment_link_create", {
+          value: 1,
+          name: SAID,
+          description: "ok",
+        }),
+        eventTitle: await refused("calendar_create_event", { summary: SAID }),
+        eventDetails: await refused("calendar_update_event", {
+          eventId: "e",
+          description: SAID,
+        }),
+        document: await refused("send_orcamento", {
+          itens: [{ descricao: SAID }],
+        }),
+        // What only the team reads is not the rules' business.
+        note: await refused("private_note", { content: SAID }),
+        caseReason: await refused("open_case_in_inbox", {
+          reason: SAID,
+          handoff_message: clean,
+        }),
+        sameNameNotADocument: await refused("send_outro", { texto: SAID }),
+      }).toEqual({
+        caseOpening: [true, true],
+        caption: [true, true],
+        fileCaption: [true, true],
+        emailSubject: [true, true],
+        emailBody: [true, true],
+        charge: [true, true],
+        linkName: [true, true],
+        eventTitle: [true, true],
+        eventDetails: [true, true],
+        document: [true, true],
+        note: [false, false],
+        caseReason: [true, false],
+        sameNameNotADocument: [false, false],
+      });
+      // A rule on the transfer is excused for the line a transfer delivers, and for nothing else:
+      // the opening message of a case reaches the customer with no transfer at all.
+      const PROMISED = "Vou encaminhar o seu caso.";
+      expect([
+        await refused(
+          "handoff_to_human",
+          { customerMessage: PROMISED },
+          PROMISE,
+        ),
+        await refused(
+          "open_case_in_inbox",
+          { reason: "r", handoff_message: PROMISED },
+          PROMISE,
+        ),
+        await refused(
+          "open_case_in_inbox",
+          { reason: "r", customer_message: PROMISED, handoff_message: clean },
+          PROMISE,
+        ),
+        await refused("send_image", { url: "u", caption: PROMISED }, PROMISE),
+      ]).toEqual([
+        [false, false],
+        [true, false],
+        [true, true],
+        [true, true],
+      ]);
+    },
+  );
+
+  // The bug it catches: a matcher that could not run while the step was read whole reported the
+  // call with no place in the turn, so the trace put the verdict at the end.
+  test.skipIf(!dbUp)(
+    "a line that could not be matched is reported at its call's place, id or not",
+    async () => {
+      const reports: GuardrailReport[] = [];
+      const { g } = gate(cfg({ rules: [BANNED] }), {
+        reports,
+        matchRules: async () => ({ kind: "timeout", index: 0 }),
+      });
+      const earlier = { name: "buscar", args: {}, id: "b" };
+      const call = { name: "send_image", args: { url: "u", caption: "Oi." } };
+      const turn = [
+        ...asked(),
+        new AIMessage({ content: "", tool_calls: [earlier] }),
+        new ToolMessage({ content: "ok", tool_call_id: "b", name: "buscar" }),
+        new AIMessage({ content: "", tool_calls: [call] }),
+      ];
+      await g?.reviewCall(turn, call, {
+        index: 0,
+        step: [{ ...call, index: 0 }],
+      });
+      expect(
+        reports.map((r) => [
+          r.outcome,
+          r.cause,
+          r.callId ?? null,
+          r.callOrdinal,
+        ]),
+      ).toEqual([["unavailable", "pattern_timeout", null, 2]]);
+    },
+  );
+
   // The bug it catches: a call was found in its step by id before identity, so of two transfers a
   // provider gave one id, the second was judged by the first one's verdict.
   test.skipIf(!dbUp)(
@@ -1152,6 +1301,20 @@ describe("the rules in the gate", () => {
       };
       const step = reviewableCalls(state, () => true);
       expect(step.map((c) => c.name)).toEqual(["skip_reply"]);
+      // The executor's own reading of an id: an empty one is an id, and one answered runs nothing.
+      const blank = { ...stale, id: "" };
+      expect(
+        reviewableCalls(
+          {
+            messages: [
+              ...asked(),
+              new ToolMessage({ content: "ok", tool_call_id: "", name: "x" }),
+              new AIMessage({ content: "", tool_calls: [blank, skip] }),
+            ],
+          },
+          () => true,
+        ).map((c) => c.name),
+      ).toEqual(["skip_reply"]);
       const g = gate(cfg({ rules: [BANNED] })).g;
       expect([
         await g?.reviewCall(state.messages, skip, { step }),

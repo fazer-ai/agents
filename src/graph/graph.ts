@@ -251,6 +251,13 @@ export interface BuildAgentGraphParams {
       alongside?: { name: string; args: unknown }[];
       // The call's place among the calls of its step, from 0.
       index?: number;
+      // The calls of the step that may run, each with its place as written when known.
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
@@ -1869,6 +1876,12 @@ export function buildAgentGraph({
                     );
                     return reviewCall(turn, call, {
                       ...o,
+                      // Each call of the step with its place as written, for a verdict given
+                      // while the step is read whole.
+                      step: o.step.map((c) => {
+                        const at = written.indexOf(c);
+                        return at >= 0 ? { ...c, index: at } : c;
+                      }),
                       index: index >= 0 ? index : undefined,
                       instructions: reviewInstructions,
                       tools: reviewTools,

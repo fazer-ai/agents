@@ -33,7 +33,7 @@ import {
 } from "@/modules/guardrails/health";
 import {
   guardrailCredentialRef,
-  guardrailsUseModel,
+  guardrailsKeyUsed,
   readGuardrailsConfig,
   turnReviewJudges,
 } from "@/modules/guardrails/settings";
@@ -280,7 +280,7 @@ export async function readAgentConfigHealth(
     contactAuthDenyMessage: contactAuth.denyMessage ?? "",
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrailCredentialRef(guardrails) ?? "",
-    guardrailsKeyUnused: !guardrailsUseModel(guardrails),
+    guardrailsKeyUnused: !guardrailsKeyUsed(guardrails),
     ...(guardrails.classifier === "decisions" && turnReviewJudges(guardrails)
       ? { turnReviewCredentialRef: guardrails.credentialRef ?? "" }
       : {}),

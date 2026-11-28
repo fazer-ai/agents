@@ -32,6 +32,11 @@ import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { HANDOFF_TOOL_NAME, OPEN_CASE_TOOL_NAME } from "@/graph/tools/catalog";
 import { customerLine } from "@/graph/tools/customer-line";
 import {
+  customerAudiences,
+  customerTextOf,
+  TRANSFER_LINE_ARG,
+} from "@/graph/tools/customer-text";
+import {
   extractTokenUsage,
   UsageCapture,
   type UsagePersist,
@@ -484,12 +489,6 @@ export function turnRuleSilenceFeedback(
   };
 }
 
-// The argument that carries a transfer's line for the customer, per tool that can transfer.
-const TRANSFER_LINE_ARG: Record<string, string | undefined> = {
-  [HANDOFF_TOOL_NAME]: "customerMessage",
-  [OPEN_CASE_TOOL_NAME]: "handoff_message",
-};
-
 // What a `skip_reply` beside the rule's transfer is answered with while the reply is owed: it
 // did not run, and whether the turn may end in silence is decided by that transfer's result.
 export function turnRuleSilenceWaitNote(tool: string): string {
@@ -541,6 +540,9 @@ export interface TurnReviewGateParams {
   reviewer: GroundingReviewerModel | null;
   // The agent's resolved system prompt: the instructions every step is judged against.
   systemPrompt: string;
+  // The turn's document tools, named by the operator's templates: every value they are given is
+  // text on a document the customer receives.
+  documentTools?: readonly string[];
   flow: FlowContext;
   logValues?: boolean;
   announce?: GuardrailAnnounce;
@@ -564,7 +566,12 @@ export interface TurnReviewGate {
       index?: number;
       // The calls of the step that may run, this one included (`reviewableCalls`). Absent, the
       // step's message is read as written.
-      step?: readonly { name: string; args: unknown; id?: string }[];
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
@@ -1131,7 +1138,16 @@ export function buildTurnReviewGate(
   // `lines`: per transfer (by its arguments), the rule its line matched, or that the match could
   // not run. A rule whose tool is the transfer itself does not read the line it carries. `owes`:
   // the rule a refused line leaves a reply owed for. One plan per step, whichever call asks first.
-  type StepCall = { name: string; args: unknown; id?: string };
+  // `index`: the call's place in the step as the model wrote it, when the caller knows it.
+  type StepCall = { name: string; args: unknown; id?: string; index?: number };
+  const documents = new Set(p.documentTools ?? []);
+  const isDocumentTool = (name: string) => documents.has(name);
+  // Whether a call carries text a rule would read: text for the customer that some rule is not
+  // excused for.
+  const readByRules = (c: { name: string; args: unknown }) =>
+    customerTextOf(c, isDocumentTool).some((said) =>
+      rules.some((r) => !(said.transfer && r.unlessTool === HANDOFF_TOOL_NAME)),
+    );
   interface StepPlan {
     calls: readonly StepCall[];
     lines: Map<unknown, TurnReviewRule | "failed">;
@@ -1164,20 +1180,27 @@ export function buildTurnReviewGate(
     const build = async (): Promise<StepPlan> => {
       const lines = new Map<unknown, TurnReviewRule | "failed">();
       for (const c of rules.length > 0 ? calls : []) {
-        const line = transferLine(c);
-        if (!line || stopped || p.signal?.aborted) continue;
-        const fired = await reviewRules(
-          turn,
-          {
-            kind: "call",
-            name: c.name,
-            args: c.args,
-            ...(c.id ? { id: c.id } : {}),
-          },
-          line,
-          HANDOFF_TOOL_NAME,
-        );
-        if (fired) lines.set(c.args, fired);
+        // Every argument of the call the customer would read (`customerTextOf`), in order, up
+        // to the first a rule refuses. A rule on `handoff_to_human` is excused only for text
+        // that is delivered with a transfer.
+        for (const said of customerTextOf(c, isDocumentTool)) {
+          if (stopped || p.signal?.aborted) break;
+          const fired = await reviewRules(
+            turn,
+            {
+              kind: "call",
+              name: c.name,
+              args: c.args,
+              ...(c.id ? { id: c.id } : {}),
+              ...callOrdinal(turn, c.index),
+            },
+            said.text,
+            said.transfer ? HANDOFF_TOOL_NAME : undefined,
+          );
+          if (!fired) continue;
+          lines.set(c.args, fired);
+          break;
+        }
       }
       const refusing = [...lines.values()].find((v) => v !== "failed");
       return {
@@ -1306,15 +1329,20 @@ export function buildTurnReviewGate(
     pending: () => decision,
     reviewsCall: (name, turn) =>
       tr.judge ||
-      // A transfer's line is read by every rule the transfer itself does not excuse, and a
-      // `skip_reply` beside such a line is a silence that line's refusal would forbid.
-      (rules.some((r) => r.unlessTool !== HANDOFF_TOOL_NAME) &&
-        (name in TRANSFER_LINE_ARG ||
+      // Text for the customer is read by every rule it does not excuse (a transfer's line
+      // excuses a rule on the transfer), and a `skip_reply` beside such text is a silence its
+      // refusal would forbid.
+      (rules.length > 0 &&
+        (customerAudiences(name, isDocumentTool).some(
+          (who) =>
+            who === "customer" ||
+            rules.some((r) => r.unlessTool !== HANDOFF_TOOL_NAME),
+        ) ||
           (name === SKIP_REPLY_TOOL &&
             (
               (turn.at(-1) as { tool_calls?: StepCall[] } | undefined)
                 ?.tool_calls ?? []
-            ).some((c) => transferLine(c))))) ||
+            ).some(readByRules)))) ||
       ((name === SKIP_REPLY_TOOL || name in TRANSFER_LINE_ARG) &&
         stillOwed(turn) !== null),
     halted: () => held || refused,

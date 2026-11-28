@@ -478,6 +478,13 @@ async function buildPlaygroundGraph(params: {
       alongside?: { name: string; args: unknown }[];
       // The call's place among the calls of its step, from 0.
       index?: number;
+      // The calls of the step that may run, each with its place as written when known.
+      step?: readonly {
+        name: string;
+        args: unknown;
+        id?: string;
+        index?: number;
+      }[];
       instructions?: string;
       tools?: Readonly<Record<string, string>>;
       readTools?: Readonly<Record<string, string>>;
@@ -1029,6 +1036,9 @@ async function runPlaygroundTurnOnce(
         cfg: loadedConfig.guardrails,
         reviewer: loadedConfig.turnReviewer,
         systemPrompt: loadedConfig.systemPrompt,
+        documentTools: loadedConfig.documentSelections.map((d) =>
+          documentToolName(d.slug),
+        ),
         flow,
         logValues: loadedConfig.logToolValues,
         announce: (r) => {

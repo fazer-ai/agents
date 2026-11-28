@@ -263,6 +263,10 @@ export interface GuardrailTurnReviewConfig {
 export const guardrailsUseModel = (g: GuardrailsConfig): boolean =>
   guardrailsScreen(g) ||
   (g.enabled && (g.factualGrounding.enabled || turnReviewJudges(g)));
+// Whether the key `guardrailCredentialRef` names is used at all. Under the Decisions classifier
+// it is the screening's alone: the reviewers run on the chat model and its own key.
+export const guardrailsKeyUsed = (g: GuardrailsConfig): boolean =>
+  g.classifier === "decisions" ? guardrailsScreen(g) : guardrailsUseModel(g);
 // Whether a screening direction has something to judge: what the classifier's own key is for.
 export const guardrailsScreen = (g: GuardrailsConfig): boolean =>
   g.enabled &&
